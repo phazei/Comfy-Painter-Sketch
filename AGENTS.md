@@ -86,7 +86,11 @@ detail against the local frontend/backend source listed under Local References.
   under a project prefix (`.cps-`) so we never collide with the frontend.
 - **Imports from ComfyUI**: only `app` and `api`, externalized by Vite and
   resolved at runtime: `import { app } from "../../scripts/app.js"` /
-  `"../../scripts/api.js"`. The frontend deliberately keeps `scripts/app` and
+  `"../../scripts/api.js"`. In source, import them as `@comfy/scripts/app.js` /
+  `@comfy/scripts/api.js`; tsconfig `paths` maps these to our local types
+  (`ui/src/types/`) and Vite rewrites them to the literal runtime paths. The
+  official `@comfyorg/comfyui-frontend-types` package ships no `.d.ts` (checked
+  1.50-1.56), so we keep minimal local types for what we use. The frontend deliberately keeps `scripts/app` and
   `scripts/api` shims warning-free; other `scripts/*` / `extensions/core/*` shims
   are deprecated and print warnings. Never import frontend internals (`@/...`).
 - **No UI framework by default.** Editor UI is plain TypeScript DOM components.
@@ -209,6 +213,21 @@ works in one renderer when a renderer-neutral approach exists.
 - Pointer events inside the DOM widget must not leak to the graph (stop
   propagation on the canvas during strokes, and don't let wheel-zoom on our
   canvas pan the graph). Verify in both renderers.
+- Our widget is created via the extension's `getCustomWidgets()` for the
+  `PAINTERSKETCH` `widgetType` (set in the Python `extra_dict`); the DOM widget
+  type string is `paintersketch`.
+- `node.hideOutputImages = true` is only honored by Nodes 2.0. In LiteGraph the
+  output preview is drawn by an `onDrawBackground` the frontend installs on
+  node classes; we override it on our prototype only, without calling the
+  original (the one exception to "call original first").
+- Nodes 2.0 forwards `wheel` and `pointerdown` to the graph in the capture phase,
+  before our element sees them. We add a capture-phase `window` listener only
+  while the pointer is over our canvas and stop the event there; also set
+  `data-capture-wheel="true"`. Nodes 2.0 ignores `getMinHeight` for DOM widgets,
+  so a CSS `min-height` backs it up.
+- Upstream images reachable through `app`: `app.nodePreviewImages[locatorId]`,
+  `app.nodeOutputs[locatorId].images`, `node.imgs`, and a `LoadImage` widget
+  value converted to a `/view` URL.
 - The in-node canvas is drawn at the graph's zoom level. Convert pointer
   coordinates through the element's `getBoundingClientRect()` every event;
   never cache a scale factor.

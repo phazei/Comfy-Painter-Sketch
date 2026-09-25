@@ -1,0 +1,14 @@
+[project]
+name = "comfy-painter-sketch"
+version = "0.1.0"
+description = "PainterSketch: paint on images directly inside a ComfyUI node, output IMAGE + MASK."
+license = { text = "MIT" }
+readme = "README.md"
+
+[project.urls]
+Repository = "https://github.com/phazei/Comfy-Painter-Sketch"
+
+[tool.comfy]
+PublisherId = "phazei"
+DisplayName = "PainterSketch"
+Icon = ""

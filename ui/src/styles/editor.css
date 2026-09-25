@@ -1,0 +1,99 @@
+/*
+ * PainterSketch editor styles. Every selector is scoped under .cps-* so we
+ * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.
+ */
+
+.cps-root {
+  --cps-rail-width: 36px;
+  --cps-bg: #1e1e1e;
+  --cps-rail-bg: #262626;
+  --cps-border: #3a3a3a;
+  --cps-fg: #d0d0d0;
+  --cps-fg-muted: #7a7a7a;
+
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */
+  min-height: 244px;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--cps-bg);
+  border: 1px solid var(--cps-border);
+  border-radius: 4px;
+  color: var(--cps-fg);
+  font: 12px/1.2 system-ui, sans-serif;
+  user-select: none;
+}
+
+.cps-root *,
+.cps-root *::before,
+.cps-root *::after {
+  box-sizing: border-box;
+}
+
+/* ── Tool rail ─────────────────────────────────────────────────────────── */
+
+.cps-rail {
+  flex: 0 0 var(--cps-rail-width);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  background: var(--cps-rail-bg);
+  border-right: 1px solid var(--cps-border);
+  overflow: hidden;
+}
+
+.cps-rail-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--cps-fg);
+  cursor: pointer;
+}
+
+.cps-rail-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cps-rail-button:disabled {
+  color: var(--cps-fg-muted);
+  cursor: default;
+}
+
+/* ── Stage ─────────────────────────────────────────────────────────────── */
+
+.cps-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+  outline: none;
+}
+
+.cps-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}

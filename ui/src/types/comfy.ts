@@ -1,0 +1,216 @@
+/**
+ * Minimal structural types for the parts of the ComfyUI frontend we touch.
+ *
+ * The official `@comfyorg/comfyui-frontend-types` package ships without its
+ * `index.d.ts` for every release from 1.50 through 1.56 (the tarball holds only
+ * LICENSE + package.json), so we declare just what we use. Shapes were checked
+ * against ComfyUI_frontend 1.55.2 source (`src/scripts/app.ts`, `api.ts`,
+ * `domWidget.ts`, `types/comfy.ts`, `types/litegraph-augmentation.d.ts`).
+ *
+ * Everything here is type-only; nothing is emitted.
+ */
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Execution output
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** One file reference in a node's execution output (`/view` query fields). */
+export interface ResultItem {
+  filename?: string;
+  subfolder?: string;
+  type?: string;
+}
+
+/** A node's `ui` output as received in `executed` / `onExecuted`. */
+export interface NodeExecutionOutput {
+  images?: (ResultItem | null)[];
+  animated?: boolean[];
+  [key: string]: unknown;
+}
+
+/** Payload of the api `executed` event. */
+export interface ExecutedWsMessage {
+  node: string;
+  display_node?: string;
+  prompt_id?: string;
+  output: NodeExecutionOutput;
+  merge?: boolean;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Widgets
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Options bag shared by all widgets (subset). */
+export interface IWidgetOptions {
+  socketless?: boolean;
+  serialize?: boolean;
+  [key: string]: unknown;
+}
+
+/** A LiteGraph widget (subset). */
+export interface IBaseWidget {
+  name: string;
+  type: string;
+  value: unknown;
+  options: IWidgetOptions;
+  hidden?: boolean;
+  serialize?: boolean;
+  callback?: (value: unknown, ...rest: unknown[]) => void;
+  serializeValue?: (node: LGraphNode, index: number) => Promise<unknown> | unknown;
+  onRemove?: () => void;
+}
+
+/** Options accepted by `node.addDOMWidget` (see frontend `src/scripts/domWidget.ts`). */
+export interface DOMWidgetOptions<V extends object | string> extends IWidgetOptions {
+  hideOnZoom?: boolean;
+  selectOn?: string[];
+  getValue?: () => V;
+  setValue?: (value: V) => void;
+  getMinHeight?: () => number;
+  getMaxHeight?: () => number;
+  getHeight?: () => string | number;
+  margin?: number;
+  afterResize?: (node: LGraphNode) => void;
+  onHide?: (widget: DOMWidget<HTMLElement, V>) => void;
+}
+
+/** A widget wrapping a real DOM element. */
+export interface DOMWidget<T extends HTMLElement, V extends object | string> extends IBaseWidget {
+  element: T;
+  value: V;
+  options: DOMWidgetOptions<V>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Graph + nodes
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** An input slot (subset). */
+export interface INodeInputSlot {
+  name: string;
+  type: unknown;
+  link: number | null;
+}
+
+/** A graph or subgraph (subset). */
+export interface LGraph {
+  id: string;
+  /** `false` for subgraphs; used to build node locator ids. */
+  isRootGraph?: boolean;
+}
+
+/** Callback signature of `LGraphNode.onConnectionsChange`. */
+export type ConnectionsChangeCallback = (
+  type: number,
+  index: number,
+  isConnected: boolean,
+  linkInfo: unknown,
+  slot: unknown,
+) => void;
+
+/** A LiteGraph node instance (subset of `LGraphNode` + ComfyUI augmentation). */
+export interface LGraphNode {
+  id: string | number;
+  type?: string;
+  comfyClass?: string;
+  graph: LGraph | null;
+  inputs: INodeInputSlot[];
+  widgets?: IBaseWidget[];
+  size: [number, number];
+  /** Frontend-only nodes (legacy Reroute, Primitive, ...). */
+  isVirtualNode?: boolean;
+  /** Legacy preview images of the node, if any. */
+  imgs?: HTMLImageElement[];
+  /** Nodes 2.0: skip rendering execution output images under the node. */
+  hideOutputImages?: boolean;
+  constructor: { comfyClass?: string; nodeData?: { name?: string } };
+
+  setSize(size: [number, number]): void;
+  getInputNode(slot: number): LGraphNode | null;
+  addDOMWidget<T extends HTMLElement, V extends object | string>(
+    name: string,
+    type: string,
+    element: T,
+    options?: DOMWidgetOptions<V>,
+  ): DOMWidget<T, V>;
+
+  onNodeCreated?(this: LGraphNode): void;
+  onExecuted?(this: LGraphNode, output: NodeExecutionOutput): void;
+  onConnectionsChange?(this: LGraphNode, ...args: Parameters<ConnectionsChangeCallback>): void;
+  onRemoved?(this: LGraphNode): void;
+  onAdded?(this: LGraphNode, graph: LGraph): void;
+  onDrawBackground?(this: LGraphNode, ctx: CanvasRenderingContext2D, ...rest: unknown[]): void;
+}
+
+/** A registered node class, as passed to `beforeRegisterNodeDef`. */
+export interface LGraphNodeConstructor {
+  prototype: LGraphNode;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Node definitions + extensions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Options part of a V1 input spec tuple. */
+export interface InputSpecOptions {
+  default?: unknown;
+  socketless?: boolean;
+  [key: string]: unknown;
+}
+
+/** V1 input spec tuple as passed to custom widget constructors. */
+export type InputSpecV1 = readonly [unknown, InputSpecOptions?];
+
+/** Node definition (subset). */
+export interface ComfyNodeDef {
+  name: string;
+  [key: string]: unknown;
+}
+
+/** Custom widget constructor returned from `getCustomWidgets`. */
+export type CustomWidgetConstructor = (
+  node: LGraphNode,
+  inputName: string,
+  inputData: InputSpecV1,
+  app: ComfyApp,
+) => { widget?: IBaseWidget; minWidth?: number; minHeight?: number } | IBaseWidget | undefined;
+
+/** Extension definition (subset of frontend `ComfyExtension`). */
+export interface ComfyExtension {
+  name: string;
+  getCustomWidgets?(app: ComfyApp): Record<string, CustomWidgetConstructor>;
+  beforeRegisterNodeDef?(
+    nodeType: LGraphNodeConstructor,
+    nodeData: ComfyNodeDef,
+    app: ComfyApp,
+  ): void | Promise<void>;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// app + api singletons
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The ComfyUI `app` singleton (subset). */
+export interface ComfyApp {
+  registerExtension(extension: ComfyExtension): void;
+  /** Execution outputs keyed by NodeLocatorId (`"12"` or `"<subgraph-uuid>:12"`). */
+  readonly nodeOutputs: Partial<Record<string, NodeExecutionOutput>>;
+  /** Preview image URLs (often `blob:`) keyed by NodeLocatorId. */
+  nodePreviewImages: Partial<Record<string, string[]>>;
+  /** `&rand=...` cache-buster (empty on cloud). */
+  getRandParam(): string;
+}
+
+/** The ComfyUI `api` singleton (subset). */
+export interface ComfyApi {
+  apiURL(route: string): string;
+  addEventListener(
+    type: "executed",
+    listener: (event: CustomEvent<ExecutedWsMessage>) => void,
+  ): void;
+  removeEventListener(
+    type: "executed",
+    listener: (event: CustomEvent<ExecutedWsMessage>) => void,
+  ): void;
+}

@@ -24,7 +24,7 @@ Category: `image`.
 | | Name | Type | Notes |
 |---|---|---|---|
 | in | `image` | IMAGE, optional | Background. Batch in, batch out |
-| in | `width`, `height`, `background` | widgets | Only used when `image` is not connected |
+| in | `width`, `height`, `background` | widgets | Only used when `image` is not connected. `width`/`height` 64-8192, step 8, default 1024; `background` default `#ffffff` |
 | in | `invert_mask` | BOOLEAN widget | Inverts the `MASK` output |
 | in | `document` | STRING widget, hidden | Versioned layer manifest (see Persistence). Not a socket |
 | out | `IMAGE` | IMAGE `[B,H,W,3]` | Each input image with visible paint layers composited on top |
@@ -210,10 +210,10 @@ own output pair.
 ## Milestones
 
 ### M0 -- Scaffold
-- [ ] Python package: `__init__.py` (`WEB_DIRECTORY`, `comfy_entrypoint`), `nodes/`, V3 node stub with the contract above
-- [ ] `ui/` Vite + TS project building one file into `js/`, CSS injection
-- [ ] DOM widget mounts in LiteGraph (primary) and Nodes 2.0, resizes with the node, stops pointer/wheel leaking to the graph
-- [ ] Background from upstream preview lookup + our `ui` preview after execution; updates live when the upstream changes
+- [x] Python package: `__init__.py` (`WEB_DIRECTORY`, `comfy_entrypoint`), `nodes/`, V3 node stub with the contract above (smoke-tested in the ComfyUI venv)
+- [x] `ui/` Vite + TS project building one file into `js/`, CSS injection
+- [x] DOM widget mounts in LiteGraph (primary) and Nodes 2.0, resizes with the node, stops pointer/wheel leaking to the graph (browser-verified)
+- [x] Background from upstream preview lookup + our `ui` preview after execution; updates live when the upstream changes (browser-verified)
 
 ### M1 -- Paint end to end
 - [ ] Engine: document model v1, layer canvases, compositor, viewport (pan/zoom)
@@ -273,3 +273,4 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: M0 code landed. Document widget via `getCustomWidgets` (`PAINTERSKETCH`); local TS types (official types package is empty). Installed ComfyUI frontend is 1.52.7; source reference is 1.55.x.

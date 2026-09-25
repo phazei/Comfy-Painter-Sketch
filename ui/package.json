@@ -1,0 +1,19 @@
+{
+  "name": "comfy-painter-sketch-ui",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Frontend source for the PainterSketch ComfyUI node. Builds a single ES module into ../js/.",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite build --watch --mode development",
+    "watch": "vite build --watch --mode development",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vite": "7.3.6",
+    "vitest": "5.0.1"
+  }
+}

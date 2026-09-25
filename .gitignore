@@ -1,0 +1,31 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Frontend build dependencies (the built output in js/ IS committed)
+ui/node_modules/
+ui/coverage/
+ui/.vite/
+ui/dist/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.venv
+venv/
+*.local
