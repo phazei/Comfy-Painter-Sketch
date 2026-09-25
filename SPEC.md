@@ -107,6 +107,7 @@ interface PainterDocument {
   bounds: { x: number; y: number; width: number; height: number } // paint area, frame coords
   regions: Region[]                                 // reserved, always [] in v1 (decision 3)
   placement?: { x: number; y: number; scale: number } // Move tool; default identity
+  mainOutput?: OutputOptions                        // M9; default applyMask 'none'
   activeLayerId: string
   layers: Layer[]                                   // bottom -> top, background excluded
 }
@@ -120,10 +121,18 @@ interface Layer {
   invert?: boolean                                  // mask layers, default false
   textData?: TextData                               // text layers: {text, x, y, font, size, color, bold, italic, align, lineHeight?}, doc px; (x,y) = first-line baseline at its left/centre/right edge per align
 }
-interface Region {                                  // future: Output Regions
+interface Region {                                  // M9 Output Regions
   id: string
-  index: number                                     // 1-based, shown on canvas, maps to output slot
-  rect: { x: number; y: number; width: number; height: number } // frame coords
+  slot: number                                      // 1..6, stable: = output pair number, never renumbered
+  name: string                                      // user label shown on the output dots ("" = "region N")
+  rect: { x: number; y: number; width: number; height: number } // IMAGE px (not doc px): fixed to the image
+  visible: boolean                                  // overlay display only; outputs always produced
+  output: OutputOptions
+}
+interface OutputOptions {                           // per region, and doc-level `mainOutput` for IMAGE/MASK
+  applyMask: 'none' | 'fill' | 'crop'               // fill = paint masked area with `fillColor`; crop = trim to mask bbox
+  fillColor: string                                 // '#rrggbb'
+  cropPadding: number                               // px around the mask bbox for 'crop'
 }
 ```
 
@@ -286,34 +295,34 @@ interface Region {                                  // future: Output Regions
 - Buttons in the UI, and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y while the editor is active
 
 ## Not in v1 (maybe later)
-Per-layer move/free transform (whole-drawing Move is M5), rotation, feathering/refine edge, blend modes, brush presets beyond
-a couple, layer masks (per-layer), smoothing/stabilizer, symmetry, PSD export,
-per-image paint in a batch, multiple mask layers in the UI, output regions.
+Non-destructive per-layer transforms (cut: too complex -- use destructive Free
+Transform, M11), feathering/refine edge, blend modes, brush presets beyond a
+couple, layer masks (per-layer), smoothing/stabilizer, symmetry, PSD export,
+per-image paint in a batch, transparent (RGBA) outputs (the `MASK` output
+carries alpha; downstream "Join Image with Alpha" exists), per-region mask
+picking (regions use all masks; could become a dropdown later), text boxes with
+wrapping, type-mask text, searchable installed-font picker.
 
-### Future (v2): Apply mask to IMAGE
-Option to bake the mask into the `IMAGE` output: fill the masked area with a
-color, or cut it out as transparency. ComfyUI `IMAGE` is RGB, so transparency
-likely means an extra RGBA/alpha output or relying on image+mask consumers.
+## Post-v1 features (before public release)
 
-### Future: Output Regions
-Draw numbered rectangles on the canvas (e.g. one per person); each becomes its
-own output pair.
-- Each region has a visible number that matches its output slot:
-  `IMAGE 1` / `MASK 1`, `IMAGE 2` / `MASK 2`, ... The main `IMAGE`/`MASK`
-  (full frame) stay as the first outputs so existing links never shift.
-- Region `IMAGE n` = composited image cropped to the region. Region `MASK n` = the
-  combined mask (decision 5) cropped to the same rectangle.
-- Deleting a region renumbers the rest only if nothing is linked to them; otherwise
-  keep numbers stable (to be decided when built).
-- Implementation note: V3 (`comfy_api.latest._io`) has a `DynamicOutput` base
-  class but no concrete dynamic-output type yet (`Autogrow`, `DynamicCombo`,
-  `DynamicSlot` are inputs). Options at build time:
-  1. A concrete V3 dynamic output, if core has added one by then (check first).
-  2. Declare a fixed maximum of region pairs in the V3 schema (e.g. 8) and have
-     the frontend show only the first N. Only ever trim from the end: link
-     indices are positional, so hiding a middle slot would misroute outputs.
-  3. A single `is_output_list` IMAGE/MASK list (downstream runs once per region;
-     no per-region wiring).
+Planned order after M7a: M8 -> M9 -> M10 -> M11 -> M12, then M7b release polish.
+Details per milestone are in the Milestones section.
+
+### Output regions: implementation notes (M9)
+- V3 has no concrete dynamic-output type (check core again first). Plan: declare
+  the maximum in the schema -- `IMAGE`, `MASK`, then 6 pairs `IMAGE 1`/`MASK 1` ...
+  `IMAGE 6`/`MASK 6` (14 outputs) -- and let the frontend show only the pairs in use.
+- **Output links are positional.** Never `removeOutput` a middle slot: the next
+  slot shifts into its index and ComfyUI would send the wrong region downstream.
+  Region *n* always uses output pair *n* (stable, never renumbered; a new region
+  takes the lowest free slot). The node shows pairs up to the highest slot in use;
+  unused pairs below it stay but are greyed/labelled "(unused)" -- unless the
+  M9 agent verifies a way to hide a slot *without removing it* in both renderers.
+- Output labels come from region names (`face` / `face mask`; default
+  `region N` / `region N mask`), set via the slot `label`, saved in the workflow.
+  Nodes 2.0: re-splice `node.outputs` after label changes (AGENTS.md).
+- Python: an unused slot returns a 1x1 black image / zero mask (or
+  `ExecutionBlocker` if something is linked to an unused slot -- decide in M9).
   - Reference: rgthree Power Puter (`D:\AITools\rgthree-comfy`,
     `py/power_puter.py`, `src_web/comfyui/power_puter.ts`) does truly dynamic
     outputs, but via V1: `RETURN_TYPES = ByPassTypeTuple(("*",))` (a tuple that
@@ -381,24 +390,60 @@ own output pair.
   - Painting/erasing/filling/shapes on a text layer asks "Rasterize text layer? It will no longer be editable as text." -- OK converts to a paint layer (part of the same undo step), Cancel aborts.
   - Text tool while Quick Mask is on: switch the target back to paint and create a normal text layer (type-mask is out of scope).
 
-### M7 -- Polish
+### M7a -- Code health + warts (do first)
+- [ ] Split `ui/src/widget/controller.ts` (~573 lines) and `ui/src/ui/colorPicker.ts` (~421); `engine/editor.ts` sits at ~399 (extract before adding to it)
 - [ ] Error toasts: audit every failure path (upload, restore/missing files, cleanup route, bad manifest) for a clear, non-spammy toast
 - [ ] Settings: default mask color, default pressure curve (+ existing PaintQuality / Cleanup)
-- [ ] README: real feature list, shortcuts table, screenshots/GIF, install, storage + cleanup explanation
-- [ ] Example workflow (`example_workflows/`), e.g. LoadImage -> PainterSketch -> inpaint
-- [ ] Code health: split `ui/src/widget/controller.ts` (~573 lines) and `ui/src/ui/colorPicker.ts` (~421); `engine/editor.ts` sits at ~399 (extract before adding to it)
 - [ ] Known warts to fix or accept:
   - Esc in the mask color picker restores the color but leaves an empty undo step
   - `fullscreenKeys.ts` calls `preventDefault` on a bare Control keydown (harmless; modifier tracking is meant to be observe-only)
   - An upload that finishes while the node's workflow tab is in the background doesn't update that tab's draft until you return to it
   - Paint/mask files in documents saved before the bounds-growth re-upload fix may be offset; they can't be repaired automatically (text layers are)
-- [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before a first release
+### M8 -- Multiple masks
+- [ ] Add / delete / reorder mask layers (mask rows stay above paint layers); each has its own color, overlay opacity, invert, visibility
+- [ ] Default colors are distinct: first mask red, then a fixed palette (e.g. blue, green, yellow, magenta, cyan, orange); user can change any
+- [ ] Quick Mask paints into the selected mask; clicking a mask row selects it (and turns Quick Mask on)
+- [ ] `MASK` = union of visible masks (unchanged rule); hidden-mask note covers any hidden mask with content
+- [ ] Undo for add/delete/reorder like paint layers; masks are not tied to paint layers
+
+### M9 -- Output regions + output options
+- [ ] Region tool: draw numbered rectangles (max 6) anywhere on the image; move/resize with handles; overlap allowed; exact X/Y/W/H fields
+- [ ] Regions are in **image px**, fixed to the image (Move drawing doesn't move them); on an upstream size change, scale them proportionally with the image and clamp
+- [ ] Stable slots: region *n* <-> output pair *n*, never renumbered; new region = lowest free slot (see "Output regions: implementation notes")
+- [ ] User-editable region name = output labels (`name` / `name mask`)
+- [ ] Region outputs: `IMAGE n` = composited image cropped to the rect; `MASK n` = union of visible masks cropped to the rect
+- [ ] Output options per output (Main + each region): apply mask **None / Fill (color) / Crop to mask (+ padding px)**. Crop trims to the mask's bbox + padding (clamped to the output), which changes that output's size; empty mask with Crop = uncropped
+- [ ] Side panel tabs **Layers | Outputs**: Outputs lists Main (always) + regions (number, name, size fields, visibility, options, delete)
+- [ ] Regions and options saved in the document (`regions`, `mainOutput`); Python applies them; undoable edits
+- [ ] Batch: each output is a batch like `IMAGE`
+
+### M10 -- Floating selections + clipboard
+- [ ] Move layer tool inside a selection drags the selected pixels as a floating piece; Alt+drag duplicates; commit on deselect / tool switch / Enter; Esc cancels
+- [ ] Ctrl+C / Ctrl+X / Ctrl+V inside the editor (only while it owns the keyboard -- white rail edge); paste = new layer, floating, at the view centre
+- [ ] Paste images from the system clipboard (browser `paste` event; no permission prompt) as a new floating layer
+- [ ] One undo step per committed float
+
+### M11 -- Free Transform (Ctrl+T)
+- [ ] Destructive scale/rotate with handles for the active layer, a selection, or a floating paste; Shift keeps proportions (Photoshop); Enter commits, Esc cancels; resample once on commit
+- [ ] Floating pastes/inputs stay unresampled until commit (one resample from the source)
+- [ ] Text rotation stored in `textData` (non-destructive; text re-renders); Free Transform on a text layer rotates/scales via `textData`
+- [ ] No saved-file contract change: pixel layers are resampled on commit, text is rasterized as always
+
+### M12 -- Extra image inputs
+- [ ] Optional growable inputs `image_2`, `image_3`, ... (V3 `Autogrow`; verify)
+- [ ] "Copy from input N" button: places that image as a new floating layer, ready to Free Transform; no live link after commit
+- [ ] Python returns previews for all image inputs so the editor can see them after a run (LoadImage-style upstreams work before a run)
+
+### M7b -- Release polish (last)
+- [ ] README: real feature list, shortcuts table, screenshots/GIF, install, storage + cleanup explanation
+- [ ] Example workflows (`example_workflows/`): e.g. LoadImage -> PainterSketch -> inpaint (Crop to mask); regions -> per-person prompts
+- [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
 - M0-M6 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Work style that worked: small, scoped agents with explicit concurrency rules; coordinator builds and runs all tests (`cd ui && npm run typecheck && npm test && npm run build`; Python `-m unittest discover tests` with the ComfyUI venv and `PYTHONPATH` = ComfyUI folder). Long-running agent sessions get large -- start fresh agents per task.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Future ideas already agreed (not scheduled): move selection contents (cut/copy-move), apply mask to IMAGE (v2), output regions, text boxes with wrapping, searchable installed-font picker, type-mask text.
+- Next: M7a, then M8-M12 (agreed 2026-09-24), then M7b release polish. The user will not publicly release until M8-M12 are done.
 
 ## Behavior Notes
 
@@ -440,6 +485,7 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: Post-v1 plan agreed: M8 multiple masks (distinct default colors), M9 output regions (max 6, image px, stable slots never renumbered, user-named output labels, per-output apply-mask None/Fill/Crop+padding, no transparency), M10 floating selections + clipboard, M11 destructive Free Transform (+ text rotation in textData; non-destructive per-layer transforms cut), M12 extra image inputs with "Copy from input N". M7 split into M7a (now) and M7b (release polish, last).
 - 2026-09-24: M6 complete. Late fixes: bounds growth now re-uploads every layer (other layers kept old-size files -> offset after reload, and slightly wrong Python output); restored text layers with mismatched files re-render from `textData`. Reload guard for F5/Ctrl+R (flush then reload; no extra prompt, ComfyUI already asks); flush on tab hidden / window blur. Drafts: we trigger `changeTracker.captureCanvasState()` after uploads/edits so page reload restores the latest paint.
 - 2026-09-24: Ctrl = temporary Move layer with auto-select (Photoshop); thumbnails now follow Move drawing placement.
 - 2026-09-24: M6 browser-verified. Fixes: every view command repaints (Fit button bug); stuck middle-button/pen drag recovery (likely cause of the "Move drawing ignored" bug); Space in text fields no longer arms pan. New Sample choice "Background" (input image only), default for bucket and wand; eyedropper keeps "All layers". Rasterize "paint again" note removed.
