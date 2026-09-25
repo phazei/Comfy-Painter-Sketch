@@ -1,0 +1,327 @@
+# AGENTS.md
+
+Guidelines for working on this project. Read this before making changes.
+
+This file holds the **stable** rules: philosophy, architecture, conventions, and
+hard-won gotchas. The **goals, feature scope, milestones, decisions, and progress**
+live in [`SPEC.md`](SPEC.md). Read both. Update `SPEC.md` as work lands; only
+change this file when an architectural rule or convention changes.
+
+## Project Goals
+
+A single, well-built ComfyUI paint node: take an `IMAGE` in, paint on it (and
+optionally draw a mask) directly inside the node, output `IMAGE` and `MASK`.
+
+- **In-node first** -- 90% of use happens inside the node body on the graph. A
+  fullscreen button opens the same editor larger; it is the same editor, not a
+  separate app.
+- **Simple, not a kitchen sink** -- a focused tool set done well beats a large
+  tool set done poorly. If a feature isn't in `SPEC.md`, don't add it without
+  asking.
+- **Well-organized, well-documented code** -- small modules with one job each.
+  Every module, class, and exported function gets a docstring / JSDoc / TSDoc.
+- **Modern ComfyUI patterns** -- V3 Python schema, DOM widget frontend that works
+  on both the LiteGraph renderer and the Nodes 2.0 (Vue) renderer.
+- **Robust** -- malformed saved documents, missing input images, and failed
+  uploads degrade gracefully; they never crash the node or lose the user's work
+  silently.
+
+### Explicitly out of scope
+
+No sessions, no custom server routes, no iframe, no separate application, no AI
+prompt box / "describe the next generation" dock, no output comparison pane, no
+run button inside the editor. Use ComfyUI's own endpoints (`/upload/image`,
+`/view`) and its own queue.
+
+## Source Projects
+
+We are writing from scratch. These are **references**, not code to copy wholesale.
+Both are months old; ComfyUI has changed a lot since. Verify any integration
+detail against the local frontend/backend source listed under Local References.
+
+| Project | Location | Take | Avoid |
+|---|---|---|---|
+| **ComfySketch** (skeleton) | `D:\AITools\comfyui-comfysketch` (`js/comfysketch.js`, one 4,900-line file) | Integration shape: one `nodeCreated` hook, a DOM widget, no LiteGraph drawing or prototype patching. Canvas 2D with one offscreen canvas per layer. Per-stroke buffer composited at `opacity` on pointer-up (stops overlapping stamps stacking alpha). Pointer-event pressure. Multi-source input-image URL lookup (`getInputImageUrl`). Swallowing keydown while the editor is active. SVG overlays for handles/selection | Monolith file. Editing only in fullscreen (we edit in-node). Floating draggable panels. Full JPEG data URI stored in the widget/workflow. Undo that stores data URLs per layer per step and reloads them async (slow, racy). `'lighter'` soft brush (blows out to white). String-keyed flood-fill visited set. No coalesced events. `setTimeout(100)` init. Inline-style theme patching. V1 Python schema, `IS_CHANGED = nan` |
+| Comfy Canvas (editor/UI ideas) | `D:\AITools\Comfy-Canvas` | Layer model (id/name/opacity/blend/visible/locked), versioned layer document, text tool (re-editable `textData`, `<textarea>` overlay, commit to raster), brush settings (size/hardness/opacity/flow/spacing, shape), left tool rail + top options bar + layers panel look | iframe app, sessions/routes, AI prompt dock, output pane, 6k-line `editor.js` with `if (tool === ...)` chains, whole-document snapshot undo, PIXI dependency, no pressure |
+| Core ComfyUI `Painter` node | `comfy_extras/nodes_painter.py`, frontend `src/composables/painter/usePainter.ts`, `src/components/painter/WidgetPainter.vue` | Current, official pattern for persistence (upload PNG on `serializeValue`, store `"name [input]"` in a widget) and for showing the upstream image (`nodeOutputStore.getNodeImageUrls(node.getInputNode(0))`) | It is brush + eraser only; don't depend on its internals (they're not a public API) |
+| Core frontend Layer Editor | `ComfyUI_frontend/src/renderer/extensions/layerEditor/` | Reference for document/history/fill/compositor module split and tests | Not an extension API; don't import from it |
+| "PaintPro" (screenshot) | -- | Visual target: vertical tool rail on the left inside the node, canvas filling the node, `image` in / `IMAGE` + `MASK` out | Its overbuilt settings panel (texture, dual brush, scattering, etc.) |
+
+## Architecture
+
+### Python (node backend)
+
+- **V3 schema** (`comfy_api.latest`) -- `io.ComfyNode`, `define_schema()`,
+  `io.NodeOutput`, `ComfyExtension`, `comfy_entrypoint()`.
+- Do NOT use V1 (`NODE_CLASS_MAPPINGS`, `INPUT_TYPES`). `NODE_CLASS_MAPPINGS` must
+  NOT exist in `__init__.py`, even empty -- see "ComfyUI Loader Fork" below.
+- `__init__.py` exports `WEB_DIRECTORY = "./js"` and `comfy_entrypoint`.
+- Node code in `nodes/`; each node imported in `nodes/__init__.py` and listed in
+  `ALL_NODES`.
+- Category: an existing ComfyUI category (`image`), not a custom top-level one.
+- Logging: `logging.getLogger("paintersketch.<module>")`. Short, actionable messages.
+- The Python side is deliberately thin: resolve the saved layer/mask PNGs from the
+  `input` folder, composite over the input image, return `IMAGE`/`MASK` and a
+  UI preview of the input image. All editing logic lives in the frontend.
+- Treat widget values that name files as untrusted: resolve through
+  `folder_paths.get_annotated_filepath()` and verify with
+  `folder_paths.exists_annotated_filepath()`; never join raw strings into paths.
+- Use `node_helpers.pillow(Image.open, path)` for loading (retries truncated images).
+- `fingerprint_inputs` hashes the saved PNG(s) so edits re-execute the node and
+  unchanged edits hit the cache.
+
+### JavaScript / TypeScript (frontend)
+
+- **TypeScript + Vite**, source in `ui/`, built output in `js/`, **built output
+  committed** so users never run a build.
+- Build: `cd ui && npm run build`. `ui/node_modules/` is gitignored.
+- Do NOT hand-edit anything in `js/` that the build produces.
+- **Single-file bundle.** ComfyUI loads every `**/*.js` under `WEB_DIRECTORY` as an
+  extension entry point, so code-split chunks would be loaded as extra
+  entry points. Configure Vite library mode with one ES entry and
+  `inlineDynamicImports: true`. Keep hand-written files out of `js/` unless they
+  are intended entry points.
+- **CSS**: ComfyUI only auto-loads `.js`. Import CSS as a string (`?inline`) and
+  inject a single `<style>` element once, or inject a `<link>`. Scope every class
+  under a project prefix (`.cps-`) so we never collide with the frontend.
+- **Imports from ComfyUI**: only `app` and `api`, externalized by Vite and
+  resolved at runtime: `import { app } from "../../scripts/app.js"` /
+  `"../../scripts/api.js"`. The frontend deliberately keeps `scripts/app` and
+  `scripts/api` shims warning-free; other `scripts/*` / `extensions/core/*` shims
+  are deprecated and print warnings. Never import frontend internals (`@/...`).
+- **No UI framework by default.** Editor UI is plain TypeScript DOM components.
+  If we ever bundle Vue, remember the dual-runtime problem (below): our Vue
+  instance is invisible to the frontend's reactivity. Decision tracked in `SPEC.md`.
+- Register one extension: `app.registerExtension({ name: "phazei.PainterSketch", ... })`.
+  `phazei` is the publisher ID / GitHub owner; user-visible names are just
+  `PainterSketch` (node ID and display name).
+- Hooking our own node type: `beforeRegisterNodeDef(nodeType, nodeData)` with a
+  `nodeData.name === "PainterSketch"` guard, chaining our node's prototype callbacks
+  (`onNodeCreated`, `onExecuted`, `onRemoved`, `onResize`) by calling the original
+  first. This is the maintainer's usual pattern and is fine for our own node
+  class. Never patch `LGraphNode.prototype`, `LGraphCanvas.prototype`, or other
+  nodes' types.
+- Settings (e.g. default brush, mask color) via `app.ui.settings` / the extension
+  `settings` array, IDs prefixed `PainterSketch.`.
+- Console prefix: `[PainterSketch]`.
+
+### Frontend module layout (target)
+
+Keep modules small and single-purpose. No file should approach the 1,000-line mark;
+if it does, split it.
+
+```
+ui/src/
+  main.ts                 -- registerExtension + node hook wiring only
+  widget/                 -- ComfyUI integration: addDOMWidget, sizing,
+                             serializeValue/upload, restore, input-image lookup
+  document/               -- versioned layer document: types, (de)serialize,
+                             migrations, validation
+  engine/                 -- rendering + editing, no DOM UI
+    compositor.ts         -- layers -> display canvas, export composite/mask
+    history.ts            -- undo/redo (dirty-rect patches, not full snapshots)
+    viewport.ts           -- pan/zoom, screen<->document coords
+    brush.ts              -- stamp generation, spacing, pressure curve
+    selection.ts          -- selection as a Uint8 coverage mask + cached outline
+  tools/                  -- one file per tool implementing a common Tool interface
+    brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
+    marquee.ts lasso.ts magicWand.ts ...
+  ui/                     -- toolbar rail, options bar, layers panel,
+                             color picker, fullscreen host
+  styles/                 -- CSS (injected by main.ts)
+```
+
+- **Tools are objects implementing one interface** (e.g. `onPointerDown/Move/Up`,
+  `onKey`, `drawOverlay`, `cursor`, `options`). No `if (tool === "brush")` chains
+  in the editor core.
+- **Engine has no DOM UI dependencies**; UI talks to the engine through a small
+  editor API + events. This is what lets the same editor mount in the node and in
+  fullscreen.
+- Rendering: Canvas 2D with one offscreen canvas per layer (no PIXI). Revisit only
+  with a measured performance problem.
+- Pointer input: Pointer Events with `pointerType`, `pressure`,
+  `getCoalescedEvents()`; `setPointerCapture` during strokes; `touch-action: none`
+  on the canvas.
+
+### Persistence model
+
+- The saved state is a **versioned layer document** (JSON manifest with
+  `version`, canvas size, layers, text data, mask) plus per-layer PNGs.
+- Pixel data is uploaded to ComfyUI's `input` folder via `POST /upload/image`
+  (subfolder per project, e.g. `painter-sketch/`) inside the widget's
+  `serializeValue` -- only when dirty -- the same pattern the core `Painter` uses.
+- The widget value stores the manifest (file references, not base64). Never put
+  base64 image data in the workflow JSON.
+- Every load path runs through `document/` migration + validation. Unknown or
+  broken documents load as an empty paint layer with a toast, never a crash.
+- Bump `version` for any breaking manifest change and add a migration.
+
+## Code Style
+
+### Python
+
+- Module-level docstring explaining what the file does and where ideas originated.
+- Docstrings on all classes and public functions.
+- Type hints on function signatures.
+- `from __future__ import annotations` is not used.
+- Imports: stdlib, third-party, then ComfyUI/local. Module scope only.
+- `@classmethod` for V3 node methods (`execute`, `define_schema`,
+  `fingerprint_inputs`, `validate_inputs`).
+- No speculative `try/except`; only where there's a real failure mode and a
+  useful fallback.
+
+### TypeScript
+
+- TSDoc on all exported functions/classes with `@param` / `@returns`.
+- Section headers: `// ── Section Name ──────────`; major sections `// ═══════════`.
+- `const` by default, `let` only when reassigned, never `var`.
+- No `any`, no `@ts-ignore`. Narrow unknown data (saved documents, API responses)
+  with type guards.
+- Arrow functions for callbacks and short lambdas.
+- Defensive checks at real boundaries: `node.inputs ?? []`, `out.links?.length`.
+- Pure functions where possible (geometry, flood fill, document migrations) so
+  they're unit-testable without a browser.
+
+## Key Gotchas
+
+### ComfyUI Loader Fork
+`NODE_CLASS_MAPPINGS` and `comfy_entrypoint` are mutually exclusive in ComfyUI's
+loader. If `NODE_CLASS_MAPPINGS` exists (even `{}`), the V1 path runs and
+`comfy_entrypoint()` is never called. Only `WEB_DIRECTORY` is read before the fork.
+
+### Two Renderers
+ComfyUI has the legacy LiteGraph canvas renderer and the Nodes 2.0 Vue renderer.
+**LiteGraph is the primary target** -- it's what the maintainer uses day to day,
+so it gets tested first and must feel best. Nodes 2.0 must also work (no broken
+layout, no lost data), but polish there is secondary. Don't write code that only
+works in one renderer when a renderer-neutral approach exists.
+- DOM widgets (`node.addDOMWidget(name, type, element, options)`) work in both:
+  Nodes 2.0 mounts the element via `WidgetDOM`. Canvas-drawn custom widgets fall
+  back to `WidgetLegacy` and are fragile -- don't write any.
+- Widget routing in Nodes 2.0: `getComponent(widget.type) || (widget.isDOMWidget ? WidgetDOM : WidgetLegacy)`.
+  Do NOT reuse the registered `painter`/`PAINTER` widget type name, or the core
+  Vue painter component will be mounted instead of ours.
+- Useful `addDOMWidget` options (see frontend `src/scripts/domWidget.ts`):
+  `getValue`, `setValue`, `getMinHeight`, `getMaxHeight`, `getHeight`,
+  `hideOnZoom`, `selectOn`, `margin`, `beforeResize`, `afterResize`, `onDraw`.
+- `setDirtyCanvas()` / `graph.change()` do nothing for the Vue renderer. Drive
+  our own UI from our own state; never rely on a graph repaint to refresh it.
+- Pointer events inside the DOM widget must not leak to the graph (stop
+  propagation on the canvas during strokes, and don't let wheel-zoom on our
+  canvas pan the graph). Verify in both renderers.
+- The in-node canvas is drawn at the graph's zoom level. Convert pointer
+  coordinates through the element's `getBoundingClientRect()` every event;
+  never cache a scale factor.
+
+### Keyboard Shortcuts
+ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
+- Editor shortcuts are active only while the editor "has focus": pointer is over
+  the in-node editor, or fullscreen is open. Otherwise every key goes to ComfyUI.
+- While active, handle the key, then `preventDefault()` + `stopPropagation()` so
+  Ctrl+Z undoes a stroke, not a graph edit. Let keys through when an `<input>` /
+  `<textarea>` (text tool, hex field) is the target.
+- Register listeners in the capture phase on `window` while active and remove them
+  when inactive / on node removal. No always-on global listeners.
+
+### Node Lifecycle
+- `nodeCreated` fires inside the constructor, **before** `node.graph` is set.
+  Don't compute execution IDs or touch `node.graph` there; defer to
+  `afterConfigureGraph` / `onAdded` or a `requestAnimationFrame`.
+- **Tab switching destroys and recreates every node instance**, and subgraph
+  navigation unmounts/remounts Vue node components. Anything not in the widget
+  value (or a module-level store keyed by a stable id) is lost. Unsaved in-memory
+  edits must be flushed to the widget value before teardown, or kept in a
+  module-level `Map` keyed by a stable document id, not on the node object.
+- `node.id` is a **string** (frontend >= 1.46). Always compare with `String(node.id)`.
+- Store per-node document state in the widget value, not in custom `node.*`
+  properties (the frontend's ECS direction discourages new instance properties).
+
+### Getting the Input Image into the Editor
+The frontend never receives the input tensor. Two sources, in order:
+1. The upstream node's preview images: `node.getInputNode(0)` then that node's
+   output image URLs (works immediately for `LoadImage` and anything that shows a
+   preview). This is what core `Painter` does.
+2. After our node executes, it returns `ui=UI.PreviewImage(input_image)` and the
+   frontend receives it via the node's executed output (`onExecuted` /
+   `api` `executed` event). Hide the default preview image rendering for our node
+   (`node.hideOutputImages = true`) and draw it as our base layer instead.
+Canvas size follows the input image. With no image connected, fall back to
+width/height/background widgets.
+
+### Nodes 2.0 Reactivity
+- **Dual Vue runtime**: a bundled Vue has its own reactivity; the frontend's
+  `computed`s never see our `ref`s.
+- `node.pos = [x, y]` (full assignment) triggers the layout store; mutating
+  `node.pos[0]` does not. Same caution for `node.size`: use `node.setSize([w, h])`.
+- `node.badges` is not reactive; use DOM overlays if we ever need live badges.
+- `node.outputs` / `node.inputs` are `shallowReactive`: changing a slot's `type`,
+  `name` or `label` in place is not seen. After such edits, re-splice the array
+  in place (`node.outputs.splice(0, node.outputs.length, ...node.outputs)`), as
+  rgthree's Power Puter does (`src_web/comfyui/power_puter.ts`, `stabilize()`).
+
+### Subgraphs
+- `app.graph` is always the root graph; `app.canvas.graph` is what's being viewed.
+- Node identifiers: `node.id` (local), execution ID (`"1:2:3"`, what the backend
+  sees as `UNIQUE_ID`), locator ID (`"<uuid>:<localId>"`).
+
+### Silent ExecutionBlocker in V3 Nodes
+If we ever need to block downstream silently: `io.NodeOutput(ExecutionBlocker(None))`
+as a positional result. `io.NodeOutput(block_execution=...)` treats `None` as
+"no block".
+
+### Image Loading
+- `node_helpers.pillow()` retries PIL ops with `LOAD_TRUNCATED_IMAGES = True`.
+- `folder_paths.get_annotated_filepath("sub/name.png [input]")` handles subfolders
+  and the `[input]` annotation.
+- IMAGE tensors are `[B, H, W, C]` float 0-1; MASK tensors are `[B, H, W]`.
+  Batch in, batch out: the same paint/mask is applied to every image in the batch
+  (broadcast, don't loop in Python). The editor previews the first image.
+
+### Photoshop Conventions
+The maintainer has used Photoshop since PS6. When a behavior or shortcut has a
+well-known Photoshop equivalent, match it rather than inventing one. `SPEC.md`
+lists the chosen shortcuts; keep that table the single source of truth.
+
+## Testing
+
+- Unit tests (Vitest) for pure logic: document migrations/validation, flood fill,
+  geometry (lines/arrows/shapes), brush spacing/pressure math, history.
+- Manual checklist before calling a milestone done:
+  1. LiteGraph (Nodes 2.0 OFF): widget renders, paints, sizes correctly at
+     several graph zoom levels, fullscreen works, shortcuts don't hit the graph
+  2. Nodes 2.0 ON: same, no broken layout or lost data
+  3. Save workflow, reload page, edits restore
+  4. Switch workflow tabs and back; edits survive
+  5. Put the node in a subgraph; enter/exit; edits survive
+  6. Change the upstream image; canvas adapts per `SPEC.md` rules
+  7. Queue: `IMAGE` and `MASK` outputs are correct; unchanged edits are cached
+  8. Pen tablet: pressure affects size/opacity as configured
+  9. Remove the node: listeners and DOM cleaned up
+
+## Local References
+
+Frontend source (authoritative for current behavior): `D:\AITools\ComfyUI_frontend\`
+(1.55.x at time of writing)
+- `src/scripts/domWidget.ts` -- `addDOMWidget` implementation and options
+- `src/renderer/extensions/vueNodes/components/NodeWidgets.vue` -- widget routing
+- `src/renderer/extensions/vueNodes/widgets/registry/widgetRegistry.ts` -- reserved widget type names
+- `src/renderer/extensions/vueNodes/widgets/components/WidgetDOM.vue` -- how DOM widgets mount in Nodes 2.0
+- `src/types/comfy.ts` -- `ComfyExtension` hooks
+- `src/extensions/core/painter.ts`, `src/composables/painter/usePainter.ts` -- core Painter
+- `src/extensions/core/maskeditor*`, `imageCrop.ts` -- other image-editing widgets
+- `src/renderer/extensions/layerEditor/engine/` -- reference engine split (history, fill, compositor)
+- `build/plugins/comfyAPIPlugin.ts` -- which `scripts/*` shims are deprecated
+- `AGENTS.md`, `docs/adr/` -- frontend conventions and direction
+
+Backend source: `D:\AITools\StabilityMatrixData\Packages\ComfyUI\`
+- `comfy_api/latest/_io.py`, `_ui.py` -- V3 schema types, `UI.PreviewImage`
+- `comfy_extras/nodes_painter.py` -- core Painter node (V3 reference)
+- `folder_paths.py`, `node_helpers.py`
+
+Docs:
+- V3 migration: https://docs.comfy.org/custom-nodes/v3_migration
+- JS extensions: https://docs.comfy.org/custom-nodes/js/javascript_overview
+- Hooks: https://docs.comfy.org/custom-nodes/js/javascript_hooks
+- Settings API: https://docs.comfy.org/custom-nodes/js/javascript_settings
+- Toast API: https://docs.comfy.org/custom-nodes/js/javascript_toast
+- Nodes 2.0: https://docs.comfy.org/interface/nodes-2
