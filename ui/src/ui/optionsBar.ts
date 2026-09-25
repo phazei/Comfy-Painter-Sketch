@@ -23,8 +23,22 @@ const NUMBER_FIELDS: readonly NumberField[] = [
   { key: "flow", label: "Flow", min: 1, max: 100, scale: 100 },
 ];
 
+/** Mask state shown in the strip. */
+export interface MaskIndicator {
+  /** Strokes go to the mask (Quick Mask on). */
+  targeting: boolean;
+  /** Mask display colour. */
+  color: string;
+  /** Mask layer visible (a missing mask layer counts as visible). */
+  visible: boolean;
+}
+
+const EYE_OPEN = "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6";
+const EYE_CLOSED = `${EYE_OPEN}M4 4l16 16`;
+
 /**
- * Options strip bound to one `PaintOptions` object at a time.
+ * Options strip bound to one `PaintOptions` object at a time, plus the mask
+ * indicator ("Mask" badge while Quick Mask is on) and mask visibility toggle.
  */
 export class OptionsBar {
   readonly element: HTMLDivElement;
@@ -34,13 +48,39 @@ export class OptionsBar {
   private readonly colorWrap: HTMLLabelElement;
   private readonly pressureSize: HTMLInputElement;
   private readonly pressureOpacity: HTMLInputElement;
+  private readonly maskBadge: HTMLSpanElement;
+  private readonly maskEye: HTMLButtonElement;
+  private readonly maskEyePath: SVGPathElement;
+  private maskTargeting = false;
 
   /**
    * @param onChange - Called after the user edits an option.
+   * @param onToggleMaskVisible - Eye button clicked.
    */
-  constructor(private readonly onChange: () => void) {
+  constructor(
+    private readonly onChange: () => void,
+    onToggleMaskVisible: () => void,
+  ) {
     this.element = document.createElement("div");
     this.element.className = "cps-options";
+
+    this.maskBadge = document.createElement("span");
+    this.maskBadge.className = "cps-mask-badge";
+    this.maskBadge.textContent = "Mask";
+    this.maskBadge.title = "Quick Mask: strokes paint the mask (Q to exit)";
+    this.maskBadge.hidden = true;
+    this.maskEye = document.createElement("button");
+    this.maskEye.type = "button";
+    this.maskEye.className = "cps-mask-eye";
+    this.maskEye.addEventListener("click", onToggleMaskVisible);
+    const svgNs = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("aria-hidden", "true");
+    this.maskEyePath = document.createElementNS(svgNs, "path");
+    svg.appendChild(this.maskEyePath);
+    this.maskEye.appendChild(svg);
+    this.element.append(this.maskBadge, this.maskEye);
 
     for (const field of NUMBER_FIELDS) {
       const label = document.createElement("label");
@@ -109,10 +149,29 @@ export class OptionsBar {
       entry.input.value = v;
       entry.value.textContent = v;
     }
-    this.colorWrap.hidden = options.color === undefined;
+    // Colour is irrelevant while painting the mask.
+    this.colorWrap.hidden = options.color === undefined || this.maskTargeting;
     if (options.color !== undefined) this.color.value = options.color;
     this.pressureSize.checked = options.pressureSize;
     this.pressureOpacity.checked = options.pressureOpacity;
+  }
+
+  /**
+   * Update the mask badge and eye button.
+   * @param state - Current mask state.
+   */
+  setMask(state: MaskIndicator): void {
+    this.maskTargeting = state.targeting;
+    this.maskBadge.hidden = !state.targeting;
+    this.maskBadge.style.backgroundColor = state.color;
+    this.maskEyePath.setAttribute("d", state.visible ? EYE_OPEN : EYE_CLOSED);
+    this.maskEye.classList.toggle("cps-off", !state.visible);
+    this.maskEye.style.color = state.visible ? state.color : "";
+    this.maskEye.title = state.visible
+      ? "Hide mask (also excludes it from the MASK output)"
+      : "Show mask (hidden masks are excluded from the MASK output)";
+    this.maskEye.setAttribute("aria-pressed", String(state.visible));
+    this.refresh();
   }
 
   private toggle(text: string, title: string, apply: (value: boolean) => void): HTMLInputElement {

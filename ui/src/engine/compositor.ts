@@ -5,8 +5,8 @@
  * into the same integer rect Python places them in, so preview and output
  * agree. Order: neutral surround, transparency checker + background inside
  * the image rect, visible paint layers bottom -> top at their opacity (Normal
- * blend, decision 11), then a dim veil over paint outside the image and the
- * image outline.
+ * blend, decision 11), visible mask layers as tinted overlays at their display
+ * opacity, then a dim veil over paint outside the image and the image outline.
  *
  * Canvas 2D only; no DOM UI.
  */
@@ -29,6 +29,18 @@ export interface CompositeLayer {
   opacity: number;
 }
 
+/** One mask layer's overlay (already tinted, see `maskTint.ts`). */
+export interface MaskOverlay {
+  /** Tinted coverage sized to `bounds`. */
+  tint: CanvasImageSource;
+  /** Display colour (fills the image area outside the layer when inverted). */
+  color: string;
+  /** Display opacity 0..1. */
+  opacity: number;
+  /** Per-layer invert: the image area outside the layer's bounds is fully tinted. */
+  invert: boolean;
+}
+
 /** Everything needed for one frame. */
 export interface CompositeInput {
   ctx: CanvasRenderingContext2D;
@@ -47,6 +59,8 @@ export interface CompositeInput {
   background: FrameBackground;
   /** Visible layers, bottom -> top, each sized to `bounds`. */
   layers: readonly CompositeLayer[];
+  /** Visible mask overlays, drawn above every paint layer. */
+  masks: readonly MaskOverlay[];
 }
 
 /** Visual constants. */
@@ -109,6 +123,27 @@ export function composite(input: CompositeInput): void {
     if (layer.opacity <= 0) continue;
     ctx.globalAlpha = layer.opacity;
     ctx.drawImage(layer.source, placed.x, placed.y, placed.width, placed.height);
+  }
+  // Mask overlays: same placement; an inverted mask is also fully tinted over
+  // the image outside the placed layer (Python: 0 there before invert).
+  for (const mask of input.masks) {
+    if (mask.opacity <= 0) continue;
+    ctx.globalAlpha = mask.opacity;
+    ctx.drawImage(mask.tint, placed.x, placed.y, placed.width, placed.height);
+    if (mask.invert) {
+      // (image rect) minus (placed rect); clip first because the placed rect
+      // may stick out of the image on one axis.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, imageSize.width, imageSize.height);
+      ctx.clip();
+      ctx.fillStyle = mask.color;
+      ctx.beginPath();
+      ctx.rect(0, 0, imageSize.width, imageSize.height);
+      ctx.rect(placed.x, placed.y, placed.width, placed.height);
+      ctx.fill("evenodd");
+      ctx.restore();
+    }
   }
   ctx.globalAlpha = 1;
 

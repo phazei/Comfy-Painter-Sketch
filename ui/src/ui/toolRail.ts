@@ -1,5 +1,6 @@
 ﻿/**
- * Left tool rail: one button per registered tool, then Undo/Redo/Fit/Clear
+ * Left tool rail: one button per registered tool, the Quick Mask toggle,
+ * then Undo/Redo/Fit/Clear
  * (always visible, SPEC "Canvas / view"). Minimal M1 version; M3 replaces
  * the look.
  */
@@ -18,6 +19,8 @@ const ICONS: Readonly<Record<string, string>> = {
   fit:
     "M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4",
   clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
+  // Photoshop's Quick Mask: a rectangle with a circle in it.
+  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -25,6 +28,8 @@ const ICONS: Readonly<Record<string, string>> = {
 /** Callbacks from the rail. */
 export interface ToolRailActions {
   selectTool(id: string): void;
+  /** Toggle the Quick Mask paint target (Q). */
+  toggleQuickMask(): void;
   undo(): void;
   redo(): void;
   /** Fit image to stage (Ctrl+0). */
@@ -42,6 +47,7 @@ export class ToolRail {
   private readonly toolBox: HTMLDivElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
+  private readonly quickMaskButton: HTMLButtonElement;
 
   /**
    * @param actions - Button handlers.
@@ -51,13 +57,35 @@ export class ToolRail {
     this.element.className = "cps-rail";
     this.toolBox = document.createElement("div");
     this.toolBox.className = "cps-rail-group";
+    this.quickMaskButton = railButton("quickMask", "Quick Mask (Q)", () => this.actions.toggleQuickMask());
+    this.quickMaskButton.classList.add("cps-rail-quickmask");
+    this.quickMaskButton.setAttribute("aria-pressed", "false");
     const spacer = document.createElement("div");
     spacer.className = "cps-rail-spacer";
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
     this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
     const fitButton = railButton("fit", "Fit to view (Ctrl+0)", () => this.actions.fit());
     const clearButton = railButton("clear", "Clear canvas", () => this.actions.clear());
-    this.element.append(this.toolBox, spacer, this.undoButton, this.redoButton, fitButton, clearButton);
+    this.element.append(
+      this.toolBox,
+      this.quickMaskButton,
+      spacer,
+      this.undoButton,
+      this.redoButton,
+      fitButton,
+      clearButton,
+    );
+  }
+
+  /**
+   * Show the Quick Mask state (highlighted while strokes go to the mask).
+   * @param on - Mask is the paint target.
+   * @param color - Mask display colour (tints the highlighted icon).
+   */
+  setQuickMask(on: boolean, color: string): void {
+    this.quickMaskButton.classList.toggle("cps-active", on);
+    this.quickMaskButton.setAttribute("aria-pressed", String(on));
+    this.quickMaskButton.style.color = on ? color : "";
   }
 
   /**

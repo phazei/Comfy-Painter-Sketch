@@ -43,6 +43,12 @@ export class StrokeBuffer {
   private style: StrokeStyle | null = null;
   private strokeRect: Rect = EMPTY;
   private pendingPreview: Rect = EMPTY;
+  private refreshed: Rect = EMPTY;
+
+  /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
+  get lastRefreshed(): Rect {
+    return { ...this.refreshed };
+  }
 
   /** Whether a stroke is in progress. */
   get active(): boolean {
@@ -65,6 +71,7 @@ export class StrokeBuffer {
     this.style = style;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
+    this.refreshed = EMPTY;
     const preview = this.surfaces().preview;
     preview.ctx.clearRect(0, 0, preview.canvas.width, preview.canvas.height);
     preview.ctx.drawImage(layer.canvas, 0, 0);
@@ -112,6 +119,7 @@ export class StrokeBuffer {
 
   /**
    * Refresh the preview inside the region dirtied since the last call.
+   * The refreshed document rect is available as {@link lastRefreshed}.
    * @param layer - Target layer surface.
    * @returns Preview surface to draw instead of the layer.
    */
@@ -119,6 +127,7 @@ export class StrokeBuffer {
     const { buffer, preview } = this.surfaces();
     const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
     this.pendingPreview = EMPTY;
+    this.refreshed = r;
     if (this.style && !isEmptyRect(r)) {
       const x = r.x - this.bounds.x;
       const y = r.y - this.bounds.y;
@@ -185,6 +194,7 @@ export class StrokeBuffer {
     this.style = null;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
+    this.refreshed = EMPTY;
   }
 
   private ensureSize(bounds: Rect): void {

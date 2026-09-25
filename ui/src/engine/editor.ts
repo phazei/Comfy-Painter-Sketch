@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Editor core: owns the document, layer pixels, undo history, the stroke
  * buffer and the view. UI and tools talk to it through this API; it has no
  * DOM UI dependencies (it only creates offscreen canvases).
@@ -16,20 +16,29 @@
  * output). Re-applying a patch first widens bounds to cover its rect if
  * needed. The one operation that replaces frame/bounds wholesale is Clear,
  * recorded as a `clear` entry holding a full snapshot of the prior state.
+ *
+ * Masks (decisions 5/6): mask layers are ordinary layers whose alpha is
+ * coverage. The paint target (Quick Mask, UI state, not saved) picks whether
+ * strokes go to the active paint layer or the mask; everything else (history,
+ * bounds, Clear, uploads) is layer-generic. Mask layers are displayed through
+ * cached tints ({@link MaskTint}) above all paint.
  */
 
-import type { PainterDocument } from "../document/types";
+import { ensureMaskLayer, findMaskLayer, maskDisplayColor, targetLayer } from "../document/masks";
+import type { PaintTarget } from "../document/masks";
+import type { Layer, PainterDocument } from "../document/types";
 import { cloneDocument } from "../document/serialize";
 import { containsRect, frameRect, isEmptyRect, unionRect } from "../geometry/rect";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { growBounds } from "./bounds";
 import type { Dab } from "./brush";
-import type { CompositeLayer, FrameBackground } from "./compositor";
+import type { CompositeLayer, FrameBackground, MaskOverlay } from "./compositor";
 import { Emitter } from "./emitter";
 import { frameMap } from "./frameMap";
 import type { FrameMap } from "./frameMap";
 import { HistoryStack } from "./history";
 import { LayerStore } from "./layerStore";
+import { MaskTint } from "./maskTint";
 import { StampCache } from "./stampCache";
 import { StrokeBuffer } from "./stroke";
 import type { StrokeStyle } from "./stroke";
@@ -75,7 +84,15 @@ export interface EditorEvents {
   history: undefined;
   /** Transient user-facing note. */
   note: string;
+  /** Paint target or mask layer state (visibility, existence) changed. */
+  mask: undefined;
 }
+
+/** Stroke colour on mask layers: coverage lives in alpha, RGB kept white. */
+const MASK_STROKE_COLOR = "#ffffff";
+
+/** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
+export const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Editor
@@ -102,6 +119,11 @@ export class Editor {
   private strokeDiameter = 1;
   private loadingCount = 0;
   private pendingBackgroundSize: Size | null = null;
+  private target: PaintTarget = "paint";
+  private readonly tints = new Map<string, MaskTint>();
+  /** Per-layer pixel revision (tint cache key); globally monotonic. */
+  private readonly revisions = new Map<string, number>();
+  private revisionCounter = 0;
 
   /** Where the previous stroke ended, document coords (Shift+click line start). */
   lastStrokeEnd: Point | null = null;
@@ -158,6 +180,21 @@ export class Editor {
   /** Whether any layer needs uploading. */
   get dirty(): boolean {
     for (const r of this.runtime.values()) if (r.dirty) return true;
+    return false;
+  }
+
+  /**
+   * Whether any mask layer is currently hidden AND has ever held paint
+   * (non-empty pixels). Used at queue time to warn the user their mask will
+   * not be included in the MASK output.
+   * @returns `true` if a hidden-but-painted mask exists.
+   */
+  hiddenMaskHasContent(): boolean {
+    for (const layer of this.docState.layers) {
+      if (layer.kind !== "mask" || layer.visible) continue;
+      const rt = this.runtime.get(layer.id);
+      if (rt?.hasContent) return true;
+    }
     return false;
   }
 
@@ -219,6 +256,79 @@ export class Editor {
       out.push({ source, opacity: layer.opacity });
     }
     return out;
+  }
+
+  /**
+   * Visible mask layers as tinted overlays (drawn above all paint). Uses the
+   * live stroke preview for the mask being painted and re-tints only the
+   * region the stroke dirtied since the last frame.
+   * @returns Bottom -> top overlays.
+   */
+  maskOverlays(): MaskOverlay[] {
+    const out: MaskOverlay[] = [];
+    const bounds = this.store.bounds;
+    for (const layer of this.docState.layers) {
+      if (!layer.visible || layer.kind !== "mask") continue;
+      const surface = this.store.ensure(layer.id);
+      const stroking = this.strokeLayerId === layer.id && this.stroke.active;
+      const source = stroking ? this.stroke.updatePreview(surface).canvas : surface.canvas;
+      let tint = this.tints.get(layer.id);
+      if (!tint) {
+        tint = new MaskTint();
+        this.tints.set(layer.id, tint);
+      }
+      const color = maskDisplayColor(layer);
+      const invert = layer.invert === true;
+      const key = { bounds, color, invert, revision: this.revisions.get(layer.id) ?? 0 };
+      const canvas = tint.update(source, key, stroking ? this.stroke.lastRefreshed : null);
+      out.push({ tint: canvas, color, opacity: layer.opacity, invert });
+    }
+    return out;
+  }
+
+  // ── Quick Mask / paint target ───────────────────────────────────────────
+
+  /** What brush/eraser strokes paint into (UI state, not saved). */
+  get paintTarget(): PaintTarget {
+    return this.target;
+  }
+
+  /** The mask layer Quick Mask edits, if the document has one. */
+  get maskLayer(): Readonly<Layer> | undefined {
+    return findMaskLayer(this.docState);
+  }
+
+  /**
+   * Switch the paint target (Quick Mask, `Q`). Targeting the mask adds a
+   * default mask layer to documents that have none.
+   * @param target - New target.
+   */
+  setPaintTarget(target: PaintTarget): void {
+    if (target === this.target) return;
+    if (this.stroke.active) this.cancelStroke();
+    if (target === "mask") this.ensureMask();
+    this.target = target;
+    this.events.emit("mask", undefined);
+  }
+
+  /** Toggle between the paint layer and the mask. */
+  togglePaintTarget(): void {
+    this.setPaintTarget(this.target === "mask" ? "paint" : "mask");
+  }
+
+  /**
+   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
+   * also excluded from the `MASK` output (saved-file contract).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible: boolean): void {
+    const layer = this.ensureMask();
+    if (layer.visible === visible) return;
+    if (this.stroke.active && this.strokeLayerId === layer.id) this.cancelStroke();
+    layer.visible = visible;
+    this.events.emit("mask", undefined);
+    this.events.emit("change", undefined);
+    this.events.emit("render", undefined);
   }
 
   // ── Background / frame ──────────────────────────────────────────────────
@@ -283,6 +393,7 @@ export class Editor {
       this.store.ensure(layer.id);
       layer.file = null;
       this.runtime.set(layer.id, { dirty: false, version: 0, hasContent: false });
+      this.bumpRevision(layer.id);
     }
     this.history.clear();
     this.lastStrokeEnd = null;
@@ -339,6 +450,7 @@ export class Editor {
     const surface = this.store.ensure(layerId);
     surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
     surface.ctx.drawImage(image, 0, 0);
+    this.bumpRevision(layerId);
     this.events.emit("render", undefined);
   }
 
@@ -360,18 +472,25 @@ export class Editor {
   // ── Strokes ─────────────────────────────────────────────────────────────
 
   /**
-   * Start a stroke on the active layer.
+   * Start a stroke on the paint target: the active paint layer, or the mask
+   * layer in Quick Mask mode (where the brush colour is replaced by white so
+   * coverage lands in alpha; opacity/flow/hardness work unchanged).
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
    * @returns `false` if painting is not possible (loading, locked, hidden).
    */
   beginStroke(style: StrokeStyle, maxDiameter: number): boolean {
     if (this.loading || this.stroke.active) return false;
-    const layer = this.docState.layers.find((l) => l.id === this.docState.activeLayerId);
-    if (!layer || layer.locked || !layer.visible || layer.kind === "mask") return false;
+    const layer = this.target === "mask" ? this.ensureMask() : targetLayer(this.docState, "paint");
+    if (!layer || layer.locked) return false;
+    if (!layer.visible) {
+      this.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
+      return false;
+    }
+    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     this.strokeLayerId = layer.id;
     this.strokeDiameter = Math.max(1, maxDiameter);
-    this.stroke.begin(this.store.ensure(layer.id), this.store.bounds, style);
+    this.stroke.begin(this.store.ensure(layer.id), this.store.bounds, strokeStyle);
     this.events.emit("history", undefined);
     return true;
   }
@@ -421,6 +540,8 @@ export class Editor {
   /** Abort the current stroke. */
   cancelStroke(): void {
     this.stroke.cancel();
+    // The mask tint may hold the discarded preview: rebuild it from the layer.
+    if (this.strokeLayerId) this.bumpRevision(this.strokeLayerId);
     this.strokeLayerId = null;
     this.events.emit("history", undefined);
     this.events.emit("render", undefined);
@@ -461,7 +582,7 @@ export class Editor {
     return copy;
   }
 
-  /** Estimated memory held (pixels + history). */
+  /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes(): number {
     return this.store.bytes + this.history.totalBytes;
   }
@@ -470,6 +591,8 @@ export class Editor {
   dispose(): void {
     this.stroke.dispose();
     this.store.dispose();
+    for (const tint of this.tints.values()) tint.dispose();
+    this.tints.clear();
     this.history.clear();
     this.stamps.clear();
     this.events.clear();
@@ -536,11 +659,32 @@ export class Editor {
   }
 
   private touchLayer(layerId: string): void {
+    this.bumpRevision(layerId);
     const rt = this.runtime.get(layerId);
     if (!rt) return;
     rt.dirty = true;
     rt.version++;
     rt.hasContent = true;
+  }
+
+  /** Committed pixels of a layer changed (invalidates its mask tint). */
+  private bumpRevision(layerId: string): void {
+    this.revisions.set(layerId, ++this.revisionCounter);
+  }
+
+  /**
+   * The mask layer, adding a default one (not dirty, no history) when the
+   * document has none -- documents saved before M2 get one lazily.
+   */
+  private ensureMask(): Layer {
+    const { layer, created } = ensureMaskLayer(this.docState);
+    if (created) {
+      this.store.ensure(layer.id);
+      this.runtime.set(layer.id, { dirty: false, version: 0, hasContent: false });
+      this.events.emit("change", undefined);
+      this.events.emit("mask", undefined);
+    }
+    return layer;
   }
 
   private afterEdit(): void {

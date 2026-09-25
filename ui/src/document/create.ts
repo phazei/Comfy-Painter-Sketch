@@ -42,9 +42,36 @@ export function createPaintLayer(name: string): Layer {
   };
 }
 
+/** Default mask display colour (decision 5). */
+export const DEFAULT_MASK_COLOR = "#ff0000";
+
+/** Default mask display opacity (decision 5). */
+export const DEFAULT_MASK_OPACITY = 0.5;
+
 /**
- * A new document with one empty paint layer ("Layer 1") and
- * `bounds = frame`.
+ * A new, empty, visible mask layer (red, 50%, not inverted).
+ *
+ * @param name - Display name.
+ * @returns Mask layer with `file: null`.
+ */
+export function createMaskLayer(name = "Mask"): Layer {
+  return {
+    id: createId(8),
+    name,
+    kind: "mask",
+    visible: true,
+    locked: false,
+    opacity: DEFAULT_MASK_OPACITY,
+    blendMode: "normal",
+    file: null,
+    color: DEFAULT_MASK_COLOR,
+    invert: false,
+  };
+}
+
+/**
+ * A new document with one empty paint layer ("Layer 1", active), one empty
+ * mask layer ("Mask") above it, and `bounds = frame`.
  *
  * @param frame - Frame size (integer pixels).
  * @param docId - Identity to reuse; a new one is generated when omitted.
@@ -60,6 +87,6 @@ export function createEmptyDocument(frame: Size, docId: string = createId()): Pa
     bounds: frameRect(size),
     regions: [],
     activeLayerId: layer.id,
-    layers: [layer],
+    layers: [layer, createMaskLayer()],
   };
 }

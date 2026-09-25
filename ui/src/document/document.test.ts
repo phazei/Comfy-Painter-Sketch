@@ -5,14 +5,27 @@ import { parseDocument } from "./parse";
 import { stringifyDocument } from "./serialize";
 
 describe("createEmptyDocument", () => {
-  it("creates one paint layer, bounds = frame, empty regions", () => {
+  it("creates a paint layer + a mask above it, bounds = frame, empty regions", () => {
     const doc = createEmptyDocument({ width: 640, height: 480 }, "abcd1234");
     expect(doc.version).toBe(1);
     expect(doc.docId).toBe("abcd1234");
     expect(doc.bounds).toEqual({ x: 0, y: 0, width: 640, height: 480 });
     expect(doc.regions).toEqual([]);
-    expect(doc.layers).toHaveLength(1);
+    expect(doc.layers).toHaveLength(2);
     expect(doc.layers[0]).toMatchObject({ name: "Layer 1", kind: "paint", file: null, opacity: 1, visible: true });
+    expect(doc.layers[1]).toEqual({
+      id: expect.any(String),
+      name: "Mask",
+      kind: "mask",
+      visible: true,
+      locked: false,
+      opacity: 0.5,
+      blendMode: "normal",
+      file: null,
+      color: "#ff0000",
+      invert: false,
+    });
+    expect(doc.layers[1]?.id).not.toBe(doc.layers[0]?.id);
     expect(doc.activeLayerId).toBe(doc.layers[0]?.id);
   });
 });
@@ -22,6 +35,12 @@ describe("parseDocument", () => {
     const doc = createEmptyDocument({ width: 100, height: 50 }, "docid0001");
     const first = doc.layers[0];
     if (first) first.file = "painter-sketch/a.png [input]";
+    const mask = doc.layers[1];
+    if (mask) {
+      mask.file = "painter-sketch/m.png [input]";
+      mask.invert = true;
+      mask.color = "#00ff00";
+    }
     doc.bounds = { x: -256, y: 0, width: 612, height: 50 };
     const parsed = parseDocument(stringifyDocument(doc));
     expect(parsed).toEqual({ status: "ok", repaired: false, document: doc });

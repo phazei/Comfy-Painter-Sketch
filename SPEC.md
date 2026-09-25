@@ -271,8 +271,8 @@ own output pair.
 - [x] Size-change scale-to-fit (non-destructive mapping, browser-verified)
 
 ### M2 -- Mask
-- [ ] Mask layer kind, Quick Mask toggle, colored overlay display
-- [ ] `MASK` output (union of mask layers) + `invert_mask`
+- [x] Mask layer kind, Quick Mask toggle, colored overlay display (browser-verified)
+- [x] `MASK` output (union of mask layers) + `invert_mask` (browser-verified)
 
 ### M3 -- UI shell
 - [ ] Left tool rail, top options bar, color picker, layers panel
@@ -288,7 +288,7 @@ own output pair.
 - [ ] Move tool (`V`): reposition/scale the whole drawing (all layers + masks) relative to the image, to realign paint to a similar but offset image
   - Drag = move; **scroll while dragging = scale** around the cursor (scroll without dragging still zooms the view); arrows nudge 1 px, Shift+arrows 10 px; Esc cancels the current drag; "Reset position" button. No rotation.
   - Non-destructive: stored as document `placement: {x, y, scale}` (frame px, identity default), applied after the frame map by both the editor and Python; pixels are never resampled. Needs a saved-file contract addition (Python must apply it).
-  - Undo: kept **out of the paint history**. While the Move tool is active, Ctrl+Z/Y step through placement changes only (like Photoshop's in-transform undo); with other tools undo affects paint only. Paint patches are in document coords, so they stay valid under any placement.
+  - Undo: placement is **not undoable** and stays out of the paint history; Ctrl+Z/Y always undo paint only (also while the Move tool is active). Recovery = Esc during a drag, drag it back, or "Reset position". Paint patches are in document coords, so they stay valid under any placement.
 - [ ] Coverage-mask selection engine, cached marching ants, add/subtract/intersect
 - [ ] Rect / ellipse marquee, lasso, magic wand
 - [ ] Clip painting to selection, fill/clear selection, selection to mask
@@ -312,6 +312,9 @@ own output pair.
 - **View on node resize:** "fit" mode is sticky (initial, Ctrl+0, Fit button) and
   re-fits on resize. After a manual zoom/pan, resize keeps the zoom and the
   centered image point. Pan is clamped so at least 64 px of the image stays visible.
+- Hidden mask layers are excluded from `MASK` (same rule as paint layers). Painting
+  on a hidden mask, or queueing while a hidden mask has paint, shows the note
+  "The mask is hidden; show it to output it."
 - Brush size is in *current image* pixels; strokes convert to document pixels
   (`size / s`) at pointer-down.
 
@@ -330,7 +333,9 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
-- 2026-09-24: Whole-drawing Move tool planned as the first M5 item (non-destructive placement, separate undo scoped to the Move tool, no rotation).
+- 2026-09-24: M2 browser-verified. Hidden mask layers stay excluded from `MASK`; queueing with a hidden, painted mask shows the note "The mask is hidden; show it to output it."
+- 2026-09-24: M2 code landed. New docs include a "Mask" layer (older docs get one lazily). Quick Mask paints white+alpha coverage. Overlay = tint of coverage (after per-layer invert) above paint; node `invert_mask` affects output only. Interim mask eye toggle until the M3 layers panel.
+- 2026-09-24: Whole-drawing Move tool planned as the first M5 item (non-destructive placement, not undoable -- Esc/Reset instead, no rotation).
 - 2026-09-24: M1 browser-verified. Fix: upstream size changes no longer resample layers (repeated A->B->A shrank paint); display maps doc -> image via `engine/frameMap.ts`. Clear button pulled forward from M3. Sticky fit + pan clamp + Fit button.
 - 2026-09-24: M1 code landed (browser check pending). `docId` added to the document. Undo patches in frame coords; bounds growth is not an undo step; scale-to-fit is one undo entry. Live sessions kept in a module map (max 6 detached) so tab switches keep unsaved strokes + undo. An inverted mask layer with no paint = full mask.
 - 2026-09-24: M0 code landed. Document widget via `getCustomWidgets` (`PAINTERSKETCH`); local TS types (official types package is empty). Installed ComfyUI frontend is 1.52.7; source reference is 1.55.x.

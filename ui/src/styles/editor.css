@@ -170,6 +170,52 @@
   margin: 0;
 }
 
+/* Quick Mask indicator + mask visibility toggle. */
+.cps-mask-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: #fff;
+  font-weight: 600;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+.cps-mask-badge[hidden] {
+  display: none;
+}
+
+.cps-mask-eye {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--cps-fg);
+  cursor: pointer;
+}
+
+.cps-mask-eye:hover {
+  background: #333;
+}
+
+.cps-mask-eye.cps-off {
+  color: var(--cps-fg-muted);
+}
+
+.cps-mask-eye svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* ── Stage ─────────────────────────────────────────────────────────────── */
 
 .cps-stage {

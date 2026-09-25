@@ -1,6 +1,7 @@
 /**
  * Editor keyboard shortcuts (SPEC "Brush shortcuts", "Canvas / view",
- * "Undo / Redo"; Photoshop conventions). Returns whether a key was handled so
+ * "Undo / Redo", Tools table incl. Quick Mask `Q`; Photoshop conventions).
+ * Returns whether a key was handled so
  * the keyboard scope stops only those.
  */
 
@@ -56,6 +57,13 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     if (!options) return false;
     setOpacity(options, digit === "0" ? 1 : Number(digit) / 10);
     effects.optionsChanged();
+    return true;
+  }
+
+  if (!event.shiftKey && key === "q") {
+    // Quick Mask: toggle the paint target (decision 6).
+    effects.cancelDrag();
+    editor.togglePaintTarget();
     return true;
   }
 

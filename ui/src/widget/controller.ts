@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Per-node controller: connects one PainterSketch node instance to an editor
  * session and its DOM host.
  *
@@ -23,6 +23,7 @@ import { stringifyDocument } from "../document/serialize";
 import type { PainterDocument } from "../document/types";
 import type { Size } from "../geometry/rect";
 import { log } from "../log";
+import { HIDDEN_MASK_NOTE } from "../engine/editor";
 import type { IBaseWidget, LGraphNode, NodeExecutionOutput } from "../types/comfy";
 import { EditorHost } from "../ui/editorHost";
 import { INPUT_NAMES, SOURCE_POLL_MS } from "./constants";
@@ -147,6 +148,9 @@ export class PainterSketchController {
     if (!session) return this.valueCache;
     await session.ready;
     await session.uploader.flush();
+    if (session.editor.hiddenMaskHasContent()) {
+      session.editor.events.emit("note", HIDDEN_MASK_NOTE);
+    }
     return this.valueCache;
   }
 

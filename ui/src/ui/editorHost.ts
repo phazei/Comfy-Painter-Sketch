@@ -7,6 +7,8 @@
  * Knows nothing about ComfyUI; the widget layer attaches sessions.
  */
 
+import { DEFAULT_MASK_COLOR } from "../document/create";
+import { maskDisplayColor } from "../document/masks";
 import { composite } from "../engine/compositor";
 import { backingStoreSize } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
@@ -73,6 +75,10 @@ export class EditorHost {
         this.input.cancel();
         this.session?.tools.setActive(id);
       },
+      toggleQuickMask: () => {
+        this.input.cancel();
+        this.session?.editor.togglePaintTarget();
+      },
       undo: () => this.session?.editor.undo(),
       redo: () => this.session?.editor.redo(),
       fit: () => {
@@ -81,7 +87,15 @@ export class EditorHost {
       },
       clear: () => this.confirmClear(),
     });
-    this.optionsBar = new OptionsBar(() => this.optionsChanged());
+    this.optionsBar = new OptionsBar(
+      () => this.optionsChanged(),
+      () => {
+        const editor = this.session?.editor;
+        if (!editor || editor.loading) return;
+        this.input.cancel();
+        editor.setMaskVisible(!(editor.maskLayer?.visible ?? true));
+      },
+    );
 
     this.stage = document.createElement("div");
     this.stage.className = "cps-stage";
@@ -146,10 +160,13 @@ export class EditorHost {
         editor.events.on("render", () => this.requestRender()),
         editor.events.on("history", () => this.syncHistory()),
         editor.events.on("note", (text) => this.showNote(text)),
+        editor.events.on("mask", () => this.syncMask()),
+        editor.events.on("change", () => this.syncMask()),
         tools.events.on("change", () => this.syncTools()),
       );
       this.rail.setTools(tools.list(), tools.active.id);
       this.syncTools();
+      this.syncMask();
       this.syncHistory();
       this.syncView();
     }
@@ -202,6 +219,17 @@ export class EditorHost {
     this.rail.setActive(session.tools.active.id);
     this.optionsBar.bind(session.tools.active.options);
     this.requestOverlay();
+  }
+
+  /** Quick Mask button, "Mask" badge and eye toggle. */
+  private syncMask(): void {
+    const editor = this.session?.editor;
+    if (!editor) return;
+    const mask = editor.maskLayer;
+    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
+    const targeting = editor.paintTarget === "mask";
+    this.rail.setQuickMask(targeting, color);
+    this.optionsBar.setMask({ targeting, color, visible: mask?.visible ?? true });
   }
 
   private syncHistory(): void {
@@ -290,6 +318,7 @@ export class EditorHost {
       bounds: editor.bounds,
       background: editor.background,
       layers: editor.compositeLayers(),
+      masks: editor.maskOverlays(),
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
