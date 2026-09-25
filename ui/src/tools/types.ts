@@ -43,8 +43,14 @@ export type PaintOptions = {
   gamma: number;
 };
 
-/** Cursor the stage should show. */
-export type ToolCursor = { kind: "ring"; diameter: number } | { kind: "css"; value: string };
+/** Named stage cursor icon; the CSS definitions live in `ui/cursors.ts`. */
+export type CursorIcon = "crosshair" | "eyedropper" | "bucket";
+
+/**
+ * Cursor the stage should show: a brush-size ring (drawn on the overlay, over
+ * a crosshair) or a named CSS cursor icon.
+ */
+export type ToolCursor = { kind: "ring"; diameter: number } | { kind: "icon"; icon: CursorIcon };
 
 /** A tool. */
 export interface Tool {
@@ -56,6 +62,11 @@ export interface Tool {
   readonly icon: string;
   /** Editable options (rendered by the options bar), or `null`. */
   readonly options: ToolOptions | null;
+  /**
+   * While Alt is held over the stage this tool acts as the eyedropper
+   * (Photoshop: brush, bucket, shapes). Honoured by {@link ToolRegistry.resolve}.
+   */
+  readonly altEyedropper?: boolean;
 
   /**
    * Pointer pressed on the stage.
@@ -85,4 +96,18 @@ export interface Tool {
    * @returns Cursor description.
    */
   cursor(): ToolCursor;
+  /**
+   * Transient stage overlay (e.g. the eyedropper loupe), drawn at the
+   * pointer instead of the cursor ring. Polled on every overlay redraw.
+   * @returns Overlay description, or `null` for none.
+   */
+  overlay?(): ToolOverlay | null;
 }
+
+/** Declarative stage overlay of a tool (drawn by `ui/stageView.ts`). */
+export type ToolOverlay = {
+  /** Eyedropper ring: top half the sampled colour, bottom half the colour before the drag. */
+  kind: "loupe";
+  color: string;
+  previous: string;
+};

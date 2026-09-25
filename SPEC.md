@@ -166,6 +166,7 @@ interface Region {                                  // future: Output Regions
 - **Mask layers** (`kind: "mask"`): mask value = image **alpha** (RGB ignored).
   `opacity` and `color` are display-only and do NOT affect `MASK`. Per-layer
   `invert`, then union (max) of visible mask layers, then node `invert_mask`.
+- **No image:** the run-time image is `width` x `height` filled with `background`.
 - **Frame mismatch:** if the run-time image is `W x H` and `frame` is `fw x fh`,
   apply decision 4: `s = min(W/fw, H/fh)`, offset `((W-fw*s)/2, (H-fh*s)/2)`;
   each layer is scaled by `s` (bilinear) and placed at
@@ -335,13 +336,14 @@ own output pair.
 - [x] Keyboard shortcuts scoped to the active editor (browser-verified)
 
 ### M4 -- Tools
-- [ ] Paint bucket (typed-array flood fill), eyedropper (+ Alt)
-- [ ] Line + arrow, rectangle, ellipse
+- [x] Paint bucket (typed-array flood fill), eyedropper (+ Alt) (browser-verified)
+- [x] Line + arrow, rectangle, ellipse (browser-verified)
 
 ### M5 -- Move + Selection
 - [ ] Move tool (`V`): reposition/scale the whole drawing (all layers + masks) relative to the image, to realign paint to a similar but offset image
   - Drag = move; **scroll while dragging = scale** around the cursor (scroll without dragging still zooms the view); arrows nudge 1 px, Shift+arrows 10 px; Esc cancels the current drag; "Reset position" button. No rotation.
   - Non-destructive: stored as document `placement: {x, y, scale}` (frame px, identity default), applied after the frame map by both the editor and Python; pixels are never resampled. Needs a saved-file contract addition (Python must apply it).
+  - Placement is relative to the current image -- with no image connected, that's the `width` x `height` background, so Move works the same.
   - Undo: placement is **not undoable** and stays out of the paint history; Ctrl+Z/Y always undo paint only (also while the Move tool is active). Recovery = Esc during a drag, drag it back, or "Reset position". Paint patches are in document coords, so they stay valid under any placement.
 - [ ] Coverage-mask selection engine, cached marching ants, add/subtract/intersect
 - [ ] Rect / ellipse marquee, lasso, magic wand
@@ -357,12 +359,16 @@ own output pair.
 
 - Shift+click straight line starts from where the previous stroke **ended**
   (Photoshop behavior).
-- When `image` is disconnected after painting, the canvas keeps its last frame
-  size and all layers; the background shows the `background` color.
-  `width`/`height` only apply to a fresh, empty document.
+- With no image connected, `width` x `height` filled with `background` **is** the
+  current image: editor and Python both use it, and the document maps onto it with
+  the normal scale-to-fit transform (empty documents adopt it as their frame).
+  Editing the widgets updates the canvas live.
+- Disconnecting `image` (a real link removal) copies the last image size into
+  `width`/`height` (rounded to a multiple of 8, clamped 64-8192), so the canvas
+  keeps its size and the node shows it.
 - A **Clear** button resets the document (all layers and masks) after a
   `window.confirm()`. Clearing is undoable. The frame becomes the current image
-  size (or stays `doc.frame` when disconnected).
+  size (the widget size when no image is connected).
 - **View on node resize:** "fit" mode is sticky (initial, Ctrl+0, Fit button) and
   re-fits on resize. After a manual zoom/pan, resize keeps the zoom and the
   centered image point. Pan is clamped so at least 64 px of the image stays visible.
@@ -389,6 +395,8 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: M4 browser-verified. Fixes: SVG cursors for eyedropper (incl. Alt) and bucket; with no image, width/height are the image size in editor and Python (doc frame no longer overrides), disconnect copies the size into the widgets.
+- 2026-09-24: M4 code landed. Bucket defaults tol 32 / contiguous / AA / all layers; fill grows bounds to cover the visible image; 4k fill ~185 ms. Eyedropper: Alt+click -> BG; `altEyedropper` tool flag gives Alt = temporary eyedropper (brush, bucket, shapes; not eraser). Shapes are pixel shapes rasterized on release (one undo patch); "both" = FG stroke + BG fill; Alt at pointer-down = eyedropper, Alt during drag = from centre; Esc cancels any tool drag. Rail tool groups (`tools/toolGroups.ts`, flyout via long-press/right-click) reusable for M5 marquees.
 - 2026-09-24: Storage revised after measurements: masks PNG, paint lossy WebP default 99 (100 = PNG); cleanup settings row shows file stats.
 - 2026-09-24: Storage: WebP layers (masks lossless-verified via VP8L sniff, paint quality setting default 100 = lossless), upload on focus loss / 5 s idle / queue / Ctrl+S, settings-panel cleanup button with the one server route.
 - 2026-09-24: M3 browser round 1 fixes: click-to-engage focus rule + white rail edge as focus indicator; slider popover drag fixed; pressure options moved behind a stylus button (declarative option groups, nested popovers); background colour alpha ignored in both editor and Python (`#rgba`/`#rrggbbaa` accepted); `document` tooltip removed; graph undo no longer blanks the node (element/session hand-off) and never rolls back paint.

@@ -13,8 +13,9 @@
  * | Q | Quick Mask |
  * | X / D | swap / reset FG-BG colours |
  * | F | toggle fullscreen (shell `fullscreen` event) |
- * | Esc | close an open popover, else leave fullscreen |
- * | tool keys | from the tool registry (B, E, ...) |
+ * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
+ * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
+ * | Shift+group key | cycle the group (Shift+U shapes) |
  */
 
 import type { ToolOptions } from "../tools/options";
@@ -28,6 +29,8 @@ export interface ShortcutEffects {
   viewChanged(): void;
   /** Cancel an in-progress drag (before switching tools). */
   cancelDrag(): void;
+  /** Esc: cancel a tool drag in progress (e.g. a shape). @returns `true` if one was cancelled. */
+  cancelToolDrag?(): boolean;
   /** Fullscreen requested. */
   fullscreen(): void;
   /** Close an open popover. @returns `true` if one was open. */
@@ -49,7 +52,9 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
 
-  if (key === "escape" && !ctrl && !event.altKey) return effects.closePopover() || effects.exitFullscreen();
+  if (key === "escape" && !ctrl && !event.altKey) {
+    return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
+  }
 
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());
@@ -81,7 +86,15 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     return true;
   }
 
-  if (event.shiftKey || key.length !== 1) return false;
+  if (event.shiftKey && key.length === 1) {
+    // Shift+group key cycles the group's tools (Shift+U shapes).
+    const next = tools.cycleShortcut(key);
+    if (!next) return false;
+    effects.cancelDrag();
+    tools.setActive(next.id);
+    return true;
+  }
+  if (key.length !== 1) return false;
   switch (key) {
     case "q":
       // Quick Mask: toggle the paint target (decision 6).

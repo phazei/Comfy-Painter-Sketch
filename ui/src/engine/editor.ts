@@ -11,6 +11,8 @@
  * - `layerDisplay.ts`-- compositor display lists + mask tint caches
  * - `layerRuntime.ts`-- per-layer dirty/version/revision bookkeeping
  * - `layerOps.ts`    -- layer list commands (exposed as {@link Editor.layerOps})
+ * - `pixelOps.ts`    -- bucket fill + eyedropper sampling ({@link Editor.pixelOps})
+ * - `editorMaskOps.ts` -- Quick Mask / paint target delegation
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -19,7 +21,6 @@
  * ordinary layers whose alpha is coverage; Quick Mask picks the paint target.
  */
 
-import { findMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
 import { cloneDocument } from "../document/serialize";
@@ -37,7 +38,10 @@ import { FrameOps } from "./frameOps";
 import { LayerDisplay } from "./layerDisplay";
 import { LayerOps } from "./layerOps";
 import type { LayerStore } from "./layerStore";
+import { EditorMaskOps } from "./editorMaskOps";
 import { PaintOps } from "./paintOps";
+import { PixelOps } from "./pixelOps";
+import type { ShapeSpec } from "./shapes";
 import { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
 import type { ViewState } from "./view";
@@ -62,12 +66,15 @@ export class Editor {
   readonly colors: ColorState;
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   readonly layerOps: LayerOps;
+  /** Paint-bucket fill and eyedropper sampling. */
+  readonly pixelOps: PixelOps;
 
   private readonly s: EditorState;
   private readonly frames: FrameOps;
   private readonly paint: PaintOps;
   private readonly io: DocIO;
   private readonly display: LayerDisplay;
+  private readonly maskOps: EditorMaskOps;
 
   /**
    * @param doc - Document (copied).
@@ -85,6 +92,8 @@ export class Editor {
     this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
     this.display = new LayerDisplay(this.s);
     this.layerOps = new LayerOps(this.s);
+    this.pixelOps = new PixelOps(this.s);
+    this.maskOps = new EditorMaskOps(this.s, this.paint);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -142,7 +151,7 @@ export class Editor {
     return this.s.background;
   }
 
-  /** Size of what the view shows: the background image, or `doc.frame`. */
+  /** Size of what the view shows: the current image (or widget-sized fill), else `doc.frame`. */
   get imageSize(): Size {
     return this.s.imageSize;
   }
@@ -203,62 +212,46 @@ export class Editor {
   // ── Quick Mask / paint target ───────────────────────────────────────────
 
   /** What brush/eraser strokes paint into (UI state, not saved). */
-  get paintTarget(): PaintTarget {
-    return this.s.target;
-  }
+  get paintTarget(): PaintTarget { return this.maskOps.paintTarget; }
 
   /** The mask layer Quick Mask edits, if the document has one. */
-  get maskLayer(): Readonly<Layer> | undefined {
-    return findMaskLayer(this.s.doc);
-  }
+  get maskLayer(): Readonly<Layer> | undefined { return this.maskOps.maskLayer; }
 
   /**
    * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
    * @param target - New target.
    */
-  setPaintTarget(target: PaintTarget): void {
-    this.paint.setPaintTarget(target);
-  }
+  setPaintTarget(target: PaintTarget): void { this.maskOps.setPaintTarget(target); }
 
   /** Toggle between the paint layer and the mask. */
-  togglePaintTarget(): void {
-    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
-  }
+  togglePaintTarget(): void { this.maskOps.togglePaintTarget(); }
 
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
    * also excluded from the `MASK` output (saved-file contract).
    * @param visible - Visibility.
    */
-  setMaskVisible(visible: boolean): void {
-    this.paint.setMaskVisible(visible);
-  }
+  setMaskVisible(visible: boolean): void { this.maskOps.setMaskVisible(visible); }
 
   // ── Background / frame ──────────────────────────────────────────────────
 
   /**
    * Set what is drawn under the paint; layer pixels are untouched.
    * @param background - Image or fill.
-   * @param imageSize - Natural size when `background` is an image.
+   * @param imageSize - Current image size: the image's natural size, or the
+   *   `width` x `height` widgets for a fill; `null` = show `doc.frame`.
    */
   setBackground(background: FrameBackground, imageSize: Size | null): void {
     this.frames.setBackground(background, imageSize);
   }
 
   /**
-   * A new background image size arrived (an empty document adopts it).
-   * @param size - Image size.
+   * A new current-image size arrived (an empty document adopts it; a painted
+   * one is only displayed through the frame map). Call after `setBackground`.
+   * @param size - Current image size.
    */
   handleBackgroundSize(size: Size): void {
     this.frames.handleBackgroundSize(size);
-  }
-
-  /**
-   * Widget frame size (applies to an empty, widget-sized document only).
-   * @param size - Widget frame size.
-   */
-  handleWidgetFrame(size: Size): void {
-    this.frames.handleWidgetFrame(size);
   }
 
   /**
@@ -278,14 +271,10 @@ export class Editor {
   // ── Restore bookkeeping (persistence) ───────────────────────────────────
 
   /** Mark the start of an async layer restore (disables painting). */
-  beginLoading(): void {
-    this.io.beginLoading();
-  }
+  beginLoading(): void { this.io.beginLoading(); }
 
   /** Mark the end of an async layer restore; applies a deferred frame change. */
-  endLoading(): void {
-    this.io.endLoading();
-  }
+  endLoading(): void { this.io.endLoading(); }
 
   /**
    * Draw a restored PNG into a layer (not an undo step, not dirty).
@@ -327,6 +316,15 @@ export class Editor {
   }
 
   /**
+   * Replace the current stroke's content with one shape (shape tools: live
+   * preview on every move, rasterized into the layer by {@link endStroke}).
+   * @param shape - Shape in document coords.
+   */
+  drawShape(shape: ShapeSpec): void {
+    this.paint.drawShape(shape);
+  }
+
+  /**
    * Commit the stroke to its layer as one undo step.
    * @param end - Where the stroke ended, document coords (for Shift+click lines).
    */
@@ -342,14 +340,10 @@ export class Editor {
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
   /** Undo the last operation. */
-  undo(): void {
-    this.paint.undo();
-  }
+  undo(): void { this.paint.undo(); }
 
   /** Redo the last undone operation. */
-  redo(): void {
-    this.paint.redo();
-  }
+  redo(): void { this.paint.redo(); }
 
   // ── Cloning / teardown ──────────────────────────────────────────────────
 
@@ -378,6 +372,7 @@ export class Editor {
     this.s.stroke.dispose();
     this.s.store.dispose();
     this.display.dispose();
+    this.pixelOps.dispose();
     this.s.history.clear();
     this.stamps.clear();
     this.events.clear();

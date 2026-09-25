@@ -1,6 +1,6 @@
 /**
  * Painting operations of the editor core: the Quick Mask paint target
- * (decision 6), strokes through the stroke buffer, and undo/redo of
+ * (decision 6), strokes (brush dabs or one shape) through the stroke buffer, and undo/redo of
  * dirty-rect patches (decision 10). Patches are in document coords;
  * re-applying one first widens bounds to cover it. Structural layer entries
  * are applied by `layerHistory.ts`.
@@ -8,9 +8,12 @@
 
 import { targetLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
-import { isEmptyRect, unionRect } from "../geometry/rect";
+import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
 import type { Dab } from "./brush";
+import { renderShape } from "./shapeRender";
+import { shapeBounds } from "./shapes";
+import type { ShapeSpec } from "./shapes";
 import { HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, MASK_STROKE_COLOR } from "./editorTypes";
 import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -108,6 +111,24 @@ export class PaintOps {
     }
     s.ensureBounds(need, true);
     s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
+    s.events.emit("render", undefined);
+  }
+
+  /**
+   * Replace the current stroke's content with one shape (live preview;
+   * shape tools call this on every move). Grows bounds like dabs do; on a
+   * mask target every part paints white coverage.
+   * @param shape - Shape in document coords.
+   */
+  drawShape(shape: ShapeSpec): void {
+    const s = this.s;
+    const layerId = s.strokeLayerId;
+    if (!s.stroke.active || !layerId) return;
+    const need = shapeBounds(shape);
+    if (!isEmptyRect(need)) s.ensureBounds(need, true);
+    const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
+    const rect = intersectRect(roundOutRect(need), s.store.bounds);
+    s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
     s.events.emit("render", undefined);
   }
 

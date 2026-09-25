@@ -8,7 +8,10 @@
 import { composite } from "../engine/compositor";
 import { backingStoreSize } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
+import type { Tool } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
+import { cssCursor } from "./cursors";
+import { drawLoupe } from "./loupe";
 
 /** How long transient notes stay visible. */
 const NOTE_MS = 5000;
@@ -27,16 +30,25 @@ export class StageView {
   private pixelRatio = 1;
   private noteTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
+  /** Last value written to `--cps-tool-cursor`. */
+  private cursorValue = "";
   /** Pointer hover position, stage CSS px (`null` = outside). */
   hover: Point | null = null;
+  /** Alt held: the cursor is that of `tools.resolve(true)` (temporary eyedropper). */
+  altDown = false;
 
   /**
    * @param stage - Stage element (canvases are appended to it).
    * @param session - Current session lookup.
+   * @param getDragTool - Returns the tool locked at pointer-down during an
+   *   active drag, or `null` when no drag is in progress. Used by the overlay
+   *   so that Alt held mid-drag does not switch the ring/loupe to the
+   *   eyedropper -- the tool is fixed for the duration of the drag.
    */
   constructor(
     private readonly stage: HTMLElement,
     private readonly session: () => EditorSession | null,
+    private readonly getDragTool: () => Tool | null = () => null,
   ) {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "cps-canvas";
@@ -116,6 +128,25 @@ export class StageView {
     return true;
   }
 
+  /**
+   * Apply the CSS cursor of the tool in effect now: the tool locked at
+   * pointer-down during a drag (Alt mid-drag changes nothing), else
+   * `tools.resolve(altDown)` (Alt = temporary eyedropper). Synchronous, so
+   * Alt down/up updates the cursor without pointer movement. Written to the
+   * `--cps-tool-cursor` property so the pan/loading class cursors still win.
+   * @returns The tool in effect, or `null` without a session.
+   */
+  syncCursor(): Tool | null {
+    const session = this.session();
+    const tool = session ? (this.getDragTool() ?? session.tools.resolve(this.altDown)) : null;
+    const value = tool ? cssCursor(tool.cursor()) : "crosshair";
+    if (value !== this.cursorValue) {
+      this.cursorValue = value;
+      this.stage.style.setProperty("--cps-tool-cursor", value);
+    }
+    return tool;
+  }
+
   /** Cancel frames and release canvases. Idempotent. */
   dispose(): void {
     if (this.disposed) return;
@@ -159,19 +190,30 @@ export class StageView {
     this.drawOverlay();
   }
 
-  /** Brush-size ring at the hover position (separate canvas). */
+  /**
+   * Tool overlay (loupe) or brush-size ring at the hover position (separate
+   * canvas). During an active drag the tool is the one locked at pointer-down
+   * (getDragTool), so Alt held mid-drag does not flip the overlay to the
+   * eyedropper.
+   */
   private drawOverlay(): void {
     const ctx = this.overlayCtx;
     if (!ctx) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     const session = this.session();
+    const tool = this.syncCursor();
     const hover = this.hover;
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
-    if (!session || !hover || panning) return;
-    const cursor = session.tools.active.cursor();
-    if (cursor.kind !== "ring") return;
+    if (!session || !tool || !hover || panning) return;
     const pr = this.pixelRatio;
+    const overlay = tool.overlay?.() ?? null;
+    if (overlay) {
+      drawLoupe(ctx, hover.x * pr, hover.y * pr, pr, overlay);
+      return;
+    }
+    const cursor = tool.cursor();
+    if (cursor.kind !== "ring") return;
     const radius = Math.max(1, (cursor.diameter * session.editor.view.current.scale * pr) / 2);
     ctx.lineWidth = Math.max(1, pr);
     ctx.beginPath();

@@ -1,13 +1,17 @@
 ﻿/**
  * Left tool rail: tool buttons generated from the tool registry metadata
- * (id, label, shortcut, icon -- no per-tool markup), then Quick Mask, then
+ * (id, label, shortcut, icon -- no per-tool markup; tool groups share one
+ * slot with a flyout, `toolGroupSlot.ts`), then Quick Mask, then
  * the always-visible actions (Undo, Redo, Fit, Clear, Fullscreen; SPEC
  * "Canvas / view"). Renders into the shell's `rail.tools` region; the swatch
  * widget lives in `rail.swatchSlot`.
  */
 
+import type { ToolGroupView } from "../tools/toolGroups";
 import type { Tool } from "../tools/types";
 import { setIcon } from "./icons";
+import type { PopoverHost } from "./popover";
+import { ToolGroupSlot } from "./toolGroupSlot";
 
 /** Callbacks from the rail. */
 export interface ToolRailActions {
@@ -35,12 +39,18 @@ export class ToolRail {
   private readonly quickMaskButton: HTMLButtonElement;
   private readonly fullscreenButton: HTMLButtonElement;
   private toolIds = "";
+  private groupSlots: ToolGroupSlot[] = [];
 
   /**
    * @param container - Shell region to render into.
    * @param actions - Button handlers.
+   * @param popovers - Popover host (tool group flyouts).
    */
-  constructor(container: HTMLElement, private readonly actions: ToolRailActions) {
+  constructor(
+    container: HTMLElement,
+    private readonly actions: ToolRailActions,
+    private readonly popovers: PopoverHost,
+  ) {
     this.toolBox = group();
     this.quickMaskButton = railButton("quickMask", "Quick Mask (Q)", () => this.actions.toggleQuickMask());
     this.quickMaskButton.classList.add("cps-rail-quickmask");
@@ -77,16 +87,30 @@ export class ToolRail {
 
   /**
    * Rebuild tool buttons from registry metadata (skipped when unchanged).
+   * Tools in a group get one shared {@link ToolGroupSlot}.
    * @param tools - Tools in order.
    * @param activeId - Active tool id.
+   * @param groups - Tool groups (last-used member per group).
    */
-  setTools(tools: readonly Tool[], activeId: string): void {
+  setTools(tools: readonly Tool[], activeId: string, groups?: ToolGroupView): void {
     const ids = tools.map((t) => t.id).join(",");
     if (ids !== this.toolIds) {
       this.toolIds = ids;
       this.toolBox.replaceChildren();
       this.toolButtons.clear();
+      for (const slot of this.groupSlots) slot.dispose();
+      this.groupSlots = [];
       for (const tool of tools) {
+        const spec = groups?.groupOf(tool.id);
+        if (spec) {
+          // Members of a tool group share one slot at the first member's position.
+          if (this.groupSlots.some((s) => s.groupId === spec.id)) continue;
+          const members = spec.toolIds.flatMap((id) => tools.filter((t) => t.id === id));
+          const slot = new ToolGroupSlot({ group: spec, tools: members, popovers: this.popovers, select: (id) => this.actions.selectTool(id) });
+          this.groupSlots.push(slot);
+          this.toolBox.appendChild(slot.element);
+          continue;
+        }
         const title = tool.shortcut ? `${tool.label} (${tool.shortcut.toUpperCase()})` : tool.label;
         const button = railButton(tool.icon, title, () => this.actions.selectTool(tool.id));
         button.dataset["tool"] = tool.id;
@@ -94,11 +118,15 @@ export class ToolRail {
         this.toolBox.appendChild(button);
       }
     }
+    for (const slot of this.groupSlots) {
+      const current = groups?.currentOf(slot.groupId);
+      if (current) slot.setCurrent(current);
+    }
     this.setActive(activeId);
   }
 
   /**
-   * Highlight the active tool.
+   * Highlight the active tool (a group slot also switches to it).
    * @param activeId - Tool id.
    */
   setActive(activeId: string): void {
@@ -106,6 +134,7 @@ export class ToolRail {
       button.classList.toggle("cps-active", id === activeId);
       button.setAttribute("aria-pressed", String(id === activeId));
     }
+    for (const slot of this.groupSlots) slot.setActive(activeId);
   }
 
   /**

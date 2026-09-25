@@ -6,6 +6,7 @@ import {
   normalizeHexColor,
   resolveFallbackFrame,
   sanitizeDimension,
+  widgetDimension,
 } from "./frameFallback";
 
 describe("normalizeHexColor", () => {
@@ -37,31 +38,31 @@ describe("sanitizeDimension", () => {
 });
 
 describe("resolveFallbackFrame", () => {
-  it("uses schema defaults for missing widgets when there was never a frame", () => {
-    expect(resolveFallbackFrame(null, undefined, undefined, undefined)).toEqual({
+  it("uses schema defaults for missing widgets", () => {
+    expect(resolveFallbackFrame(undefined, undefined, undefined)).toEqual({
       size: { width: 1024, height: 1024 },
       color: "#ffffff",
     });
   });
 
-  it("uses the width/height widgets when there was never a frame", () => {
-    expect(resolveFallbackFrame(null, 640, 480, "#000")).toEqual({
+  it("always uses the width/height widgets", () => {
+    expect(resolveFallbackFrame(640, 480, "#000")).toEqual({
       size: { width: 640, height: 480 },
       color: "#000000",
     });
   });
+});
 
-  it("keeps the last known frame size over the widgets, filled with background", () => {
-    expect(resolveFallbackFrame({ width: 1920, height: 1080 }, 640, 480, "#123456")).toEqual({
-      size: { width: 1920, height: 1080 },
-      color: "#123456",
-    });
+describe("widgetDimension", () => {
+  it("rounds to the nearest widget step", () => {
+    expect(widgetDimension(1024)).toBe(1024);
+    expect(widgetDimension(1917)).toBe(1920);
+    expect(widgetDimension(1083)).toBe(1080);
+    expect(widgetDimension(1084)).toBe(1088);
   });
 
-  it("ignores a degenerate known frame", () => {
-    expect(resolveFallbackFrame({ width: 0, height: 100 }, 640, 480, "#fff").size).toEqual({
-      width: 640,
-      height: 480,
-    });
+  it("clamps to the widget range", () => {
+    expect(widgetDimension(10)).toBe(MIN_FRAME_SIDE);
+    expect(widgetDimension(20000)).toBe(MAX_FRAME_SIDE);
   });
 });

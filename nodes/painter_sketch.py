@@ -6,7 +6,8 @@ IMAGE (composited) and MASK tensors.  All paint editing lives in the frontend;
 Python resolves saved layer images (WebP/PNG), composites them, and handles fingerprinting.
 
 Execution flow:
-    1. Determine frame size: input image dims, or document frame, or width/height.
+    1. Determine the image size: input image dims, else width/height (the
+       document frame is mapped onto it, never used as the output size).
     2. Build a ``[B, H, W, 3]`` base-image tensor (input image or background fill).
     3. Parse the document manifest -> :class:`~document.Document`.
     4. Load each layer file -> RGBA tensor (via :mod:`layers`).
@@ -34,7 +35,7 @@ from comfy_api.latest import io, UI
 import folder_paths
 
 from .composite import run_composite
-from .document import frame_size, parse_document
+from .document import parse_document
 from .layers import load_layer_rgba
 
 log = logging.getLogger("paintersketch.painter_sketch")
@@ -187,13 +188,13 @@ class PainterSketch(io.ComfyNode):
             as its locked background layer.
         """
         # ── 1. Base image ─────────────────────────────────────────────────────
+        # No image: the width/height widgets ARE the current image; the
+        # document's own frame maps onto it like onto any upstream image
+        # (decision 4 frame mismatch, handled by run_composite).
         if image is not None:
             base_rgb = image[:, :, :, :3].contiguous()  # drop alpha if RGBA
         else:
-            doc = parse_document(document)
-            sz = frame_size(doc)
-            w, h = sz if sz is not None else (width, height)
-            base_rgb = _make_background(w, h, background)
+            base_rgb = _make_background(width, height, background)
 
         B, H, W = base_rgb.shape[:3]
         # Keep the raw input for the UI preview (before compositing).

@@ -22,19 +22,23 @@ export class FrameOps {
   /**
    * Set what is drawn under the paint; the view re-fits (in fit mode).
    * @param background - Image or fill.
-   * @param imageSize - Natural size when `background` is an image.
+   * @param imageSize - Size of the current image: the natural size of an
+   *   image background, or the `width` x `height` widgets for a fill (no
+   *   image connected). `null` = show `doc.frame`.
    */
   setBackground(background: FrameBackground, imageSize: Size | null): void {
     this.s.background = background;
-    this.s.backgroundSize = background.kind === "image" && imageSize ? { ...imageSize } : null;
+    this.s.backgroundSize = imageSize ? { ...imageSize } : null;
     this.s.syncViewFrame();
     this.s.events.emit("render", undefined);
   }
 
   /**
-   * A new background image size arrived: an empty document adopts it,
-   * otherwise nothing changes. Deferred while layer files are loading.
-   * @param size - Image size.
+   * A new current-image size arrived (upstream image, or the widgets while
+   * disconnected; call after {@link setBackground}): an empty document
+   * adopts it, otherwise it is only a display mapping (decision 4).
+   * Deferred while layer files are loading.
+   * @param size - Current image size.
    */
   handleBackgroundSize(size: Size): void {
     const s = this.s;
@@ -42,23 +46,13 @@ export class FrameOps {
       s.pendingBackgroundSize = { ...size };
       return;
     }
+    const source: FrameSource = s.background.kind === "image" ? "image" : "widgets";
     const frame = s.doc.frame;
     if (size.width === frame.width && size.height === frame.height) {
-      s.frameSource = "image";
+      s.frameSource = source;
       return;
     }
-    if (s.isEmpty) this.adoptFrame(size, "image");
-  }
-
-  /**
-   * Adopt `size` only for an empty document whose frame came from widgets.
-   * @param size - Widget frame size.
-   */
-  handleWidgetFrame(size: Size): void {
-    const s = this.s;
-    if (s.loading || !s.isEmpty || s.frameSource !== "widgets") return;
-    const frame = s.doc.frame;
-    if (size.width !== frame.width || size.height !== frame.height) this.adoptFrame(size, "widgets");
+    if (s.isEmpty) this.adoptFrame(size, source);
   }
 
   /**
@@ -96,7 +90,7 @@ export class FrameOps {
     if (s.stroke.active) s.cancelStroke();
     const size = s.imageSize;
     const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
-    const source: FrameSource = s.background.kind === "image" && s.backgroundSize ? "image" : s.frameSource;
+    const source: FrameSource = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
     const before = this.captureSnapshot();
     const after: DocSnapshot = { frame, bounds: frameRect(frame), source, pixels: null };
     this.applySnapshot(after);

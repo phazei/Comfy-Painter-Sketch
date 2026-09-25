@@ -1,6 +1,6 @@
 /**
- * The frame used when no image is connected: the last known frame size (or,
- * if there never was one, `width` x `height`) filled with `background`.
+ * The "current image" used when no image is connected: `width` x `height`
+ * filled with `background` (the document's own frame maps onto it, decision 4).
  *
  * Pure: takes raw widget values (unknown) and returns sanitized values.
  */
@@ -17,6 +17,8 @@ export const FALLBACK_DEFAULTS = {
 /** Frame side limits accepted from widgets (match the Python INT min/max). */
 export const MIN_FRAME_SIDE = 64;
 export const MAX_FRAME_SIDE = 8192;
+/** Step of the `width`/`height` widgets (Python INT `step`). */
+export const FRAME_SIDE_STEP = 8;
 
 /** A sanitized fallback frame. */
 export interface FallbackFrame {
@@ -60,33 +62,35 @@ export function sanitizeDimension(value: unknown, fallback: number): number {
 }
 
 /**
- * Build the frame shown when no image is connected (SPEC Behavior Notes):
- * the last known frame size filled with `background`; the `width`/`height`
- * widgets only apply when there has never been a frame. Mirrors the Python
- * side, which prefers the document's `frame` over the widgets.
+ * Build the "current image" used when no image is connected: `width` x
+ * `height` filled with `background`. The document maps onto it like onto any
+ * upstream image (decision 4); Python builds the same background.
  *
- * @param knownFrame - Last known frame size (last background image now;
- *   the document manifest's `frame` from M1), or `null` if never had one.
  * @param width - `width` widget value.
  * @param height - `height` widget value.
  * @param color - `background` widget value.
- * @returns Sanitized frame size and fill colour.
+ * @returns Sanitized image size and fill colour.
  */
-export function resolveFallbackFrame(
-  knownFrame: Size | null,
-  width: unknown,
-  height: unknown,
-  color: unknown,
-): FallbackFrame {
-  const known =
-    knownFrame && knownFrame.width > 0 && knownFrame.height > 0
-      ? { width: Math.round(knownFrame.width), height: Math.round(knownFrame.height) }
-      : null;
+export function resolveFallbackFrame(width: unknown, height: unknown, color: unknown): FallbackFrame {
   return {
-    size: known ?? {
+    size: {
       width: sanitizeDimension(width, FALLBACK_DEFAULTS.width),
       height: sanitizeDimension(height, FALLBACK_DEFAULTS.height),
     },
     color: normalizeHexColor(color),
   };
+}
+
+/**
+ * Widget value for a frame side, so the `width`/`height` widgets can take
+ * over an image's size on disconnect: rounded to the nearest multiple of
+ * {@link FRAME_SIDE_STEP} and clamped to the widget range. The result may
+ * differ from `side` by less than one step; the frame map absorbs that.
+ *
+ * @param side - Image side in pixels.
+ * @returns Value valid for the `width`/`height` INT widgets.
+ */
+export function widgetDimension(side: number): number {
+  const snapped = Math.round(side / FRAME_SIDE_STEP) * FRAME_SIDE_STEP;
+  return Math.min(MAX_FRAME_SIDE, Math.max(MIN_FRAME_SIDE, snapped));
 }

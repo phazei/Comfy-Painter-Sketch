@@ -278,7 +278,8 @@
   background: var(--cps-input-bg);
   touch-action: none;
   outline: none;
-  cursor: crosshair;
+  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */
+  cursor: var(--cps-tool-cursor, crosshair);
 }
 
 .cps-stage.cps-pan-ready {

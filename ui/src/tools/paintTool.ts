@@ -67,6 +67,8 @@ export interface PaintToolSpec {
   icon: string;
   mode: StrokeMode;
   defaults: PaintOptions;
+  /** Alt = temporary eyedropper (brush yes; eraser no, like Photoshop). */
+  altEyedropper?: boolean;
 }
 
 /**
@@ -78,6 +80,7 @@ export class PaintTool implements Tool {
   readonly shortcut: string;
   readonly icon: string;
   readonly options: OptionSet;
+  readonly altEyedropper: boolean;
   /** Stored option values (edited in place through {@link options}). */
   readonly values: PaintOptions;
   private readonly mode: StrokeMode;
@@ -95,6 +98,7 @@ export class PaintTool implements Tool {
     this.shortcut = spec.shortcut;
     this.icon = spec.icon;
     this.mode = spec.mode;
+    this.altEyedropper = spec.altEyedropper ?? false;
     this.values = { ...spec.defaults };
     this.options = new OptionSet(PAINT_OPTION_DESCRIPTORS, this.values, PAINT_OPTION_GROUPS);
   }

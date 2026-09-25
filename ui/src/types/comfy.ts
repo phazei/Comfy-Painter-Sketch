@@ -98,6 +98,8 @@ export interface LGraph {
   id: string;
   /** `false` for subgraphs; used to build node locator ids. */
   isRootGraph?: boolean;
+  /** Marks the graph as changed (what `BaseWidget.setValue` calls after a user edit). */
+  incrementVersion?(): void;
 }
 
 /** Callback signature of `LGraphNode.onConnectionsChange`. */
@@ -248,7 +250,7 @@ export interface ComfyApp {
    * The `LGraphCanvas` (subset; both renderers). `graph` is the graph being
    * viewed (a subgraph while inside one). Set up during app init.
    */
-  canvas?: { graph?: LGraph | null } | null;
+  canvas?: { graph?: LGraph | null; setDirty?(foreground: boolean, background?: boolean): void } | null;
   /** Execution outputs keyed by NodeLocatorId (`"12"` or `"<subgraph-uuid>:12"`). */
   readonly nodeOutputs: Partial<Record<string, NodeExecutionOutput>>;
   /** Preview image URLs (often `blob:`) keyed by NodeLocatorId. */

@@ -15,6 +15,7 @@ export function createBrushTool(): PaintTool {
     shortcut: "b",
     icon: "brush",
     mode: "paint",
+    altEyedropper: true,
     defaults: {
       size: 24,
       hardness: 0.8,

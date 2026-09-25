@@ -108,7 +108,7 @@ export class EditorHost {
       isDetached: () => this.events.isDetached?.() ?? false,
     });
     this.element = this.fullscreen.container;
-    this.view = new StageView(this.stage, () => this.session);
+    this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
     this.rail = new ToolRail(this.shell.rail.tools, {
       selectTool: (id) => {
@@ -127,7 +127,7 @@ export class EditorHost {
       },
       clear: () => this.confirmClear(),
       fullscreen: () => this.shell.events.emit("fullscreen", undefined),
-    });
+    }, this.shell.popoverHost);
     this.swatches = new SwatchWidget({
       pick: (slot, anchor) => {
         const colors = this.session?.editor.colors;
@@ -171,6 +171,7 @@ export class EditorHost {
         this.view.hover = point;
         this.view.requestOverlay();
       },
+      setAlt: (down) => this.setAlt(down),
       viewChanged: () => this.view.requestRender(),
     });
     this.keyboard = new KeyboardScope(this.root, {
@@ -180,6 +181,7 @@ export class EditorHost {
               optionsChanged: () => this.optionsChanged(),
               viewChanged: () => this.view.requestRender(),
               cancelDrag: () => this.input.cancel(),
+              cancelToolDrag: () => this.input.cancelToolDrag(),
               fullscreen: () => this.shell.events.emit("fullscreen", undefined),
               closePopover: () => this.shell.popoverHost.close(),
               exitFullscreen: () => {
@@ -190,6 +192,7 @@ export class EditorHost {
             })
           : false,
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
+      onAltChange: (down) => this.setAlt(down),
       onSave: () => this.events.onSave?.(),
       onDeactivate: () => this.events.onDisengage?.(),
     });
@@ -232,7 +235,7 @@ export class EditorHost {
         editor.colors.events.on("change", (colors) => this.swatches.setColors(colors)),
         tools.events.on("change", () => this.syncTools()),
       );
-      this.rail.setTools(tools.list(), tools.active.id);
+      this.rail.setTools(tools.list(), tools.active.id, tools.groups);
       this.swatches.setColors(editor.colors.current);
       this.syncTools();
       this.syncMask();
@@ -305,6 +308,7 @@ export class EditorHost {
     if (!session) return;
     this.rail.setActive(session.tools.active.id);
     this.optionsBar.bind(session.tools.active.options);
+    this.view.syncCursor();
     this.view.requestOverlay();
   }
 
@@ -323,6 +327,14 @@ export class EditorHost {
   private syncHistory(): void {
     const editor = this.session?.editor;
     this.rail.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
+  }
+
+  /** Alt held (keyboard or pointer modifier): the cursor follows `ToolRegistry.resolve`. */
+  private setAlt(down: boolean): void {
+    if (this.view.altDown === down) return;
+    this.view.altDown = down;
+    this.view.syncCursor();
+    this.view.requestOverlay();
   }
 
   private optionsChanged(): void {

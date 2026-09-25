@@ -4,14 +4,18 @@
  * cursor. Pointer positions are converted through `getBoundingClientRect()`
  * on every event (the node is drawn at graph zoom; never cache a scale), then
  * stage -> image (view) -> document (inverse frame map, decision 4).
+ * During a tool drag, modifier key changes re-send the last sample
+ * (`dragModifiers.ts`) and Esc can cancel the drag ({@link StageInput.cancelToolDrag}).
  */
 
 import { normalizePressure } from "../engine/brush";
 import { imageToDoc } from "../engine/frameMap";
 import { stageToDoc } from "../engine/viewport";
 import type { Point } from "../geometry/rect";
-import type { ToolPointer } from "../tools/types";
+import type { Tool, ToolPointer } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
+import { DragModifierWatch } from "./dragModifiers";
+import type { ModifierState } from "./dragModifiers";
 
 /** What the stage input needs from its host. */
 export interface StageInputHost {
@@ -23,11 +27,18 @@ export interface StageInputHost {
   setDragging(dragging: boolean): void;
   /** Pointer hover position in stage CSS px (`null` = left the stage). */
   setHover(point: Point | null): void;
+  /** Alt state seen on a pointer event (keeps the Alt-eyedropper cursor in sync). */
+  setAlt?(down: boolean): void;
   /** View changed by pan/zoom. */
   viewChanged(): void;
 }
 
-type DragMode = { kind: "tool"; pointerId: number } | { kind: "pan"; pointerId: number; last: Point };
+/**
+ * A drag in progress. Tool drags keep the tool resolved at pointer-down
+ * (`ToolRegistry.resolve`, Alt = temporary eyedropper) until release, even
+ * if Alt changes mid-drag.
+ */
+type DragMode = { kind: "tool"; pointerId: number; tool: Tool } | { kind: "pan"; pointerId: number; last: Point };
 
 /**
  * Stage pointer/wheel controller.
@@ -35,6 +46,9 @@ type DragMode = { kind: "tool"; pointerId: number } | { kind: "pan"; pointerId: 
 export class StageInput {
   private drag: DragMode | null = null;
   private readonly controller = new AbortController();
+  /** Last pointer event of the tool drag (re-sent when modifiers change). */
+  private lastToolEvent: PointerEvent | null = null;
+  private readonly modifierWatch = new DragModifierWatch((mods) => this.modifiersChanged(mods));
 
   /**
    * @param stage - Stage element.
@@ -51,6 +65,17 @@ export class StageInput {
     stage.addEventListener("pointercancel", (e) => this.handlePointer(e), { signal });
     stage.addEventListener("lostpointercapture", (e) => this.handleLostCapture(e), { signal });
     stage.addEventListener("pointerleave", () => this.host.setHover(null), { signal });
+  }
+
+  /**
+   * The tool locked at pointer-down for the current drag, or `null` when no
+   * tool drag is in progress. Used by the stage overlay to show the correct
+   * cursor/ring during modifier changes (e.g. Alt held mid-drag must not
+   * switch the overlay to the eyedropper).
+   * @returns The locked tool, or `null`.
+   */
+  get activeTool(): Tool | null {
+    return this.drag?.kind === "tool" ? this.drag.tool : null;
   }
 
   /**
@@ -93,11 +118,22 @@ export class StageInput {
   cancel(): void {
     const drag = this.drag;
     this.drag = null;
+    this.endToolDrag();
     if (drag?.kind === "tool") {
       const session = this.host.session();
-      if (session) session.tools.active.onCancel(session.editor);
+      if (session) drag.tool.onCancel(session.editor);
     }
     this.host.setDragging(false);
+  }
+
+  /**
+   * Esc: abort a tool drag in progress (e.g. a shape); pans are unaffected.
+   * @returns `true` if a tool drag was cancelled.
+   */
+  cancelToolDrag(): boolean {
+    if (this.drag?.kind !== "tool") return false;
+    this.cancel();
+    return true;
   }
 
   /** Remove listeners. */
@@ -121,12 +157,18 @@ export class StageInput {
       this.stage.classList.add("cps-panning");
       return;
     }
-    this.drag = { kind: "tool", pointerId: event.pointerId };
-    session.tools.active.onPointerDown(session.editor, this.samples(event, session));
+    this.host.setAlt?.(event.altKey);
+    const tool = session.tools.resolve(event.altKey);
+    this.drag = { kind: "tool", pointerId: event.pointerId, tool };
+    this.lastToolEvent = event;
+    this.modifierWatch.start();
+    tool.onPointerDown(session.editor, this.samples(event, session));
+    this.host.setHover(this.toStage(event));
   }
 
   private move(event: PointerEvent): void {
     const point = this.toStage(event);
+    this.host.setAlt?.(event.altKey);
     this.host.setHover(point);
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -139,22 +181,40 @@ export class StageInput {
       this.host.viewChanged();
       return;
     }
-    session.tools.active.onPointerMove(session.editor, this.samples(event, session));
+    this.lastToolEvent = event;
+    drag.tool.onPointerMove(session.editor, this.samples(event, session));
+  }
+
+  /** Shift/Alt/Ctrl changed mid-drag: re-send the last position with the new modifiers. */
+  private modifiersChanged(mods: ModifierState): void {
+    const drag = this.drag;
+    const last = this.lastToolEvent;
+    const session = this.host.session();
+    if (drag?.kind !== "tool" || !last || !session) return;
+    drag.tool.onPointerMove(session.editor, [this.sample(last, session, mods)]);
+  }
+
+  private endToolDrag(): void {
+    this.modifierWatch.stop();
+    this.lastToolEvent = null;
   }
 
   private up(event: PointerEvent, cancelled: boolean): void {
     const drag = this.drag;
     if (!drag || drag.pointerId !== event.pointerId) return;
     this.drag = null;
+    this.endToolDrag();
     this.stage.classList.remove("cps-panning");
     this.release(event.pointerId);
     this.host.setDragging(false);
     if (drag.kind !== "tool") return;
     const session = this.host.session();
     if (!session) return;
-    const tool = session.tools.active;
+    const tool = drag.tool;
     if (cancelled) tool.onCancel(session.editor);
     else tool.onPointerUp(session.editor, this.samples(event, session)[0] ?? this.sample(event, session));
+    // Redraw the overlay: tool overlays (eyedropper loupe) end with the drag.
+    if (event.type !== "lostpointercapture") this.host.setHover(this.toStage(event));
   }
 
   private handleLostCapture(event: PointerEvent): void {
@@ -167,7 +227,7 @@ export class StageInput {
     return list.map((e) => this.sample(e, session, event));
   }
 
-  private sample(e: PointerEvent, session: EditorSession, modifiers: PointerEvent = e): ToolPointer {
+  private sample(e: PointerEvent, session: EditorSession, modifiers: ModifierState = e): ToolPointer {
     const { editor } = session;
     const doc = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.toStage(e)));
     return {

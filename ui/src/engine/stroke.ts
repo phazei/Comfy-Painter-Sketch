@@ -7,10 +7,12 @@
  * the last frame.
  *
  * Brush composites with `source-over`, eraser with `destination-out`.
+ * Shape tools use the same buffer but replace its content on every move
+ * ({@link StrokeBuffer.replaceContent}) instead of accumulating dabs.
  */
 
 import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
-import type { Rect } from "../geometry/rect";
+import type { Point, Rect } from "../geometry/rect";
 import type { Dab } from "./brush";
 import { dabBounds } from "./brush";
 import type { StampCache } from "./stampCache";
@@ -115,6 +117,24 @@ export class StrokeBuffer {
       this.pendingPreview = unionRect(this.pendingPreview, rect);
     }
     ctx.globalAlpha = 1;
+  }
+
+  /**
+   * Replace the buffer content with one shape (shape tools redraw the whole
+   * shape on every move): clears what the previous shape drew, draws the
+   * new one, and marks both areas for the preview. {@link touched} becomes
+   * the new shape's rect.
+   * @param rect - Document rect the new shape can touch (empty = nothing).
+   * @param draw - Draws into the buffer context; `origin` is the document point at its (0, 0).
+   */
+  replaceContent(rect: Rect, draw: (ctx: CanvasRenderingContext2D, origin: Point) => void): void {
+    if (!this.style) return;
+    const { ctx } = this.surfaces().buffer;
+    const old = this.touched;
+    if (!isEmptyRect(old)) ctx.clearRect(old.x - this.bounds.x, old.y - this.bounds.y, old.width, old.height);
+    this.pendingPreview = unionRect(unionRect(this.pendingPreview, old), rect);
+    this.strokeRect = isEmptyRect(rect) ? EMPTY : { ...rect };
+    if (!isEmptyRect(rect)) draw(ctx, { x: this.bounds.x, y: this.bounds.y });
   }
 
   /**

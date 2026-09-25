@@ -1,55 +1,32 @@
 /**
  * Keyboard scope for one editor (AGENTS.md "Keyboard Shortcuts").
  *
- * Active while the pointer is over the editor, a stroke/pan that started
- * there is in progress, the user has clicked inside ("engaged", below), or
- * fullscreen is open. While active, capture-phase listeners on `window` see
- * keys before the frontend: handled keys get `preventDefault()` +
- * `stopPropagation()`, which stops the keybinding service (window, bubble
- * phase) and LiteGraph's canvas handlers.
+ * Active while hovering, a drag is in progress, the user has clicked inside
+ * ("engaged"), or fullscreen is open. While active, capture-phase listeners
+ * on `window` beat the frontend's keybinding service and LiteGraph.
  *
- * The frontend's ChangeTracker also listens on window/capture, registered at
- * startup BEFORE any extension, so propagation cannot stop it; it runs graph
- * undo on Ctrl+Z unless `document.activeElement` is an INPUT/TEXTAREA. So
- * the editor keeps DOM focus on a hidden read-only `<input>` (the key sink).
+ * ChangeTracker (also window/capture, registered before extensions) cannot
+ * be stopped; it ignores Ctrl+Z when `activeElement` is an INPUT. The editor
+ * keeps a hidden `<input>` focused (the key sink) while active.
  *
- * Focus rule (pure parts in `focusPolicy.ts`):
- * - Hover: the sink takes focus only if no text field (ours or another
- *   node's) has it; leaving hands focus back.
- * - Pointerdown anywhere inside the root (stage, rail, bar, layers panel,
- *   popovers): the editor becomes *engaged*. Text entries get native focus;
- *   range sliders keep their native default (a prevented pointerdown kills
- *   native slider dragging); anything else is `preventDefault()`ed (no focus
- *   move -- plain `<div>`s like layer rows would otherwise drop focus to
- *   `body`) and the sink is focused, stealing focus from other nodes' text
- *   fields.
- * - Engaged survives the pointer leaving; it ends on a pointerdown outside
- *   the root (graph canvas, another node) or focus moving outside the root,
- *   after which ComfyUI's shortcuts work as usual.
- * - A text field of ours that blurs to nothing hands focus back to the sink;
- *   non-text elements that still receive focus are redirected to the sink.
+ * Focus rules: hover takes the sink unless another text field has focus;
+ * leaving returns it. Any click inside "engages" the editor (sink takes
+ * over, survives pointer leave); a click outside or focus moving out ends
+ * engagement. Non-text elements that receive focus are redirected to the
+ * sink; a text field blurring to nothing reclaims it.
  *
- * While the root (or something in it) holds DOM focus, the root carries
- * `cps-has-keys` (focus indicator on the tool rail), driven from real
- * focusin/focusout + `document.activeElement`.
+ * Ctrl/Cmd+S in the editor is reported via {@link KeyboardHandlers.onSave}.
+ * Scope going inactive is reported via {@link KeyboardHandlers.onDeactivate}.
  *
- * Save: Ctrl/Cmd+S aimed at the editor (sink, our own fields, fullscreen
- * overlay) is always taken (`saveKey.ts`) and reported via
- * {@link KeyboardHandlers.onSave} so the owner can flush uploads before
- * running ComfyUI's save. The scope going inactive is reported via
- * {@link KeyboardHandlers.onDeactivate} (upload trigger).
+ * Fullscreen ({@link KeyboardScope.setCaptureScope}): active without hover;
+ * unhandled keys filtered by {@link fullscreenKeyPolicy}.
  *
- * Fullscreen ({@link KeyboardScope.setCaptureScope}): the scope stays
- * active without hover, and keys the editor does not handle are filtered by
- * {@link fullscreenKeyPolicy} (swallowed unless browser/save/queue keys).
- * Keys typed into our own text fields reach them first and are stopped at
- * the root afterwards; keys aimed at UI outside the fullscreen overlay (a
- * ComfyUI dialog on top) pass untouched. Focus that lands on a button or
- * the backdrop goes back to the sink so graph undo keeps ignoring Ctrl+Z.
+ * Alt/Space modifier tracking is delegated to {@link ModifierScope}.
  */
 
 import { describeElement, hoverMayTakeFocus, isScopeActive, isTextEntry, mayKeepFocus, pointerFocusAction } from "./focusPolicy";
 import { fullscreenKeyPolicy } from "./fullscreenKeys";
+import { ModifierScope } from "./modifierScope";
 import { isSaveChord } from "./saveKey";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -63,6 +40,8 @@ export interface KeyboardHandlers {
   onKeyDown(event: KeyboardEvent): boolean;
   /** Space held/released (temporary pan). */
   onSpaceChange(down: boolean): void;
+  /** Alt held/released (temporary eyedropper). */
+  onAltChange?(down: boolean): void;
   /**
    * Ctrl/Cmd+S while the editor owns the keyboard (focus in the root or the
    * fullscreen overlay). The event is already prevented and stopped; the
@@ -90,15 +69,15 @@ export class KeyboardScope {
   private hovered = false;
   private held = false;
   private engaged = false;
-  private spaceDown = false;
   private previousFocus: Element | null = null;
   /** Fullscreen overlay (contains the root) while fullscreen, else `null`. */
   private captureScope: HTMLElement | null = null;
   private readonly sink: HTMLInputElement;
+  /** Alt/Space modifier tracking (window keydown/keyup/blur). */
+  private readonly modifiers: ModifierScope;
 
   private readonly keydown = (event: KeyboardEvent): void => this.handleKeyDown(event);
   private readonly keyup = (event: KeyboardEvent): void => this.handleKeyUp(event);
-  private readonly blur = (): void => this.setSpace(false);
   /** Fullscreen: stop keys from our own text fields after they handled them. */
   private readonly rootKeydown = (event: KeyboardEvent): void => {
     if (this.captureScope && fullscreenKeyPolicy(event) === "swallow") event.stopPropagation();
@@ -171,6 +150,10 @@ export class KeyboardScope {
     this.sink.tabIndex = -1;
     this.sink.setAttribute("aria-hidden", "true");
     root.appendChild(this.sink);
+    this.modifiers = new ModifierScope({
+      onSpaceChange: (down) => handlers.onSpaceChange(down),
+      onAltChange: (down) => handlers.onAltChange?.(down),
+    });
     root.addEventListener("pointerenter", this.enter);
     root.addEventListener("pointerleave", this.leave);
     root.addEventListener("keydown", this.rootKeydown);
@@ -181,7 +164,7 @@ export class KeyboardScope {
 
   /** Whether Space is held (pan). */
   get isSpaceDown(): boolean {
-    return this.spaceDown;
+    return this.modifiers.isSpaceDown;
   }
 
   /**
@@ -284,13 +267,12 @@ export class KeyboardScope {
     if (shouldBeActive) {
       window.addEventListener("keydown", this.keydown, true);
       window.addEventListener("keyup", this.keyup, true);
-      window.addEventListener("blur", this.blur);
+      this.modifiers.activate();
       this.takeFocus();
     } else {
       window.removeEventListener("keydown", this.keydown, true);
       window.removeEventListener("keyup", this.keyup, true);
-      window.removeEventListener("blur", this.blur);
-      this.setSpace(false);
+      this.modifiers.deactivate();
       this.returnFocus();
       this.handlers.onDeactivate?.();
     }
@@ -345,11 +327,19 @@ export class KeyboardScope {
       return;
     }
     if (this.isForeignTextTarget(event.target)) return;
+    if (event.key === "Alt") {
+      // Temporary eyedropper. Not stopped (the graph may track modifiers),
+      // only prevented -- together with keyup this keeps Windows browsers
+      // from focusing their menu bar when Alt is released.
+      event.preventDefault();
+      // ModifierScope handles the state update via its own capture listener.
+      return;
+    }
     if (event.key === " " || event.code === "Space") {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
-      this.setSpace(true);
+      // ModifierScope handles the state update via its own capture listener.
       return;
     }
     if (this.handlers.onKeyDown(event) || (this.captureScope && fullscreenKeyPolicy(event) === "swallow")) {
@@ -359,18 +349,15 @@ export class KeyboardScope {
   }
 
   private handleKeyUp(event: KeyboardEvent): void {
+    if (event.key === "Alt") {
+      if (!this.isForeignTextTarget(event.target)) event.preventDefault();
+      return;
+    }
     if (event.key === " " || event.code === "Space") {
       if (this.isForeignTextTarget(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
-      this.setSpace(false);
     }
-  }
-
-  private setSpace(down: boolean): void {
-    if (this.spaceDown === down) return;
-    this.spaceDown = down;
-    this.handlers.onSpaceChange(down);
   }
 
   /** Fullscreen: focus is in UI above/outside the overlay (e.g. a dialog). */

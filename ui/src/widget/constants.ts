@@ -30,6 +30,9 @@ export const INPUT_NAMES = {
   invertMask: "invert_mask",
 } as const;
 
+/** LiteGraph `NodeSlotType.INPUT` as passed to `onConnectionsChange`. */
+export const LINK_INPUT = 1;
+
 /** Minimum editor widget height in graph units. */
 export const WIDGET_MIN_HEIGHT = 256;
 

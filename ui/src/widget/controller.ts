@@ -29,16 +29,17 @@ import { createEmptyDocument, createId } from "../document/create";
 import { parseDocument } from "../document/parse";
 import { stringifyDocument } from "../document/serialize";
 import type { PainterDocument } from "../document/types";
+import type { Size } from "../geometry/rect";
 import { log } from "../log";
 import { HIDDEN_MASK_NOTE } from "../engine/editor";
 import type { IBaseWidget, LGraphNode, NodeExecutionOutput } from "../types/comfy";
 import { EditorHost } from "../ui/editorHost";
 import { chooseForEmpty, chooseForManifest } from "./attachDecision";
 import { executeCommand, SAVE_WORKFLOW_COMMAND } from "./comfyApi";
-import { INPUT_NAMES, SOURCE_POLL_MS } from "./constants";
+import { INPUT_NAMES, LINK_INPUT, SOURCE_POLL_MS } from "./constants";
 import { isolateEvents } from "./eventIsolation";
 import type { EventIsolation } from "./eventIsolation";
-import { resolveFallbackFrame } from "./frameFallback";
+import { resolveFallbackFrame, widgetDimension } from "./frameFallback";
 import type { FallbackFrame } from "./frameFallback";
 import { handoffKey, offerHandoff, takeHandoff } from "./handoff";
 import type { LoadedBackground, NodeHandoff } from "./handoff";
@@ -259,15 +260,56 @@ export class PainterSketchController {
     this.refresh();
   }
 
-  /** A link on our node changed. */
-  handleConnectionsChange(): void {
+  /**
+   * A link on our node changed.
+   * @param type - Slot type (`LINK_INPUT` for inputs).
+   * @param slot - Slot index.
+   * @param isConnected - `false` when a link was removed.
+   */
+  handleConnectionsChange(type: number, slot: number, isConnected: boolean): void {
     // During `configure` (before the deferred first refresh) upstream nodes
     // may not be configured yet; resolving now could load a bogus source.
     if (this.startTimer !== null) {
       this.updateContent();
       return;
     }
+    const imageSlot = inputSlotIndex(this.node, INPUT_NAMES.image);
+    if (type === LINK_INPUT && slot === imageSlot && !isConnected && this.session && this.node.graph) {
+      this.handleImageDisconnected(this.session.editor.imageSize);
+    }
     this.refresh();
+  }
+
+  /**
+   * `image` lost its link (a user edit, not a load): the widgets take over the
+   * last image size so the canvas keeps its size and the node shows it.
+   * Deferred a microtask so a link replaced by another (disconnect, then
+   * connect in one call) leaves the widgets alone.
+   * @param size - Image size shown when the link was removed.
+   */
+  private handleImageDisconnected(size: Size): void {
+    queueMicrotask(() => {
+      if (this.disposed || this.isImageConnected()) return;
+      const width = this.setWidgetValue(INPUT_NAMES.width, widgetDimension(size.width));
+      const height = this.setWidgetValue(INPUT_NAMES.height, widgetDimension(size.height));
+      if (!width && !height) return;
+      this.node.graph?.incrementVersion?.();
+      app.canvas?.setDirty?.(true, true);
+    });
+  }
+
+  /**
+   * Set a widget's value like a user edit: the value setter (backed by the
+   * widget value store, so both renderers update) plus its callback (ours
+   * re-applies the frame; see `handleNodeCreated`).
+   * @returns `true` if the value changed.
+   */
+  private setWidgetValue(name: string, value: number): boolean {
+    const widget = this.findWidget(name);
+    if (!widget || widget.value === value) return false;
+    widget.value = value;
+    widget.callback?.(widget.value);
+    return true;
   }
 
   /**
@@ -482,9 +524,9 @@ export class PainterSketchController {
 
   /**
    * Push background + frame decisions to the editor when anything relevant
-   * changed. Connected: the loaded image (an empty editor adopts a new size;
-   * otherwise it is only a display mapping). Disconnected: the `background` colour over the document's
-   * frame; `width`/`height` only resize a fresh, empty, widget-sized document.
+   * changed. The current image is the loaded upstream image while connected,
+   * else `width` x `height` filled with `background`; either way an empty
+   * editor adopts its size and a painted one only maps onto it.
    */
   private updateContent(): void {
     const session = this.session;
@@ -508,20 +550,17 @@ export class PainterSketchController {
     const key = `${session.docId}|fill|${frame.color}|${frame.size.width}x${frame.size.height}`;
     if (key === this.contentKey) return;
     this.contentKey = key;
-    editor.setBackground({ kind: "fill", color: frame.color }, null);
-    editor.handleWidgetFrame(frame.size);
+    editor.setBackground({ kind: "fill", color: frame.color }, frame.size);
+    editor.handleBackgroundSize(frame.size);
   }
 
   /**
-   * Frame used while disconnected: the document's frame once it has paint or
-   * its size came from an image/manifest (SPEC Behavior Notes), else the
-   * `width`/`height` widgets.
+   * The current image while disconnected: `width` x `height` filled with
+   * `background`. Like any upstream image, an empty document adopts it and a
+   * painted one is shown through the frame map (decision 4).
    */
   private fallbackFrame(): FallbackFrame {
-    const editor = this.session?.editor;
-    const known = editor && (editor.hasPaint || editor.frameSource !== "widgets") ? editor.doc.frame : null;
     return resolveFallbackFrame(
-      known,
       this.findWidget(INPUT_NAMES.width)?.value,
       this.findWidget(INPUT_NAMES.height)?.value,
       this.findWidget(INPUT_NAMES.background)?.value,

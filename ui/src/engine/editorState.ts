@@ -34,7 +34,10 @@ export class EditorState {
   doc: PainterDocument;
   frameSource: FrameSource;
   background: FrameBackground = { kind: "fill", color: "#ffffff" };
-  /** Natural size of the background image (`null` for a fill). */
+  /**
+   * Size of the current image: the background image's natural size, or the
+   * `width` x `height` widgets under a fill. `null` = unknown (use `doc.frame`).
+   */
   backgroundSize: Size | null = null;
   loadingCount = 0;
   /** Background size that arrived while loading (applied afterwards). */
@@ -69,11 +72,10 @@ export class EditorState {
     return this.loadingCount > 0;
   }
 
-  /** Size the view shows: the background image, or `doc.frame` without one. */
+  /** Size the view shows: the current image (image or widget-sized fill), else `doc.frame`. */
   get imageSize(): Size {
     const size = this.backgroundSize;
-    if (this.background.kind === "image" && size) return { ...size };
-    return { ...this.doc.frame };
+    return size ? { ...size } : { ...this.doc.frame };
   }
 
   /** No paint ever and nothing in history that depends on the frame. */

@@ -127,6 +127,9 @@ ui/src/
     history.ts            -- undo/redo (dirty-rect patches, not full snapshots)
     viewport.ts           -- pan/zoom, screen<->image coords, pan clamp
     frameMap.ts           -- document frame <-> current image mapping (matches Python)
+    floodFill.ts          -- scanline fill on typed arrays (pure; `clip` seam for selection)
+    docComposite.ts       -- "what the user sees" in doc coords (for sampling)
+    shapes.ts             -- shape geometry (pure)
     brush.ts              -- stamp generation, spacing, pressure curve
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
   tools/                  -- one file per tool implementing a common Tool interface
@@ -140,6 +143,9 @@ ui/src/
 
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
+- Tools sharing a rail slot/key (shapes on `U`, marquees on `M`) are a tool
+  group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
+  tool makes Alt-at-pointer-down a temporary eyedropper.
 - Tool options are **declarative** (descriptors: slider/number/toggle/select),
   rendered generically by the options bar. No per-tool UI code.
 - `ui/shell.ts` owns the regions (rail, options bar, stage, side panel) and the
