@@ -1,5 +1,251 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+const PREFIX = "[PainterSketch]";
+const log = {
+  /**
+   * Log a warning.
+   * @param args - Values to log after the prefix.
+   */
+  warn: (...args) => console.warn(PREFIX, ...args),
+  /**
+   * Log an error.
+   * @param args - Values to log after the prefix.
+   */
+  error: (...args) => console.error(PREFIX, ...args)
+};
+function notify(severity, detail) {
+  const toast = app.extensionManager?.toast;
+  if (toast && typeof toast.add === "function") {
+    toast.add({ severity, summary: "PainterSketch", detail, life: severity === "error" ? 8e3 : 5e3 });
+  }
+  if (severity === "info") return;
+  if (severity === "error") log.error(detail);
+  else log.warn(detail);
+}
+const REFERENCE_SOURCE = String.raw`painter-sketch(?:[\\/]|%2f){1,8}(ps-[a-z0-9]+-[0-9a-f]+\.(?:png|webp))`;
+function extractReferences(text, into = /* @__PURE__ */ new Set()) {
+  for (const match of text.matchAll(new RegExp(REFERENCE_SOURCE, "gi"))) {
+    const name = match[1];
+    if (name) into.add(name.toLowerCase());
+  }
+  return into;
+}
+function isStatsResponse(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const { all, old } = value;
+  return isFileStat(all) && isFileStat(old);
+}
+function isCleanupResponse(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const { count, bytes, errors, all, old } = value;
+  return typeof count === "number" && typeof bytes === "number" && isFileStat(all) && isFileStat(old) && (errors === void 0 || Array.isArray(errors) && errors.every((e) => typeof e === "string"));
+}
+function isFileStat(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const { count, bytes } = value;
+  return typeof count === "number" && typeof bytes === "number";
+}
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return unit === 0 ? `${Math.round(value)} B` : `${value.toFixed(1)} ${units[unit]}`;
+}
+function fileCount(count) {
+  return `${count} ${count === 1 ? "file" : "files"}`;
+}
+function confirmText(dry) {
+  if (dry.count === 0) return null;
+  let text = `${dry.count} of the ${fileCount(dry.old.count)} older than 24 h (${formatBytes(dry.bytes)}) are unused and will be deleted. This affects all workflows.`;
+  const skipped = dry.errors?.length ?? 0;
+  if (skipped) {
+    text += `
+
+Warning: ${fileCount(skipped)} in the workflows folders could not be scanned (too large or unreadable); layer files used only there would be deleted.`;
+  }
+  return text;
+}
+function isRecord$1(value) {
+  return typeof value === "object" && value !== null;
+}
+function scanValue(value, into) {
+  if (value === null || value === void 0) return;
+  if (typeof value === "string") {
+    extractReferences(value, into);
+    return;
+  }
+  try {
+    const text = JSON.stringify(value);
+    if (text) extractReferences(text, into);
+  } catch {
+  }
+}
+function scanOpenWorkflows(into) {
+  const manager = app.extensionManager;
+  const store = isRecord$1(manager) ? manager["workflow"] : void 0;
+  const open = isRecord$1(store) ? store["openWorkflows"] : void 0;
+  if (!Array.isArray(open)) return;
+  for (const workflow of open) {
+    if (!isRecord$1(workflow)) continue;
+    scanValue(workflow["content"], into);
+    scanValue(workflow["originalContent"], into);
+    const tracker = workflow["changeTracker"];
+    if (!isRecord$1(tracker)) continue;
+    for (const key of ["activeState", "initialState", "undoQueue", "redoQueue"]) scanValue(tracker[key], into);
+  }
+}
+function scanCurrentGraph(into) {
+  const root = app;
+  const graph = isRecord$1(root) ? root["graph"] : void 0;
+  if (!isRecord$1(graph) || typeof graph["serialize"] !== "function") return;
+  try {
+    scanValue(graph["serialize"].call(graph), into);
+  } catch {
+  }
+}
+function scanStorage(getStorage, into) {
+  let storage;
+  try {
+    storage = getStorage();
+  } catch {
+    return;
+  }
+  for (let i = 0; i < storage.length; i++) {
+    const key = storage.key(i);
+    if (key !== null) scanValue(storage.getItem(key), into);
+  }
+}
+function collectClientReferences() {
+  const names = /* @__PURE__ */ new Set();
+  scanOpenWorkflows(names);
+  scanCurrentGraph(names);
+  scanStorage(() => globalThis.localStorage, names);
+  scanStorage(() => globalThis.sessionStorage, names);
+  return [...names].sort();
+}
+const CLEANUP_SETTING_ID = "PainterSketch.Cleanup";
+const CLEANUP_ROUTE = "/painter-sketch/cleanup";
+const CLEANUP_SETTING = {
+  id: CLEANUP_SETTING_ID,
+  category: ["PainterSketch", "Storage", "Clean up files"],
+  name: "Clean up files",
+  tooltip: "Deletes layer files in input/painter-sketch/ that no saved workflow, open workflow tab or unsaved draft in this browser uses and that are older than 24 hours. Asks before deleting.",
+  type: () => renderCleanupControl(),
+  defaultValue: ""
+};
+function renderCleanupControl() {
+  const root = document.createElement("div");
+  root.style.cssText = "display:flex;flex-direction:column;gap:0.4rem;";
+  const statsLine = document.createElement("span");
+  statsLine.style.cssText = "font-size:0.8rem;opacity:0.7;";
+  statsLine.textContent = "Loading file counts…";
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;align-items:center;gap:0.75rem;";
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = "p-button p-component p-button-sm p-button-secondary";
+  button2.textContent = "Clean up files";
+  button2.addEventListener("click", () => {
+    button2.disabled = true;
+    button2.textContent = "Cleaning up…";
+    void runCleanup(statsLine).finally(() => {
+      button2.disabled = false;
+      button2.textContent = "Clean up files";
+    });
+  });
+  row.append(button2);
+  root.append(statsLine, row);
+  void fetchStats(statsLine);
+  return root;
+}
+async function fetchStats(statsLine) {
+  try {
+    const response = await api.fetchApi(CLEANUP_ROUTE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "stats" })
+    });
+    const data = await response.json().catch(() => null);
+    if (response.ok && isStatsResponse(data)) {
+      statsLine.textContent = statsText(data);
+    } else {
+      statsLine.textContent = "Could not load file counts.";
+    }
+  } catch {
+    statsLine.textContent = "Could not load file counts.";
+  }
+}
+function statsText(stats) {
+  const all = `${stats.all.count} (${formatBytes(stats.all.bytes)})`;
+  const old = `${stats.old.count} (${formatBytes(stats.old.bytes)})`;
+  return `Files: ${all} · Older than 24 h: ${old}`;
+}
+async function postCleanup(dryRun, referenced) {
+  const response = await api.fetchApi(CLEANUP_ROUTE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dryRun, referenced })
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = typeof data === "object" && data !== null ? data.error : void 0;
+    throw new Error(typeof message === "string" ? message : `server returned ${response.status}`);
+  }
+  if (!isCleanupResponse(data)) throw new Error("unexpected server response");
+  return data;
+}
+async function runCleanup(statsLine) {
+  try {
+    const referenced = collectClientReferences();
+    const dry = await postCleanup(true, referenced);
+    if (dry.old.count === 0) {
+      notify("info", "Nothing to clean up (no files older than 24 h)");
+      void fetchStats(statsLine);
+      return;
+    }
+    if (dry.count === 0) {
+      notify("info", `Nothing to clean up (the ${fileCount(dry.old.count)} files older than 24 h are all in use)`);
+      void fetchStats(statsLine);
+      return;
+    }
+    const text = confirmText(dry);
+    if (text === null || !window.confirm(text)) return;
+    const result = await postCleanup(false, collectClientReferences());
+    const summary = `Deleted ${fileCount(result.count)} (${formatBytes(result.bytes)}).`;
+    const errors = result.errors ?? [];
+    if (errors.length) notify("warn", `${summary} ${errors.length} problem(s), see server log. First: ${errors[0]}`);
+    else notify("info", summary);
+  } catch (error) {
+    notify("error", `File cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    void fetchStats(statsLine);
+  }
+}
+const PAINT_QUALITY_ID = "PainterSketch.PaintQuality";
+const PAINT_QUALITY_DEFAULT = 99;
+const MIN = 50;
+const MAX = 100;
+const PAINT_QUALITY_SETTING = {
+  id: PAINT_QUALITY_ID,
+  category: ["PainterSketch", "Storage", "Paint layer quality"],
+  name: "Paint layer quality",
+  tooltip: "Paint layer quality. Below 100 saves lossy WebP (much smaller); 100 saves lossless PNG. Masks are always PNG.",
+  type: "slider",
+  attrs: { min: MIN, max: MAX, step: 1 },
+  defaultValue: PAINT_QUALITY_DEFAULT
+};
+function normalizePaintQuality(raw) {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return PAINT_QUALITY_DEFAULT;
+  return Math.min(MAX, Math.max(MIN, Math.round(raw)));
+}
+const SETTINGS = [
+  PAINT_QUALITY_SETTING,
+  CLEANUP_SETTING
+];
 const EXTENSION_NAME = "phazei.PainterSketch";
 const NODE_NAME = "PainterSketch";
 const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
@@ -194,7 +440,7 @@ function readLayer(value) {
     kind,
     visible: typeof value["visible"] === "boolean" ? value["visible"] : true,
     locked: typeof value["locked"] === "boolean" ? value["locked"] : false,
-    opacity: clamp01(value["opacity"], 1),
+    opacity: clamp01$1(value["opacity"], 1),
     blendMode: "normal",
     file: typeof file === "string" ? file : null
   };
@@ -241,7 +487,7 @@ function isInt(value) {
 function isSide(value) {
   return isInt(value) && value >= 1 && value <= MAX_DOCUMENT_SIDE;
 }
-function clamp01(value, fallback) {
+function clamp01$1(value, fallback) {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(1, Math.max(0, value));
 }
@@ -285,19 +531,6 @@ function cloneDocument(doc) {
     layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
   };
 }
-const PREFIX = "[PainterSketch]";
-const log = {
-  /**
-   * Log a warning.
-   * @param args - Values to log after the prefix.
-   */
-  warn: (...args) => console.warn(PREFIX, ...args),
-  /**
-   * Log an error.
-   * @param args - Values to log after the prefix.
-   */
-  error: (...args) => console.error(PREFIX, ...args)
-};
 function findMaskLayer(doc) {
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
   if (active?.kind === "mask") return active;
@@ -325,35 +558,6 @@ function ensureMaskLayer(doc) {
 function maskDisplayColor(layer) {
   const color = layer.color;
   return typeof color === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_MASK_COLOR;
-}
-const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
-  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
 }
 class Emitter {
   listeners = /* @__PURE__ */ new Map();
@@ -387,42 +591,144 @@ class Emitter {
     this.listeners.clear();
   }
 }
-const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
-function frameMap(frame, image) {
-  const { width: fw, height: fh } = frame;
-  const { width: W, height: H } = image;
-  if (!(fw > 0 && fh > 0 && W > 0 && H > 0) || ![fw, fh, W, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
-  const scale = Math.min(W / fw, H / fh);
-  return { scale, offsetX: (W - fw * scale) / 2, offsetY: (H - fh * scale) / 2 };
+const DEFAULT_COLORS = { fg: "#000000", bg: "#ffffff" };
+function normalizeHex(value) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  const hex = m?.[1];
+  if (!hex) return null;
+  const full = hex.length === 3 ? [...hex].map((c) => c + c).join("") : hex;
+  return `#${full.toLowerCase()}`;
 }
-function imageToDoc(map, p) {
-  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
+class ColorState {
+  events = new Emitter();
+  pair;
+  /**
+   * @param initial - Starting colours (defaults to black/white).
+   */
+  constructor(initial = DEFAULT_COLORS) {
+    this.pair = { fg: normalizeHex(initial.fg) ?? DEFAULT_COLORS.fg, bg: normalizeHex(initial.bg) ?? DEFAULT_COLORS.bg };
+  }
+  /** Foreground colour (`#rrggbb`). */
+  get fg() {
+    return this.pair.fg;
+  }
+  /** Background colour (`#rrggbb`). */
+  get bg() {
+    return this.pair.bg;
+  }
+  /** Both colours (copy). */
+  get current() {
+    return { ...this.pair };
+  }
+  /**
+   * Set one colour; invalid values are ignored.
+   * @param slot - Foreground or background.
+   * @param value - Hex colour.
+   */
+  set(slot, value) {
+    const hex = normalizeHex(value);
+    if (!hex || hex === this.pair[slot]) return;
+    this.pair = { ...this.pair, [slot]: hex };
+    this.emit();
+  }
+  /** Swap foreground and background (`X`). */
+  swap() {
+    if (this.pair.fg === this.pair.bg) return;
+    this.pair = { fg: this.pair.bg, bg: this.pair.fg };
+    this.emit();
+  }
+  /** Reset to black foreground, white background (`D`). */
+  reset() {
+    if (this.pair.fg === DEFAULT_COLORS.fg && this.pair.bg === DEFAULT_COLORS.bg) return;
+    this.pair = { ...DEFAULT_COLORS };
+    this.emit();
+  }
+  emit() {
+    this.events.emit("change", { ...this.pair });
+  }
 }
-function docRectToImage(map, r) {
+class DocIO {
+  /**
+   * @param s - Shared editor state.
+   * @param applyBackgroundSize - Re-run a background size change deferred while loading.
+   */
+  constructor(s, applyBackgroundSize) {
+    this.s = s;
+    this.applyBackgroundSize = applyBackgroundSize;
+  }
+  s;
+  applyBackgroundSize;
+  /** Mark the start of an async layer restore (disables painting). */
+  beginLoading() {
+    this.s.loadingCount++;
+  }
+  /** Mark the end of an async layer restore; applies a deferred frame change. */
+  endLoading() {
+    const s = this.s;
+    s.loadingCount = Math.max(0, s.loadingCount - 1);
+    s.events.emit("render", void 0);
+    if (!s.loading && s.pendingBackgroundSize) {
+      const size = s.pendingBackgroundSize;
+      s.pendingBackgroundSize = null;
+      this.applyBackgroundSize(size);
+    }
+  }
+  /**
+   * Draw a restored layer image (WebP or PNG) into a layer (not an undo
+   * step, not dirty).
+   * @param layerId - Layer id.
+   * @param image - Decoded image (sized to `bounds`).
+   */
+  restoreLayerPixels(layerId, image) {
+    const surface = this.s.store.ensure(layerId);
+    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+    surface.ctx.drawImage(image, 0, 0);
+    this.s.runtime.bump(layerId);
+    this.s.events.emit("render", void 0);
+  }
+  /**
+   * Record a finished upload.
+   * @param layerId - Layer id.
+   * @param version - Layer version that was uploaded.
+   * @param file - Stored file reference (`null` for an empty layer).
+   */
+  markUploaded(layerId, version, file) {
+    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    const rt = this.s.runtime.get(layerId);
+    if (!layer || !rt) return;
+    layer.file = file;
+    if (rt.version === version) rt.dirty = false;
+    this.s.events.emit("change", void 0);
+  }
+}
+const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
+  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
   return {
-    x: map.offsetX + r.x * map.scale,
-    y: map.offsetY + r.y * map.scale,
-    width: r.width * map.scale,
-    height: r.height * map.scale
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
   };
 }
-function imageLengthToDoc(map, imageLength) {
-  return imageLength / map.scale;
-}
-function roundHalfEven(value) {
-  const floor = Math.floor(value);
-  const diff = value - floor;
-  if (diff > 0.5) return floor + 1;
-  if (diff < 0.5) return floor;
-  return floor % 2 === 0 ? floor : floor + 1;
-}
-function layerPlacement(map, bounds) {
-  return {
-    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
-    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
-    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
-    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
+  const cap = boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
   };
+  return unionRect(intersectRect(grown, cap), bounds);
 }
 const DEFAULT_HISTORY_BYTES = 256 * 1024 * 1024;
 class HistoryStack {
@@ -455,6 +761,14 @@ class HistoryStack {
   /** Number of redo entries. */
   get redoDepth() {
     return this.redoStack.length;
+  }
+  /**
+   * The newest undo entry, only while nothing is redoable (the entry a
+   * continuing gesture may merge into).
+   * @returns The entry, or `undefined`.
+   */
+  mergeTarget() {
+    return this.redoStack.length ? void 0 : this.undoStack[this.undoStack.length - 1];
   }
   /**
    * Record a new operation. Clears the redo stack, then enforces the cap.
@@ -506,6 +820,97 @@ class HistoryStack {
       evicted.push(oldest);
     }
     return evicted;
+  }
+}
+class LayerRuntimeTable {
+  entries = /* @__PURE__ */ new Map();
+  revisions = /* @__PURE__ */ new Map();
+  /** Last version of removed layers (see {@link LayerRuntimeTable.reinstate}). */
+  removedVersions = /* @__PURE__ */ new Map();
+  revisionCounter = 0;
+  /**
+   * (Re)initialise a layer's bookkeeping: clean, version 0.
+   * @param layerId - Layer id.
+   * @param hasContent - Whether the layer holds (saved) paint.
+   */
+  reset(layerId, hasContent) {
+    this.entries.set(layerId, { dirty: false, version: 0, hasContent });
+  }
+  /**
+   * Forget a deleted layer (so it no longer counts as dirty/painted). Its
+   * revision is kept so a re-inserted layer never reuses a stale cache key.
+   * @param layerId - Layer id.
+   */
+  remove(layerId) {
+    const rt = this.entries.get(layerId);
+    if (rt) this.removedVersions.set(layerId, rt.version);
+    this.entries.delete(layerId);
+  }
+  /**
+   * (Re)install a layer that is (again) part of the document (new layer,
+   * undo of a delete). The version continues past any earlier life of the
+   * id, so an upload started before the delete can never mark the restored
+   * pixels clean.
+   * @param layerId - Layer id.
+   * @param hasPixels - The layer holds pixels (dirty until uploaded).
+   */
+  reinstate(layerId, hasPixels) {
+    const version = (this.removedVersions.get(layerId) ?? 0) + 1;
+    this.entries.set(layerId, { dirty: hasPixels, version, hasContent: hasPixels });
+    this.bump(layerId);
+  }
+  /**
+   * Bookkeeping of a layer.
+   * @param layerId - Layer id.
+   * @returns The entry or `undefined`.
+   */
+  get(layerId) {
+    return this.entries.get(layerId);
+  }
+  /**
+   * Pixels of a layer were edited: new revision, dirty, next version.
+   * @param layerId - Layer id.
+   */
+  touch(layerId) {
+    this.bump(layerId);
+    const rt = this.entries.get(layerId);
+    if (!rt) return;
+    rt.dirty = true;
+    rt.version++;
+    rt.hasContent = true;
+  }
+  /**
+   * Committed pixels of a layer changed without an edit (restore, cancel):
+   * only invalidates caches keyed by the revision.
+   * @param layerId - Layer id.
+   */
+  bump(layerId) {
+    this.revisions.set(layerId, ++this.revisionCounter);
+  }
+  /**
+   * Current pixel revision of a layer.
+   * @param layerId - Layer id.
+   * @returns Revision (0 = never bumped).
+   */
+  revision(layerId) {
+    return this.revisions.get(layerId) ?? 0;
+  }
+  /** Whether any layer has ever held paint. */
+  get hasPaint() {
+    for (const r of this.entries.values()) if (r.hasContent) return true;
+    return false;
+  }
+  /** Whether any layer needs uploading. */
+  get dirty() {
+    for (const r of this.entries.values()) if (r.dirty) return true;
+    return false;
+  }
+  /**
+   * Copy every entry of `other` (fork); revisions are not copied.
+   * @param other - Source table.
+   */
+  copyFrom(other) {
+    for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
   }
 }
 function createSurface(width, height) {
@@ -651,70 +1056,6 @@ class LayerStore {
     this.surfaces.clear();
   }
 }
-class MaskTint {
-  surface = null;
-  key = null;
-  /**
-   * Bring the tint up to date and return it.
-   * @param source - Coverage canvas (layer or stroke preview), sized to `key.bounds`.
-   * @param key - Current inputs.
-   * @param dirty - Document rect changed in `source` since the last call while
-   *   the key is unchanged (live stroke preview); `null` = nothing extra.
-   * @returns Tinted canvas sized to `key.bounds`.
-   */
-  update(source, key, dirty) {
-    const surface = this.ensureSurface(key.bounds);
-    if (!this.key || !sameKey(this.key, key)) {
-      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key);
-    } else if (dirty) {
-      const local = intersectRect(
-        { x: dirty.x - key.bounds.x, y: dirty.y - key.bounds.y, width: dirty.width, height: dirty.height },
-        { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }
-      );
-      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key);
-    }
-    this.key = { ...key, bounds: { ...key.bounds } };
-    return surface.canvas;
-  }
-  /** Release the cached canvas. */
-  dispose() {
-    if (this.surface) releaseSurface(this.surface);
-    this.surface = null;
-    this.key = null;
-  }
-  ensureSurface(bounds) {
-    const s = this.surface;
-    if (s && s.canvas.width === bounds.width && s.canvas.height === bounds.height) return s;
-    if (s) releaseSurface(s);
-    this.key = null;
-    this.surface = createSurface(bounds.width, bounds.height);
-    return this.surface;
-  }
-}
-function sameKey(a, b) {
-  return a.revision === b.revision && a.color === b.color && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
-}
-function paint(ctx, source, r, key) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(r.x, r.y, r.width, r.height);
-  ctx.clip();
-  ctx.globalAlpha = 1;
-  ctx.clearRect(r.x, r.y, r.width, r.height);
-  ctx.fillStyle = key.color;
-  if (key.invert) {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-  } else {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-    ctx.globalCompositeOperation = "source-in";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-  }
-  ctx.restore();
-}
 const MIN_STEP = 0.5;
 const MIN_SIZE = 0.5;
 function normalizePressure(pointerType, pressure) {
@@ -726,11 +1067,13 @@ function curvePressure(pressure, gamma) {
   const g = gamma > 0 && Number.isFinite(gamma) ? gamma : 1;
   return Math.pow(Math.min(1, Math.max(0, pressure)), g);
 }
+function pressureSizeFactor(pressure, minSizeRatio, gamma) {
+  const min = Number.isFinite(minSizeRatio) ? Math.min(1, Math.max(0, minSizeRatio)) : 0;
+  return min + (1 - min) * curvePressure(pressure, gamma);
+}
 function dabSize(pressure, dyn) {
   if (!dyn.pressureSize) return Math.max(MIN_SIZE, dyn.size);
-  const p = curvePressure(pressure, dyn.gamma);
-  const min = Math.min(1, Math.max(0, dyn.minSizeRatio));
-  return Math.max(MIN_SIZE, dyn.size * (min + (1 - min) * p));
+  return Math.max(MIN_SIZE, dyn.size * pressureSizeFactor(pressure, dyn.minSizeRatio, dyn.gamma));
 }
 function dabAlpha(pressure, dyn) {
   const flow = Math.min(1, Math.max(0, dyn.flow));
@@ -784,67 +1127,6 @@ function stampStops(hardness, radiusPx) {
   const inner = Math.min(h, aaEdge);
   if (inner <= 0) return [[0, 1], [1, 0]];
   return [[0, 1], [inner, 1], [1, 0]];
-}
-const MAX_STAMPS = 32;
-class StampCache {
-  stamps = /* @__PURE__ */ new Map();
-  /**
-   * Get (or render) a stamp.
-   *
-   * @param diameter - Largest diameter it will be drawn at, px.
-   * @param hardness - 0..1.
-   * @param color - CSS colour.
-   * @returns Square surface with the disc centred.
-   */
-  get(diameter, hardness, color) {
-    const size = Math.max(2, Math.ceil(diameter));
-    const key = `${size}|${hardness.toFixed(2)}|${color}`;
-    const hit = this.stamps.get(key);
-    if (hit) {
-      this.stamps.delete(key);
-      this.stamps.set(key, hit);
-      return hit;
-    }
-    const stamp = renderStamp(size, hardness, color);
-    this.stamps.set(key, stamp);
-    if (this.stamps.size > MAX_STAMPS) {
-      const oldest = this.stamps.keys().next().value;
-      if (oldest !== void 0) this.stamps.delete(oldest);
-    }
-    return stamp;
-  }
-  /** Drop all stamps. */
-  clear() {
-    this.stamps.clear();
-  }
-}
-function renderStamp(size, hardness, color) {
-  const surface = createSurface(size, size);
-  const { ctx } = surface;
-  const r = size / 2;
-  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
-  const rgb = colorToRgb(ctx, color);
-  for (const [offset, alpha] of stampStops(hardness, r)) {
-    gradient.addColorStop(offset, `rgba(${rgb}, ${alpha})`);
-  }
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(r, r, r, 0, Math.PI * 2);
-  ctx.fill();
-  return surface;
-}
-function colorToRgb(ctx, color) {
-  ctx.fillStyle = "#000000";
-  ctx.fillStyle = color;
-  const parsed = String(ctx.fillStyle);
-  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
-  if (hex) {
-    const n = parseInt(hex, 16);
-    return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
-  }
-  const rgba = /^rgba?\(([^)]+)\)$/i.exec(parsed)?.[1];
-  if (rgba) return rgba.split(",").slice(0, 3).join(",");
-  return "0, 0, 0";
 }
 const EMPTY = { x: 0, y: 0, width: 0, height: 0 };
 class StrokeBuffer {
@@ -1196,30 +1478,28 @@ class ViewState {
     return changed;
   }
 }
-const MASK_STROKE_COLOR = "#ffffff";
-const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
-class Editor {
+class EditorState {
   events = new Emitter();
   view = new ViewState();
-  stamps = new StampCache();
-  docState;
-  store;
   history = new HistoryStack();
   stroke = new StrokeBuffer();
-  runtime = /* @__PURE__ */ new Map();
-  backgroundState = { kind: "fill", color: "#ffffff" };
+  runtime = new LayerRuntimeTable();
+  store;
+  doc;
+  frameSource;
+  background = { kind: "fill", color: "#ffffff" };
+  /** Natural size of the background image (`null` for a fill). */
   backgroundSize = null;
-  frameSourceState;
-  strokeLayerId = null;
-  strokeDiameter = 1;
   loadingCount = 0;
+  /** Background size that arrived while loading (applied afterwards). */
   pendingBackgroundSize = null;
+  /** Quick Mask paint target (UI state, not saved). */
   target = "paint";
-  tints = /* @__PURE__ */ new Map();
-  /** Per-layer pixel revision (tint cache key); globally monotonic. */
-  revisions = /* @__PURE__ */ new Map();
-  revisionCounter = 0;
-  /** Where the previous stroke ended, document coords (Shift+click line start). */
+  /** Layer the current stroke paints into. */
+  strokeLayerId = null;
+  /** Largest dab diameter of the current stroke, document px. */
+  strokeDiameter = 1;
+  /** Where the previous stroke ended, document coords. */
   lastStrokeEnd = null;
   /**
    * @param doc - Document (copied).
@@ -1227,218 +1507,161 @@ class Editor {
    * @param store - Existing pixels (for clones); a blank store is created otherwise.
    */
   constructor(doc, source, store) {
-    this.docState = cloneDocument(doc);
-    this.frameSourceState = source;
+    this.doc = cloneDocument(doc);
+    this.frameSource = source;
     this.store = store ?? new LayerStore(doc.bounds);
     for (const layer of doc.layers) {
       this.store.ensure(layer.id);
-      this.runtime.set(layer.id, { dirty: false, version: 0, hasContent: layer.file !== null });
+      this.runtime.reset(layer.id, layer.file !== null);
     }
     this.syncViewFrame();
   }
-  // ── Read access ─────────────────────────────────────────────────────────
-  /** Current document (treat as read-only). */
-  get doc() {
-    return this.docState;
-  }
-  /** Where the frame size came from. */
-  get frameSource() {
-    return this.frameSourceState;
-  }
-  /** Undo available. */
-  get canUndo() {
-    return this.history.canUndo && !this.stroke.active;
-  }
-  /** Redo available. */
-  get canRedo() {
-    return this.history.canRedo && !this.stroke.active;
-  }
-  /** Layer files are being restored; painting is disabled. */
+  /** Layer files are being restored. */
   get loading() {
     return this.loadingCount > 0;
   }
-  /** Whether any layer has ever held paint. */
-  get hasPaint() {
-    for (const r of this.runtime.values()) if (r.hasContent) return true;
-    return false;
-  }
-  /** Whether any layer needs uploading. */
-  get dirty() {
-    for (const r of this.runtime.values()) if (r.dirty) return true;
-    return false;
-  }
-  /**
-   * Whether any mask layer is currently hidden AND has ever held paint
-   * (non-empty pixels). Used at queue time to warn the user their mask will
-   * not be included in the MASK output.
-   * @returns `true` if a hidden-but-painted mask exists.
-   */
-  hiddenMaskHasContent() {
-    for (const layer of this.docState.layers) {
-      if (layer.kind !== "mask" || layer.visible) continue;
-      const rt = this.runtime.get(layer.id);
-      if (rt?.hasContent) return true;
-    }
-    return false;
-  }
-  /** Background drawn under the paint. */
-  get background() {
-    return this.backgroundState;
-  }
-  /**
-   * Size of what the view shows: the background image, or `doc.frame` when
-   * there is no image (disconnected -> `background` fill, s = 1).
-   */
+  /** Size the view shows: the background image, or `doc.frame` without one. */
   get imageSize() {
     const size = this.backgroundSize;
-    if (this.backgroundState.kind === "image" && size) return { ...size };
-    return { ...this.docState.frame };
+    if (this.background.kind === "image" && size) return { ...size };
+    return { ...this.doc.frame };
   }
-  /** Document -> image transform (same as Python's frame-mismatch placement). */
-  get frameMap() {
-    return frameMap(this.docState.frame, this.imageSize);
+  /** No paint ever and nothing in history that depends on the frame. */
+  get isEmpty() {
+    return !this.runtime.hasPaint && !this.history.canUndo && !this.history.canRedo;
   }
-  /**
-   * Runtime state of a layer.
-   * @param layerId - Layer id.
-   * @returns Bookkeeping or `undefined`.
-   */
-  layerRuntime(layerId) {
-    return this.runtime.get(layerId);
+  /** The view fits the image, not the document frame. */
+  syncViewFrame() {
+    this.view.setFrame(this.imageSize);
   }
   /**
-   * Canvas of a layer (for export/upload).
-   * @param layerId - Layer id.
-   * @returns The canvas.
+   * Grow bounds to cover `need`. Chunked + capped for strokes; exact and
+   * uncapped when re-applying history.
+   * @param need - Document rect that must be covered.
+   * @param chunked - Stroke growth (256 px chunks, capped).
    */
-  layerCanvas(layerId) {
-    return this.store.ensure(layerId).canvas;
-  }
-  /** Current paint bounds (document coords). */
-  get bounds() {
-    return this.store.bounds;
-  }
-  /**
-   * Visible layers to composite, using the live stroke preview for the layer
-   * being painted.
-   * @returns Bottom -> top layers.
-   */
-  compositeLayers() {
-    const out = [];
-    for (const layer of this.docState.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
-      const surface = this.store.ensure(layer.id);
-      const source = this.strokeLayerId === layer.id && this.stroke.active ? this.stroke.updatePreview(surface).canvas : surface.canvas;
-      out.push({ source, opacity: layer.opacity });
+  ensureBounds(need, chunked) {
+    const current = this.store.bounds;
+    if (containsRect(current, need)) return;
+    const next = chunked ? growBounds(current, need, this.doc.frame) : unionRect(current, need);
+    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
+      this.store.rebase(next);
+      this.stroke.rebase(next);
+      this.doc.bounds = { ...next };
     }
-    return out;
   }
   /**
-   * Visible mask layers as tinted overlays (drawn above all paint). Uses the
-   * live stroke preview for the mask being painted and re-tints only the
-   * region the stroke dirtied since the last frame.
-   * @returns Bottom -> top overlays.
+   * The mask layer, adding a default one (not dirty, no history) when the
+   * document has none -- documents saved before M2 get one lazily.
+   * @returns The mask layer.
    */
-  maskOverlays() {
-    const out = [];
-    const bounds = this.store.bounds;
-    for (const layer of this.docState.layers) {
-      if (!layer.visible || layer.kind !== "mask") continue;
-      const surface = this.store.ensure(layer.id);
-      const stroking = this.strokeLayerId === layer.id && this.stroke.active;
-      const source = stroking ? this.stroke.updatePreview(surface).canvas : surface.canvas;
-      let tint = this.tints.get(layer.id);
-      if (!tint) {
-        tint = new MaskTint();
-        this.tints.set(layer.id, tint);
-      }
-      const color = maskDisplayColor(layer);
-      const invert = layer.invert === true;
-      const key = { bounds, color, invert, revision: this.revisions.get(layer.id) ?? 0 };
-      const canvas = tint.update(source, key, stroking ? this.stroke.lastRefreshed : null);
-      out.push({ tint: canvas, color, opacity: layer.opacity, invert });
+  ensureMask() {
+    const { layer, created } = ensureMaskLayer(this.doc);
+    if (created) {
+      this.store.ensure(layer.id);
+      this.runtime.reset(layer.id, false);
+      this.events.emit("change", void 0);
+      this.events.emit("mask", void 0);
     }
-    return out;
+    return layer;
   }
-  // ── Quick Mask / paint target ───────────────────────────────────────────
-  /** What brush/eraser strokes paint into (UI state, not saved). */
-  get paintTarget() {
-    return this.target;
+  /** Abort the current stroke (its preview may be cached in a mask tint). */
+  cancelStroke() {
+    this.stroke.cancel();
+    if (this.strokeLayerId) this.runtime.bump(this.strokeLayerId);
+    this.strokeLayerId = null;
+    this.events.emit("history", void 0);
+    this.events.emit("render", void 0);
   }
-  /** The mask layer Quick Mask edits, if the document has one. */
-  get maskLayer() {
-    return findMaskLayer(this.docState);
-  }
-  /**
-   * Switch the paint target (Quick Mask, `Q`). Targeting the mask adds a
-   * default mask layer to documents that have none.
-   * @param target - New target.
-   */
-  setPaintTarget(target) {
-    if (target === this.target) return;
-    if (this.stroke.active) this.cancelStroke();
-    if (target === "mask") this.ensureMask();
-    this.target = target;
-    this.events.emit("mask", void 0);
-  }
-  /** Toggle between the paint layer and the mask. */
-  togglePaintTarget() {
-    this.setPaintTarget(this.target === "mask" ? "paint" : "mask");
-  }
-  /**
-   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
-   * also excluded from the `MASK` output (saved-file contract).
-   * @param visible - Visibility.
-   */
-  setMaskVisible(visible) {
-    const layer = this.ensureMask();
-    if (layer.visible === visible) return;
-    if (this.stroke.active && this.strokeLayerId === layer.id) this.cancelStroke();
-    layer.visible = visible;
-    this.events.emit("mask", void 0);
+  /** Notify history, content and render listeners after an edit. */
+  afterEdit() {
+    this.events.emit("history", void 0);
     this.events.emit("change", void 0);
     this.events.emit("render", void 0);
   }
-  // ── Background / frame ──────────────────────────────────────────────────
+}
+const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
+function frameMap(frame, image) {
+  const { width: fw, height: fh } = frame;
+  const { width: W, height: H } = image;
+  if (!(fw > 0 && fh > 0 && W > 0 && H > 0) || ![fw, fh, W, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
+  const scale = Math.min(W / fw, H / fh);
+  return { scale, offsetX: (W - fw * scale) / 2, offsetY: (H - fh * scale) / 2 };
+}
+function imageToDoc(map, p) {
+  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
+}
+function docRectToImage(map, r) {
+  return {
+    x: map.offsetX + r.x * map.scale,
+    y: map.offsetY + r.y * map.scale,
+    width: r.width * map.scale,
+    height: r.height * map.scale
+  };
+}
+function imageLengthToDoc(map, imageLength) {
+  return imageLength / map.scale;
+}
+function roundHalfEven(value) {
+  const floor = Math.floor(value);
+  const diff = value - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+function layerPlacement(map, bounds) {
+  return {
+    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
+    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
+    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
+    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
+  };
+}
+class FrameOps {
   /**
-   * Set what is drawn under the paint. The view re-fits to the new image size
-   * (in fit mode); layer pixels are untouched.
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /**
+   * Set what is drawn under the paint; the view re-fits (in fit mode).
    * @param background - Image or fill.
    * @param imageSize - Natural size when `background` is an image.
    */
   setBackground(background, imageSize) {
-    this.backgroundState = background;
-    this.backgroundSize = background.kind === "image" && imageSize ? { ...imageSize } : null;
-    this.syncViewFrame();
-    this.events.emit("render", void 0);
+    this.s.background = background;
+    this.s.backgroundSize = background.kind === "image" && imageSize ? { ...imageSize } : null;
+    this.s.syncViewFrame();
+    this.s.events.emit("render", void 0);
   }
   /**
-   * A new background image size arrived. An empty document (no paint, no
-   * history) adopts it; otherwise nothing changes -- the document is simply
-   * drawn through {@link frameMap} (decision 4). Deferred while layer files
-   * are loading.
+   * A new background image size arrived: an empty document adopts it,
+   * otherwise nothing changes. Deferred while layer files are loading.
    * @param size - Image size.
    */
   handleBackgroundSize(size) {
-    if (this.loading) {
-      this.pendingBackgroundSize = { ...size };
+    const s = this.s;
+    if (s.loading) {
+      s.pendingBackgroundSize = { ...size };
       return;
     }
-    const frame = this.docState.frame;
+    const frame = s.doc.frame;
     if (size.width === frame.width && size.height === frame.height) {
-      this.frameSourceState = "image";
+      s.frameSource = "image";
       return;
     }
-    if (this.isEmpty) this.adoptFrame(size, "image");
+    if (s.isEmpty) this.adoptFrame(size, "image");
   }
   /**
-   * Adopt `size` only for an empty document whose frame came from widgets
-   * (the `width`/`height` widgets apply to fresh documents only).
+   * Adopt `size` only for an empty document whose frame came from widgets.
    * @param size - Widget frame size.
    */
   handleWidgetFrame(size) {
-    if (this.loading || !this.isEmpty || this.frameSourceState !== "widgets") return;
-    const frame = this.docState.frame;
+    const s = this.s;
+    if (s.loading || !s.isEmpty || s.frameSource !== "widgets") return;
+    const frame = s.doc.frame;
     if (size.width !== frame.width || size.height !== frame.height) this.adoptFrame(size, "widgets");
   }
   /**
@@ -1447,58 +1670,999 @@ class Editor {
    * @param source - Origin of the size.
    */
   adoptFrame(size, source) {
-    if (this.stroke.active) this.cancelStroke();
+    const s = this.s;
+    if (s.stroke.active) s.cancelStroke();
     const frame = { width: Math.round(size.width), height: Math.round(size.height) };
-    this.docState.frame = frame;
-    this.docState.bounds = frameRect(frame);
-    this.frameSourceState = source;
-    this.store.reset(this.docState.bounds);
-    for (const layer of this.docState.layers) {
-      this.store.ensure(layer.id);
+    s.doc.frame = frame;
+    s.doc.bounds = frameRect(frame);
+    s.frameSource = source;
+    s.store.reset(s.doc.bounds);
+    for (const layer of s.doc.layers) {
+      s.store.ensure(layer.id);
       layer.file = null;
-      this.runtime.set(layer.id, { dirty: false, version: 0, hasContent: false });
-      this.bumpRevision(layer.id);
+      s.runtime.reset(layer.id, false);
+      s.runtime.bump(layer.id);
     }
-    this.history.clear();
-    this.lastStrokeEnd = null;
-    this.syncViewFrame();
-    this.events.emit("history", void 0);
-    this.events.emit("change", void 0);
-    this.events.emit("render", void 0);
+    s.history.clear();
+    s.lastStrokeEnd = null;
+    s.syncViewFrame();
+    s.afterEdit();
   }
   /**
-   * Clear all paint (every layer, masks included; the layer list is kept) and
-   * reset the frame to the current image size (or the current fallback frame
-   * when no image is shown). One undoable step that restores the full prior
-   * state; the snapshot counts against the history memory cap.
+   * Clear all paint and reset the frame to the current image size, as one
+   * undoable step.
    */
   clear() {
-    if (this.loading) return;
-    if (this.stroke.active) this.cancelStroke();
-    const size = this.imageSize;
+    const s = this.s;
+    if (s.loading) return;
+    if (s.stroke.active) s.cancelStroke();
+    const size = s.imageSize;
     const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
-    const source = this.backgroundState.kind === "image" && this.backgroundSize ? "image" : this.frameSourceState;
+    const source = s.background.kind === "image" && s.backgroundSize ? "image" : s.frameSource;
     const before = this.captureSnapshot();
     const after = { frame, bounds: frameRect(frame), source, pixels: null };
     this.applySnapshot(after);
-    this.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
-    this.lastStrokeEnd = null;
-    this.afterEdit();
+    s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
+    s.lastStrokeEnd = null;
+    s.afterEdit();
+  }
+  /**
+   * Restore a full document snapshot (Clear undo/redo).
+   * @param state - Snapshot to apply.
+   */
+  applySnapshot(state) {
+    const s = this.s;
+    s.doc.frame = { ...state.frame };
+    s.doc.bounds = { ...state.bounds };
+    s.frameSource = state.source;
+    s.store.reset(state.bounds);
+    for (const layer of s.doc.layers) {
+      const data = state.pixels?.get(layer.id);
+      if (data) s.store.write(layer.id, state.bounds.x, state.bounds.y, data);
+      else s.store.ensure(layer.id);
+      s.runtime.touch(layer.id);
+    }
+    s.syncViewFrame();
+  }
+  captureSnapshot() {
+    const s = this.s;
+    const pixels = /* @__PURE__ */ new Map();
+    for (const layer of s.doc.layers) pixels.set(layer.id, s.store.snapshot(layer.id));
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, pixels };
+  }
+}
+function snapshotBytes(state) {
+  let bytes = 0;
+  if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
+  return bytes;
+}
+class MaskTint {
+  surface = null;
+  key = null;
+  /**
+   * Bring the tint up to date and return it.
+   * @param source - Coverage canvas (layer or stroke preview), sized to `key.bounds`.
+   * @param key - Current inputs.
+   * @param dirty - Document rect changed in `source` since the last call while
+   *   the key is unchanged (live stroke preview); `null` = nothing extra.
+   * @returns Tinted canvas sized to `key.bounds`.
+   */
+  update(source, key, dirty) {
+    const surface = this.ensureSurface(key.bounds);
+    if (!this.key || !sameKey(this.key, key)) {
+      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key);
+    } else if (dirty) {
+      const local = intersectRect(
+        { x: dirty.x - key.bounds.x, y: dirty.y - key.bounds.y, width: dirty.width, height: dirty.height },
+        { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }
+      );
+      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key);
+    }
+    this.key = { ...key, bounds: { ...key.bounds } };
+    return surface.canvas;
+  }
+  /** Release the cached canvas. */
+  dispose() {
+    if (this.surface) releaseSurface(this.surface);
+    this.surface = null;
+    this.key = null;
+  }
+  ensureSurface(bounds) {
+    const s = this.surface;
+    if (s && s.canvas.width === bounds.width && s.canvas.height === bounds.height) return s;
+    if (s) releaseSurface(s);
+    this.key = null;
+    this.surface = createSurface(bounds.width, bounds.height);
+    return this.surface;
+  }
+}
+function sameKey(a, b) {
+  return a.revision === b.revision && a.color === b.color && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
+}
+function paint(ctx, source, r, key) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(r.x, r.y, r.width, r.height);
+  ctx.clip();
+  ctx.globalAlpha = 1;
+  ctx.clearRect(r.x, r.y, r.width, r.height);
+  ctx.fillStyle = key.color;
+  if (key.invert) {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillRect(r.x, r.y, r.width, r.height);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+  } else {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillRect(r.x, r.y, r.width, r.height);
+  }
+  ctx.restore();
+}
+class LayerDisplay {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  tints = /* @__PURE__ */ new Map();
+  /**
+   * Visible paint layers to composite.
+   * @returns Bottom -> top layers.
+   */
+  compositeLayers() {
+    const s = this.s;
+    const out = [];
+    for (const layer of s.doc.layers) {
+      if (!layer.visible || layer.kind === "mask") continue;
+      const surface = s.store.ensure(layer.id);
+      const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      out.push({ source, opacity: layer.opacity });
+    }
+    return out;
+  }
+  /**
+   * Visible mask layers as tinted overlays (drawn above all paint).
+   * @returns Bottom -> top overlays.
+   */
+  maskOverlays() {
+    const s = this.s;
+    const out = [];
+    const bounds = s.store.bounds;
+    for (const layer of s.doc.layers) {
+      if (!layer.visible || layer.kind !== "mask") continue;
+      const surface = s.store.ensure(layer.id);
+      const stroking = s.strokeLayerId === layer.id && s.stroke.active;
+      const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      let tint = this.tints.get(layer.id);
+      if (!tint) {
+        tint = new MaskTint();
+        this.tints.set(layer.id, tint);
+      }
+      const color = maskDisplayColor(layer);
+      const invert = layer.invert === true;
+      const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
+      const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
+      out.push({ tint: canvas, color, opacity: layer.opacity, invert });
+    }
+    return out;
+  }
+  /** Release the tint caches. */
+  dispose() {
+    for (const tint of this.tints.values()) tint.dispose();
+    this.tints.clear();
+  }
+}
+const PROP_KEYS = ["name", "opacity", "color", "invert"];
+function isPaintLike(layer) {
+  return layer.kind !== "mask";
+}
+function paintLayerCount(layers) {
+  let n = 0;
+  for (const layer of layers) if (isPaintLike(layer)) n++;
+  return n;
+}
+function nextLayerName(layers) {
+  let max = 0;
+  for (const layer of layers) {
+    const match = /^Layer (\d+)$/.exec(layer.name.trim());
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `Layer ${max + 1}`;
+}
+function paintInsertIndex(doc) {
+  const layers = doc.layers;
+  const active = layers.findIndex((l) => l.id === doc.activeLayerId);
+  if (active >= 0 && isPaintLike(layers[active])) return active + 1;
+  for (let i = layers.length - 1; i >= 0; i--) if (isPaintLike(layers[i])) return i + 1;
+  const firstMask = layers.findIndex((l) => l.kind === "mask");
+  return firstMask >= 0 ? firstMask : layers.length;
+}
+function canDeleteLayer(layers, id) {
+  const layer = layers.find((l) => l.id === id);
+  return !!layer && isPaintLike(layer) && paintLayerCount(layers) > 1;
+}
+function canDuplicateLayer(layers, id) {
+  const layer = layers.find((l) => l.id === id);
+  return !!layer && isPaintLike(layer);
+}
+function activeAfterRemoval(layers, removed) {
+  for (let i = Math.min(removed - 1, layers.length - 1); i >= 0; i--) {
+    const layer = layers[i];
+    if (layer && isPaintLike(layer)) return layer.id;
+  }
+  for (let i = Math.max(0, removed); i < layers.length; i++) {
+    const layer = layers[i];
+    if (layer && isPaintLike(layer)) return layer.id;
+  }
+  return void 0;
+}
+function resolveMove(layers, id, targetId, above) {
+  const from = layers.findIndex((l) => l.id === id);
+  const target = layers.findIndex((l) => l.id === targetId);
+  const src = layers[from];
+  const dst = layers[target];
+  if (!src || !dst || !isPaintLike(src) || !isPaintLike(dst)) return null;
+  if (from === target) return null;
+  const targetAfterRemoval = target > from ? target - 1 : target;
+  const to = above ? targetAfterRemoval + 1 : targetAfterRemoval;
+  return to === from ? null : { from, to };
+}
+function readProps(layer, props) {
+  const out = {};
+  for (const key of PROP_KEYS) if (key in props) Object.assign(out, { [key]: layer[key] });
+  return out;
+}
+function propsDiffer(layer, props) {
+  return PROP_KEYS.some((key) => key in props && props[key] !== layer[key]);
+}
+function writeProps(layer, props) {
+  for (const key of PROP_KEYS) {
+    if (!(key in props)) continue;
+    const value = props[key];
+    if (value === void 0) {
+      if (key === "color" || key === "invert") delete layer[key];
+    } else {
+      Object.assign(layer, { [key]: value });
+    }
+  }
+}
+function applyLayerChange(layers, change, forward) {
+  switch (change.op) {
+    case "insert":
+    case "remove": {
+      const inserting = change.op === "insert" === forward;
+      if (inserting) {
+        if (layers.some((l) => l.id === change.layer.id)) return false;
+        layers.splice(Math.min(change.index, layers.length), 0, { ...change.layer });
+        return true;
+      }
+      const index = layers.findIndex((l) => l.id === change.layer.id);
+      const live = layers[index];
+      if (!live) return false;
+      change.layer = { ...live };
+      layers.splice(index, 1);
+      return true;
+    }
+    case "move": {
+      const from = forward ? change.from : change.to;
+      const to = forward ? change.to : change.from;
+      if (layers[from]?.id !== change.id) return false;
+      const [moved] = layers.splice(from, 1);
+      if (!moved) return false;
+      layers.splice(Math.min(to, layers.length), 0, moved);
+      return true;
+    }
+    case "props": {
+      const layer = layers.find((l) => l.id === change.id);
+      if (!layer) return false;
+      writeProps(layer, forward ? change.after : change.before);
+      return true;
+    }
+  }
+}
+const LAYERS_ENTRY_BASE_BYTES = 256;
+function changesBytes(changes) {
+  let bytes = LAYERS_ENTRY_BASE_BYTES;
+  for (const change of changes) {
+    if ((change.op === "insert" || change.op === "remove") && change.pixels) bytes += change.pixels.data.data.byteLength;
+  }
+  return bytes;
+}
+function captureLayerPixels(s, layerId) {
+  if (!s.runtime.get(layerId)?.hasContent) return null;
+  const bounds = s.store.bounds;
+  return { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
+}
+function installLayerPixels(s, layerId, pixels) {
+  const surface = s.store.ensure(layerId);
+  surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+  if (pixels) {
+    s.ensureBounds({ x: pixels.x, y: pixels.y, width: pixels.data.width, height: pixels.data.height }, false);
+    s.store.write(layerId, pixels.x, pixels.y, pixels.data);
+  }
+  s.runtime.reinstate(layerId, pixels !== null);
+}
+function releaseRemovedLayers(s) {
+  const keep = new Set(s.doc.layers.map((l) => l.id));
+  s.store.retain(keep);
+}
+function applyLayersEntry(s, entry, forward) {
+  if (s.stroke.active) s.cancelStroke();
+  const changes = forward ? entry.changes : [...entry.changes].reverse();
+  for (const change of changes) {
+    if (!applyLayerChange(s.doc.layers, change, forward)) continue;
+    if (change.op !== "insert" && change.op !== "remove") continue;
+    const appeared = change.op === "insert" === forward;
+    if (appeared) installLayerPixels(s, change.layer.id, change.pixels);
+    else s.runtime.remove(change.layer.id);
+  }
+  const active = forward ? entry.activeAfter : entry.activeBefore;
+  if (s.doc.layers.some((l) => l.id === active && isPaintLike(l))) s.doc.activeLayerId = active;
+  releaseRemovedLayers(s);
+  emitLayerEvents(s);
+}
+function emitLayerEvents(s) {
+  s.events.emit("layers", void 0);
+  s.events.emit("mask", void 0);
+}
+class LayerOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  // ── Queries ─────────────────────────────────────────────────────────────
+  /**
+   * Pixel revision of a layer: changes whenever its committed pixels change
+   * (thumbnail cache key; not bumped during a stroke preview).
+   * @param layerId - Layer id.
+   * @returns Revision number.
+   */
+  revision(layerId) {
+    return this.s.runtime.revision(layerId);
+  }
+  /**
+   * Whether the layer can be deleted (paint-like, not the last one).
+   * @param layerId - Layer id.
+   * @returns `true` if deletable.
+   */
+  canDelete(layerId) {
+    return canDeleteLayer(this.s.doc.layers, layerId);
+  }
+  /**
+   * Whether the layer can be duplicated (paint-like).
+   * @param layerId - Layer id.
+   * @returns `true` if duplicable.
+   */
+  canDuplicate(layerId) {
+    return canDuplicateLayer(this.s.doc.layers, layerId);
+  }
+  // ── Not undoable ────────────────────────────────────────────────────────
+  /**
+   * Make a paint layer the active one (the layer strokes go to outside
+   * Quick Mask). Mask layers are selected via the paint target instead.
+   * @param layerId - Paint layer id.
+   * @returns `true` if the active layer changed.
+   */
+  setActiveLayer(layerId) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
+    if (s.stroke.active) s.cancelStroke();
+    s.doc.activeLayerId = layerId;
+    s.events.emit("layers", void 0);
+    s.events.emit("change", void 0);
+    return true;
+  }
+  /**
+   * Show or hide a layer (hidden layers are skipped in `IMAGE`/`MASK`).
+   * @param layerId - Layer id.
+   * @param visible - Visibility.
+   */
+  setVisible(layerId, visible) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || layer.visible === visible) return;
+    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
+    layer.visible = visible;
+    this.afterMeta();
+  }
+  /**
+   * Lock or unlock a layer (painting on a locked layer is refused).
+   * @param layerId - Layer id.
+   * @param locked - Lock state.
+   */
+  setLocked(layerId, locked) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || layer.locked === locked) return;
+    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
+    layer.locked = locked;
+    this.afterMeta();
+  }
+  // ── Structural (undoable) ───────────────────────────────────────────────
+  /**
+   * Add an empty "Layer N" above the active paint layer and make it active.
+   * @returns New layer id, or `null` while loading.
+   */
+  add() {
+    const s = this.s;
+    if (!this.ready()) return null;
+    const layer = createPaintLayer(nextLayerName(s.doc.layers));
+    const index = paintInsertIndex(s.doc);
+    this.insert(layer, index, null);
+    return layer.id;
+  }
+  /**
+   * Duplicate a paint layer (pixels included) directly above it; the copy
+   * becomes active.
+   * @param layerId - Source layer (default: the active layer).
+   * @returns New layer id, or `null` if not possible.
+   */
+  duplicate(layerId = this.s.doc.activeLayerId) {
+    const s = this.s;
+    if (!this.ready() || !this.canDuplicate(layerId)) return null;
+    const index = s.doc.layers.findIndex((l) => l.id === layerId);
+    const source = s.doc.layers[index];
+    if (!source) return null;
+    const layer = { ...source, id: createId(8), name: `${source.name} copy` };
+    this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    return layer.id;
+  }
+  /**
+   * Delete a paint layer (not the last one; masks are not deletable). The
+   * pixels stay in the undo entry.
+   * @param layerId - Layer (default: the active layer).
+   * @returns `true` if deleted.
+   */
+  remove(layerId = this.s.doc.activeLayerId) {
+    const s = this.s;
+    if (!this.ready() || !this.canDelete(layerId)) return false;
+    const index = s.doc.layers.findIndex((l) => l.id === layerId);
+    const layer = s.doc.layers[index];
+    if (!layer) return false;
+    const activeBefore = s.doc.activeLayerId;
+    const pixels = captureLayerPixels(s, layerId);
+    s.doc.layers.splice(index, 1);
+    s.runtime.remove(layerId);
+    releaseRemovedLayers(s);
+    if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
+    this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
+    return true;
+  }
+  /**
+   * Reorder a paint layer next to another paint layer.
+   * @param layerId - Dragged layer.
+   * @param targetId - Layer it is dropped next to.
+   * @param above - Above (true) or below the target in the stack.
+   * @returns `true` if the order changed.
+   */
+  move(layerId, targetId, above) {
+    const s = this.s;
+    if (!this.ready()) return false;
+    const move = resolveMove(s.doc.layers, layerId, targetId, above);
+    if (!move) return false;
+    const [layer] = s.doc.layers.splice(move.from, 1);
+    if (!layer) return false;
+    s.doc.layers.splice(move.to, 0, layer);
+    this.record([{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
+    return true;
+  }
+  /**
+   * Rename a layer (trimmed; empty names are ignored).
+   * @param layerId - Layer id.
+   * @param name - New name.
+   * @returns `true` if renamed.
+   */
+  rename(layerId, name) {
+    const trimmed = name.trim().slice(0, 100);
+    if (!trimmed) return false;
+    return this.setProps(layerId, { name: trimmed });
+  }
+  /**
+   * Layer opacity (paint: composite opacity; mask: overlay display only).
+   * @param layerId - Layer id.
+   * @param opacity - 0..1 (clamped).
+   * @param gesture - Edits with the same key merge into one undo entry (a scrub/slider drag).
+   * @returns `true` if changed.
+   */
+  setOpacity(layerId, opacity, gesture) {
+    if (!Number.isFinite(opacity)) return false;
+    return this.setProps(layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
+  }
+  /**
+   * Mask display colour.
+   * @param layerId - Mask layer id.
+   * @param color - `#rrggbb`.
+   * @param gesture - Edits with the same key merge into one undo entry (picker drag).
+   * @returns `true` if changed.
+   */
+  setMaskColor(layerId, color, gesture) {
+    if (this.find(layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
+    return this.setProps(layerId, { color: color.toLowerCase() }, gesture);
+  }
+  /**
+   * Per-mask invert (applied before the union, decision 5).
+   * @param layerId - Mask layer id.
+   * @param invert - Invert state.
+   * @returns `true` if changed.
+   */
+  setMaskInvert(layerId, invert) {
+    if (this.find(layerId)?.kind !== "mask") return false;
+    return this.setProps(layerId, { invert });
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  find(layerId) {
+    return this.s.doc.layers.find((l) => l.id === layerId);
+  }
+  /** Structural edits wait for restores and cancel a running stroke. */
+  ready() {
+    const s = this.s;
+    if (s.loading) return false;
+    if (s.stroke.active) s.cancelStroke();
+    return true;
+  }
+  insert(layer, index, pixels) {
+    const s = this.s;
+    const activeBefore = s.doc.activeLayerId;
+    s.doc.layers.splice(index, 0, layer);
+    installLayerPixels(s, layer.id, pixels);
+    s.doc.activeLayerId = layer.id;
+    this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
+  }
+  setProps(layerId, props, gesture) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || s.loading || !propsDiffer(layer, props)) return false;
+    const merge = gesture ? s.history.mergeTarget() : void 0;
+    const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
+    if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
+      Object.assign(change.after, props);
+      writeProps(layer, props);
+      this.afterMeta(true);
+      return true;
+    }
+    const before = readProps(layer, props);
+    writeProps(layer, props);
+    this.record([{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
+    return true;
+  }
+  record(changes, activeBefore, gesture) {
+    const s = this.s;
+    s.history.push({
+      kind: "layers",
+      changes,
+      activeBefore,
+      activeAfter: s.doc.activeLayerId,
+      bytes: changesBytes(changes),
+      ...gesture ? { gesture } : {}
+    });
+    this.afterMeta(true);
+  }
+  /** Events after a metadata change (`history` too when it was recorded). */
+  afterMeta(history = false) {
+    const s = this.s;
+    if (history) s.events.emit("history", void 0);
+    emitLayerEvents(s);
+    s.events.emit("change", void 0);
+    s.events.emit("render", void 0);
+  }
+}
+function sameKeys(a, b) {
+  const ka = Object.keys(a).sort().join();
+  return ka === Object.keys(b).sort().join();
+}
+const LOCKED_LAYER_NOTE = "Layer is locked.";
+const MASK_STROKE_COLOR = "#ffffff";
+const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
+class PaintOps {
+  /**
+   * @param s - Shared editor state.
+   * @param frames - Frame operations (Clear snapshots for undo).
+   * @param stamps - Dab stamp cache.
+   */
+  constructor(s, frames, stamps) {
+    this.s = s;
+    this.frames = frames;
+    this.stamps = stamps;
+  }
+  s;
+  frames;
+  stamps;
+  // ── Quick Mask / paint target ───────────────────────────────────────────
+  /**
+   * Switch the paint target. Targeting the mask adds a default mask layer to
+   * documents that have none.
+   * @param target - New target.
+   */
+  setPaintTarget(target) {
+    const s = this.s;
+    if (target === s.target) return;
+    if (s.stroke.active) s.cancelStroke();
+    if (target === "mask") s.ensureMask();
+    s.target = target;
+    s.events.emit("mask", void 0);
+  }
+  /**
+   * Show or hide the mask layer (adds one if missing).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible) {
+    const s = this.s;
+    const layer = s.ensureMask();
+    if (layer.visible === visible) return;
+    if (s.stroke.active && s.strokeLayerId === layer.id) s.cancelStroke();
+    layer.visible = visible;
+    s.events.emit("mask", void 0);
+    s.events.emit("change", void 0);
+    s.events.emit("render", void 0);
+  }
+  // ── Strokes ─────────────────────────────────────────────────────────────
+  /**
+   * Start a stroke on the paint target (mask strokes paint white coverage).
+   * @param style - Stroke appearance.
+   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
+   * @returns `false` if painting is not possible (loading, locked, hidden).
+   */
+  beginStroke(style, maxDiameter) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc);
+    if (!layer) return false;
+    if (layer.locked) {
+      s.events.emit("note", LOCKED_LAYER_NOTE);
+      return false;
+    }
+    if (!layer.visible) {
+      s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
+      return false;
+    }
+    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
+    s.strokeLayerId = layer.id;
+    s.strokeDiameter = Math.max(1, maxDiameter);
+    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle);
+    s.events.emit("history", void 0);
+    return true;
+  }
+  /**
+   * Add dabs to the current stroke, growing bounds when they go off-frame.
+   * @param dabs - Dabs in document coords.
+   */
+  addDabs(dabs) {
+    const s = this.s;
+    if (!s.stroke.active || dabs.length === 0) return;
+    let need = { x: 0, y: 0, width: 0, height: 0 };
+    for (const dab of dabs) {
+      const r = dab.size / 2 + 1;
+      need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
+    }
+    s.ensureBounds(need, true);
+    s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * Commit the stroke to its layer as one undo step.
+   * @param end - Where the stroke ended, document coords.
+   */
+  endStroke(end) {
+    const s = this.s;
+    const layerId = s.strokeLayerId;
+    if (!s.stroke.active || !layerId) return;
+    const rect = s.stroke.touched;
+    const surface = s.store.ensure(layerId);
+    if (isEmptyRect(rect)) {
+      s.stroke.cancel();
+    } else {
+      const before = s.store.read(layerId, rect);
+      s.stroke.commit(surface);
+      const after = s.store.read(layerId, rect);
+      if (before && after) {
+        const bytes = before.data.data.byteLength + after.data.data.byteLength;
+        s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+        s.runtime.touch(layerId);
+      }
+    }
+    s.strokeLayerId = null;
+    if (end) s.lastStrokeEnd = { ...end };
+    s.afterEdit();
+  }
+  // ── Undo / redo ─────────────────────────────────────────────────────────
+  /** Undo the last operation (no-op while stroking). */
+  undo() {
+    const s = this.s;
+    if (!s.history.canUndo || s.stroke.active) return;
+    const entry = s.history.undo();
+    if (entry) this.applyEntry(entry, "before");
+    s.afterEdit();
+  }
+  /** Redo the last undone operation (no-op while stroking). */
+  redo() {
+    const s = this.s;
+    if (!s.history.canRedo || s.stroke.active) return;
+    const entry = s.history.redo();
+    if (entry) this.applyEntry(entry, "after");
+    s.afterEdit();
+  }
+  applyEntry(entry, side) {
+    const s = this.s;
+    if (entry.kind === "clear") {
+      this.frames.applySnapshot(side === "before" ? entry.before : entry.after);
+      s.lastStrokeEnd = null;
+      return;
+    }
+    if (entry.kind === "layers") {
+      applyLayersEntry(s, entry, side === "after");
+      return;
+    }
+    if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+    const data = side === "before" ? entry.before : entry.after;
+    s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
+    s.store.write(entry.layerId, entry.x, entry.y, data);
+    s.runtime.touch(entry.layerId);
+  }
+}
+const MAX_STAMPS = 32;
+class StampCache {
+  stamps = /* @__PURE__ */ new Map();
+  /**
+   * Get (or render) a stamp.
+   *
+   * @param diameter - Largest diameter it will be drawn at, px.
+   * @param hardness - 0..1.
+   * @param color - CSS colour.
+   * @returns Square surface with the disc centred.
+   */
+  get(diameter, hardness, color) {
+    const size = Math.max(2, Math.ceil(diameter));
+    const key = `${size}|${hardness.toFixed(2)}|${color}`;
+    const hit = this.stamps.get(key);
+    if (hit) {
+      this.stamps.delete(key);
+      this.stamps.set(key, hit);
+      return hit;
+    }
+    const stamp = renderStamp(size, hardness, color);
+    this.stamps.set(key, stamp);
+    if (this.stamps.size > MAX_STAMPS) {
+      const oldest = this.stamps.keys().next().value;
+      if (oldest !== void 0) this.stamps.delete(oldest);
+    }
+    return stamp;
+  }
+  /** Drop all stamps. */
+  clear() {
+    this.stamps.clear();
+  }
+}
+function renderStamp(size, hardness, color) {
+  const surface = createSurface(size, size);
+  const { ctx } = surface;
+  const r = size / 2;
+  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
+  const rgb = colorToRgb(ctx, color);
+  for (const [offset, alpha] of stampStops(hardness, r)) {
+    gradient.addColorStop(offset, `rgba(${rgb}, ${alpha})`);
+  }
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+  return surface;
+}
+function colorToRgb(ctx, color) {
+  ctx.fillStyle = "#000000";
+  ctx.fillStyle = color;
+  const parsed = String(ctx.fillStyle);
+  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
+  if (hex) {
+    const n = parseInt(hex, 16);
+    return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
+  }
+  const rgba = /^rgba?\(([^)]+)\)$/i.exec(parsed)?.[1];
+  if (rgba) return rgba.split(",").slice(0, 3).join(",");
+  return "0, 0, 0";
+}
+class Editor {
+  events;
+  view;
+  stamps = new StampCache();
+  /** FG/BG colours (session-scoped, not saved). */
+  colors;
+  /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
+  layerOps;
+  s;
+  frames;
+  paint;
+  io;
+  display;
+  /**
+   * @param doc - Document (copied).
+   * @param source - Origin of its frame size.
+   * @param store - Existing pixels (for clones); a blank store is created otherwise.
+   * @param colors - Colour state to start from (forks copy their source's).
+   */
+  constructor(doc, source, store, colors) {
+    this.s = new EditorState(doc, source, store);
+    this.events = this.s.events;
+    this.view = this.s.view;
+    this.colors = new ColorState(colors?.current);
+    this.frames = new FrameOps(this.s);
+    this.paint = new PaintOps(this.s, this.frames, this.stamps);
+    this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
+    this.display = new LayerDisplay(this.s);
+    this.layerOps = new LayerOps(this.s);
+  }
+  // ── Read access ─────────────────────────────────────────────────────────
+  /** Current document (treat as read-only). */
+  get doc() {
+    return this.s.doc;
+  }
+  /** Where the frame size came from. */
+  get frameSource() {
+    return this.s.frameSource;
+  }
+  /** Undo available. */
+  get canUndo() {
+    return this.s.history.canUndo && !this.s.stroke.active;
+  }
+  /** Redo available. */
+  get canRedo() {
+    return this.s.history.canRedo && !this.s.stroke.active;
+  }
+  /** Layer files are being restored; painting is disabled. */
+  get loading() {
+    return this.s.loading;
+  }
+  /** Whether any layer has ever held paint. */
+  get hasPaint() {
+    return this.s.runtime.hasPaint;
+  }
+  /** Whether any layer needs uploading. */
+  get dirty() {
+    return this.s.runtime.dirty;
+  }
+  /**
+   * Whether any mask layer is hidden AND has ever held paint (queue-time
+   * warning: it will not be in the MASK output).
+   * @returns `true` if a hidden-but-painted mask exists.
+   */
+  hiddenMaskHasContent() {
+    for (const layer of this.s.doc.layers) {
+      if (layer.kind !== "mask" || layer.visible) continue;
+      if (this.s.runtime.get(layer.id)?.hasContent) return true;
+    }
+    return false;
+  }
+  /** Background drawn under the paint. */
+  get background() {
+    return this.s.background;
+  }
+  /** Size of what the view shows: the background image, or `doc.frame`. */
+  get imageSize() {
+    return this.s.imageSize;
+  }
+  /** Document -> image transform (same as Python's frame-mismatch placement). */
+  get frameMap() {
+    return frameMap(this.s.doc.frame, this.s.imageSize);
+  }
+  /**
+   * Runtime state of a layer.
+   * @param layerId - Layer id.
+   * @returns Bookkeeping or `undefined`.
+   */
+  layerRuntime(layerId) {
+    return this.s.runtime.get(layerId);
+  }
+  /**
+   * Canvas of a layer (for export/upload).
+   * @param layerId - Layer id.
+   * @returns The canvas.
+   */
+  layerCanvas(layerId) {
+    return this.s.store.ensure(layerId).canvas;
+  }
+  /** Current paint bounds (document coords). */
+  get bounds() {
+    return this.s.store.bounds;
+  }
+  /** Where the previous stroke ended, document coords (Shift+click line start). */
+  get lastStrokeEnd() {
+    return this.s.lastStrokeEnd;
+  }
+  set lastStrokeEnd(point) {
+    this.s.lastStrokeEnd = point ? { ...point } : null;
+  }
+  /**
+   * Visible layers to composite (live stroke preview for the painted layer).
+   * @returns Bottom -> top layers.
+   */
+  compositeLayers() {
+    return this.display.compositeLayers();
+  }
+  /**
+   * Visible mask layers as tinted overlays (drawn above all paint).
+   * @returns Bottom -> top overlays.
+   */
+  maskOverlays() {
+    return this.display.maskOverlays();
+  }
+  // ── Quick Mask / paint target ───────────────────────────────────────────
+  /** What brush/eraser strokes paint into (UI state, not saved). */
+  get paintTarget() {
+    return this.s.target;
+  }
+  /** The mask layer Quick Mask edits, if the document has one. */
+  get maskLayer() {
+    return findMaskLayer(this.s.doc);
+  }
+  /**
+   * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
+   * @param target - New target.
+   */
+  setPaintTarget(target) {
+    this.paint.setPaintTarget(target);
+  }
+  /** Toggle between the paint layer and the mask. */
+  togglePaintTarget() {
+    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+  }
+  /**
+   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
+   * also excluded from the `MASK` output (saved-file contract).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible) {
+    this.paint.setMaskVisible(visible);
+  }
+  // ── Background / frame ──────────────────────────────────────────────────
+  /**
+   * Set what is drawn under the paint; layer pixels are untouched.
+   * @param background - Image or fill.
+   * @param imageSize - Natural size when `background` is an image.
+   */
+  setBackground(background, imageSize) {
+    this.frames.setBackground(background, imageSize);
+  }
+  /**
+   * A new background image size arrived (an empty document adopts it).
+   * @param size - Image size.
+   */
+  handleBackgroundSize(size) {
+    this.frames.handleBackgroundSize(size);
+  }
+  /**
+   * Widget frame size (applies to an empty, widget-sized document only).
+   * @param size - Widget frame size.
+   */
+  handleWidgetFrame(size) {
+    this.frames.handleWidgetFrame(size);
+  }
+  /**
+   * Replace the frame of an empty document (no history).
+   * @param size - New frame.
+   * @param source - Origin of the size.
+   */
+  adoptFrame(size, source) {
+    this.frames.adoptFrame(size, source);
+  }
+  /** Clear all paint (masks included) and reset the frame; one undo step. */
+  clear() {
+    this.frames.clear();
   }
   // ── Restore bookkeeping (persistence) ───────────────────────────────────
   /** Mark the start of an async layer restore (disables painting). */
   beginLoading() {
-    this.loadingCount++;
+    this.io.beginLoading();
   }
   /** Mark the end of an async layer restore; applies a deferred frame change. */
   endLoading() {
-    this.loadingCount = Math.max(0, this.loadingCount - 1);
-    this.events.emit("render", void 0);
-    if (!this.loading && this.pendingBackgroundSize) {
-      const size = this.pendingBackgroundSize;
-      this.pendingBackgroundSize = null;
-      this.handleBackgroundSize(size);
-    }
+    this.io.endLoading();
   }
   /**
    * Draw a restored PNG into a layer (not an undo step, not dirty).
@@ -1506,11 +2670,7 @@ class Editor {
    * @param image - Decoded PNG (sized to `bounds`).
    */
   restoreLayerPixels(layerId, image) {
-    const surface = this.store.ensure(layerId);
-    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
-    surface.ctx.drawImage(image, 0, 0);
-    this.bumpRevision(layerId);
-    this.events.emit("render", void 0);
+    this.io.restoreLayerPixels(layerId, image);
   }
   /**
    * Record a finished upload.
@@ -1519,324 +2679,618 @@ class Editor {
    * @param file - Stored file reference (`null` for an empty layer).
    */
   markUploaded(layerId, version, file) {
-    const layer = this.docState.layers.find((l) => l.id === layerId);
-    const rt = this.runtime.get(layerId);
-    if (!layer || !rt) return;
-    layer.file = file;
-    if (rt.version === version) rt.dirty = false;
-    this.events.emit("change", void 0);
+    this.io.markUploaded(layerId, version, file);
   }
   // ── Strokes ─────────────────────────────────────────────────────────────
   /**
-   * Start a stroke on the paint target: the active paint layer, or the mask
-   * layer in Quick Mask mode (where the brush colour is replaced by white so
-   * coverage lands in alpha; opacity/flow/hardness work unchanged).
+   * Start a stroke on the paint target.
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
    * @returns `false` if painting is not possible (loading, locked, hidden).
    */
   beginStroke(style, maxDiameter) {
-    if (this.loading || this.stroke.active) return false;
-    const layer = this.target === "mask" ? this.ensureMask() : targetLayer(this.docState);
-    if (!layer || layer.locked) return false;
-    if (!layer.visible) {
-      this.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
-      return false;
-    }
-    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
-    this.strokeLayerId = layer.id;
-    this.strokeDiameter = Math.max(1, maxDiameter);
-    this.stroke.begin(this.store.ensure(layer.id), this.store.bounds, strokeStyle);
-    this.events.emit("history", void 0);
-    return true;
+    return this.paint.beginStroke(style, maxDiameter);
   }
   /**
-   * Add dabs to the current stroke, growing bounds when they go off-frame.
+   * Add dabs to the current stroke.
    * @param dabs - Dabs in document coords.
    */
   addDabs(dabs) {
-    if (!this.stroke.active || dabs.length === 0) return;
-    let need = { x: 0, y: 0, width: 0, height: 0 };
-    for (const dab of dabs) {
-      const r = dab.size / 2 + 1;
-      need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
-    }
-    this.ensureBounds(need, true);
-    this.stroke.addDabs(dabs, this.stamps, this.strokeDiameter);
-    this.events.emit("render", void 0);
+    this.paint.addDabs(dabs);
   }
   /**
    * Commit the stroke to its layer as one undo step.
    * @param end - Where the stroke ended, document coords (for Shift+click lines).
    */
   endStroke(end) {
-    const layerId = this.strokeLayerId;
-    if (!this.stroke.active || !layerId) return;
-    const rect = this.stroke.touched;
-    const surface = this.store.ensure(layerId);
-    if (isEmptyRect(rect)) {
-      this.stroke.cancel();
-    } else {
-      const before = this.store.read(layerId, rect);
-      this.stroke.commit(surface);
-      const after = this.store.read(layerId, rect);
-      if (before && after) {
-        const bytes = before.data.data.byteLength + after.data.data.byteLength;
-        this.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
-        this.touchLayer(layerId);
-      }
-    }
-    this.strokeLayerId = null;
-    if (end) this.lastStrokeEnd = { ...end };
-    this.afterEdit();
+    this.paint.endStroke(end);
   }
   /** Abort the current stroke. */
   cancelStroke() {
-    this.stroke.cancel();
-    if (this.strokeLayerId) this.bumpRevision(this.strokeLayerId);
-    this.strokeLayerId = null;
-    this.events.emit("history", void 0);
-    this.events.emit("render", void 0);
+    this.s.cancelStroke();
   }
   // ── Undo / redo ─────────────────────────────────────────────────────────
   /** Undo the last operation. */
   undo() {
-    if (!this.canUndo) return;
-    const entry = this.history.undo();
-    if (entry) this.applyEntry(entry, "before");
-    this.afterEdit();
+    this.paint.undo();
   }
   /** Redo the last undone operation. */
   redo() {
-    if (!this.canRedo) return;
-    const entry = this.history.redo();
-    if (entry) this.applyEntry(entry, "after");
-    this.afterEdit();
+    this.paint.redo();
   }
   // ── Cloning / teardown ──────────────────────────────────────────────────
   /**
-   * Independent copy with a new document id (used when a node is duplicated
-   * while its source is still live). History is not copied.
+   * Independent copy with a new document id (node duplicated while its source
+   * is still live). History is not copied.
    * @param docId - New id.
    * @returns New editor.
    */
   fork(docId) {
-    const doc = cloneDocument(this.docState);
+    const doc = cloneDocument(this.s.doc);
     doc.docId = docId;
-    const copy = new Editor(doc, this.frameSourceState, this.store.clone());
-    for (const [id, rt] of this.runtime) copy.runtime.set(id, { ...rt });
-    copy.setBackground(this.backgroundState, this.backgroundSize);
+    const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
+    copy.s.runtime.copyFrom(this.s.runtime);
+    copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
   }
   /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes() {
-    return this.store.bytes + this.history.totalBytes;
+    return this.s.store.bytes + this.s.history.totalBytes;
   }
   /** Release everything. */
   dispose() {
-    this.stroke.dispose();
-    this.store.dispose();
-    for (const tint of this.tints.values()) tint.dispose();
-    this.tints.clear();
-    this.history.clear();
+    this.s.stroke.dispose();
+    this.s.store.dispose();
+    this.display.dispose();
+    this.s.history.clear();
     this.stamps.clear();
     this.events.clear();
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  /** No paint ever and nothing in history that depends on the frame. */
-  get isEmpty() {
-    return !this.hasPaint && !this.history.canUndo && !this.history.canRedo;
-  }
-  /** The view fits the image, not the document frame. */
-  syncViewFrame() {
-    this.view.setFrame(this.imageSize);
-  }
-  captureSnapshot() {
-    const pixels = /* @__PURE__ */ new Map();
-    for (const layer of this.docState.layers) pixels.set(layer.id, this.store.snapshot(layer.id));
-    return { frame: { ...this.docState.frame }, bounds: this.store.bounds, source: this.frameSourceState, pixels };
-  }
-  applySnapshot(state) {
-    this.docState.frame = { ...state.frame };
-    this.docState.bounds = { ...state.bounds };
-    this.frameSourceState = state.source;
-    this.store.reset(state.bounds);
-    for (const layer of this.docState.layers) {
-      const data = state.pixels?.get(layer.id);
-      if (data) this.store.write(layer.id, state.bounds.x, state.bounds.y, data);
-      else this.store.ensure(layer.id);
-      this.touchLayer(layer.id);
-    }
-    this.syncViewFrame();
-  }
-  applyEntry(entry, side) {
-    if (entry.kind === "clear") {
-      this.applySnapshot(side === "before" ? entry.before : entry.after);
-      this.lastStrokeEnd = null;
-      return;
-    }
-    if (!this.docState.layers.some((l) => l.id === entry.layerId)) return;
-    const data = side === "before" ? entry.before : entry.after;
-    this.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
-    this.store.write(entry.layerId, entry.x, entry.y, data);
-    this.touchLayer(entry.layerId);
-  }
-  /**
-   * Grow bounds to cover `need`. Chunked + capped for strokes; exact and
-   * uncapped when re-applying history.
-   */
-  ensureBounds(need, chunked) {
-    const current = this.store.bounds;
-    if (containsRect(current, need)) return;
-    const next = chunked ? growBounds(current, need, this.docState.frame) : unionRect(current, need);
-    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
-      this.store.rebase(next);
-      this.stroke.rebase(next);
-      this.docState.bounds = { ...next };
-    }
-  }
-  touchLayer(layerId) {
-    this.bumpRevision(layerId);
-    const rt = this.runtime.get(layerId);
-    if (!rt) return;
-    rt.dirty = true;
-    rt.version++;
-    rt.hasContent = true;
-  }
-  /** Committed pixels of a layer changed (invalidates its mask tint). */
-  bumpRevision(layerId) {
-    this.revisions.set(layerId, ++this.revisionCounter);
-  }
-  /**
-   * The mask layer, adding a default one (not dirty, no history) when the
-   * document has none -- documents saved before M2 get one lazily.
-   */
-  ensureMask() {
-    const { layer, created } = ensureMaskLayer(this.docState);
-    if (created) {
-      this.store.ensure(layer.id);
-      this.runtime.set(layer.id, { dirty: false, version: 0, hasContent: false });
-      this.events.emit("change", void 0);
-      this.events.emit("mask", void 0);
-    }
-    return layer;
-  }
-  afterEdit() {
-    this.events.emit("history", void 0);
-    this.events.emit("change", void 0);
-    this.events.emit("render", void 0);
+    this.colors.events.clear();
   }
 }
-function snapshotBytes(state) {
-  let bytes = 0;
-  if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
-  return bytes;
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  const digits = m?.[1];
+  if (!digits) return null;
+  const full = digits.length === 3 ? [...digits].map((c) => c + c).join("") : digits;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16)
+  };
 }
-const STAGE_STYLE = {
-  surround: "#1e1e1e",
-  checkerLight: "#cfcfcf",
-  checkerDark: "#a8a8a8",
-  checkerCell: 8,
-  offFrameVeil: "rgba(30, 30, 30, 0.55)",
-  frameOutline: "rgba(255, 255, 255, 0.55)",
-  frameShadow: "rgba(0, 0, 0, 0.6)"
-};
-const checkerPatterns = /* @__PURE__ */ new WeakMap();
-function composite(input) {
-  const { ctx, pixelRatio: pr, view, imageSize, map, bounds } = input;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.fillStyle = STAGE_STYLE.surround;
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  const imageRect = frameRect(imageSize);
-  const paintRect = docRectToImage(map, bounds);
-  const frameScreen = scaleRect(docRectToStage(view, imageRect), pr);
-  const boundsScreen = scaleRect(docRectToStage(view, paintRect), pr);
-  const pattern = checkerPattern(ctx);
-  if (pattern) {
-    ctx.fillStyle = pattern;
-    ctx.fillRect(frameScreen.x, frameScreen.y, frameScreen.width, frameScreen.height);
+function rgbToHex(rgb) {
+  const r = clampByte(rgb.r);
+  const g = clampByte(rgb.g);
+  const b = clampByte(rgb.b);
+  return `#${byteHex(r)}${byteHex(g)}${byteHex(b)}`;
+}
+function rgbToHsv(rgb) {
+  const r = clampByte(rgb.r) / 255;
+  const g = clampByte(rgb.g) / 255;
+  const b = clampByte(rgb.b) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  const v = max;
+  const s = max === 0 ? 0 : delta / max;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === r) h = (g - b) / delta % 6;
+    else if (max === g) h = (b - r) / delta + 2;
+    else h = (r - g) / delta + 4;
+    h = h * 60;
+    if (h < 0) h += 360;
   }
-  const k = view.scale * pr;
-  ctx.setTransform(k, 0, 0, k, view.offsetX * pr, view.offsetY * pr);
-  ctx.imageSmoothingEnabled = k < 2;
-  ctx.imageSmoothingQuality = "high";
-  if (input.background.kind === "image") {
-    ctx.drawImage(input.background.image, 0, 0, imageSize.width, imageSize.height);
+  return { h, s, v };
+}
+function hsvToRgb(hsv) {
+  const h = (hsv.h % 360 + 360) % 360;
+  const s = clamp01(hsv.s);
+  const v = clamp01(hsv.v);
+  const c = v * s;
+  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+  const m = v - c;
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (h < 60) {
+    r1 = c;
+    g1 = x;
+  } else if (h < 120) {
+    r1 = x;
+    g1 = c;
+  } else if (h < 180) {
+    g1 = c;
+    b1 = x;
+  } else if (h < 240) {
+    g1 = x;
+    b1 = c;
+  } else if (h < 300) {
+    r1 = x;
+    b1 = c;
   } else {
-    ctx.fillStyle = input.background.color;
-    ctx.fillRect(0, 0, imageSize.width, imageSize.height);
+    r1 = c;
+    b1 = x;
   }
-  const placed = layerPlacement(map, bounds);
-  const resampled = placed.width !== bounds.width || placed.height !== bounds.height;
-  if (resampled) ctx.imageSmoothingEnabled = true;
-  for (const layer of input.layers) {
-    if (layer.opacity <= 0) continue;
-    ctx.globalAlpha = layer.opacity;
-    ctx.drawImage(layer.source, placed.x, placed.y, placed.width, placed.height);
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+function hexToHsv(hex) {
+  const rgb = hexToRgb(hex);
+  return rgb ? rgbToHsv(rgb) : null;
+}
+function hsvToHex(hsv) {
+  return rgbToHex(hsvToRgb(hsv));
+}
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+function clampByte(v) {
+  return Math.max(0, Math.min(255, Math.round(v)));
+}
+function byteHex(byte) {
+  return byte.toString(16).padStart(2, "0");
+}
+const RECENT_KEY = "PainterSketch.recentColors";
+const MAX_RECENTS = 10;
+function openColorPicker(host, anchor, opts) {
+  const initial = normalizeHex(opts.initial) ?? "#000000";
+  let hsv = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
+  let current = initial;
+  let committed = false;
+  let escaped = false;
+  const root = document.createElement("div");
+  root.className = "cps-picker";
+  if (opts.title) {
+    const title = document.createElement("div");
+    title.className = "cps-picker-title";
+    title.textContent = opts.title;
+    root.appendChild(title);
   }
-  for (const mask of input.masks) {
-    if (mask.opacity <= 0) continue;
-    ctx.globalAlpha = mask.opacity;
-    ctx.drawImage(mask.tint, placed.x, placed.y, placed.width, placed.height);
-    if (mask.invert) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, imageSize.width, imageSize.height);
-      ctx.clip();
-      ctx.fillStyle = mask.color;
-      ctx.beginPath();
-      ctx.rect(0, 0, imageSize.width, imageSize.height);
-      ctx.rect(placed.x, placed.y, placed.width, placed.height);
-      ctx.fill("evenodd");
-      ctx.restore();
+  const svWrap = document.createElement("div");
+  svWrap.className = "cps-picker-sv";
+  const svCanvas = document.createElement("canvas");
+  svCanvas.className = "cps-picker-sv-canvas";
+  const svThumb = document.createElement("div");
+  svThumb.className = "cps-picker-sv-thumb";
+  svWrap.append(svCanvas, svThumb);
+  const hueWrap = document.createElement("div");
+  hueWrap.className = "cps-picker-hue";
+  const hueThumb = document.createElement("div");
+  hueThumb.className = "cps-picker-hue-thumb";
+  hueWrap.appendChild(hueThumb);
+  const hexRow = document.createElement("div");
+  hexRow.className = "cps-picker-hex-row";
+  const hexLabel = document.createElement("span");
+  hexLabel.className = "cps-picker-hex-label";
+  hexLabel.textContent = "Hex";
+  const hexInput = document.createElement("input");
+  hexInput.type = "text";
+  hexInput.className = "cps-picker-hex-input";
+  hexInput.maxLength = 7;
+  hexInput.spellcheck = false;
+  hexInput.autocomplete = "off";
+  hexRow.append(hexLabel, hexInput);
+  const preview = document.createElement("div");
+  preview.className = "cps-picker-preview";
+  preview.title = "Click left half to revert to original colour";
+  const previewOld = document.createElement("div");
+  previewOld.className = "cps-picker-preview-old";
+  const previewNew = document.createElement("div");
+  previewNew.className = "cps-picker-preview-new";
+  preview.append(previewOld, previewNew);
+  const recentsEl = document.createElement("div");
+  recentsEl.className = "cps-picker-recents";
+  root.append(svWrap, hueWrap, hexRow, preview, recentsEl);
+  const applyHsv = (newHsv, skipHexField = false) => {
+    hsv = newHsv;
+    current = hsvToHex(hsv);
+    drawSv();
+    positionSvThumb();
+    positionHueThumb();
+    if (!skipHexField) syncHexField();
+    previewNew.style.backgroundColor = current;
+    opts.onInput(current);
+  };
+  const applyHex = (hex) => {
+    const normalized = normalizeHex(hex);
+    if (!normalized) return;
+    const newHsv = hexToHsv(normalized);
+    if (!newHsv) return;
+    applyHsv(newHsv);
+  };
+  const drawSv = () => {
+    const ctx = svCanvas.getContext("2d");
+    if (!ctx) return;
+    const w = svCanvas.width;
+    const h = svCanvas.height;
+    const satGrad = ctx.createLinearGradient(0, 0, w, 0);
+    satGrad.addColorStop(0, "#ffffff");
+    satGrad.addColorStop(1, hsvToHex({ h: hsv.h, s: 1, v: 1 }));
+    ctx.fillStyle = satGrad;
+    ctx.fillRect(0, 0, w, h);
+    const valGrad = ctx.createLinearGradient(0, 0, 0, h);
+    valGrad.addColorStop(0, "rgba(0,0,0,0)");
+    valGrad.addColorStop(1, "#000000");
+    ctx.fillStyle = valGrad;
+    ctx.fillRect(0, 0, w, h);
+  };
+  const positionSvThumb = () => {
+    svThumb.style.left = `${clamp01(hsv.s) * 100}%`;
+    svThumb.style.top = `${(1 - clamp01(hsv.v)) * 100}%`;
+  };
+  const svPointerDown = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    svWrap.setPointerCapture(event.pointerId);
+    updateSvFromEvent(event);
+  };
+  const svPointerMove = (event) => {
+    if (!svWrap.hasPointerCapture(event.pointerId)) return;
+    updateSvFromEvent(event);
+  };
+  const updateSvFromEvent = (event) => {
+    const rect = svCanvas.getBoundingClientRect();
+    const s = clamp01((event.clientX - rect.left) / rect.width);
+    const v = clamp01(1 - (event.clientY - rect.top) / rect.height);
+    applyHsv({ h: hsv.h, s, v });
+  };
+  svWrap.addEventListener("pointerdown", svPointerDown);
+  svWrap.addEventListener("pointermove", svPointerMove);
+  svWrap.addEventListener("wheel", (e) => e.stopPropagation());
+  const positionHueThumb = () => {
+    hueThumb.style.left = `${hsv.h / 360 * 100}%`;
+  };
+  const huePointerDown = (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    hueWrap.setPointerCapture(event.pointerId);
+    updateHueFromEvent(event);
+  };
+  const huePointerMove = (event) => {
+    if (!hueWrap.hasPointerCapture(event.pointerId)) return;
+    updateHueFromEvent(event);
+  };
+  const updateHueFromEvent = (event) => {
+    const rect = hueWrap.getBoundingClientRect();
+    const h = clamp01((event.clientX - rect.left) / rect.width) * 360;
+    applyHsv({ h, s: hsv.s, v: hsv.v });
+  };
+  hueWrap.addEventListener("pointerdown", huePointerDown);
+  hueWrap.addEventListener("pointermove", huePointerMove);
+  hueWrap.addEventListener("wheel", (e) => e.stopPropagation());
+  const syncHexField = () => {
+    hexInput.value = current.slice(1).toUpperCase();
+    hexInput.classList.remove("cps-invalid");
+  };
+  const applyHexField = () => {
+    const raw = hexInput.value.trim();
+    const normalized = normalizeHex(raw);
+    if (normalized) {
+      hexInput.classList.remove("cps-invalid");
+      applyHex(normalized);
+    } else {
+      hexInput.classList.add("cps-invalid");
+      syncHexField();
     }
+  };
+  hexInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      applyHexField();
+      hexInput.blur();
+    }
+  });
+  hexInput.addEventListener("blur", () => {
+    applyHexField();
+  });
+  hexInput.addEventListener("input", () => {
+    const raw = hexInput.value.trim();
+    const normalized = normalizeHex(raw);
+    if (normalized) {
+      hexInput.classList.remove("cps-invalid");
+      applyHex(normalized);
+    } else {
+      hexInput.classList.add("cps-invalid");
+    }
+  });
+  previewOld.style.backgroundColor = initial;
+  previewOld.title = "Click to revert to original colour";
+  previewOld.addEventListener("click", () => {
+    applyHex(initial);
+  });
+  const loadRecents = () => {
+    try {
+      const raw = localStorage.getItem(RECENT_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((v) => typeof v === "string" && normalizeHex(v) !== null);
+    } catch {
+      return [];
+    }
+  };
+  const saveRecent = (hex) => {
+    const normalized = normalizeHex(hex);
+    if (!normalized) return;
+    const existing = loadRecents().filter((c) => c !== normalized);
+    const updated = [normalized, ...existing].slice(0, MAX_RECENTS);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
+    } catch {
+    }
+  };
+  const renderRecents = () => {
+    recentsEl.textContent = "";
+    const recents = loadRecents();
+    for (const hex of recents) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "cps-picker-recent";
+      btn.style.backgroundColor = hex;
+      btn.title = hex.toUpperCase();
+      btn.setAttribute("aria-label", `Use recent colour ${hex.toUpperCase()}`);
+      btn.addEventListener("click", () => applyHex(hex));
+      recentsEl.appendChild(btn);
+    }
+    recentsEl.hidden = recents.length === 0;
+  };
+  const resizeSvCanvas = () => {
+    const rect = svCanvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width));
+    const h = Math.max(1, Math.round(rect.height));
+    if (svCanvas.width !== w || svCanvas.height !== h) {
+      svCanvas.width = w;
+      svCanvas.height = h;
+    }
+  };
+  requestAnimationFrame(() => {
+    resizeSvCanvas();
+    drawSv();
+    positionSvThumb();
+    positionHueThumb();
+    syncHexField();
+    previewOld.style.backgroundColor = initial;
+    previewNew.style.backgroundColor = current;
+    renderRecents();
+  });
+  const handle = host.open(root, {
+    anchor,
+    placement: "below",
+    onClose: () => {
+      if (!escaped && !committed) {
+        committed = true;
+        if (current !== initial) {
+          saveRecent(current);
+          opts.onCommit?.(current);
+        }
+      } else if (escaped) {
+        opts.onInput(initial);
+      }
+    }
+  });
+  handle.element.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape") {
+        escaped = true;
+      }
+    },
+    true
+  );
+  return handle;
+}
+const PATHS = {
+  brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
+  eraser: "M7 20h11M4.5 14.5l8-8 6 6-7.5 7.5H9.5z",
+  // Photoshop's Quick Mask: a rectangle with a circle in it.
+  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
+  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
+  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  // Frame corners around the image: "fit to view".
+  fit: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9z",
+  clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
+  fullscreen: "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7",
+  // Arrows pointing inwards: "exit fullscreen".
+  exitFullscreen: "M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7",
+  panel: "M4 5h16v14H4zM15 5v14",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
+  eyeOff: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M4 4l16 16",
+  // Curved double arrow (Photoshop's "switch colors").
+  swap: "M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3",
+  // Layers panel.
+  lock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
+  unlock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 6.8-1.2",
+  plus: "M12 5v14M5 12h14",
+  duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
+  trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
+  // Half-filled circle outline: "invert".
+  invert: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 4v16M12 8h4M12 12h6M12 16h4",
+  // Tablet pen, nib at bottom-left, with a pressure stroke: "pen pressure".
+  stylus: "M17 3l4 4L9 19l-5 1 1-5zM14 6l4 4M5 15l4 4M13 21c2-1.5 4-1.5 6 0"
+};
+const FALLBACK = "M5 5h14v14H5z";
+function iconSvg(name, size = 20) {
+  const d = PATHS[name] ?? FALLBACK;
+  return `<svg class="cps-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+}
+function setIcon(element, name, size = 20) {
+  element.innerHTML = iconSvg(name, size);
+}
+const WATCH_MS = 250;
+const PLACEHOLDER_TEXT = "Editing in fullscreen — press Esc or click to return";
+const OVERLAY_STOPPED = [
+  "pointerdown",
+  "pointerup",
+  "pointercancel",
+  "mousedown",
+  "mouseup",
+  "click",
+  "dblclick",
+  "contextmenu"
+];
+let openMount = null;
+class FullscreenMount {
+  /**
+   * @param root - Editor root (appended to the container now).
+   * @param options - Callbacks.
+   */
+  constructor(root, options) {
+    this.root = root;
+    this.options = options;
+    this.container = document.createElement("div");
+    this.container.className = "cps-widget";
+    this.container.appendChild(root);
+    this.placeholder = document.createElement("button");
+    this.placeholder.type = "button";
+    this.placeholder.className = "cps-fullscreen-placeholder";
+    this.placeholder.textContent = PLACEHOLDER_TEXT;
+    this.placeholder.addEventListener("click", () => this.exit());
   }
-  ctx.globalAlpha = 1;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  const extends_ = !containsRect(inflateRect(imageRect, EPSILON), paintRect);
-  if (extends_) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(boundsScreen.x, boundsScreen.y, boundsScreen.width, boundsScreen.height);
-    ctx.clip();
-    ctx.fillStyle = STAGE_STYLE.offFrameVeil;
-    ctx.beginPath();
-    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.rect(frameScreen.x, frameScreen.y, frameScreen.width, frameScreen.height);
-    ctx.fill("evenodd");
-    ctx.restore();
+  root;
+  options;
+  /** Stable DOM widget element; holds the root (or the placeholder). */
+  container;
+  placeholder;
+  overlay = null;
+  watchTimer = null;
+  disposed = false;
+  /** Whether the editor is fullscreen. */
+  get isOpen() {
+    return this.overlay !== null;
   }
-  const lw = Math.max(1, Math.round(pr));
-  ctx.lineWidth = lw;
-  ctx.strokeStyle = extends_ ? STAGE_STYLE.frameOutline : STAGE_STYLE.frameShadow;
-  ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
+  /** The overlay element while fullscreen, else `null`. */
+  get overlayElement() {
+    return this.overlay;
+  }
+  /** Enter or leave fullscreen. */
+  toggle() {
+    if (this.overlay) this.exit();
+    else this.enter();
+  }
+  /** Move the root into a new overlay. No-op if open, disposed or unmounted. */
+  enter() {
+    if (this.overlay || this.disposed || !this.container.isConnected) return;
+    openMount?.exit();
+    this.options.beforeChange?.();
+    const overlay = buildOverlay(() => this.exit());
+    this.overlay = overlay;
+    openMount = this;
+    overlay.prepend(this.root);
+    this.container.appendChild(this.placeholder);
+    document.body.appendChild(overlay);
+    this.watchTimer = setInterval(() => this.watch(), WATCH_MS);
+    this.options.onChange(true);
+  }
+  /** Move the root back into the container and remove the overlay. */
+  exit() {
+    const overlay = this.overlay;
+    if (!overlay) return;
+    this.options.beforeChange?.();
+    this.overlay = null;
+    if (openMount === this) openMount = null;
+    if (this.watchTimer !== null) clearInterval(this.watchTimer);
+    this.watchTimer = null;
+    this.placeholder.remove();
+    this.container.appendChild(this.root);
+    overlay.remove();
+    this.options.onChange(false);
+  }
+  /** Exit (if open) and stop accepting `enter`. Idempotent. */
+  dispose() {
+    this.exit();
+    this.disposed = true;
+  }
+  watch() {
+    if (!this.container.isConnected || this.options.isDetached?.()) this.exit();
+  }
 }
-const EPSILON = 1e-6;
-function inflateRect(r, d) {
-  return { x: r.x - d, y: r.y - d, width: r.width + d * 2, height: r.height + d * 2 };
+function buildOverlay(exit) {
+  const overlay = document.createElement("div");
+  overlay.className = "cps-fullscreen";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-label", "PainterSketch fullscreen editor");
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = "cps-fullscreen-exit";
+  button2.title = "Exit fullscreen (Esc)";
+  setIcon(button2, "exitFullscreen", 16);
+  const label = document.createElement("span");
+  label.textContent = "Exit fullscreen";
+  button2.appendChild(label);
+  button2.addEventListener("click", exit);
+  overlay.appendChild(button2);
+  const stop = (event) => event.stopPropagation();
+  for (const type of OVERLAY_STOPPED) overlay.addEventListener(type, stop);
+  overlay.addEventListener(
+    "wheel",
+    (event) => {
+      event.stopPropagation();
+      if (event.target === overlay || event.ctrlKey) event.preventDefault();
+    },
+    { passive: false }
+  );
+  const noDrop = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+  };
+  overlay.addEventListener("dragover", noDrop);
+  overlay.addEventListener("drop", noDrop);
+  return overlay;
 }
-function scaleRect(r, k) {
-  return { x: r.x * k, y: r.y * k, width: r.width * k, height: r.height * k };
+const NON_TEXT_INPUTS = ["range", "checkbox", "radio", "button", "submit", "reset", "color", "file", "image"];
+function isTextEntry(info) {
+  if (info.tagName === "TEXTAREA" || info.tagName === "SELECT") return true;
+  if (info.tagName === "INPUT") return !NON_TEXT_INPUTS.includes((info.type ?? "text").toLowerCase());
+  return info.editable === true;
 }
-function checkerPattern(ctx) {
-  const cached = checkerPatterns.get(ctx);
-  if (cached) return cached;
-  const cell = STAGE_STYLE.checkerCell;
-  const tile = document.createElement("canvas");
-  tile.width = tile.height = cell * 2;
-  const t = tile.getContext("2d");
-  if (!t) return null;
-  t.fillStyle = STAGE_STYLE.checkerLight;
-  t.fillRect(0, 0, cell * 2, cell * 2);
-  t.fillStyle = STAGE_STYLE.checkerDark;
-  t.fillRect(cell, 0, cell, cell);
-  t.fillRect(0, cell, cell, cell);
-  const pattern = ctx.createPattern(tile, "repeat");
-  if (pattern) checkerPatterns.set(ctx, pattern);
-  return pattern;
+function isRangeInput(info) {
+  return info.tagName === "INPUT" && (info.type ?? "").toLowerCase() === "range";
 }
+function pointerFocusAction(info) {
+  if (isTextEntry(info)) return "text";
+  if (isRangeInput(info)) return "native";
+  return "sink";
+}
+function mayKeepFocus(info) {
+  return pointerFocusAction(info) !== "sink";
+}
+function isScopeActive(state) {
+  return state.hovered || state.held || state.engaged || state.fullscreen;
+}
+function hoverMayTakeFocus(focused) {
+  return focused === null || !isTextEntry(focused);
+}
+function describeElement(element) {
+  const info = { tagName: element.tagName.toUpperCase() };
+  if (element instanceof HTMLInputElement) info.type = element.type;
+  if (element instanceof HTMLElement && element.isContentEditable) info.editable = true;
+  return info;
+}
+const BROWSER_MOD_KEYS = /* @__PURE__ */ new Set(["r", "w", "t", "n", "l", "tab", "pageup", "pagedown"]);
+const BROWSER_MOD_SHIFT_KEYS = /* @__PURE__ */ new Set(["i", "j", "c"]);
+const COMFY_MOD_KEYS = /* @__PURE__ */ new Set(["s", "enter"]);
+function fullscreenKeyPolicy(event) {
+  const key = event.key.toLowerCase();
+  if (/^f([1-9]|1[0-9]|2[0-4])$/.test(key)) return "pass";
+  const mod = event.ctrlKey || event.metaKey;
+  if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";
+  if (mod && !event.altKey) {
+    if (BROWSER_MOD_KEYS.has(key) || COMFY_MOD_KEYS.has(key)) return "pass";
+    if (event.shiftKey && BROWSER_MOD_SHIFT_KEYS.has(key)) return "pass";
+  }
+  return "swallow";
+}
+function isSaveChord(event) {
+  return event.key.toLowerCase() === "s" && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey;
+}
+const HAS_KEYS_CLASS = "cps-has-keys";
 class KeyboardScope {
   /**
    * @param root - Editor root (hover target, hosts the focus sink).
@@ -1853,18 +3307,82 @@ class KeyboardScope {
     root.appendChild(this.sink);
     root.addEventListener("pointerenter", this.enter);
     root.addEventListener("pointerleave", this.leave);
+    root.addEventListener("keydown", this.rootKeydown);
+    root.addEventListener("pointerdown", this.rootPointerDown, true);
+    root.addEventListener("focusin", this.rootFocusIn);
+    root.addEventListener("focusout", this.rootFocusOut);
   }
   root;
   handlers;
   active = false;
   hovered = false;
   held = false;
+  engaged = false;
   spaceDown = false;
   previousFocus = null;
+  /** Fullscreen overlay (contains the root) while fullscreen, else `null`. */
+  captureScope = null;
   sink;
   keydown = (event) => this.handleKeyDown(event);
   keyup = (event) => this.handleKeyUp(event);
   blur = () => this.setSpace(false);
+  /** Fullscreen: stop keys from our own text fields after they handled them. */
+  rootKeydown = (event) => {
+    if (this.captureScope && fullscreenKeyPolicy(event) === "swallow") event.stopPropagation();
+  };
+  /**
+   * Any press inside the root engages the editor (see module doc). Capture
+   * phase, so it runs before the stage/row/scrub handlers; those may still
+   * `setPointerCapture` -- `preventDefault()` here only stops the focus move
+   * and the compatibility mouse events, not `click`/`dblclick`.
+   */
+  rootPointerDown = (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    this.setEngaged(true);
+    if (pointerFocusAction(describeElement(target)) !== "sink") return;
+    event.preventDefault();
+    this.focusSink();
+  };
+  /**
+   * Safety net: a non-text element inside the root that still receives
+   * focus while active is redirected to the sink so ChangeTracker keeps
+   * ignoring Ctrl+Z. Text entries and range sliders keep focus.
+   */
+  rootFocusIn = (event) => {
+    const target = event.target;
+    if (this.active && target instanceof Element && target !== this.sink && !mayKeepFocus(describeElement(target))) {
+      this.focusSink();
+    }
+    this.syncIndicator();
+  };
+  /** One of our text fields blurred to nothing: give focus back to the sink. */
+  rootFocusOut = (event) => {
+    if (event.relatedTarget === null && event.target !== this.sink) queueMicrotask(() => this.reclaimFocus());
+    queueMicrotask(() => this.syncIndicator());
+  };
+  /** Engaged: a press outside the root (and fullscreen overlay) ends it. */
+  outsidePointerDown = (event) => {
+    if (!this.isInside(event.target)) this.setEngaged(false);
+  };
+  /** Engaged: focus moving outside the root (and overlay) ends it. */
+  outsideFocusIn = (event) => {
+    if (!this.isInside(event.target)) this.setEngaged(false);
+  };
+  /**
+   * Fullscreen: buttons and other non-input elements outside the root (the
+   * overlay exit button, the backdrop) don't keep focus.
+   */
+  scopeFocusIn = (event) => {
+    const target = event.target;
+    if (target instanceof Element && !(target instanceof HTMLInputElement) && !isTextEntry(describeElement(target))) {
+      this.focusSink();
+    }
+  };
+  /** Fullscreen: a click on the backdrop leaves focus on `body`; reclaim it. */
+  scopePointerUp = () => {
+    queueMicrotask(() => this.reclaimFocus());
+  };
   /** Whether Space is held (pan). */
   get isSpaceDown() {
     return this.spaceDown;
@@ -1878,13 +3396,51 @@ class KeyboardScope {
     this.held = held;
     this.sync();
   }
+  /**
+   * Fullscreen on/off. While set, the scope is active regardless of hover
+   * and filters unhandled keys (see module doc).
+   * @param scope - Overlay element containing the root, or `null` to leave.
+   */
+  setCaptureScope(scope) {
+    if (scope === this.captureScope) return;
+    const previous = this.captureScope;
+    if (previous) {
+      previous.removeEventListener("focusin", this.scopeFocusIn);
+      previous.removeEventListener("pointerup", this.scopePointerUp, true);
+    }
+    this.captureScope = scope;
+    if (scope) {
+      scope.addEventListener("focusin", this.scopeFocusIn);
+      scope.addEventListener("pointerup", this.scopePointerUp, true);
+    }
+    this.sync();
+    this.reclaimFocus();
+    this.syncIndicator();
+  }
+  /**
+   * While active, move focus back to the sink if nothing else holds it
+   * (e.g. after a popover with a focused text field closed), so ComfyUI's
+   * graph undo keeps ignoring Ctrl+Z.
+   */
+  reclaimFocus() {
+    const current = document.activeElement;
+    if (this.active && (!current || current === document.body)) this.focusSink();
+    this.syncIndicator();
+  }
   /** Remove listeners and the focus sink. */
   dispose() {
     this.hovered = false;
     this.held = false;
+    this.setEngaged(false);
+    this.setCaptureScope(null);
     this.sync();
     this.root.removeEventListener("pointerenter", this.enter);
     this.root.removeEventListener("pointerleave", this.leave);
+    this.root.removeEventListener("keydown", this.rootKeydown);
+    this.root.removeEventListener("pointerdown", this.rootPointerDown, true);
+    this.root.removeEventListener("focusin", this.rootFocusIn);
+    this.root.removeEventListener("focusout", this.rootFocusOut);
+    this.root.classList.remove(HAS_KEYS_CLASS);
     this.sink.remove();
   }
   // ── Internals ───────────────────────────────────────────────────────────
@@ -1896,8 +3452,26 @@ class KeyboardScope {
     this.hovered = false;
     this.sync();
   };
+  setEngaged(engaged) {
+    if (engaged === this.engaged) return;
+    this.engaged = engaged;
+    if (engaged) {
+      this.previousFocus = null;
+      window.addEventListener("pointerdown", this.outsidePointerDown, true);
+      document.addEventListener("focusin", this.outsideFocusIn, true);
+    } else {
+      window.removeEventListener("pointerdown", this.outsidePointerDown, true);
+      document.removeEventListener("focusin", this.outsideFocusIn, true);
+    }
+    this.sync();
+  }
   sync() {
-    const shouldBeActive = this.hovered || this.held;
+    const shouldBeActive = isScopeActive({
+      hovered: this.hovered,
+      held: this.held,
+      engaged: this.engaged,
+      fullscreen: this.captureScope !== null
+    });
     if (shouldBeActive === this.active) return;
     this.active = shouldBeActive;
     if (shouldBeActive) {
@@ -1911,24 +3485,50 @@ class KeyboardScope {
       window.removeEventListener("blur", this.blur);
       this.setSpace(false);
       this.returnFocus();
+      this.handlers.onDeactivate?.();
     }
+    this.syncIndicator();
   }
+  /** Hover/fullscreen activation: take focus unless a text field has it. */
   takeFocus() {
     const current = document.activeElement;
-    if (current && current !== document.body && !this.root.contains(current) && isTextField(current)) return;
-    this.previousFocus = current && !this.root.contains(current) ? current : null;
-    this.sink.focus({ preventScroll: true });
+    const focused = current && current !== document.body ? current : null;
+    if (focused === this.sink) return;
+    if (focused && !hoverMayTakeFocus(describeElement(focused))) return;
+    this.previousFocus = focused && !this.root.contains(focused) ? focused : null;
+    this.focusSink();
   }
   returnFocus() {
     if (document.activeElement !== this.sink) return;
     this.sink.blur();
     const previous = this.previousFocus;
     this.previousFocus = null;
-    if (previous instanceof HTMLElement && previous.isConnected && !isTextField(previous)) {
+    if (previous instanceof HTMLElement && previous.isConnected && !isTextEntry(describeElement(previous))) {
       previous.focus({ preventScroll: true });
     }
   }
+  focusSink() {
+    if (document.activeElement !== this.sink) this.sink.focus({ preventScroll: true });
+  }
+  /** Focus indicator from the real focus state. */
+  syncIndicator() {
+    const current = document.activeElement;
+    const owns = current !== null && current !== document.body && this.root.contains(current);
+    this.root.classList.toggle(HAS_KEYS_CLASS, owns);
+  }
+  /** Inside the root, or inside the fullscreen overlay holding it. */
+  isInside(target) {
+    if (!(target instanceof Node)) return false;
+    return this.root.contains(target) || (this.captureScope?.contains(target) ?? false);
+  }
   handleKeyDown(event) {
+    if (this.captureScope && this.isOutsideScope(event.target)) return;
+    if (isSaveChord(event) && this.ownsKeyTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) this.handlers.onSave?.();
+      return;
+    }
     if (this.isForeignTextTarget(event.target)) return;
     if (event.key === " " || event.code === "Space") {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -1937,7 +3537,7 @@ class KeyboardScope {
       this.setSpace(true);
       return;
     }
-    if (this.handlers.onKeyDown(event)) {
+    if (this.handlers.onKeyDown(event) || this.captureScope && fullscreenKeyPolicy(event) === "swallow") {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -1955,168 +3555,1478 @@ class KeyboardScope {
     this.spaceDown = down;
     this.handlers.onSpaceChange(down);
   }
+  /** Fullscreen: focus is in UI above/outside the overlay (e.g. a dialog). */
+  isOutsideScope(target) {
+    if (!(target instanceof Node) || target === document.body || target === document.documentElement) return false;
+    return !(this.captureScope?.contains(target) ?? false);
+  }
+  /**
+   * The editor owns this key: it targets the sink or another element inside
+   * the root / fullscreen overlay. While fullscreen, `body` also counts (a
+   * backdrop click can leave focus there before it is reclaimed).
+   */
+  ownsKeyTarget(target) {
+    if (target === this.sink || this.isInside(target)) return true;
+    return this.captureScope !== null && (target === document.body || target === document.documentElement);
+  }
   /** Text fields other than our sink keep their keys (hex field, text tool...). */
   isForeignTextTarget(target) {
-    return target instanceof Element && target !== this.sink && isTextField(target);
+    return target instanceof Element && target !== this.sink && isTextEntry(describeElement(target));
   }
 }
-function isTextField(element) {
-  if (element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true;
-  if (element instanceof HTMLInputElement) {
-    return !["range", "checkbox", "radio", "button", "color"].includes(element.type);
-  }
-  return element instanceof HTMLElement && element.isContentEditable;
+const THUMB_BOX = 36;
+const THUMB_MIN_INTERVAL_MS = 150;
+function thumbSize(size, box = THUMB_BOX) {
+  const w = Math.max(1, size.width);
+  const h = Math.max(1, size.height);
+  const s = box / Math.max(w, h);
+  return { width: Math.max(4, Math.round(w * s)), height: Math.max(4, Math.round(h * s)) };
 }
-const NUMBER_FIELDS = [
-  { key: "size", label: "Size", min: 1, max: 500, scale: 1 },
-  { key: "hardness", label: "Hard", min: 0, max: 100, scale: 100 },
-  { key: "opacity", label: "Opac", min: 1, max: 100, scale: 100 },
-  { key: "flow", label: "Flow", min: 1, max: 100, scale: 100 }
-];
-const EYE_OPEN = "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6";
-const EYE_CLOSED = `${EYE_OPEN}M4 4l16 16`;
+class Thumbnail {
+  canvas;
+  key = "";
+  constructor() {
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "cps-layer-thumb";
+    this.canvas.width = THUMB_BOX;
+    this.canvas.height = THUMB_BOX;
+    this.canvas.style.width = `${THUMB_BOX}px`;
+    this.canvas.style.height = `${THUMB_BOX}px`;
+  }
+  /**
+   * Redraw if `key` changed.
+   * @param key - Cache key (revision + geometry + display state).
+   * @param size - Content size (for the aspect ratio).
+   * @param source - What to draw.
+   */
+  update(key, size, source) {
+    if (key === this.key) return;
+    this.key = key;
+    const css = thumbSize(size);
+    const dpr = Math.min(2, Math.max(1, globalThis.devicePixelRatio || 1));
+    const w = Math.round(css.width * dpr);
+    const h = Math.round(css.height * dpr);
+    const canvas = this.canvas;
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    canvas.style.width = `${css.width}px`;
+    canvas.style.height = `${css.height}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.save();
+    ctx.clearRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "medium";
+    if (source.kind === "background") drawBackground(ctx, source.background, w, h);
+    else drawLayer(ctx, source, w, h);
+    ctx.restore();
+  }
+  /** Force the next {@link update} to redraw. */
+  invalidate() {
+    this.key = "";
+  }
+}
+function drawBackground(ctx, background, w, h) {
+  if (background.kind === "fill") {
+    ctx.fillStyle = background.color;
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+  try {
+    ctx.drawImage(background.image, 0, 0, w, h);
+  } catch {
+  }
+}
+function drawLayer(ctx, source, w, h) {
+  const { canvas, region } = source;
+  if (source.mask) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+  }
+  if (region.width > 0 && region.height > 0 && canvas.width > 0 && canvas.height > 0) {
+    ctx.drawImage(canvas, region.x, region.y, region.width, region.height, 0, 0, w, h);
+  }
+  if (source.mask && source.invert) {
+    ctx.globalCompositeOperation = "difference";
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+  }
+}
+class RefreshThrottle {
+  /**
+   * @param refresh - Work to run.
+   */
+  constructor(refresh) {
+    this.refresh = refresh;
+  }
+  refresh;
+  frame = null;
+  timer = null;
+  last = 0;
+  /** Request a refresh (cheap; call on every editor event). */
+  request() {
+    if (this.frame !== null || this.timer !== null) return;
+    const wait = this.last + THUMB_MIN_INTERVAL_MS - performance.now();
+    if (wait > 0) {
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        this.request();
+      }, wait);
+      return;
+    }
+    this.frame = requestAnimationFrame(() => {
+      this.frame = null;
+      this.last = performance.now();
+      this.refresh();
+    });
+  }
+  /** Cancel pending work. */
+  dispose() {
+    if (this.frame !== null) cancelAnimationFrame(this.frame);
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.frame = null;
+    this.timer = null;
+  }
+}
+class LayerRow {
+  /**
+   * @param kind - Row kind.
+   * @param id - Layer id (`"background"` for the background row).
+   * @param actions - Callbacks.
+   * @param maskOpacity - Overlay opacity control (mask rows).
+   */
+  constructor(kind, id, actions, maskOpacity) {
+    this.kind = kind;
+    this.id = id;
+    this.actions = actions;
+    this.element = document.createElement("div");
+    this.element.className = `cps-layer-row cps-layer-${kind}`;
+    this.element.dataset["layerId"] = id;
+    const main = document.createElement("div");
+    main.className = "cps-layer-main";
+    const thumbBox = document.createElement("span");
+    thumbBox.className = "cps-layer-thumb-box";
+    thumbBox.appendChild(this.thumb.canvas);
+    this.nameEl = document.createElement("span");
+    this.nameEl.className = "cps-layer-name";
+    main.append(thumbBox, this.nameEl);
+    if (kind !== "background") {
+      this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
+      main.appendChild(this.eye);
+    }
+    this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
+    main.appendChild(this.lock);
+    this.element.appendChild(main);
+    if (kind === "background") {
+      this.lock.disabled = true;
+      this.lock.title = "The background (input image) is locked";
+      setIcon(this.lock, "lock", 14);
+    } else {
+      this.element.addEventListener("click", (event) => {
+        if (!isControl(event.target)) actions.select(id);
+      });
+      this.nameEl.addEventListener("dblclick", (event) => {
+        event.stopPropagation();
+        this.startRename();
+      });
+    }
+    if (kind === "mask") {
+      const extra = document.createElement("div");
+      extra.className = "cps-layer-extra";
+      const swatch2 = button("cps-layer-swatch", () => actions.pickColor(id, swatch2));
+      swatch2.title = "Mask colour (display only)";
+      const invert = button("cps-layer-invert", () => actions.toggleInvert(id));
+      setIcon(invert, "invert", 14);
+      extra.append(swatch2, invert);
+      if (maskOpacity) extra.appendChild(maskOpacity.element);
+      this.element.appendChild(extra);
+      this.swatch = swatch2;
+      this.invertButton = invert;
+    }
+  }
+  kind;
+  id;
+  actions;
+  element;
+  thumb = new Thumbnail();
+  nameEl;
+  eye = null;
+  lock;
+  swatch = null;
+  invertButton = null;
+  model = null;
+  editor = null;
+  icons = { eye: "", lock: "" };
+  /** Whether the name is being edited. */
+  get isRenaming() {
+    return this.editor !== null;
+  }
+  /**
+   * Apply display state.
+   * @param model - New state.
+   */
+  update(model) {
+    this.model = model;
+    const el2 = this.element;
+    el2.classList.toggle("cps-selected", model.selected);
+    el2.classList.toggle("cps-standby", model.standby);
+    el2.classList.toggle("cps-hidden-layer", !model.visible);
+    if (!this.editor) this.nameEl.textContent = model.name;
+    this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
+    if (this.eye) {
+      const icon = model.visible ? "eye" : "eyeOff";
+      if (icon !== this.icons.eye) setIcon(this.eye, icon, 14);
+      this.icons.eye = icon;
+      this.eye.classList.toggle("cps-off", !model.visible);
+      this.eye.setAttribute("aria-pressed", String(model.visible));
+      this.eye.title = this.kind === "mask" ? model.visible ? "Hide mask (also excludes it from the MASK output)" : "Show mask (hidden masks are excluded from the MASK output)" : model.visible ? "Hide layer" : "Show layer";
+    }
+    if (this.kind !== "background") {
+      const icon = model.locked ? "lock" : "unlock";
+      if (icon !== this.icons.lock) setIcon(this.lock, icon, 14);
+      this.icons.lock = icon;
+      this.lock.classList.toggle("cps-on", model.locked);
+      this.lock.setAttribute("aria-pressed", String(model.locked));
+      this.lock.title = model.locked ? "Unlock layer" : "Lock layer (refuses painting)";
+    }
+    if (this.swatch && model.color) this.swatch.style.backgroundColor = model.color;
+    if (this.invertButton) {
+      const on = model.invert === true;
+      this.invertButton.classList.toggle("cps-active", on);
+      this.invertButton.setAttribute("aria-pressed", String(on));
+      this.invertButton.title = on ? "Mask inverted (click to un-invert)" : "Invert mask";
+    }
+  }
+  /** Begin inline renaming. */
+  startRename() {
+    if (this.editor || this.kind === "background") return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "cps-layer-rename";
+    input.value = this.model?.name ?? "";
+    input.spellcheck = false;
+    input.maxLength = 100;
+    this.editor = input;
+    this.nameEl.replaceChildren(input);
+    this.actions.renaming(true);
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      const value = input.value;
+      this.editor = null;
+      this.nameEl.textContent = this.model?.name ?? "";
+      if (commit) this.actions.rename(this.id, value);
+      this.actions.renaming(false);
+    };
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("pointerdown", (event) => event.stopPropagation());
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.focus({ preventScroll: true });
+    input.select();
+  }
+}
+function button(className, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = `cps-icon-button cps-layer-button ${className}`;
+  b.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onClick();
+  });
+  return b;
+}
+function isControl(target) {
+  return target instanceof Element && target.closest("button, input, select, .cps-num") !== null;
+}
+const DRAG_THRESHOLD_PX = 4;
+const EDGE_PX = 18;
+const SCROLL_STEP_PX = 8;
+class LayerDrag {
+  /**
+   * @param list - Scrolling list holding `.cps-layer-row` elements.
+   * @param onDrop - Called with the dragged id and the drop target.
+   */
+  constructor(list, onDrop) {
+    this.list = list;
+    this.onDrop = onDrop;
+    const { signal } = this.controller;
+    list.addEventListener("pointerdown", (e) => this.down(e), { signal });
+    list.addEventListener("pointermove", (e) => this.move(e), { signal });
+    list.addEventListener("pointerup", (e) => this.up(e, true), { signal });
+    list.addEventListener("pointercancel", (e) => this.up(e, false), { signal });
+    list.addEventListener("lostpointercapture", (e) => this.up(e, false), { signal });
+  }
+  list;
+  onDrop;
+  press = null;
+  dragging = false;
+  drop = null;
+  marked = null;
+  controller = new AbortController();
+  /** Whether a drag is in progress. */
+  get active() {
+    return this.dragging;
+  }
+  /** Remove listeners. */
+  dispose() {
+    this.reset();
+    this.controller.abort();
+  }
+  down(event) {
+    if (event.button !== 0 || isControl(event.target) || !(event.target instanceof Element)) return;
+    const row = event.target.closest(".cps-layer-paint");
+    const id = row?.dataset["layerId"];
+    if (!row || !id) return;
+    this.press = { id, pointerId: event.pointerId, startY: event.clientY, row };
+  }
+  move(event) {
+    const press = this.press;
+    if (!press || event.pointerId !== press.pointerId) return;
+    if (!this.dragging) {
+      if (Math.abs(event.clientY - press.startY) < DRAG_THRESHOLD_PX) return;
+      try {
+        this.list.setPointerCapture(event.pointerId);
+      } catch {
+        this.press = null;
+        return;
+      }
+      this.dragging = true;
+      press.row.classList.add("cps-dragging");
+    }
+    event.preventDefault();
+    this.autoScroll(event.clientY);
+    this.drop = this.findDrop(event.clientY);
+    this.mark(this.drop);
+  }
+  up(event, commit) {
+    const press = this.press;
+    if (!press || event.pointerId !== press.pointerId) return;
+    const drop = this.drop;
+    const wasDragging = this.dragging;
+    this.reset();
+    if (this.list.hasPointerCapture(event.pointerId)) this.list.releasePointerCapture(event.pointerId);
+    if (commit && wasDragging && drop && drop.targetId !== press.id) this.onDrop(press.id, drop);
+  }
+  reset() {
+    this.press?.row.classList.remove("cps-dragging");
+    this.press = null;
+    this.dragging = false;
+    this.drop = null;
+    this.mark(null);
+  }
+  /** Paint row under (or nearest to) the pointer, above/below its middle. */
+  findDrop(clientY) {
+    const rows = [...this.list.querySelectorAll(".cps-layer-paint")];
+    let best = null;
+    for (const row of rows) {
+      const id = row.dataset["layerId"];
+      if (!id) continue;
+      const r = row.getBoundingClientRect();
+      if (clientY < r.top) return best ?? { targetId: id, above: true };
+      best = { targetId: id, above: clientY < r.top + r.height / 2 };
+      if (clientY <= r.bottom) return best;
+      best = { targetId: id, above: false };
+    }
+    return best;
+  }
+  mark(drop) {
+    const marked = this.marked;
+    marked?.classList.remove("cps-drop-above", "cps-drop-below");
+    this.marked = null;
+    if (!drop) return;
+    const row = [...this.list.querySelectorAll(".cps-layer-row")].find(
+      (r) => r.dataset["layerId"] === drop.targetId
+    );
+    if (!row) return;
+    row.classList.add(drop.above ? "cps-drop-above" : "cps-drop-below");
+    this.marked = row;
+  }
+  autoScroll(clientY) {
+    const r = this.list.getBoundingClientRect();
+    if (clientY < r.top + EDGE_PX) this.list.scrollTop -= SCROLL_STEP_PX;
+    else if (clientY > r.bottom - EDGE_PX) this.list.scrollTop += SCROLL_STEP_PX;
+  }
+}
+const POW_CURVE = 2;
+function stepDecimals(step) {
+  if (!Number.isFinite(step) || step <= 0) return 0;
+  for (let d = 0; d <= 6; d++) if (Math.abs(Math.round(step * 10 ** d) - step * 10 ** d) < 1e-9) return d;
+  return 6;
+}
+function clampDisplay(desc, display) {
+  if (!Number.isFinite(display)) return desc.min;
+  const step = desc.step > 0 ? desc.step : 1;
+  const snapped = desc.min + Math.round((display - desc.min) / step) * step;
+  const clamped = Math.min(desc.max, Math.max(desc.min, snapped));
+  return Number(clamped.toFixed(stepDecimals(step)));
+}
+function toDisplay(desc, value) {
+  return clampDisplay(desc, value * (desc.scale ?? 1));
+}
+function fromDisplay(desc, display) {
+  return clampDisplay(desc, display) / (desc.scale ?? 1);
+}
+function formatDisplay(desc, display) {
+  return clampDisplay(desc, display).toFixed(stepDecimals(desc.step));
+}
+function sliderToDisplay(desc, t) {
+  const u = Math.min(1, Math.max(0, t));
+  const k = desc.curve === "pow" ? Math.pow(u, POW_CURVE) : u;
+  return clampDisplay(desc, desc.min + k * (desc.max - desc.min));
+}
+function displayToSlider(desc, display) {
+  const range = desc.max - desc.min;
+  if (range <= 0) return 0;
+  const k = (clampDisplay(desc, display) - desc.min) / range;
+  return desc.curve === "pow" ? Math.pow(k, 1 / POW_CURVE) : k;
+}
+function coerceOption(desc, value) {
+  switch (desc.kind) {
+    case "number":
+      return typeof value === "number" ? fromDisplay(desc, value * (desc.scale ?? 1)) : void 0;
+    case "toggle":
+      return typeof value === "boolean" ? value : void 0;
+    case "select":
+      return typeof value === "string" && desc.choices.some((c) => c.value === value) ? value : void 0;
+  }
+}
+function isOptionEnabled(desc, get) {
+  if (!desc.dependsOn?.length) return true;
+  return desc.dependsOn.some((key) => get(key) === true);
+}
+function layoutOptions(descriptors, groups = []) {
+  const collapsed = new Map(groups.map((g) => [g.id, g]));
+  const items = [];
+  const emitted = /* @__PURE__ */ new Map();
+  let lastGroup;
+  for (const desc of descriptors) {
+    const group2 = desc.group !== void 0 ? collapsed.get(desc.group) : void 0;
+    if (group2) {
+      const members = emitted.get(group2.id);
+      if (members) {
+        members.push(desc);
+        continue;
+      }
+    }
+    if (items.length > 0 && desc.group !== lastGroup) items.push({ kind: "separator" });
+    lastGroup = desc.group;
+    if (group2) {
+      const members = [desc];
+      emitted.set(group2.id, members);
+      items.push({ kind: "group", group: group2, descriptors: members });
+    } else {
+      items.push({ kind: "control", desc });
+    }
+  }
+  return items;
+}
+function isGroupActive(group2, get) {
+  return (group2.activeWhen ?? []).some((key) => get(key) === true);
+}
+class OptionSet {
+  /**
+   * @param descriptors - Descriptors in display order.
+   * @param values - Values object; only descriptor keys are ever written.
+   * @param groups - Groups collapsed behind a button in the bar.
+   */
+  constructor(descriptors, values, groups = []) {
+    this.descriptors = descriptors;
+    this.values = values;
+    this.groups = groups;
+    for (const desc of descriptors) this.byKey.set(desc.key, desc);
+  }
+  descriptors;
+  values;
+  groups;
+  byKey = /* @__PURE__ */ new Map();
+  /** @inheritdoc */
+  get(key) {
+    return this.byKey.has(key) ? this.values[key] : void 0;
+  }
+  /** @inheritdoc */
+  set(key, value) {
+    const desc = this.byKey.get(key);
+    if (!desc) return false;
+    const next = coerceOption(desc, value);
+    if (next === void 0 || next === this.values[key]) return false;
+    this.values[key] = next;
+    return true;
+  }
+}
+const MAX_PX_PER_STEP = 8;
+const MIN_PX_PER_STEP = 1;
+const RANGE_PX = 240;
+const SCRUB_FAST_FACTOR = 10;
+function scrubPixelsPerStep(desc) {
+  const steps = desc.step > 0 ? Math.round((desc.max - desc.min) / desc.step) : 0;
+  if (!(steps > 0)) return MAX_PX_PER_STEP;
+  return Math.min(MAX_PX_PER_STEP, Math.max(MIN_PX_PER_STEP, RANGE_PX / steps));
+}
+function scrubValue(desc, startDisplay, dx, fast) {
+  const steps = Math.trunc(dx / scrubPixelsPerStep(desc)) * (fast ? SCRUB_FAST_FACTOR : 1);
+  return clampDisplay(desc, startDisplay + steps * desc.step);
+}
+const SLIDER_STEPS = 1e3;
+function createControl(desc, ctx) {
+  switch (desc.kind) {
+    case "number":
+      return numberControl(desc, ctx);
+    case "toggle":
+      return toggleControl(desc, ctx);
+    case "select":
+      return selectControl(desc, ctx);
+  }
+}
+function numberControl(desc, ctx) {
+  const element = document.createElement("div");
+  element.className = "cps-num";
+  if (desc.title) element.title = desc.title;
+  const label = document.createElement("span");
+  label.className = "cps-num-label";
+  label.textContent = desc.label;
+  const value = document.createElement("button");
+  value.type = "button";
+  value.className = "cps-num-value";
+  element.append(label, value);
+  const display = () => {
+    const v = ctx.options.get(desc.key);
+    return typeof v === "number" ? toDisplay(desc, v) : desc.min;
+  };
+  const commit = (next) => {
+    if (ctx.options.set(desc.key, fromDisplay(desc, next))) ctx.changed();
+  };
+  let popover = null;
+  const refresh = () => {
+    value.textContent = `${formatDisplay(desc, display())}${desc.unit ?? ""}`;
+    element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
+    popover?.sync();
+  };
+  label.addEventListener("pointerdown", (event) => startScrub(event, label, desc, display, commit));
+  value.addEventListener("click", () => {
+    if (popover) {
+      popover.handle.close();
+      return;
+    }
+    popover = openSlider(desc, ctx, value, display, commit, () => popover = null);
+  });
+  refresh();
+  return { element, refresh };
+}
+function startScrub(event, label, desc, display, commit) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const id = event.pointerId;
+  let startX = event.clientX;
+  let start = display();
+  let fast = event.shiftKey;
+  try {
+    label.setPointerCapture(id);
+  } catch {
+    return;
+  }
+  label.classList.add("cps-scrubbing");
+  const controller = new AbortController();
+  const move = (e) => {
+    if (e.pointerId !== id) return;
+    if (e.shiftKey !== fast) {
+      start = display();
+      startX = e.clientX;
+      fast = e.shiftKey;
+    }
+    commit(scrubValue(desc, start, e.clientX - startX, fast));
+  };
+  const end = (e) => {
+    if (e.pointerId !== id) return;
+    controller.abort();
+    label.classList.remove("cps-scrubbing");
+    if (label.hasPointerCapture(id)) label.releasePointerCapture(id);
+  };
+  const { signal } = controller;
+  label.addEventListener("pointermove", move, { signal });
+  label.addEventListener("pointerup", end, { signal });
+  label.addEventListener("pointercancel", end, { signal });
+  label.addEventListener("lostpointercapture", end, { signal });
+}
+function openSlider(desc, ctx, anchor, display, commit, onClose) {
+  const content = document.createElement("div");
+  content.className = "cps-slider-pop";
+  const range = document.createElement("input");
+  range.type = "range";
+  range.min = "0";
+  range.max = String(SLIDER_STEPS);
+  range.step = "1";
+  range.className = "cps-slider";
+  const field = document.createElement("input");
+  field.type = "text";
+  field.inputMode = "decimal";
+  field.className = "cps-num-input";
+  field.spellcheck = false;
+  const unit = document.createElement("span");
+  unit.className = "cps-num-unit";
+  unit.textContent = desc.unit ?? "";
+  content.append(range, field, unit);
+  const sync = () => {
+    const d = display();
+    range.value = String(Math.round(displayToSlider(desc, d) * SLIDER_STEPS));
+    if (document.activeElement !== field) field.value = formatDisplay(desc, d);
+  };
+  const commitField = () => {
+    const parsed = Number.parseFloat(field.value.replace(",", "."));
+    if (Number.isFinite(parsed)) commit(parsed);
+    field.value = formatDisplay(desc, display());
+  };
+  range.addEventListener("input", () => commit(sliderToDisplay(desc, Number(range.value) / SLIDER_STEPS)));
+  field.addEventListener("change", commitField);
+  field.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commitField();
+    handle.close();
+  });
+  const handle = ctx.popovers.open(content, { anchor, placement: "below", className: "cps-pop-slider", onClose });
+  sync();
+  field.focus({ preventScroll: true });
+  field.select();
+  return { handle, sync };
+}
+function toggleControl(desc, ctx) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "cps-toggle";
+  element.textContent = desc.label;
+  if (desc.title) element.title = desc.title;
+  element.addEventListener("click", () => {
+    if (ctx.options.set(desc.key, ctx.options.get(desc.key) !== true)) ctx.changed();
+  });
+  const refresh = () => {
+    const on = ctx.options.get(desc.key) === true;
+    element.classList.toggle("cps-active", on);
+    element.setAttribute("aria-pressed", String(on));
+    element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
+  };
+  refresh();
+  return { element, refresh };
+}
+function selectControl(desc, ctx) {
+  const element = document.createElement("label");
+  element.className = "cps-select";
+  if (desc.title) element.title = desc.title;
+  const name = document.createElement("span");
+  name.className = "cps-num-label";
+  name.textContent = desc.label;
+  const select = document.createElement("select");
+  for (const choice of desc.choices) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    select.appendChild(option);
+  }
+  select.addEventListener("change", () => {
+    if (ctx.options.set(desc.key, select.value)) ctx.changed();
+  });
+  element.append(name, select);
+  const refresh = () => {
+    const v = ctx.options.get(desc.key);
+    if (typeof v === "string") select.value = v;
+    element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
+  };
+  refresh();
+  return { element, refresh };
+}
+let gestureCounter = 0;
+function newGesture(prefix) {
+  return `${prefix}:${++gestureCounter}`;
+}
+class LayerOpacityOptions {
+  constructor(desc, target) {
+    this.target = target;
+    this.descriptors = [desc];
+  }
+  target;
+  descriptors;
+  gesture = newGesture("opacity");
+  get(key) {
+    const t = this.target();
+    if (key !== "opacity" || !t) return void 0;
+    return t.editor.doc.layers.find((l) => l.id === t.layerId)?.opacity;
+  }
+  set(key, value) {
+    const t = this.target();
+    if (key !== "opacity" || !t || typeof value !== "number") return false;
+    return t.editor.layerOps.setOpacity(t.layerId, value, this.gesture);
+  }
+}
+function layerOpacityControl(label, title, target, popovers) {
+  const desc = { kind: "number", key: "opacity", label, title, min: 0, max: 100, step: 1, unit: "%", scale: 100 };
+  const options = new LayerOpacityOptions(desc, target);
+  const control = createControl(desc, { options, popovers, changed: () => control.refresh() });
+  control.element.classList.add("cps-layer-opacity");
+  control.element.addEventListener("pointerdown", () => options.gesture = newGesture("opacity"), { capture: true });
+  return control;
+}
+class MaskColorPicker {
+  /**
+   * @param pick - Colour UI to open.
+   */
+  constructor(pick) {
+    this.pick = pick;
+  }
+  pick;
+  /**
+   * Open the picker for a mask layer.
+   * @param anchor - Swatch element.
+   * @param target - Mask layer.
+   * @param initial - Current colour.
+   */
+  open(anchor, target, initial) {
+    const gesture = newGesture("mask-color");
+    const apply = (hex) => {
+      target.editor.layerOps.setMaskColor(target.layerId, hex, gesture);
+    };
+    this.pick(anchor, { initial, title: "Mask colour", onInput: apply, onCommit: apply });
+  }
+}
+const BACKGROUND_ID = "\0background";
+class LayersPanel {
+  /**
+   * @param ctx - Host services.
+   */
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.element = el("div", "cps-layers");
+    const header = el("div", "cps-layers-header");
+    const title = el("span", "cps-layers-title");
+    title.textContent = "Layers";
+    this.opacity = layerOpacityControl("Opacity", "Opacity of the selected layer (drag the label to scrub)", () => this.selectedTarget(), ctx.popovers);
+    header.append(title, this.opacity.element);
+    this.list = el("div", "cps-layers-list");
+    const footer = el("div", "cps-layers-footer");
+    this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
+    this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
+    this.deleteButton = footerButton("trash", "Delete layer", () => this.withEditor((e) => e.layerOps.remove()));
+    footer.append(this.addButton, this.duplicateButton, this.deleteButton);
+    this.element.append(header, this.list, footer);
+    this.maskColor = new MaskColorPicker(ctx.pickColor);
+    this.actions = this.rowActions();
+    this.drag = new LayerDrag(
+      this.list,
+      (id, drop) => this.withEditor((e) => e.layerOps.move(id, drop.targetId, drop.above))
+    );
+    this.unbind.push(ctx.sidePanel.events.on("collapse", (collapsed) => !collapsed && this.thumbs.request()));
+  }
+  ctx;
+  element;
+  list;
+  opacity;
+  addButton;
+  duplicateButton;
+  deleteButton;
+  rows = /* @__PURE__ */ new Map();
+  maskControls = /* @__PURE__ */ new Map();
+  drag;
+  thumbs = new RefreshThrottle(() => this.refreshThumbs());
+  maskColor;
+  actions;
+  editor = null;
+  unbind = [];
+  editorUnbind = [];
+  renaming = false;
+  backgroundKeys = /* @__PURE__ */ new WeakMap();
+  backgroundCounter = 0;
+  /**
+   * Show an editor's layers (or nothing).
+   * @param editor - Editor to bind.
+   */
+  setEditor(editor) {
+    if (editor === this.editor) {
+      this.sync();
+      return;
+    }
+    this.unbindEditor();
+    this.editor = editor;
+    this.renaming = false;
+    for (const row of this.rows.values()) row.element.remove();
+    this.rows.clear();
+    this.maskControls.clear();
+    if (editor) {
+      this.editorUnbind = [
+        editor.events.on("layers", () => this.sync()),
+        editor.events.on("mask", () => this.sync()),
+        editor.events.on("render", () => this.thumbs.request()),
+        editor.events.on("change", () => this.thumbs.request())
+      ];
+    }
+    this.sync();
+  }
+  /** Remove listeners and DOM. */
+  dispose() {
+    this.setEditor(null);
+    for (const off of this.unbind) off();
+    this.unbind = [];
+    this.thumbs.dispose();
+    this.drag.dispose();
+    this.element.remove();
+  }
+  // ── Rendering ───────────────────────────────────────────────────────────
+  unbindEditor() {
+    for (const off of this.editorUnbind) off();
+    this.editorUnbind = [];
+  }
+  /** Rebuild row state from the editor (rows are reused by id). */
+  sync() {
+    if (this.renaming) return;
+    const editor = this.editor;
+    const wanted = [];
+    if (editor) {
+      const doc = editor.doc;
+      const targeting = editor.paintTarget === "mask";
+      const maskId = editor.maskLayer?.id;
+      for (let i = doc.layers.length - 1; i >= 0; i--) {
+        const layer = doc.layers[i];
+        if (!layer) continue;
+        const kind = isPaintLike(layer) ? "paint" : "mask";
+        const row = this.rowFor(kind, layer.id);
+        const active = layer.id === doc.activeLayerId;
+        const selected = kind === "mask" ? targeting && layer.id === maskId : !targeting && active;
+        row.update(rowModel(layer, selected, targeting && active));
+        wanted.push(row);
+      }
+      const bg = this.rowFor("background", BACKGROUND_ID);
+      bg.update({ id: BACKGROUND_ID, name: "Background", visible: true, locked: true, selected: false, standby: false });
+      wanted.push(bg);
+    }
+    const keep = new Set(wanted.map((r) => r.id));
+    for (const [id, row] of this.rows) {
+      if (keep.has(id)) continue;
+      row.element.remove();
+      this.rows.delete(id);
+      this.maskControls.delete(id);
+    }
+    const current = [...this.list.children];
+    if (current.length !== wanted.length || wanted.some((r, i) => current[i] !== r.element)) {
+      this.list.replaceChildren(...wanted.map((r) => r.element));
+    }
+    for (const control of this.maskControls.values()) control.refresh();
+    this.syncFooter();
+    this.thumbs.request();
+  }
+  syncFooter() {
+    const editor = this.editor;
+    const target = this.selectedTarget();
+    const paintId = editor && target && editor.paintTarget !== "mask" ? target.layerId : null;
+    this.addButton.disabled = !editor;
+    this.duplicateButton.disabled = !(editor && paintId && editor.layerOps.canDuplicate(paintId));
+    this.deleteButton.disabled = !(editor && paintId && editor.layerOps.canDelete(paintId));
+    this.opacity.refresh();
+    this.opacity.element.classList.toggle("cps-dim", !target);
+    const label = this.opacity.element.querySelector(".cps-num-label");
+    if (label) label.textContent = editor?.paintTarget === "mask" ? "Overlay" : "Opacity";
+  }
+  rowFor(kind, id) {
+    const existing = this.rows.get(id);
+    if (existing && existing.kind === kind) return existing;
+    existing?.element.remove();
+    let maskOpacity;
+    if (kind === "mask") {
+      maskOpacity = layerOpacityControl("Overlay", "Mask overlay opacity (display only)", () => this.targetFor(id), this.ctx.popovers);
+      this.maskControls.set(id, maskOpacity);
+    }
+    const row = new LayerRow(kind, id, this.actions, maskOpacity);
+    this.rows.set(id, row);
+    return row;
+  }
+  /** Redraw thumbnails whose pixels/geometry changed (throttled caller). */
+  refreshThumbs() {
+    const editor = this.editor;
+    if (!editor || this.ctx.sidePanel.collapsed || !this.element.isConnected) return;
+    const doc = editor.doc;
+    const bounds = editor.bounds;
+    const frame = doc.frame;
+    const geometry = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}|${frame.width}x${frame.height}`;
+    const region = { x: -bounds.x, y: -bounds.y, width: frame.width, height: frame.height };
+    for (const layer of doc.layers) {
+      const row = this.rows.get(layer.id);
+      if (!row) continue;
+      const mask = layer.kind === "mask";
+      const invert = mask && layer.invert === true;
+      const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
+      row.thumb.update(key, frame, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
+    }
+    const bg = this.rows.get(BACKGROUND_ID);
+    if (bg) {
+      const background = editor.background;
+      const size = editor.imageSize;
+      const id = background.kind === "fill" ? background.color : this.backgroundId(background.image);
+      bg.thumb.update(`${id}|${size.width}x${size.height}`, size, { kind: "background", background, size });
+    }
+  }
+  backgroundId(image) {
+    let id = this.backgroundKeys.get(image);
+    if (id === void 0) {
+      id = ++this.backgroundCounter;
+      this.backgroundKeys.set(image, id);
+    }
+    return `img${id}`;
+  }
+  // ── Actions ─────────────────────────────────────────────────────────────
+  rowActions() {
+    return {
+      select: (id) => this.withEditor((e) => {
+        if (e.maskLayer?.id === id) {
+          e.setPaintTarget("mask");
+          return;
+        }
+        e.layerOps.setActiveLayer(id);
+        e.setPaintTarget("paint");
+      }),
+      toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer(e, id)?.visible)),
+      toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
+      rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
+      toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
+      pickColor: (id, anchor) => {
+        const editor = this.editor;
+        const layer = editor && findLayer(editor, id);
+        if (editor && layer) this.maskColor.open(anchor, { editor, layerId: id }, maskDisplayColor(layer));
+      },
+      renaming: (active) => {
+        this.renaming = active;
+        if (active) return;
+        this.ctx.releaseFocus();
+        this.sync();
+      }
+    };
+  }
+  addLayer() {
+    this.withEditor((e) => {
+      if (e.layerOps.add()) e.setPaintTarget("paint");
+    });
+  }
+  withEditor(fn) {
+    const editor = this.editor;
+    if (!editor) return;
+    this.ctx.beforeEdit();
+    fn(editor);
+  }
+  /** Layer the header opacity edits: the mask in Quick Mask, else the active paint layer. */
+  selectedTarget() {
+    const editor = this.editor;
+    if (!editor) return null;
+    const id = editor.paintTarget === "mask" ? editor.maskLayer?.id : editor.doc.activeLayerId;
+    return id ? this.targetFor(id) : null;
+  }
+  targetFor(id) {
+    const editor = this.editor;
+    return editor && findLayer(editor, id) ? { editor, layerId: id } : null;
+  }
+}
+function rowModel(layer, selected, standby) {
+  const model = { id: layer.id, name: layer.name, visible: layer.visible, locked: layer.locked, selected, standby };
+  if (layer.kind === "mask") {
+    model.color = maskDisplayColor(layer);
+    model.invert = layer.invert === true;
+  }
+  return model;
+}
+function findLayer(editor, id) {
+  return editor.doc.layers.find((l) => l.id === id);
+}
+function el(tag, className) {
+  const element = document.createElement(tag);
+  element.className = className;
+  return element;
+}
+function footerButton(icon, title, onClick) {
+  const button2 = el("button", "cps-icon-button cps-layers-action");
+  button2.type = "button";
+  button2.title = title;
+  setIcon(button2, icon, 16);
+  button2.addEventListener("click", onClick);
+  return button2;
+}
+function groupControl(group2, descriptors, ctx) {
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = "cps-icon-button cps-option-group";
+  button2.title = group2.title;
+  button2.setAttribute("aria-haspopup", "dialog");
+  button2.setAttribute("aria-expanded", "false");
+  setIcon(button2, group2.icon, 18);
+  let open = null;
+  const refresh = () => {
+    const on = isGroupActive(group2, (key) => ctx.options.get(key));
+    button2.classList.toggle("cps-on", on);
+    button2.title = on ? `${group2.title} (on)` : group2.title;
+    for (const control of open?.controls ?? []) control.refresh();
+  };
+  const setOpen = (value) => {
+    button2.classList.toggle("cps-active", value);
+    button2.setAttribute("aria-expanded", String(value));
+  };
+  button2.addEventListener("click", () => {
+    if (open) {
+      open.handle.close();
+      return;
+    }
+    const content = document.createElement("div");
+    content.className = "cps-group-pop";
+    const title = document.createElement("div");
+    title.className = "cps-group-title";
+    title.textContent = group2.title;
+    const controls = descriptors.map((desc) => createControl(desc, ctx));
+    content.append(title, ...controls.map((c) => c.element));
+    const handle = ctx.popovers.open(content, {
+      anchor: button2,
+      placement: "below",
+      className: "cps-pop-group",
+      onClose: () => {
+        open = null;
+        setOpen(false);
+      }
+    });
+    open = { handle, controls };
+    setOpen(true);
+    refresh();
+  });
+  refresh();
+  return { element: button2, refresh };
+}
 class OptionsBar {
   /**
+   * @param regions - Shell bar regions to render into.
+   * @param popovers - Popover host (number slider popovers).
    * @param onChange - Called after the user edits an option.
-   * @param onToggleMaskVisible - Eye button clicked.
    */
-  constructor(onChange, onToggleMaskVisible) {
+  constructor(regions, popovers, onChange) {
+    this.regions = regions;
+    this.popovers = popovers;
     this.onChange = onChange;
-    this.element = document.createElement("div");
-    this.element.className = "cps-options";
     this.maskBadge = document.createElement("span");
     this.maskBadge.className = "cps-mask-badge";
     this.maskBadge.textContent = "Mask";
     this.maskBadge.title = "Quick Mask: strokes paint the mask (Q to exit)";
     this.maskBadge.hidden = true;
-    this.maskEye = document.createElement("button");
-    this.maskEye.type = "button";
-    this.maskEye.className = "cps-mask-eye";
-    this.maskEye.addEventListener("click", onToggleMaskVisible);
-    const svgNs = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(svgNs, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("aria-hidden", "true");
-    this.maskEyePath = document.createElementNS(svgNs, "path");
-    svg.appendChild(this.maskEyePath);
-    this.maskEye.appendChild(svg);
-    this.element.append(this.maskBadge, this.maskEye);
-    for (const field of NUMBER_FIELDS) {
-      const label = document.createElement("label");
-      label.className = "cps-opt";
-      label.title = field.label;
-      const name = document.createElement("span");
-      name.textContent = field.label;
-      const input = document.createElement("input");
-      input.type = "range";
-      input.min = String(field.min);
-      input.max = String(field.max);
-      input.step = "1";
-      const value = document.createElement("span");
-      value.className = "cps-opt-value";
-      input.addEventListener("input", () => {
-        if (!this.options) return;
-        this.options[field.key] = Number(input.value) / field.scale;
-        value.textContent = input.value;
-        this.onChange();
-      });
-      label.append(name, input, value);
-      this.element.appendChild(label);
-      this.ranges.set(field.key, { input, value });
-    }
-    this.colorWrap = document.createElement("label");
-    this.colorWrap.className = "cps-opt";
-    this.colorWrap.title = "Color";
-    this.color = document.createElement("input");
-    this.color.type = "color";
-    this.color.className = "cps-color";
-    this.color.addEventListener("input", () => {
-      if (!this.options || this.options.color === void 0) return;
-      this.options.color = this.color.value;
-      this.onChange();
-    });
-    this.colorWrap.appendChild(this.color);
-    this.element.appendChild(this.colorWrap);
-    this.pressureSize = this.toggle("P→size", "Pen pressure controls size", (v) => {
-      if (this.options) this.options.pressureSize = v;
-    });
-    this.pressureOpacity = this.toggle("P→opac", "Pen pressure controls opacity", (v) => {
-      if (this.options) this.options.pressureOpacity = v;
-    });
+    regions.leading.append(this.maskBadge);
   }
+  regions;
+  popovers;
   onChange;
-  element;
   options = null;
-  ranges = /* @__PURE__ */ new Map();
-  color;
-  colorWrap;
-  pressureSize;
-  pressureOpacity;
+  controls = [];
   maskBadge;
-  maskEye;
-  maskEyePath;
-  maskTargeting = false;
   /**
-   * Show options of a tool (or hide when `null`).
-   * @param options - Options object (edited in place).
+   * Show a tool's options (rebuilds controls only when the options object
+   * changes, so an in-progress scrub survives refreshes).
+   * @param options - Options to edit, or `null` for none.
    */
   bind(options) {
+    if (options === this.options) {
+      this.refresh();
+      return;
+    }
+    this.closeOwnPopover();
     this.options = options;
-    this.element.hidden = options === null;
-    this.refresh();
+    this.controls = [];
+    const scroller = this.regions.scroller;
+    scroller.replaceChildren();
+    scroller.scrollLeft = 0;
+    if (!options) return;
+    const ctx = { options, popovers: this.popovers, changed: () => this.onChange() };
+    for (const item of layoutOptions(options.descriptors, options.groups)) {
+      if (item.kind === "separator") {
+        scroller.appendChild(separator());
+        continue;
+      }
+      const control = item.kind === "group" ? groupControl(item.group, item.descriptors, ctx) : createControl(item.desc, ctx);
+      this.controls.push(control);
+      scroller.appendChild(control.element);
+    }
   }
   /** Re-read values from the bound options (after shortcuts changed them). */
   refresh() {
-    const options = this.options;
-    if (!options) return;
-    for (const field of NUMBER_FIELDS) {
-      const entry = this.ranges.get(field.key);
-      if (!entry) continue;
-      const v = String(Math.round(options[field.key] * field.scale));
-      entry.input.value = v;
-      entry.value.textContent = v;
-    }
-    this.colorWrap.hidden = options.color === void 0 || this.maskTargeting;
-    if (options.color !== void 0) this.color.value = options.color;
-    this.pressureSize.checked = options.pressureSize;
-    this.pressureOpacity.checked = options.pressureOpacity;
+    for (const control of this.controls) control.refresh();
   }
   /**
-   * Update the mask badge and eye button.
+   * Update the mask badge.
    * @param state - Current mask state.
    */
   setMask(state) {
-    this.maskTargeting = state.targeting;
     this.maskBadge.hidden = !state.targeting;
     this.maskBadge.style.backgroundColor = state.color;
-    this.maskEyePath.setAttribute("d", state.visible ? EYE_OPEN : EYE_CLOSED);
-    this.maskEye.classList.toggle("cps-off", !state.visible);
-    this.maskEye.style.color = state.visible ? state.color : "";
-    this.maskEye.title = state.visible ? "Hide mask (also excludes it from the MASK output)" : "Show mask (hidden masks are excluded from the MASK output)";
-    this.maskEye.setAttribute("aria-pressed", String(state.visible));
-    this.refresh();
   }
-  toggle(text, title, apply) {
-    const label = document.createElement("label");
-    label.className = "cps-opt cps-opt-toggle";
-    label.title = title;
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.addEventListener("change", () => {
-      apply(input.checked);
-      this.onChange();
+  /** Close a slider popover anchored in the bar (its control is going away). */
+  closeOwnPopover() {
+    this.popovers.closeAnchoredIn(this.regions.element);
+  }
+}
+function separator() {
+  const sep = document.createElement("span");
+  sep.className = "cps-bar-sep";
+  return sep;
+}
+const GAP = 4;
+class PopoverHost {
+  /**
+   * @param root - Editor root (the host is appended to it).
+   */
+  constructor(root) {
+    this.root = root;
+    this.element = document.createElement("div");
+    this.element.className = "cps-popover-host";
+    root.appendChild(this.element);
+  }
+  root;
+  /** Overlay element (append-only child of the editor root). */
+  element;
+  /** `close` fires after any popover closed. */
+  events = new Emitter();
+  /** Open popovers, bottom (outermost) first. */
+  stack = [];
+  outside = (event) => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    for (let top = this.stack.at(-1); top; top = this.stack.at(-1)) {
+      if (top.element.contains(target) || top.anchor.contains(target)) return;
+      top.close();
+    }
+  };
+  /** Whether a popover is open. */
+  get isOpen() {
+    return this.stack.length > 0;
+  }
+  /** The topmost open popover, if any. */
+  get active() {
+    return this.stack.at(-1) ?? null;
+  }
+  /**
+   * Open `content` next to an anchor. Open popovers that do not contain the
+   * anchor close first; one that does stays open underneath (nesting).
+   * @param content - Popover content.
+   * @param options - Anchor, placement, close callback.
+   * @returns Handle of the new popover.
+   */
+  open(content, options) {
+    for (let top = this.stack.at(-1); top && !top.element.contains(options.anchor); top = this.stack.at(-1)) {
+      top.close();
+    }
+    const element = document.createElement("div");
+    element.className = `cps-popover${options.className ? ` ${options.className}` : ""}`;
+    element.appendChild(content);
+    element.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      handle.close();
     });
-    const span = document.createElement("span");
-    span.textContent = text;
-    label.append(input, span);
-    this.element.appendChild(label);
-    return input;
+    this.element.appendChild(element);
+    let closed = false;
+    const handle = {
+      element,
+      anchor: options.anchor,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        const index = this.stack.indexOf(handle);
+        while (index >= 0 && this.stack.length > index + 1) this.stack.at(-1)?.close();
+        if (index >= 0) this.stack.splice(index, 1);
+        element.remove();
+        if (this.stack.length === 0) window.removeEventListener("pointerdown", this.outside, true);
+        options.onClose?.();
+        this.events.emit("close", void 0);
+      },
+      reposition: () => {
+        if (options.anchor.isConnected) this.position(element, options.anchor, options.placement ?? "below");
+        else handle.close();
+      }
+    };
+    this.stack.push(handle);
+    window.addEventListener("pointerdown", this.outside, true);
+    handle.reposition();
+    return handle;
   }
+  /** Close every open popover. @returns `true` if one was open. */
+  close() {
+    const bottom = this.stack[0];
+    if (!bottom) return false;
+    bottom.close();
+    return true;
+  }
+  /**
+   * Close the open popovers anchored inside `container` (and their children).
+   * @param container - E.g. the options bar whose controls are being rebuilt.
+   */
+  closeAnchoredIn(container) {
+    const handle = this.stack.find((h) => container.contains(h.anchor));
+    handle?.close();
+  }
+  /** Close and remove the layer. */
+  dispose() {
+    this.close();
+    this.events.clear();
+    this.element.remove();
+  }
+  // ── Positioning ─────────────────────────────────────────────────────────
+  position(element, anchor, placement) {
+    const rootRect = this.root.getBoundingClientRect();
+    const scale = this.root.offsetWidth > 0 && rootRect.width > 0 ? rootRect.width / this.root.offsetWidth : 1;
+    const a = anchor.getBoundingClientRect();
+    const ox = rootRect.left + this.root.clientLeft * scale;
+    const oy = rootRect.top + this.root.clientTop * scale;
+    const box = {
+      left: (a.left - ox) / scale,
+      top: (a.top - oy) / scale,
+      right: (a.right - ox) / scale,
+      bottom: (a.bottom - oy) / scale
+    };
+    const w = element.offsetWidth;
+    const h = element.offsetHeight;
+    const rootW = this.root.clientWidth;
+    const rootH = this.root.clientHeight;
+    let left;
+    let top;
+    if (placement === "right") {
+      left = box.right + GAP;
+      top = box.top;
+      if (left + w > rootW) left = box.left - GAP - w;
+    } else {
+      left = box.left;
+      top = placement === "above" ? box.top - GAP - h : box.bottom + GAP;
+      if (placement === "below" && top + h > rootH) top = box.top - GAP - h;
+      if (placement === "above" && top < 0) top = box.bottom + GAP;
+    }
+    element.style.left = `${Math.round(clamp(left, 0, rootW - w))}px`;
+    element.style.top = `${Math.round(clamp(top, 0, rootH - h))}px`;
+  }
+}
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(Math.max(lo, hi), v));
+}
+const NARROW_EDITOR_WIDTH = 520;
+const INITIAL_PANEL_STATE = { sizeClass: null, userCollapsed: null };
+function sizeClassOf(width) {
+  return width < NARROW_EDITOR_WIDTH ? "narrow" : "wide";
+}
+function isPanelCollapsed(state) {
+  if (state.userCollapsed !== null) return state.userCollapsed;
+  return state.sizeClass !== "wide";
+}
+function panelResized(state, width) {
+  if (!(width > 0)) return state;
+  const sizeClass = sizeClassOf(width);
+  if (sizeClass === state.sizeClass) return state;
+  return { sizeClass, userCollapsed: null };
+}
+function panelSetByUser(state, collapsed) {
+  return { sizeClass: state.sizeClass, userCollapsed: collapsed };
+}
+class SidePanel {
+  /** Panel element (a region of the shell body). */
+  element;
+  /** Mount point for panel content (placeholder "Layers" until M3.3). */
+  content;
+  events = new Emitter();
+  state = INITIAL_PANEL_STATE;
+  shown;
+  constructor() {
+    this.element = document.createElement("div");
+    this.element.className = "cps-side";
+    this.content = document.createElement("div");
+    this.content.className = "cps-side-content";
+    const placeholder = document.createElement("div");
+    placeholder.className = "cps-side-placeholder";
+    placeholder.textContent = "Layers";
+    this.content.appendChild(placeholder);
+    this.element.appendChild(this.content);
+    this.shown = !isPanelCollapsed(this.state);
+    this.apply();
+  }
+  /** Whether the panel is collapsed. */
+  get collapsed() {
+    return !this.shown;
+  }
+  /**
+   * Collapse or expand (counts as an explicit choice until the editor
+   * changes size class).
+   * @param collapsed - New state.
+   */
+  setCollapsed(collapsed) {
+    this.update(panelSetByUser(this.state, collapsed));
+  }
+  /**
+   * Current collapse state, for {@link SidePanel.restore} (fullscreen saves
+   * it on enter and restores it on exit).
+   * @returns Immutable state snapshot.
+   */
+  snapshot() {
+    return this.state;
+  }
+  /**
+   * Restore a {@link SidePanel.snapshot}. Its size class is the one the
+   * editor returns to, so the following resize keeps it.
+   * @param state - Snapshot.
+   */
+  restore(state) {
+    this.update(state);
+  }
+  /** Flip the collapsed state (the bar's panel button). */
+  toggle() {
+    this.setCollapsed(!this.collapsed);
+  }
+  /**
+   * Editor root width changed (from the shell's ResizeObserver).
+   * @param width - Root width, CSS px.
+   */
+  handleWidth(width) {
+    this.update(panelResized(this.state, width));
+  }
+  update(next) {
+    this.state = next;
+    const shown = !isPanelCollapsed(next);
+    if (shown === this.shown) return;
+    this.shown = shown;
+    this.apply();
+    this.events.emit("collapse", !shown);
+  }
+  apply() {
+    this.element.hidden = !this.shown;
+  }
+}
+class EditorShell {
+  /** Editor root (child of the DOM widget element; re-parented for fullscreen). */
+  root;
+  rail;
+  bar;
+  /** Canvas stage. */
+  stage;
+  sidePanel;
+  popoverHost;
+  events = new Emitter();
+  panelButton;
+  resizeObserver;
+  nativeInput = null;
+  nativeApply = null;
+  constructor() {
+    this.root = div("cps-root");
+    this.rail = { element: div("cps-rail"), tools: div("cps-rail-tools"), swatchSlot: div("cps-rail-swatches") };
+    this.rail.element.append(this.rail.tools, this.rail.swatchSlot);
+    this.bar = {
+      element: div("cps-bar"),
+      leading: div("cps-bar-leading"),
+      scroller: div("cps-bar-scroller"),
+      trailing: div("cps-bar-trailing")
+    };
+    this.panelButton = document.createElement("button");
+    this.panelButton.type = "button";
+    this.panelButton.className = "cps-icon-button";
+    setIcon(this.panelButton, "panel", 18);
+    this.panelButton.addEventListener("click", () => this.sidePanel.toggle());
+    this.bar.trailing.appendChild(this.panelButton);
+    this.bar.element.append(this.bar.leading, this.bar.scroller, this.bar.trailing);
+    this.stage = div("cps-stage");
+    this.stage.tabIndex = -1;
+    this.sidePanel = new SidePanel();
+    const body = div("cps-body");
+    body.append(this.stage, this.sidePanel.element);
+    const main = div("cps-main");
+    main.append(this.bar.element, body);
+    this.root.append(this.rail.element, main);
+    this.popoverHost = new PopoverHost(this.root);
+    this.sidePanel.events.on("collapse", () => this.syncPanelButton());
+    this.syncPanelButton();
+    this.resizeObserver = new ResizeObserver(() => this.sidePanel.handleWidth(this.root.clientWidth));
+    this.resizeObserver.observe(this.root);
+  }
+  /**
+   * Ask for a colour picker for a swatch: emits `pick-color`; if no listener
+   * handles it, falls back to the native colour input.
+   * @param slot - Foreground or background.
+   * @param anchor - Swatch element.
+   * @param current - Current colour (`#rrggbb`).
+   * @param apply - Called with each picked colour.
+   */
+  requestColorPick(slot, anchor, current, apply) {
+    const request = { slot, anchor, handled: false };
+    this.events.emit("pick-color", request);
+    if (!request.handled) this.nativeColorPick(current, apply);
+  }
+  /**
+   * Horizontal scroll for wheel over the options bar (vertical wheels scroll
+   * it sideways). Called by the event isolation guard for non-stage wheels.
+   * @param event - Wheel event (propagation already stopped).
+   */
+  handleChromeWheel(event) {
+    const target = event.target;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      return;
+    }
+    if (!(target instanceof Node) || !this.bar.element.contains(target)) return;
+    event.preventDefault();
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? this.bar.scroller.clientWidth : 1;
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    this.bar.scroller.scrollLeft += delta * unit;
+  }
+  /** Disconnect observers and close popovers. */
+  dispose() {
+    this.resizeObserver.disconnect();
+    this.popoverHost.dispose();
+    this.events.clear();
+    this.sidePanel.events.clear();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  syncPanelButton() {
+    const open = !this.sidePanel.collapsed;
+    this.panelButton.classList.toggle("cps-active", open);
+    this.panelButton.setAttribute("aria-pressed", String(open));
+    this.panelButton.title = open ? "Hide layers panel" : "Show layers panel";
+  }
+  /** Fallback picker until M3.2: a hidden native `<input type=color>`. */
+  nativeColorPick(current, apply) {
+    let input = this.nativeInput;
+    if (!input) {
+      const created = document.createElement("input");
+      created.type = "color";
+      created.className = "cps-native-color";
+      created.tabIndex = -1;
+      created.addEventListener("input", () => this.nativeApply?.(created.value));
+      created.addEventListener("change", () => this.nativeApply?.(created.value));
+      this.popoverHost.element.appendChild(created);
+      this.nativeInput = input = created;
+    }
+    this.nativeApply = apply;
+    input.value = current;
+    if (typeof input.showPicker === "function") {
+      try {
+        input.showPicker();
+        return;
+      } catch {
+      }
+    }
+    input.click();
+  }
+}
+function div(className) {
+  const element = document.createElement("div");
+  element.className = className;
+  return element;
 }
 function handleShortcut(event, session, effects) {
   const { editor, tools } = session;
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
+  if (key === "escape" && !ctrl && !event.altKey) return effects.closePopover() || effects.exitFullscreen();
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());
     if (key === "z" && event.shiftKey || key === "y" && !event.shiftKey) return run(() => editor.redo());
@@ -2129,40 +5039,51 @@ function handleShortcut(event, session, effects) {
   if (event.altKey || ctrl) return false;
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {
-    if (!options) return false;
     const up = event.code === "BracketRight" || key === "]" || key === "}";
-    if (event.shiftKey) options.hardness = stepHardness(options.hardness, up);
-    else options.size = stepSize(options.size, up);
-    effects.optionsChanged();
+    const changed = event.shiftKey ? stepOption(options, "hardness", (v) => stepHardness(v, up)) : stepOption(options, "size", (v) => stepSize(v, up));
+    if (changed === null) return false;
+    if (changed) effects.optionsChanged();
     return true;
   }
   const digit = /^Digit([0-9])$/.exec(event.code)?.[1] ?? (/^[0-9]$/.test(key) ? key : null);
   if (digit !== null && !event.shiftKey) {
-    if (!options) return false;
-    setOpacity(options, digit === "0" ? 1 : Number(digit) / 10);
-    effects.optionsChanged();
+    const changed = stepOption(options, "opacity", () => digit === "0" ? 1 : Number(digit) / 10);
+    if (changed === null) return false;
+    if (changed) effects.optionsChanged();
     return true;
   }
-  if (!event.shiftKey && key === "q") {
-    effects.cancelDrag();
-    editor.togglePaintTarget();
-    return true;
-  }
-  if (!event.shiftKey && key.length === 1) {
-    const tool = tools.byShortcut(key);
-    if (tool) {
-      if (tool.id !== tools.active.id) {
-        effects.cancelDrag();
-        tools.setActive(tool.id);
-      }
+  if (event.shiftKey || key.length !== 1) return false;
+  switch (key) {
+    case "q":
+      effects.cancelDrag();
+      editor.togglePaintTarget();
       return true;
-    }
+    case "x":
+      editor.colors.swap();
+      return true;
+    case "d":
+      editor.colors.reset();
+      return true;
+    case "f":
+      effects.fullscreen();
+      return true;
   }
-  return false;
+  const tool = tools.byShortcut(key);
+  if (!tool) return false;
+  if (tool.id !== tools.active.id) {
+    effects.cancelDrag();
+    tools.setActive(tool.id);
+  }
+  return true;
 }
 function run(action) {
   action();
   return true;
+}
+function stepOption(options, key, next) {
+  const value = options?.get(key);
+  if (!options || typeof value !== "number") return null;
+  return options.set(key, next(value));
 }
 function stepSize(size, up) {
   const step = size < 10 ? 1 : size < 50 ? 5 : size < 100 ? 10 : size < 300 ? 25 : 50;
@@ -2172,9 +5093,6 @@ function stepSize(size, up) {
 function stepHardness(hardness, up) {
   const next = Math.round((hardness + (up ? 0.25 : -0.25)) * 4) / 4;
   return Math.min(1, Math.max(0, next));
-}
-function setOpacity(options, value) {
-  options.opacity = value;
 }
 class StageInput {
   /**
@@ -2329,156 +5247,120 @@ class StageInput {
     if (this.stage.hasPointerCapture(pointerId)) this.stage.releasePointerCapture(pointerId);
   }
 }
-const ICONS = {
-  brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
-  eraser: "M7 20h10M4 14l8-8 6 6-8 8H7z",
-  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
-  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
-  // Four corner brackets indicating "fit to view".
-  fit: "M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4",
-  clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
-  // Photoshop's Quick Mask: a rectangle with a circle in it.
-  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7"
+const STAGE_STYLE = {
+  surround: "#1e1e1e",
+  checkerLight: "#cfcfcf",
+  checkerDark: "#a8a8a8",
+  checkerCell: 8,
+  offFrameVeil: "rgba(30, 30, 30, 0.55)",
+  frameOutline: "rgba(255, 255, 255, 0.55)",
+  frameShadow: "rgba(0, 0, 0, 0.6)"
 };
-class ToolRail {
-  /**
-   * @param actions - Button handlers.
-   */
-  constructor(actions) {
-    this.actions = actions;
-    this.element = document.createElement("div");
-    this.element.className = "cps-rail";
-    this.toolBox = document.createElement("div");
-    this.toolBox.className = "cps-rail-group";
-    this.quickMaskButton = railButton("quickMask", "Quick Mask (Q)", () => this.actions.toggleQuickMask());
-    this.quickMaskButton.classList.add("cps-rail-quickmask");
-    this.quickMaskButton.setAttribute("aria-pressed", "false");
-    const spacer = document.createElement("div");
-    spacer.className = "cps-rail-spacer";
-    this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
-    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
-    const fitButton = railButton("fit", "Fit to view (Ctrl+0)", () => this.actions.fit());
-    const clearButton = railButton("clear", "Clear canvas", () => this.actions.clear());
-    this.element.append(
-      this.toolBox,
-      this.quickMaskButton,
-      spacer,
-      this.undoButton,
-      this.redoButton,
-      fitButton,
-      clearButton
-    );
+const checkerPatterns = /* @__PURE__ */ new WeakMap();
+function composite(input) {
+  const { ctx, pixelRatio: pr, view, imageSize, map, bounds } = input;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = STAGE_STYLE.surround;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const imageRect = frameRect(imageSize);
+  const paintRect = docRectToImage(map, bounds);
+  const frameScreen = scaleRect(docRectToStage(view, imageRect), pr);
+  const boundsScreen = scaleRect(docRectToStage(view, paintRect), pr);
+  const pattern = checkerPattern(ctx);
+  if (pattern) {
+    ctx.fillStyle = pattern;
+    ctx.fillRect(frameScreen.x, frameScreen.y, frameScreen.width, frameScreen.height);
   }
-  actions;
-  element;
-  toolButtons = /* @__PURE__ */ new Map();
-  toolBox;
-  undoButton;
-  redoButton;
-  quickMaskButton;
-  /**
-   * Show the Quick Mask state (highlighted while strokes go to the mask).
-   * @param on - Mask is the paint target.
-   * @param color - Mask display colour (tints the highlighted icon).
-   */
-  setQuickMask(on, color) {
-    this.quickMaskButton.classList.toggle("cps-active", on);
-    this.quickMaskButton.setAttribute("aria-pressed", String(on));
-    this.quickMaskButton.style.color = on ? color : "";
+  const k = view.scale * pr;
+  ctx.setTransform(k, 0, 0, k, view.offsetX * pr, view.offsetY * pr);
+  ctx.imageSmoothingEnabled = k < 2;
+  ctx.imageSmoothingQuality = "high";
+  if (input.background.kind === "image") {
+    ctx.drawImage(input.background.image, 0, 0, imageSize.width, imageSize.height);
+  } else {
+    ctx.fillStyle = input.background.color;
+    ctx.fillRect(0, 0, imageSize.width, imageSize.height);
   }
-  /**
-   * Rebuild tool buttons.
-   * @param tools - Tools in order.
-   * @param activeId - Active tool id.
-   */
-  setTools(tools, activeId) {
-    this.toolBox.replaceChildren();
-    this.toolButtons.clear();
-    for (const tool of tools) {
-      const button = railButton(
-        tool.id,
-        `${tool.label} (${tool.shortcut.toUpperCase()})`,
-        () => this.actions.selectTool(tool.id)
-      );
-      this.toolButtons.set(tool.id, button);
-      this.toolBox.appendChild(button);
-    }
-    this.setActive(activeId);
+  const placed = layerPlacement(map, bounds);
+  const resampled = placed.width !== bounds.width || placed.height !== bounds.height;
+  if (resampled) ctx.imageSmoothingEnabled = true;
+  for (const layer of input.layers) {
+    if (layer.opacity <= 0) continue;
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(layer.source, placed.x, placed.y, placed.width, placed.height);
   }
-  /**
-   * Highlight the active tool.
-   * @param activeId - Tool id.
-   */
-  setActive(activeId) {
-    for (const [id, button] of this.toolButtons) {
-      button.classList.toggle("cps-active", id === activeId);
-      button.setAttribute("aria-pressed", String(id === activeId));
+  for (const mask of input.masks) {
+    if (mask.opacity <= 0) continue;
+    ctx.globalAlpha = mask.opacity;
+    ctx.drawImage(mask.tint, placed.x, placed.y, placed.width, placed.height);
+    if (mask.invert) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, imageSize.width, imageSize.height);
+      ctx.clip();
+      ctx.fillStyle = mask.color;
+      ctx.beginPath();
+      ctx.rect(0, 0, imageSize.width, imageSize.height);
+      ctx.rect(placed.x, placed.y, placed.width, placed.height);
+      ctx.fill("evenodd");
+      ctx.restore();
     }
   }
-  /**
-   * Enable/disable undo and redo.
-   * @param canUndo - Undo available.
-   * @param canRedo - Redo available.
-   */
-  setHistory(canUndo, canRedo) {
-    this.undoButton.disabled = !canUndo;
-    this.redoButton.disabled = !canRedo;
+  ctx.globalAlpha = 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const extends_ = !containsRect(inflateRect(imageRect, EPSILON), paintRect);
+  if (extends_) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(boundsScreen.x, boundsScreen.y, boundsScreen.width, boundsScreen.height);
+    ctx.clip();
+    ctx.fillStyle = STAGE_STYLE.offFrameVeil;
+    ctx.beginPath();
+    ctx.rect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.rect(frameScreen.x, frameScreen.y, frameScreen.width, frameScreen.height);
+    ctx.fill("evenodd");
+    ctx.restore();
   }
+  const lw = Math.max(1, Math.round(pr));
+  ctx.lineWidth = lw;
+  ctx.strokeStyle = extends_ ? STAGE_STYLE.frameOutline : STAGE_STYLE.frameShadow;
+  ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
 }
-function railButton(icon, title, onClick) {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "cps-rail-button";
-  button.title = title;
-  button.addEventListener("click", onClick);
-  const svgNs = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNs, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS(svgNs, "path");
-  path.setAttribute("d", ICONS[icon] ?? "M4 4h16v16H4z");
-  svg.appendChild(path);
-  button.appendChild(svg);
-  return button;
+const EPSILON = 1e-6;
+function inflateRect(r, d) {
+  return { x: r.x - d, y: r.y - d, width: r.width + d * 2, height: r.height + d * 2 };
+}
+function scaleRect(r, k) {
+  return { x: r.x * k, y: r.y * k, width: r.width * k, height: r.height * k };
+}
+function checkerPattern(ctx) {
+  const cached = checkerPatterns.get(ctx);
+  if (cached) return cached;
+  const cell = STAGE_STYLE.checkerCell;
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = cell * 2;
+  const t = tile.getContext("2d");
+  if (!t) return null;
+  t.fillStyle = STAGE_STYLE.checkerLight;
+  t.fillRect(0, 0, cell * 2, cell * 2);
+  t.fillStyle = STAGE_STYLE.checkerDark;
+  t.fillRect(cell, 0, cell, cell);
+  t.fillRect(0, cell, cell, cell);
+  const pattern = ctx.createPattern(tile, "repeat");
+  if (pattern) checkerPatterns.set(ctx, pattern);
+  return pattern;
 }
 const NOTE_MS = 5e3;
-class EditorHost {
+class StageView {
   /**
-   * @param events - Owner callbacks.
+   * @param stage - Stage element (canvases are appended to it).
+   * @param session - Current session lookup.
    */
-  constructor(events = {}) {
-    this.events = events;
-    this.root = document.createElement("div");
-    this.root.className = "cps-root";
-    this.rail = new ToolRail({
-      selectTool: (id) => {
-        this.input.cancel();
-        this.session?.tools.setActive(id);
-      },
-      toggleQuickMask: () => {
-        this.input.cancel();
-        this.session?.editor.togglePaintTarget();
-      },
-      undo: () => this.session?.editor.undo(),
-      redo: () => this.session?.editor.redo(),
-      fit: () => {
-        this.session?.editor.view.fit();
-        this.requestRender();
-      },
-      clear: () => this.confirmClear()
-    });
-    this.optionsBar = new OptionsBar(
-      () => this.optionsChanged(),
-      () => {
-        const editor = this.session?.editor;
-        if (!editor || editor.loading) return;
-        this.input.cancel();
-        editor.setMaskVisible(!(editor.maskLayer?.visible ?? true));
-      }
-    );
-    this.stage = document.createElement("div");
-    this.stage.className = "cps-stage";
-    this.stage.tabIndex = -1;
+  constructor(stage, session) {
+    this.stage = stage;
+    this.session = session;
     this.canvas = document.createElement("canvas");
     this.canvas.className = "cps-canvas";
     this.ctx = this.canvas.getContext("2d");
@@ -2488,93 +5370,22 @@ class EditorHost {
     this.note = document.createElement("div");
     this.note.className = "cps-note";
     this.note.hidden = true;
-    this.stage.append(this.canvas, this.overlay, this.note);
-    const main = document.createElement("div");
-    main.className = "cps-main";
-    main.append(this.optionsBar.element, this.stage);
-    this.root.append(this.rail.element, main);
-    this.input = new StageInput(this.stage, {
-      session: () => this.session,
-      isSpaceDown: () => this.keyboard.isSpaceDown,
-      setDragging: (dragging) => this.keyboard.setHeld(dragging),
-      setHover: (point) => {
-        this.hover = point;
-        this.requestOverlay();
-      },
-      viewChanged: () => this.requestRender()
-    });
-    this.keyboard = new KeyboardScope(this.root, {
-      onKeyDown: (event) => this.session ? handleShortcut(event, this.session, {
-        optionsChanged: () => this.optionsChanged(),
-        viewChanged: () => this.requestRender(),
-        cancelDrag: () => this.input.cancel()
-      }) : false,
-      onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down)
-    });
-    this.resizeObserver = new ResizeObserver(() => this.handleResize());
-    this.resizeObserver.observe(this.stage);
+    stage.append(this.canvas, this.overlay, this.note);
   }
-  events;
-  /** Root element handed to `addDOMWidget`. */
-  root;
-  /** Canvas area. */
   stage;
-  /** Pointer/wheel router (the isolation guard forwards to it). */
-  input;
+  session;
   canvas;
   ctx;
   overlay;
   overlayCtx;
   note;
-  rail;
-  optionsBar;
-  keyboard;
-  resizeObserver;
-  session = null;
-  unbind = [];
   frameRequest = 0;
   overlayRequest = 0;
   pixelRatio = 1;
-  hover = null;
-  wasVisible = false;
   noteTimer = null;
   disposed = false;
-  // ── Public API ──────────────────────────────────────────────────────────
-  /**
-   * Show a session (or nothing).
-   * @param session - Session to bind.
-   */
-  setSession(session) {
-    if (session === this.session) return;
-    this.input.cancel();
-    for (const off of this.unbind) off();
-    this.unbind = [];
-    this.session = session;
-    if (session) {
-      const { editor, tools } = session;
-      this.unbind.push(
-        editor.events.on("render", () => this.requestRender()),
-        editor.events.on("history", () => this.syncHistory()),
-        editor.events.on("note", (text) => this.showNote(text)),
-        editor.events.on("mask", () => this.syncMask()),
-        editor.events.on("change", () => this.syncMask()),
-        tools.events.on("change", () => this.syncTools())
-      );
-      this.rail.setTools(tools.list(), tools.active.id);
-      this.syncTools();
-      this.syncMask();
-      this.syncHistory();
-      this.syncView();
-    }
-    this.requestRender();
-  }
-  /**
-   * Re-check the on-screen scale (graph zoom changes don''t trigger
-   * ResizeObserver) and redraw if the backing store would change.
-   */
-  refreshScale() {
-    if (this.syncBackingStore()) this.requestRender();
-  }
+  /** Pointer hover position, stage CSS px (`null` = outside). */
+  hover = null;
   /** Whether the stage is attached and has a non-zero layout size. */
   isVisible() {
     return this.stage.isConnected && this.stage.clientWidth > 0 && this.stage.clientHeight > 0;
@@ -2587,56 +5398,25 @@ class EditorHost {
       this.render();
     });
   }
-  /** Tear down listeners and canvases. Idempotent. */
-  dispose() {
+  /** Redraw synchronously, replacing any scheduled frame. */
+  renderNow() {
     if (this.disposed) return;
-    this.setSession(null);
-    this.disposed = true;
     if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
-    if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
-    if (this.noteTimer !== null) clearTimeout(this.noteTimer);
-    this.resizeObserver.disconnect();
-    this.input.dispose();
-    this.keyboard.dispose();
-    this.canvas.width = this.canvas.height = 0;
-    this.overlay.width = this.overlay.height = 0;
-    this.root.remove();
+    this.frameRequest = 0;
+    this.render();
   }
-  // ── Sync ────────────────────────────────────────────────────────────────
-  syncTools() {
-    const session = this.session;
-    if (!session) return;
-    this.rail.setActive(session.tools.active.id);
-    this.optionsBar.bind(session.tools.active.options);
-    this.requestOverlay();
+  /** Schedule an overlay-only redraw (cheap). */
+  requestOverlay() {
+    if (this.disposed || this.overlayRequest) return;
+    this.overlayRequest = requestAnimationFrame(() => {
+      this.overlayRequest = 0;
+      this.drawOverlay();
+    });
   }
-  /** Quick Mask button, "Mask" badge and eye toggle. */
-  syncMask() {
-    const editor = this.session?.editor;
-    if (!editor) return;
-    const mask = editor.maskLayer;
-    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
-    const targeting = editor.paintTarget === "mask";
-    this.rail.setQuickMask(targeting, color);
-    this.optionsBar.setMask({ targeting, color, visible: mask?.visible ?? true });
-  }
-  syncHistory() {
-    const editor = this.session?.editor;
-    this.rail.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
-  }
-  optionsChanged() {
-    this.optionsBar.refresh();
-    this.session?.tools.notifyOptions();
-    this.requestOverlay();
-  }
-  /** Clear button: confirm, then one undoable Clear (SPEC Behavior Notes). */
-  confirmClear() {
-    const editor = this.session?.editor;
-    if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint? This can be undone.")) return;
-    this.input.cancel();
-    editor.clear();
-  }
+  /**
+   * Show a transient note at the bottom of the stage.
+   * @param text - Note text.
+   */
   showNote(text) {
     this.note.textContent = text;
     this.note.hidden = false;
@@ -2646,25 +5426,11 @@ class EditorHost {
       this.noteTimer = null;
     }, NOTE_MS);
   }
-  // ── Sizing ──────────────────────────────────────────────────────────────
-  handleResize() {
-    const visible = this.isVisible();
-    if (visible && !this.wasVisible) this.events.onBecameVisible?.();
-    this.wasVisible = visible;
-    this.syncBackingStore();
-    this.requestRender();
-  }
-  stageSize() {
-    return { width: this.stage.clientWidth, height: this.stage.clientHeight };
-  }
-  displayScale() {
-    const rect = this.stage.getBoundingClientRect();
-    return this.stage.clientWidth > 0 && rect.width > 0 ? rect.width / this.stage.clientWidth : 1;
-  }
   /** Push stage size + graph zoom into the view (re-fits in fit mode). */
   syncView() {
-    if (!this.session || !this.isVisible()) return;
-    this.session.editor.view.setStage(this.stageSize(), this.displayScale());
+    const session = this.session();
+    if (!session || !this.isVisible()) return;
+    session.editor.view.setStage(this.stageSize(), this.displayScale());
   }
   /** @returns `true` if the backing store size changed. */
   syncBackingStore() {
@@ -2679,9 +5445,26 @@ class EditorHost {
     this.requestOverlay();
     return true;
   }
-  // ── Rendering ───────────────────────────────────────────────────────────
+  /** Cancel frames and release canvases. Idempotent. */
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
+    if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
+    if (this.noteTimer !== null) clearTimeout(this.noteTimer);
+    this.canvas.width = this.canvas.height = 0;
+    this.overlay.width = this.overlay.height = 0;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  stageSize() {
+    return { width: this.stage.clientWidth, height: this.stage.clientHeight };
+  }
+  displayScale() {
+    const rect = this.stage.getBoundingClientRect();
+    return this.stage.clientWidth > 0 && rect.width > 0 ? rect.width / this.stage.clientWidth : 1;
+  }
   render() {
-    const session = this.session;
+    const session = this.session();
     if (!this.ctx || !session || !this.isVisible()) return;
     this.syncBackingStore();
     const { editor } = session;
@@ -2700,20 +5483,13 @@ class EditorHost {
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
   }
-  requestOverlay() {
-    if (this.disposed || this.overlayRequest) return;
-    this.overlayRequest = requestAnimationFrame(() => {
-      this.overlayRequest = 0;
-      this.drawOverlay();
-    });
-  }
-  /** Brush-size ring at the hover position (cheap; separate canvas). */
+  /** Brush-size ring at the hover position (separate canvas). */
   drawOverlay() {
     const ctx = this.overlayCtx;
     if (!ctx) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
-    const session = this.session;
+    const session = this.session();
     const hover = this.hover;
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !hover || panning) return;
@@ -2732,6 +5508,464 @@ class EditorHost {
     ctx.stroke();
   }
 }
+class SwatchWidget {
+  element;
+  fg;
+  bg;
+  /**
+   * @param actions - Click handlers.
+   */
+  constructor(actions) {
+    this.element = document.createElement("div");
+    this.element.className = "cps-swatches";
+    this.bg = swatch("cps-swatch cps-swatch-bg", "Background color (X swaps)", () => actions.pick("bg", this.bg));
+    this.fg = swatch("cps-swatch cps-swatch-fg", "Foreground color (X swaps)", () => actions.pick("fg", this.fg));
+    const swap = swatch("cps-swatch-swap", "Swap colors (X)", () => actions.swap());
+    setIcon(swap, "swap", 11);
+    const reset = swatch("cps-swatch-reset", "Default colors (D)", () => actions.reset());
+    reset.innerHTML = '<span class="cps-reset-bg"></span><span class="cps-reset-fg"></span>';
+    this.element.append(this.bg, this.fg, swap, reset);
+  }
+  /**
+   * Show colours.
+   * @param colors - Current FG/BG.
+   */
+  setColors(colors) {
+    this.fg.style.backgroundColor = colors.fg;
+    this.bg.style.backgroundColor = colors.bg;
+    this.fg.dataset["color"] = colors.fg;
+    this.bg.dataset["color"] = colors.bg;
+  }
+  /**
+   * Anchor element of a swatch (for pickers opened programmatically).
+   * @param slot - Which swatch.
+   * @returns The square's element.
+   */
+  anchor(slot) {
+    return slot === "fg" ? this.fg : this.bg;
+  }
+}
+function swatch(className, title, onClick) {
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = className;
+  button2.title = title;
+  button2.setAttribute("aria-label", title);
+  button2.addEventListener("click", onClick);
+  return button2;
+}
+class ToolRail {
+  /**
+   * @param container - Shell region to render into.
+   * @param actions - Button handlers.
+   */
+  constructor(container, actions) {
+    this.actions = actions;
+    this.toolBox = group();
+    this.quickMaskButton = railButton("quickMask", "Quick Mask (Q)", () => this.actions.toggleQuickMask());
+    this.quickMaskButton.classList.add("cps-rail-quickmask");
+    this.quickMaskButton.setAttribute("aria-pressed", "false");
+    const maskGroup = group();
+    maskGroup.appendChild(this.quickMaskButton);
+    const spacer = document.createElement("div");
+    spacer.className = "cps-rail-spacer";
+    this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
+    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
+    this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
+    this.fullscreenButton.setAttribute("aria-pressed", "false");
+    const actionGroup = group();
+    actionGroup.append(
+      this.undoButton,
+      this.redoButton,
+      railButton("fit", "Fit to view (Ctrl+0)", () => this.actions.fit()),
+      railButton("clear", "Clear canvas", () => this.actions.clear()),
+      this.fullscreenButton
+    );
+    container.append(this.toolBox, maskGroup, spacer, actionGroup);
+  }
+  actions;
+  toolButtons = /* @__PURE__ */ new Map();
+  toolBox;
+  undoButton;
+  redoButton;
+  quickMaskButton;
+  fullscreenButton;
+  toolIds = "";
+  /**
+   * Show the Quick Mask state (highlighted while strokes go to the mask).
+   * @param on - Mask is the paint target.
+   * @param color - Mask display colour (tints the highlighted icon).
+   */
+  setQuickMask(on, color) {
+    this.quickMaskButton.classList.toggle("cps-active", on);
+    this.quickMaskButton.setAttribute("aria-pressed", String(on));
+    this.quickMaskButton.style.color = on ? color : "";
+  }
+  /**
+   * Rebuild tool buttons from registry metadata (skipped when unchanged).
+   * @param tools - Tools in order.
+   * @param activeId - Active tool id.
+   */
+  setTools(tools, activeId) {
+    const ids = tools.map((t) => t.id).join(",");
+    if (ids !== this.toolIds) {
+      this.toolIds = ids;
+      this.toolBox.replaceChildren();
+      this.toolButtons.clear();
+      for (const tool of tools) {
+        const title = tool.shortcut ? `${tool.label} (${tool.shortcut.toUpperCase()})` : tool.label;
+        const button2 = railButton(tool.icon, title, () => this.actions.selectTool(tool.id));
+        button2.dataset["tool"] = tool.id;
+        this.toolButtons.set(tool.id, button2);
+        this.toolBox.appendChild(button2);
+      }
+    }
+    this.setActive(activeId);
+  }
+  /**
+   * Highlight the active tool.
+   * @param activeId - Tool id.
+   */
+  setActive(activeId) {
+    for (const [id, button2] of this.toolButtons) {
+      button2.classList.toggle("cps-active", id === activeId);
+      button2.setAttribute("aria-pressed", String(id === activeId));
+    }
+  }
+  /**
+   * Enable/disable undo and redo.
+   * @param canUndo - Undo available.
+   * @param canRedo - Redo available.
+   */
+  setHistory(canUndo, canRedo) {
+    this.undoButton.disabled = !canUndo;
+    this.redoButton.disabled = !canRedo;
+  }
+  /**
+   * Show the fullscreen state (the same button exits).
+   * @param on - Editor is fullscreen.
+   */
+  setFullscreen(on) {
+    const title = on ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)";
+    this.fullscreenButton.classList.toggle("cps-active", on);
+    this.fullscreenButton.setAttribute("aria-pressed", String(on));
+    this.fullscreenButton.title = title;
+    this.fullscreenButton.setAttribute("aria-label", title);
+    setIcon(this.fullscreenButton, on ? "exitFullscreen" : "fullscreen");
+  }
+}
+function group() {
+  const element = document.createElement("div");
+  element.className = "cps-rail-group";
+  return element;
+}
+function railButton(icon, title, onClick) {
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = "cps-rail-button";
+  button2.title = title;
+  button2.setAttribute("aria-label", title);
+  button2.addEventListener("click", onClick);
+  setIcon(button2, icon);
+  return button2;
+}
+class EditorHost {
+  /**
+   * @param events - Owner callbacks.
+   */
+  constructor(events = {}) {
+    this.events = events;
+    this.shell = new EditorShell();
+    this.root = this.shell.root;
+    this.stage = this.shell.stage;
+    this.fullscreen = new FullscreenMount(this.root, {
+      beforeChange: () => {
+        this.input.cancel();
+        this.shell.popoverHost.close();
+      },
+      onChange: (open) => this.fullscreenChanged(open),
+      isDetached: () => this.events.isDetached?.() ?? false
+    });
+    this.element = this.fullscreen.container;
+    this.view = new StageView(this.stage, () => this.session);
+    this.rail = new ToolRail(this.shell.rail.tools, {
+      selectTool: (id) => {
+        this.input.cancel();
+        this.session?.tools.setActive(id);
+      },
+      toggleQuickMask: () => {
+        this.input.cancel();
+        this.session?.editor.togglePaintTarget();
+      },
+      undo: () => this.session?.editor.undo(),
+      redo: () => this.session?.editor.redo(),
+      fit: () => {
+        this.session?.editor.view.fit();
+        this.view.requestRender();
+      },
+      clear: () => this.confirmClear(),
+      fullscreen: () => this.shell.events.emit("fullscreen", void 0)
+    });
+    this.swatches = new SwatchWidget({
+      pick: (slot, anchor) => {
+        const colors = this.session?.editor.colors;
+        if (colors) this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
+      },
+      swap: () => this.session?.editor.colors.swap(),
+      reset: () => this.session?.editor.colors.reset()
+    });
+    this.shell.rail.swatchSlot.appendChild(this.swatches.element);
+    this.optionsBar = new OptionsBar(this.shell.bar, this.shell.popoverHost, () => this.optionsChanged());
+    this.layers = new LayersPanel({
+      sidePanel: this.shell.sidePanel,
+      popovers: this.shell.popoverHost,
+      pickColor: (anchor, options) => openColorPicker(this.shell.popoverHost, anchor, options),
+      beforeEdit: () => this.input.cancel(),
+      releaseFocus: () => this.keyboard.reclaimFocus()
+    });
+    this.shell.sidePanel.content.replaceChildren(this.layers.element);
+    this.shell.events.on("pick-color", (request) => {
+      const colors = this.session?.editor.colors;
+      if (!colors) return;
+      const slot = request.slot;
+      request.handled = true;
+      openColorPicker(this.shell.popoverHost, request.anchor, {
+        initial: colors[slot],
+        title: slot === "fg" ? "Foreground" : "Background",
+        onInput: (hex) => colors.set(slot, hex),
+        onCommit: (hex) => colors.set(slot, hex)
+      });
+    });
+    this.input = new StageInput(this.stage, {
+      session: () => this.session,
+      isSpaceDown: () => this.keyboard.isSpaceDown,
+      setDragging: (dragging) => this.keyboard.setHeld(dragging),
+      setHover: (point) => {
+        this.view.hover = point;
+        this.view.requestOverlay();
+      },
+      viewChanged: () => this.view.requestRender()
+    });
+    this.keyboard = new KeyboardScope(this.root, {
+      onKeyDown: (event) => this.session ? handleShortcut(event, this.session, {
+        optionsChanged: () => this.optionsChanged(),
+        viewChanged: () => this.view.requestRender(),
+        cancelDrag: () => this.input.cancel(),
+        fullscreen: () => this.shell.events.emit("fullscreen", void 0),
+        closePopover: () => this.shell.popoverHost.close(),
+        exitFullscreen: () => {
+          if (!this.fullscreen.isOpen) return false;
+          this.fullscreen.exit();
+          return true;
+        }
+      }) : false,
+      onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
+      onSave: () => this.events.onSave?.(),
+      onDeactivate: () => this.events.onDisengage?.()
+    });
+    this.shell.popoverHost.events.on("close", () => this.keyboard.reclaimFocus());
+    this.shell.events.on("fullscreen", () => this.fullscreen.toggle());
+    this.resizeObserver = new ResizeObserver(() => this.handleResize());
+    this.resizeObserver.observe(this.stage);
+  }
+  events;
+  /** Layout regions + extension seams (side panel, popovers, events). */
+  shell;
+  /** Element handed to `addDOMWidget`; never moves (holds `root`). */
+  element;
+  /** Editor root (= `shell.root`); moves into the fullscreen overlay. */
+  root;
+  /** Canvas area. */
+  stage;
+  /** Pointer/wheel router (the isolation guard forwards to it). */
+  input;
+  view;
+  rail;
+  optionsBar;
+  swatches;
+  layers;
+  keyboard;
+  resizeObserver;
+  fullscreen;
+  restoreState = null;
+  session = null;
+  unbind = [];
+  wasVisible = false;
+  disposed = false;
+  // ── Public API ──────────────────────────────────────────────────────────
+  /** Session currently shown (M3.2/M3.3 read its editor and tools). */
+  get current() {
+    return this.session;
+  }
+  /**
+   * Show a session (or nothing).
+   * @param session - Session to bind.
+   */
+  setSession(session) {
+    if (session === this.session) return;
+    this.input.cancel();
+    this.shell.popoverHost.close();
+    for (const off of this.unbind) off();
+    this.unbind = [];
+    this.session = session;
+    this.layers.setEditor(session?.editor ?? null);
+    if (session) {
+      const { editor, tools } = session;
+      this.unbind.push(
+        editor.events.on("render", () => this.view.requestRender()),
+        editor.events.on("history", () => this.syncHistory()),
+        editor.events.on("note", (text) => this.view.showNote(text)),
+        editor.events.on("mask", () => this.syncMask()),
+        editor.events.on("change", () => this.syncMask()),
+        editor.colors.events.on("change", (colors) => this.swatches.setColors(colors)),
+        tools.events.on("change", () => this.syncTools())
+      );
+      this.rail.setTools(tools.list(), tools.active.id);
+      this.swatches.setColors(editor.colors.current);
+      this.syncTools();
+      this.syncMask();
+      this.syncHistory();
+      this.view.syncView();
+    }
+    this.view.requestRender();
+  }
+  /**
+   * Re-check the on-screen scale (graph zoom changes don't trigger
+   * ResizeObserver) and redraw if the backing store would change.
+   */
+  refreshScale() {
+    if (this.view.syncBackingStore()) this.view.requestRender();
+  }
+  /** Whether the stage is attached and has a non-zero layout size. */
+  isVisible() {
+    return this.view.isVisible();
+  }
+  /** Schedule a redraw on the next animation frame (coalesced). */
+  requestRender() {
+    this.view.requestRender();
+  }
+  /**
+   * Wheel over the editor outside the stage (rail, bar, side panel,
+   * popovers); propagation is already stopped by the isolation guard.
+   * @param event - Wheel event.
+   */
+  handleChromeWheel(event) {
+    this.shell.handleChromeWheel(event);
+  }
+  /** Whether the editor is fullscreen. */
+  get isFullscreen() {
+    return this.fullscreen.isOpen;
+  }
+  /** Leave fullscreen if open (the root returns to {@link EditorHost.element}). */
+  exitFullscreen() {
+    this.fullscreen.exit();
+  }
+  /**
+   * Tear down listeners and canvases (exits fullscreen first) and empty
+   * {@link EditorHost.element}. The element itself stays where it is: the
+   * owner removes it or hands its slot to a successor. Idempotent.
+   */
+  dispose() {
+    if (this.disposed) return;
+    this.fullscreen.dispose();
+    this.setSession(null);
+    this.disposed = true;
+    this.resizeObserver.disconnect();
+    this.input.dispose();
+    this.keyboard.dispose();
+    this.layers.dispose();
+    this.view.dispose();
+    this.shell.dispose();
+    this.root.remove();
+  }
+  // ── Sync ────────────────────────────────────────────────────────────────
+  syncTools() {
+    const session = this.session;
+    if (!session) return;
+    this.rail.setActive(session.tools.active.id);
+    this.optionsBar.bind(session.tools.active.options);
+    this.view.requestOverlay();
+  }
+  /** Quick Mask button and "Mask" badge (the eye lives in the layers panel). */
+  syncMask() {
+    const editor = this.session?.editor;
+    if (!editor) return;
+    const mask = editor.maskLayer;
+    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
+    const targeting = editor.paintTarget === "mask";
+    this.rail.setQuickMask(targeting, color);
+    this.root.classList.toggle("cps-quickmask", targeting);
+    this.optionsBar.setMask({ targeting, color });
+  }
+  syncHistory() {
+    const editor = this.session?.editor;
+    this.rail.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
+  }
+  optionsChanged() {
+    this.optionsBar.refresh();
+    this.session?.tools.notifyOptions();
+    this.view.requestOverlay();
+  }
+  /** Clear button: confirm, then one undoable Clear (SPEC Behavior Notes). */
+  confirmClear() {
+    const editor = this.session?.editor;
+    if (!editor || editor.loading) return;
+    if (!window.confirm("Clear all paint? This can be undone.")) return;
+    this.input.cancel();
+    editor.clear();
+  }
+  // ── Fullscreen ──────────────────────────────────────────────────────────
+  /** Root just moved into (`open`) or out of the overlay. */
+  fullscreenChanged(open) {
+    const panel = this.shell.sidePanel;
+    const view = this.session?.editor.view;
+    this.rail.setFullscreen(open);
+    this.root.classList.toggle("cps-is-fullscreen", open);
+    this.keyboard.setCaptureScope(open ? this.fullscreen.overlayElement : null);
+    if (open) {
+      this.restoreState = { panel: panel.snapshot(), fitting: view?.isFitting ?? true };
+      panel.setCollapsed(false);
+      view?.fit();
+    } else {
+      const saved = this.restoreState;
+      this.restoreState = null;
+      if (saved) panel.restore(saved.panel);
+      if (saved?.fitting) view?.fit();
+      this.events.onDisengage?.();
+    }
+    this.handleResize();
+  }
+  // ── Sizing ──────────────────────────────────────────────────────────────
+  handleResize() {
+    const visible = this.isVisible();
+    if (visible && !this.wasVisible) this.events.onBecameVisible?.();
+    this.wasVisible = visible;
+    if (this.view.syncBackingStore()) this.view.renderNow();
+    else this.view.requestRender();
+  }
+}
+function chooseForManifest(live) {
+  if (!live) return "restore";
+  if (live.owner === "other") return live.matchesRecent ? "fork-copy" : "fork-restore";
+  if (live.handedOff || live.matchesRecent) return "reuse";
+  return "restore";
+}
+function chooseForEmpty(status, facts) {
+  if (status === "invalid") return "reset";
+  if (facts.handoff) return "adopt";
+  return facts.hasPaint ? "reset" : "keep";
+}
+const SAVE_WORKFLOW_COMMAND = "Comfy.SaveWorkflow";
+function readSetting(id) {
+  const setting = app.extensionManager?.setting;
+  if (typeof setting?.get === "function") return setting.get(id);
+  return app.ui?.settings?.getSettingValue?.(id);
+}
+async function executeCommand(id) {
+  const command = app.extensionManager?.command;
+  if (typeof command?.execute !== "function") throw new Error("command API unavailable");
+  await command.execute(id);
+}
 const ROOT_STOPPED = [
   "pointerdown",
   "pointerup",
@@ -2743,21 +5977,26 @@ const ROOT_STOPPED = [
 ];
 const GUARDED_POINTER = ["pointerdown", "pointermove", "pointerup", "pointercancel"];
 function isolateEvents(options) {
-  const { root, stage, onWheel, onMiddlePointer } = options;
+  const { root, stage, onWheel, onChromeWheel, onMiddlePointer } = options;
   const controller = new AbortController();
   const { signal } = controller;
   const stop = (event) => event.stopPropagation();
   for (const type of ROOT_STOPPED) root.addEventListener(type, stop, { signal });
   stage.addEventListener("auxclick", (e) => e.preventDefault(), { signal });
-  stage.dataset["captureWheel"] = "true";
+  root.dataset["captureWheel"] = "true";
   let hovering = false;
   let middleDrag = false;
   let armed = false;
   const inStage = (target) => target instanceof Node && stage.contains(target);
+  const inRoot = (target) => target instanceof Node && root.contains(target);
   const wheelGuard = (event) => {
-    if (!inStage(event.target)) return;
-    event.preventDefault();
+    if (!inRoot(event.target)) return;
     event.stopPropagation();
+    if (!inStage(event.target)) {
+      onChromeWheel(event);
+      return;
+    }
+    event.preventDefault();
     onWheel(event);
   };
   const pointerGuard = (event) => {
@@ -2788,9 +6027,9 @@ function isolateEvents(options) {
     hovering = true;
     sync();
   };
-  stage.addEventListener("pointerenter", enter, { signal });
-  stage.addEventListener("pointermove", enter, { signal });
-  stage.addEventListener(
+  root.addEventListener("pointerenter", enter, { signal });
+  root.addEventListener("pointermove", enter, { signal });
+  root.addEventListener(
     "pointerleave",
     () => {
       hovering = false;
@@ -2819,9 +6058,9 @@ function normalizeHexColor(value, fallback = FALLBACK_DEFAULTS.color) {
   const hex = value.trim().replace(/^#/, "").toLowerCase();
   if (!/^[0-9a-f]+$/.test(hex)) return fallback;
   if (hex.length === 3 || hex.length === 4) {
-    return `#${[...hex].map((c) => c + c).join("")}`;
+    return `#${[...hex.slice(0, 3)].map((c) => c + c).join("")}`;
   }
-  if (hex.length === 6 || hex.length === 8) return `#${hex}`;
+  if (hex.length === 6 || hex.length === 8) return `#${hex.slice(0, 6)}`;
   return fallback;
 }
 function sanitizeDimension(value, fallback) {
@@ -2838,6 +6077,26 @@ function resolveFallbackFrame(knownFrame, width, height, color) {
     },
     color: normalizeHexColor(color)
   };
+}
+const offers = /* @__PURE__ */ new Map();
+function handoffKey(node) {
+  const graph = node.graph;
+  if (!graph) return null;
+  return `${graph.isRootGraph === false ? graph.id : "root"}:${String(node.id)}`;
+}
+function offerHandoff(key, handoff) {
+  offers.get(key)?.element.remove();
+  offers.set(key, handoff);
+  queueMicrotask(() => {
+    if (offers.get(key) !== handoff) return;
+    offers.delete(key);
+    handoff.element.remove();
+  });
+}
+function takeHandoff(key) {
+  const handoff = offers.get(key);
+  offers.delete(key);
+  return handoff;
 }
 const FOLDER_TYPES = /* @__PURE__ */ new Set(["input", "output", "temp"]);
 function parseAnnotatedFilename(value, defaultType = "input") {
@@ -2938,42 +6197,78 @@ function resultItemSource(item, origin) {
     origin
   };
 }
-const PRESSURE_CURVE = { minSizeRatio: 0.1, gamma: 1 };
-class PaintTool {
-  /**
-   * @param id - Tool id.
-   * @param label - Display label.
-   * @param shortcut - Single-key shortcut.
-   * @param mode - Paint or erase.
-   * @param defaults - Initial options.
-   */
-  constructor(id, label, shortcut, mode, defaults) {
-    this.id = id;
-    this.label = label;
-    this.shortcut = shortcut;
-    this.mode = mode;
-    this.options = { ...defaults };
+const PAINT_OPTION_DESCRIPTORS = [
+  { kind: "number", key: "size", label: "Size", title: "Brush size ([ / ])", min: 1, max: 1e3, step: 1, unit: "px", curve: "pow" },
+  { kind: "number", key: "hardness", label: "Hard", title: "Hardness (Shift+[ / ])", min: 0, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "opacity", label: "Opac", title: "Opacity (1..9, 0)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "flow", label: "Flow", title: "Flow (per-dab strength)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 200, step: 1, unit: "%", scale: 100 },
+  { kind: "toggle", key: "pressureSize", label: "Size", title: "Pen pressure controls size", group: "pressure" },
+  { kind: "toggle", key: "pressureOpacity", label: "Opacity", title: "Pen pressure controls opacity", group: "pressure" },
+  {
+    kind: "number",
+    key: "minSize",
+    label: "Min size",
+    title: "Size at zero pressure (% of size)",
+    min: 0,
+    max: 100,
+    step: 1,
+    unit: "%",
+    scale: 100,
+    group: "pressure",
+    dependsOn: ["pressureSize"]
+  },
+  {
+    kind: "number",
+    key: "gamma",
+    label: "Curve γ",
+    title: "Pressure curve (1 = linear, > 1 = softer start)",
+    min: 0.2,
+    max: 5,
+    step: 0.05,
+    group: "pressure",
+    dependsOn: ["pressureSize", "pressureOpacity"]
   }
+];
+const PAINT_OPTION_GROUPS = [
+  { id: "pressure", icon: "stylus", title: "Pen pressure", activeWhen: ["pressureSize", "pressureOpacity"] }
+];
+class PaintTool {
   id;
   label;
   shortcut;
-  mode;
+  icon;
   options;
+  /** Stored option values (edited in place through {@link options}). */
+  values;
+  mode;
   spacer = null;
   last = null;
   /** Current stroke's full-pressure diameter in document px. */
   docSize = 1;
+  /**
+   * @param spec - Id, label, shortcut, icon, mode and default options.
+   */
+  constructor(spec) {
+    this.id = spec.id;
+    this.label = spec.label;
+    this.shortcut = spec.shortcut;
+    this.icon = spec.icon;
+    this.mode = spec.mode;
+    this.values = { ...spec.defaults };
+    this.options = new OptionSet(PAINT_OPTION_DESCRIPTORS, this.values, PAINT_OPTION_GROUPS);
+  }
   /** @inheritdoc */
   onPointerDown(editor, samples) {
     const first = samples[0];
     if (!first) return;
     const style = {
       mode: this.mode,
-      opacity: this.options.opacity,
-      hardness: this.options.hardness,
-      color: this.options.color ?? "#000000"
+      opacity: this.values.opacity,
+      hardness: this.values.hardness,
+      color: editor.colors.fg
     };
-    this.docSize = imageLengthToDoc(editor.frameMap, this.options.size);
+    this.docSize = imageLengthToDoc(editor.frameMap, this.values.size);
     if (!editor.beginStroke(style, this.docSize)) return;
     this.spacer = createSpacer();
     const lineStart = first.shiftKey ? editor.lastStrokeEnd : null;
@@ -3002,7 +6297,7 @@ class PaintTool {
   }
   /** @inheritdoc */
   cursor() {
-    return { kind: "ring", diameter: this.options.size };
+    return { kind: "ring", diameter: this.values.size };
   }
   feed(editor, samples) {
     const spacer = this.spacer;
@@ -3018,37 +6313,56 @@ class PaintTool {
   }
   /** Spacing is a fraction of the diameter, so it scales with `docSize` too. */
   dynamics() {
+    const v = this.values;
     return {
       size: this.docSize,
-      flow: this.options.flow,
-      spacing: this.options.spacing,
-      pressureSize: this.options.pressureSize,
-      pressureOpacity: this.options.pressureOpacity,
-      ...PRESSURE_CURVE
+      flow: v.flow,
+      spacing: v.spacing,
+      pressureSize: v.pressureSize,
+      pressureOpacity: v.pressureOpacity,
+      minSizeRatio: v.minSize,
+      gamma: v.gamma
     };
   }
 }
 function createBrushTool() {
-  return new PaintTool("brush", "Brush", "b", "paint", {
-    size: 24,
-    hardness: 0.8,
-    opacity: 1,
-    flow: 1,
-    spacing: 0.1,
-    pressureSize: true,
-    pressureOpacity: false,
-    color: "#000000"
+  return new PaintTool({
+    id: "brush",
+    label: "Brush",
+    shortcut: "b",
+    icon: "brush",
+    mode: "paint",
+    defaults: {
+      size: 24,
+      hardness: 0.8,
+      opacity: 1,
+      flow: 1,
+      spacing: 0.1,
+      pressureSize: true,
+      pressureOpacity: false,
+      minSize: 0.1,
+      gamma: 1
+    }
   });
 }
 function createEraserTool() {
-  return new PaintTool("eraser", "Eraser", "e", "erase", {
-    size: 48,
-    hardness: 0.8,
-    opacity: 1,
-    flow: 1,
-    spacing: 0.1,
-    pressureSize: true,
-    pressureOpacity: false
+  return new PaintTool({
+    id: "eraser",
+    label: "Eraser",
+    shortcut: "e",
+    icon: "eraser",
+    mode: "erase",
+    defaults: {
+      size: 48,
+      hardness: 0.8,
+      opacity: 1,
+      flow: 1,
+      spacing: 0.1,
+      pressureSize: true,
+      pressureOpacity: false,
+      minSize: 0.1,
+      gamma: 1
+    }
   });
 }
 class ToolRegistry {
@@ -3121,20 +6435,54 @@ function contentHash(bytes, seed = 0) {
   const value = 4294967296 * (2097151 & h2) + (h1 >>> 0);
   return value.toString(16).padStart(14, "0");
 }
-function layerFileName(docId, hash) {
+function layerFileName(docId, hash, ext) {
   const prefix = docId.replace(/[^a-z0-9]/gi, "").slice(0, 8) || "doc";
-  return `ps-${prefix}-${hash}.png`;
+  return `ps-${prefix}-${hash}.${ext}`;
 }
-function notify(severity, detail) {
-  const toast = app.extensionManager?.toast;
-  if (toast && typeof toast.add === "function") {
-    toast.add({ severity, summary: "PainterSketch", detail, life: severity === "error" ? 8e3 : 5e3 });
+const HEADER = 12;
+function sniffWebp(bytes) {
+  if (bytes.length < HEADER + 8 || fourcc(bytes, 0) !== "RIFF" || fourcc(bytes, 8) !== "WEBP") return "invalid";
+  let offset = HEADER;
+  while (offset + 8 <= bytes.length) {
+    const id = fourcc(bytes, offset);
+    const size = readU32(bytes, offset + 4);
+    if (id === "VP8L") return "lossless";
+    if (id === "VP8 ") return "lossy";
+    if (id === "ANMF" || id === "ANIM") return "invalid";
+    offset += 8 + size + (size & 1);
   }
-  if (severity === "info") return;
-  if (severity === "error") log.error(detail);
-  else log.warn(detail);
+  return "invalid";
 }
-const AUTO_UPLOAD_DELAY_MS = 1e3;
+function acceptWebp(mimeType, bytes) {
+  if (mimeType !== "image/webp") return false;
+  const kind = sniffWebp(bytes);
+  return kind === "lossy" || kind === "lossless";
+}
+function fourcc(bytes, at) {
+  return String.fromCharCode(bytes[at] ?? 0, bytes[at + 1] ?? 0, bytes[at + 2] ?? 0, bytes[at + 3] ?? 0);
+}
+function readU32(bytes, at) {
+  return ((bytes[at] ?? 0) | (bytes[at + 1] ?? 0) << 8 | (bytes[at + 2] ?? 0) << 16 | (bytes[at + 3] ?? 0) << 24) >>> 0;
+}
+async function encodeLayer(canvas, kind, paintQuality) {
+  if (kind === "mask" || paintQuality >= 100) {
+    const png2 = await toBlob(canvas, "image/png");
+    if (!png2) throw new Error("image encoding failed");
+    return { blob: png2, bytes: new Uint8Array(await png2.arrayBuffer()), ext: "png" };
+  }
+  const webp = await toBlob(canvas, "image/webp", paintQuality / 100);
+  if (webp) {
+    const bytes = new Uint8Array(await webp.arrayBuffer());
+    if (acceptWebp(webp.type, bytes)) return { blob: webp, bytes, ext: "webp" };
+  }
+  const png = await toBlob(canvas, "image/png");
+  if (!png) throw new Error("image encoding failed");
+  return { blob: png, bytes: new Uint8Array(await png.arrayBuffer()), ext: "png" };
+}
+function toBlob(canvas, type, quality) {
+  return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+}
+const IDLE_UPLOAD_DELAY_MS = 5e3;
 class LayerUploader {
   /**
    * @param editor - Editor whose layers are uploaded.
@@ -3150,14 +6498,22 @@ class LayerUploader {
   timer = null;
   failureNotified = false;
   disposed = false;
-  /** Upload soon (debounced). Failures are reported, never thrown. */
+  /**
+   * Idle fallback: upload {@link IDLE_UPLOAD_DELAY_MS} after the last call
+   * (debounced; call on every edit). Failures are reported, never thrown.
+   */
   schedule() {
     if (this.disposed) return;
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.timer = null;
-      this.flush().catch(() => void 0);
-    }, AUTO_UPLOAD_DELAY_MS);
+      this.flushQuietly();
+    }, IDLE_UPLOAD_DELAY_MS);
+  }
+  /** Upload now if dirty (disengage, fullscreen exit); failures only toast. */
+  flushQuietly() {
+    if (this.disposed || !this.editor.dirty) return;
+    this.flush().catch(() => void 0);
   }
   /**
    * Upload every dirty layer now.
@@ -3185,12 +6541,13 @@ class LayerUploader {
   }
   async uploadDirty() {
     const failures = [];
+    const paintQuality = normalizePaintQuality(readSetting(PAINT_QUALITY_ID));
     for (const layer of [...this.editor.doc.layers]) {
       const rt = this.editor.layerRuntime(layer.id);
       if (!rt?.dirty) continue;
       const version = rt.version;
       try {
-        const file = await this.uploadLayer(layer.id, layer.file);
+        const file = await this.uploadLayer(layer.id, layer.kind, layer.file, paintQuality);
         if (this.disposed) return;
         if (file) this.knownFiles.add(file);
         this.editor.markUploaded(layer.id, version, file);
@@ -3208,21 +6565,15 @@ class LayerUploader {
     this.failureNotified = false;
   }
   /** @returns The file reference for the layer's current pixels (null = empty). */
-  async uploadLayer(layerId, currentFile) {
+  async uploadLayer(layerId, kind, currentFile, paintQuality) {
     const canvas = this.editor.layerCanvas(layerId);
     if (isCanvasEmpty(canvas)) return null;
-    const blob = await canvasToPng(canvas);
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const name = layerFileName(this.editor.doc.docId, contentHash(bytes));
+    const { blob, bytes, ext } = await encodeLayer(canvas, kind, paintQuality);
+    const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
     if (currentFile === expected || this.knownFiles.has(expected)) return expected;
-    return uploadPng(blob, name);
+    return uploadImage(blob, name);
   }
-}
-function canvasToPng(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed")), "image/png");
-  });
 }
 function isCanvasEmpty(canvas) {
   const ctx = canvas.getContext("2d");
@@ -3231,7 +6582,7 @@ function isCanvasEmpty(canvas) {
   for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
   return true;
 }
-async function uploadPng(blob, name) {
+async function uploadImage(blob, name) {
   const body = new FormData();
   body.append("image", blob, name);
   body.append("type", "input");
@@ -3359,18 +6710,24 @@ class PainterSketchController {
    */
   constructor(node) {
     this.node = node;
-    this.host = new EditorHost({ onBecameVisible: () => this.refresh() });
+    this.host = new EditorHost({
+      onBecameVisible: () => this.refresh(),
+      isDetached: () => this.isOffViewedGraph(),
+      onDisengage: () => this.session?.uploader.flushQuietly(),
+      onSave: () => void this.saveWorkflow()
+    });
     this.isolation = isolateEvents({
       root: this.host.root,
       stage: this.host.stage,
       onWheel: (event) => this.host.input.handleWheel(event),
+      onChromeWheel: (event) => this.host.handleChromeWheel(event),
       onMiddlePointer: (event) => this.host.input.handlePointer(event)
     });
     controllers.set(node, this);
     this.attach(createSession(createEmptyDocument(this.fallbackFrame().size), "widgets"));
   }
   node;
-  /** Editor DOM shell; its `root` is the DOM widget element. */
+  /** Editor DOM shell; its `element` is the DOM widget element. */
   host;
   session = null;
   sessionUnbind = null;
@@ -3380,12 +6737,21 @@ class PainterSketchController {
   background = null;
   /** Key of the most recent source we started loading (success or not). */
   requestedKey = null;
+  /** A background load is in flight. */
+  loadPending = false;
   loadSeq = 0;
+  /**
+   * Session handed off by this node's previous instance, until the widget
+   * value has been applied (same task; see `handoff.ts`).
+   */
+  handoff = null;
   contentKey = "";
   pollTimer = null;
   startTimer = null;
   listening = false;
   isolation;
+  /** A Ctrl+S flush + save is in progress. */
+  saving = false;
   disposed = false;
   handleApiExecuted = () => this.refresh();
   // ── Widget value ────────────────────────────────────────────────────────
@@ -3400,18 +6766,24 @@ class PainterSketchController {
    */
   setValue(value) {
     if (this.disposed) return;
-    if (typeof value === "string" && value === this.valueCache) return;
+    if (!this.handoff && typeof value === "string" && value === this.valueCache) return;
     const parsed = parseDocument(value);
     if (parsed.status === "ok") {
       this.attach(this.sessionFor(parsed.document));
+      this.handoff = null;
       return;
     }
     if (parsed.status === "invalid") {
       notify("warn", `Could not read the saved painting (${parsed.reason}); starting with an empty canvas.`);
     }
-    if (parsed.status === "invalid" || this.session?.editor.hasPaint) {
-      this.attach(createSession(createEmptyDocument(this.fallbackFrame().size), "widgets"));
-    }
+    const handoff = this.handoff?.alive && this.handoff.owner === null ? this.handoff : null;
+    this.handoff = null;
+    const choice = chooseForEmpty(parsed.status, {
+      hasPaint: this.session?.editor.hasPaint ?? false,
+      handoff: handoff !== null
+    });
+    if (choice === "adopt" && handoff) this.attach(handoff);
+    else if (choice === "reset") this.attach(createSession(createEmptyDocument(this.fallbackFrame().size), "widgets"));
   }
   /**
    * Value for the prompt: uploads dirty layers first (decision 8).
@@ -3428,6 +6800,33 @@ class PainterSketchController {
       session.editor.events.emit("note", HIDDEN_MASK_NOTE);
     }
     return this.valueCache;
+  }
+  /**
+   * Ctrl/Cmd+S in the editor: upload dirty layers, then run ComfyUI's save
+   * command so the saved workflow references the new files (the widget value
+   * is updated by the upload's `change` event before the save serializes).
+   * If an upload failed (already toasted), ask before saving the workflow
+   * without the latest paint; the pixels stay in memory either way.
+   */
+  async saveWorkflow() {
+    if (this.saving) return;
+    this.saving = true;
+    try {
+      const session = this.session;
+      if (session) {
+        try {
+          await session.ready;
+          await session.uploader.flush();
+        } catch {
+          if (!window.confirm("Upload failed; save anyway without the latest paint?")) return;
+        }
+      }
+      await executeCommand(SAVE_WORKFLOW_COMMAND);
+    } catch (error) {
+      notify("error", `Could not save the workflow: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.saving = false;
+    }
   }
   // ── Lifecycle (called from node hooks) ──────────────────────────────────
   /**
@@ -3447,10 +6846,16 @@ class PainterSketchController {
     }
     this.updateContent();
   }
-  /** Node added to a graph: start listening (after `configure` finishes). */
+  /**
+   * Node added to a graph (before `configure` applies saved values): claim a
+   * hand-off from a predecessor re-created in this task, then start listening.
+   */
   handleAdded() {
     if (this.disposed || this.listening) return;
     this.listening = true;
+    const key = handoffKey(this.node);
+    const handoff = key ? takeHandoff(key) : void 0;
+    if (handoff) this.adoptHandoff(handoff);
     api.addEventListener("executed", this.handleApiExecuted);
     this.pollTimer = setInterval(() => this.tick(), SOURCE_POLL_MS);
     this.startTimer = setTimeout(() => {
@@ -3468,11 +6873,21 @@ class PainterSketchController {
   }
   /** A link on our node changed. */
   handleConnectionsChange() {
+    if (this.startTimer !== null) {
+      this.updateContent();
+      return;
+    }
     this.refresh();
   }
-  /** Release node-bound resources; the session is only detached. Idempotent. */
+  /**
+   * Release node-bound resources; the session is only detached. The widget
+   * element and state are offered to a successor re-created in the same task
+   * (graph undo/redo), else the element is removed. Idempotent.
+   */
   dispose() {
     if (this.disposed) return;
+    const key = handoffKey(this.node);
+    const session = this.session;
     this.disposed = true;
     this.loadSeq++;
     if (this.listening) api.removeEventListener("executed", this.handleApiExecuted);
@@ -3485,19 +6900,62 @@ class PainterSketchController {
     this.isolation.dispose();
     this.host.dispose();
     controllers.delete(this.node);
+    const element = this.host.element;
+    if (!key) {
+      element.remove();
+      return;
+    }
+    offerHandoff(key, {
+      element,
+      session: session?.alive ? session : null,
+      background: this.background,
+      lastExecuted: this.lastExecuted
+    });
+  }
+  /**
+   * Take over from the removed previous instance of this node: put our
+   * element into its renderer slot (Nodes 2.0 does not remount the widget),
+   * reuse its background, and remember its session for `setValue`.
+   */
+  adoptHandoff(handoff) {
+    const element = this.host.element;
+    if (!element.isConnected && handoff.element.isConnected) handoff.element.replaceWith(element);
+    else handoff.element.remove();
+    this.lastExecuted ??= handoff.lastExecuted;
+    if (handoff.background) {
+      this.background = handoff.background;
+      this.requestedKey = handoff.background.key;
+    }
+    const session = handoff.session;
+    if (!session?.alive || session.owner !== null) return;
+    this.handoff = session;
+    queueMicrotask(() => {
+      if (this.handoff !== session) return;
+      this.handoff = null;
+      if (!this.disposed && session.alive && session.owner === null && this.valueCache === "") this.attach(session);
+    });
   }
   // ── Sessions ────────────────────────────────────────────────────────────
   /** Pick/create the session for a parsed manifest. */
   sessionFor(doc) {
     const existing = findSession(doc.docId);
     if (!existing) return createSession(doc, "document");
-    const ownedElsewhere = existing.owner !== null && existing.owner !== this;
-    const matches = sessionMatches(existing, doc);
-    if (ownedElsewhere) {
-      const docId = createId();
-      return matches ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
+    const choice = chooseForManifest({
+      owner: existing.owner === null ? "none" : existing.owner === this ? "self" : "other",
+      matchesRecent: sessionMatches(existing, doc),
+      handedOff: existing === this.handoff
+    });
+    switch (choice) {
+      case "reuse":
+        return existing;
+      case "restore":
+        return createSession(doc, "document");
+      case "fork-copy":
+      case "fork-restore": {
+        const docId = createId();
+        return choice === "fork-copy" ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
+      }
     }
-    return matches ? existing : createSession(doc, "document");
   }
   attach(session) {
     if (session === this.session) {
@@ -3527,7 +6985,10 @@ class PainterSketchController {
     this.session = null;
     this.host.setSession(null);
     if (!session.editor.hasPaint && !session.editor.dirty) releaseSession(session.docId);
-    else detachSession(session, this);
+    else {
+      session.uploader.flushQuietly();
+      detachSession(session, this);
+    }
   }
   syncValue() {
     const editor = this.session?.editor;
@@ -3547,6 +7008,7 @@ class PainterSketchController {
       if (source && source.key !== this.requestedKey) this.load(source);
     } else if (this.requestedKey !== (this.background?.key ?? null)) {
       this.loadSeq++;
+      this.loadPending = false;
       this.requestedKey = this.background?.key ?? null;
     }
     this.updateContent();
@@ -3555,6 +7017,17 @@ class PainterSketchController {
     if (!this.host.isVisible()) return;
     this.host.refreshScale();
     this.refresh();
+  }
+  /**
+   * Fullscreen exit check: the node left its graph (removal, tab switch
+   * clears `node.graph`) or another graph is being viewed (subgraph
+   * navigation; Nodes 2.0 also unmounts the widget then).
+   */
+  isOffViewedGraph() {
+    const graph = this.node.graph;
+    if (!graph) return true;
+    const viewed = app.canvas?.graph;
+    return viewed != null && viewed !== graph;
   }
   isImageConnected() {
     return isInputConnected(this.node, INPUT_NAMES.image);
@@ -3568,12 +7041,17 @@ class PainterSketchController {
   /** Load `source`; results of superseded loads are ignored. */
   load(source) {
     this.requestedKey = source.key;
+    this.loadPending = true;
     const seq = ++this.loadSeq;
     const image = new Image();
     image.decoding = "async";
     image.onload = () => {
       if (seq !== this.loadSeq || this.disposed) return;
-      if (!image.naturalWidth || !image.naturalHeight) return;
+      this.loadPending = false;
+      if (!image.naturalWidth || !image.naturalHeight) {
+        this.updateContent();
+        return;
+      }
       this.background = {
         key: source.key,
         image,
@@ -3583,6 +7061,8 @@ class PainterSketchController {
     };
     image.onerror = () => {
       if (seq !== this.loadSeq || this.disposed) return;
+      this.loadPending = false;
+      this.updateContent();
       log.warn(`Could not load background image from ${source.origin} node:`, source.url);
     };
     image.src = source.url;
@@ -3598,7 +7078,8 @@ class PainterSketchController {
     const session = this.session;
     if (this.disposed || !session) return;
     const { editor } = session;
-    const bg = this.isImageConnected() ? this.background : null;
+    const connected = this.isImageConnected();
+    const bg = connected ? this.background : null;
     if (bg) {
       const key2 = `${session.docId}|image|${bg.key}`;
       if (key2 === this.contentKey) return;
@@ -3607,6 +7088,8 @@ class PainterSketchController {
       editor.handleBackgroundSize(bg.size);
       return;
     }
+    const awaitingImage = connected && (this.loadPending || this.requestedKey === null);
+    if (awaitingImage && editor.background.kind === "image") return;
     const frame = this.fallbackFrame();
     const key = `${session.docId}|fill|${frame.color}|${frame.size.width}x${frame.size.height}`;
     if (key === this.contentKey) return;
@@ -3666,13 +7149,120 @@ function installNodeHooks(nodeType) {
   proto.onDrawBackground = function() {
   };
 }
-const editorCss = '/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bg: #1e1e1e;\n  --cps-rail-bg: #262626;\n  --cps-border: #3a3a3a;\n  --cps-fg: #d0d0d0;\n  --cps-fg-muted: #7a7a7a;\n  --cps-accent: #3b82f6;\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  padding: 4px 0;\n  background: var(--cps-rail-bg);\n  border-right: 1px solid var(--cps-border);\n  overflow: hidden;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 28px;\n  height: 28px;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button:hover:not(:disabled) {\n  background: #333;\n}\n\n.cps-rail-button.cps-active {\n  border-color: var(--cps-accent);\n  background: #2d3a52;\n}\n\n.cps-rail-button svg {\n  width: 18px;\n  height: 18px;\n  fill: none;\n  stroke: currentColor;\n  stroke-width: 1.6;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  cursor: default;\n}\n\n/* ── Main column: options strip + stage ────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-options {\n  flex: 0 0 auto;\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 2px 8px;\n  padding: 3px 6px;\n  background: var(--cps-rail-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-options[hidden] {\n  display: none;\n}\n\n.cps-opt {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  white-space: nowrap;\n}\n\n.cps-opt[hidden] {\n  display: none;\n}\n\n.cps-opt input[type="range"] {\n  width: 64px;\n  margin: 0;\n}\n\n.cps-opt-value {\n  min-width: 2.2em;\n  color: var(--cps-fg-muted);\n  font-variant-numeric: tabular-nums;\n}\n\n.cps-color {\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid var(--cps-border);\n  background: none;\n  cursor: pointer;\n}\n\n.cps-opt-toggle input {\n  margin: 0;\n}\n\n/* Quick Mask indicator + mask visibility toggle. */\n.cps-mask-badge {\n  padding: 1px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n.cps-mask-badge[hidden] {\n  display: none;\n}\n\n.cps-mask-eye {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 3px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-mask-eye:hover {\n  background: #333;\n}\n\n.cps-mask-eye.cps-off {\n  color: var(--cps-fg-muted);\n}\n\n.cps-mask-eye svg {\n  width: 16px;\n  height: 16px;\n  fill: none;\n  stroke: currentColor;\n  stroke-width: 1.8;\n  stroke-linecap: round;\n  stroke-linejoin: round;\n}\n\n/* ── Stage ─────────────────────────────────────────────────────────────── */\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  touch-action: none;\n  outline: none;\n  cursor: crosshair;\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-note[hidden] {\n  display: none;\n}\n';
+const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
+const controlsCss = "/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n";
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 180px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  cursor: crosshair;\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
+const fullscreenCss = `/*
+ * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
+ *
+ * .cps-widget is the DOM widget element and never moves; the editor root is
+ * its child and moves into .cps-fullscreen (on document.body) while
+ * fullscreen, leaving the placeholder button behind.
+ *
+ * z-index: above ComfyUI's static chrome (top menu 1001, splitter overlay
+ * 999, side bars) but below PrimeVue layers (modal/overlay/menu base 1800,
+ * tooltips 2000). Toasts share the modal counter with dialogs, so "above
+ * dialogs, below toasts" is not possible; dialogs/toasts showing on top of
+ * the editor is the safer choice.
+ */
+
+.cps-widget {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */
+  min-height: 244px;
+  min-width: 0;
+}
+
+.cps-widget > .cps-root {
+  flex: 1 1 auto;
+}
+
+.cps-fullscreen-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--border-color, #4e4e4e);
+  border-radius: 4px;
+  background: var(--comfy-menu-secondary-bg, #292929);
+  color: var(--descrip-text, #999);
+  font: 12px/1.4 system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  appearance: none;
+}
+
+.cps-fullscreen-placeholder:hover {
+  color: var(--input-text, #ddd);
+  border-color: var(--p-primary-color, #3b82f6);
+}
+
+.cps-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1790;
+  box-sizing: border-box;
+  display: flex;
+  /* Top strip holds the exit button so it never covers the options bar. */
+  padding: 40px 12px 12px;
+  background: color-mix(in srgb, var(--bg-color, #202020) 92%, black);
+  overscroll-behavior: contain;
+}
+
+.cps-fullscreen > .cps-root {
+  flex: 1 1 auto;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.cps-fullscreen-exit {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-color, #4e4e4e);
+  border-radius: 4px;
+  background: var(--comfy-menu-bg, #353535);
+  color: var(--input-text, #ddd);
+  font: 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  appearance: none;
+}
+
+.cps-fullscreen-exit:hover {
+  background: color-mix(in srgb, var(--input-text, #ddd) 14%, var(--comfy-menu-bg, #353535));
+}
+
+.cps-fullscreen-exit:focus-visible,
+.cps-fullscreen-placeholder:focus-visible {
+  outline: 2px solid var(--p-primary-color, #3b82f6);
+  outline-offset: 1px;
+}
+`;
+const layersCss = '/*\n * PainterSketch layers panel (M3.3): header (title + opacity), scrolling row\n * list, footer actions. Lives inside .cps-side-content (editor.css); theme\n * variables come from .cps-root. Injected by styles/inject.ts.\n */\n\n.cps-layers {\n  display: flex;\n  flex-direction: column;\n  height: 100%;\n  min-height: 0;\n  font-size: 11px;\n}\n\n.cps-layers-header {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 4px;\n  padding: 4px 6px;\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-layers-title {\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n}\n\n.cps-layers-list {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n}\n\n.cps-layers-footer {\n  flex: none;\n  display: flex;\n  justify-content: flex-end;\n  gap: 2px;\n  padding: 3px 4px;\n  border-top: 1px solid var(--cps-border);\n}\n\n.cps-layers-action:disabled {\n  opacity: 0.35;\n  cursor: default;\n}\n\n/* ── Rows ──────────────────────────────────────────────────────────────── */\n\n.cps-layer-row {\n  position: relative;\n  padding: 3px 4px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  border-left: 2px solid transparent;\n  cursor: default;\n  user-select: none;\n  touch-action: none;\n}\n\n.cps-layer-paint,\n.cps-layer-mask {\n  cursor: pointer;\n}\n\n.cps-layer-row:hover:not(.cps-layer-background) {\n  background: var(--cps-hover);\n}\n\n.cps-layer-row.cps-selected {\n  background: var(--cps-active-bg);\n  border-left-color: var(--cps-accent);\n}\n\n.cps-layer-row.cps-standby {\n  border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);\n}\n\n.cps-layer-row.cps-dragging {\n  opacity: 0.5;\n}\n\n.cps-layer-row.cps-drop-above::before,\n.cps-layer-row.cps-drop-below::after {\n  content: "";\n  position: absolute;\n  left: 0;\n  right: 0;\n  height: 2px;\n  background: var(--cps-accent);\n  pointer-events: none;\n}\n\n.cps-layer-row.cps-drop-above::before {\n  top: -1px;\n}\n\n.cps-layer-row.cps-drop-below::after {\n  bottom: -1px;\n}\n\n.cps-layer-main,\n.cps-layer-extra {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  min-width: 0;\n}\n\n.cps-layer-extra {\n  margin: 2px 0 0 42px;\n}\n\n.cps-layer-thumb-box {\n  flex: 0 0 38px;\n  height: 38px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n}\n\n.cps-layer-thumb {\n  display: block;\n  /* Hard cap so a freshly-created canvas (default 300×150) never escapes the\n   * thumb-box before update() applies its inline style. */\n  max-width: 100%;\n  max-height: 100%;\n  border: 1px solid var(--cps-border);\n  background-color: #fff;\n  background-image:\n    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%),\n    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%);\n  background-position: 0 0, 4px 4px;\n  background-size: 8px 8px;\n}\n\n.cps-layer-name {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.cps-layer-row.cps-hidden-layer .cps-layer-name,\n.cps-layer-row.cps-hidden-layer .cps-layer-thumb {\n  opacity: 0.5;\n}\n\n.cps-layer-rename {\n  width: 100%;\n  height: 18px;\n  box-sizing: border-box;\n  padding: 0 3px;\n  border: 1px solid var(--cps-accent);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n}\n\n.cps-layer-button {\n  flex: none;\n  width: 20px;\n  height: 20px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-layer-button:hover:not(:disabled) {\n  color: var(--cps-fg);\n}\n\n.cps-layer-eye.cps-off,\n.cps-layer-lock:not(.cps-on) {\n  opacity: 0.55;\n}\n\n.cps-layer-lock.cps-on {\n  color: var(--cps-fg);\n}\n\n.cps-layer-lock:disabled {\n  cursor: default;\n  opacity: 0.55;\n}\n\n.cps-layer-swatch {\n  width: 16px;\n  height: 16px;\n  border: 1px solid var(--cps-fg-muted);\n  border-radius: 3px;\n}\n\n.cps-layer-swatch:hover:not(:disabled) {\n  border-color: var(--cps-fg);\n}\n\n.cps-layer-opacity .cps-num-value {\n  min-width: 3em;\n  height: 18px;\n}\n\n.cps-layers .cps-native-color {\n  position: absolute;\n  width: 1px;\n  height: 1px;\n  opacity: 0;\n  pointer-events: none;\n}\n';
 const STYLE_ELEMENT_ID = "cps-styles";
 function injectStyles() {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ELEMENT_ID;
-  style.textContent = editorCss;
+  style.textContent = `${editorCss}
+${controlsCss}
+${colorPickerCss}
+${layersCss}
+${fullscreenCss}`;
   document.head.appendChild(style);
 }
 function createPainterSketchWidget(node, inputName, inputData) {
@@ -3680,7 +7270,7 @@ function createPainterSketchWidget(node, inputName, inputData) {
   const options = inputData[1] ?? {};
   const controller = new PainterSketchController(node);
   controller.setValue(options.default ?? "");
-  const widget = node.addDOMWidget(inputName, DOM_WIDGET_TYPE, controller.host.root, {
+  const widget = node.addDOMWidget(inputName, DOM_WIDGET_TYPE, controller.host.element, {
     getValue: () => controller.getValue(),
     setValue: (value) => controller.setValue(value),
     getMinHeight: () => WIDGET_MIN_HEIGHT,
@@ -3693,6 +7283,7 @@ function createPainterSketchWidget(node, inputName, inputData) {
 }
 app.registerExtension({
   name: EXTENSION_NAME,
+  settings: SETTINGS,
   getCustomWidgets: () => ({
     [WIDGET_SPEC_TYPE]: (node, inputName, inputData) => createPainterSketchWidget(node, inputName, inputData)
   }),

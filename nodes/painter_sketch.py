@@ -3,7 +3,7 @@ nodes/painter_sketch.py -- PainterSketch V3 ComfyUI node.
 
 Accepts an optional base IMAGE plus the JSON layer-document widget; returns
 IMAGE (composited) and MASK tensors.  All paint editing lives in the frontend;
-Python resolves saved layer PNGs, composites them, and handles fingerprinting.
+Python resolves saved layer images (WebP/PNG), composites them, and handles fingerprinting.
 
 Execution flow:
     1. Determine frame size: input image dims, or document frame, or width/height.
@@ -43,7 +43,12 @@ log = logging.getLogger("paintersketch.painter_sketch")
 # ── Colour helpers ────────────────────────────────────────────────────────────
 
 def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
-    """Convert ``#RRGGBB`` to normalised (r, g, b) floats; falls back to white.
+    """Convert a CSS hex colour to normalised (r, g, b) floats; falls back to white.
+
+    Accepts ``#rgb``, ``#rgba``, ``#rrggbb`` and ``#rrggbbaa`` (the Nodes 2.0
+    colour picker can produce alpha). Alpha is ignored: ``IMAGE`` has no alpha
+    channel, and the editor also draws the background opaque, so preview and
+    output agree.
 
     Args:
         hex_color: CSS hex colour string.
@@ -51,7 +56,11 @@ def _hex_to_rgb(hex_color: str) -> tuple[float, float, float]:
     Returns:
         ``(r, g, b)`` floats in [0, 1].
     """
-    s = hex_color.lstrip("#")
+    s = hex_color.strip().lstrip("#")
+    if len(s) in (3, 4):
+        s = "".join(c + c for c in s[:3])
+    elif len(s) == 8:
+        s = s[:6]
     if len(s) != 6:
         log.warning("background: unrecognised hex colour %r; using white", hex_color)
         return (1.0, 1.0, 1.0)
@@ -88,7 +97,7 @@ def _make_background(w: int, h: int, hex_color: str) -> torch.Tensor:
 class PainterSketch(io.ComfyNode):
     """PainterSketch: in-node paint editor that outputs IMAGE + MASK.
 
-    Paint and mask layers are stored in the frontend and uploaded as PNGs to
+    Paint and mask layers are stored in the frontend and uploaded as WebP (or PNG) to
     ``input/painter-sketch/``.  The manifest JSON in the ``document`` widget
     references those files; Python resolves and composites them at queue time.
     """
@@ -117,10 +126,6 @@ class PainterSketch(io.ComfyNode):
                     default="",
                     socketless=True,
                     extra_dict={"widgetType": "PAINTERSKETCH"},
-                    tooltip=(
-                        "Versioned layer-document manifest (JSON). "
-                        "Managed by the in-node editor; do not edit by hand."
-                    ),
                 ),
                 io.Int.Input(
                     "width",

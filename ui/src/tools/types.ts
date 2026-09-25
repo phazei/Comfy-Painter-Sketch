@@ -4,6 +4,7 @@
  */
 
 import type { Editor } from "../engine/editor";
+import type { ToolOptions } from "./options";
 
 /** One pointer sample, already converted to document coordinates. */
 export interface ToolPointer {
@@ -19,8 +20,11 @@ export interface ToolPointer {
   ctrlKey: boolean;
 }
 
-/** Numeric/boolean/colour options shown in the options strip. */
-export interface PaintOptions {
+/**
+ * Stored options of brush-like tools (a type alias so it is assignable to
+ * `OptionValues`). The brush colour is the editor's foreground colour.
+ */
+export type PaintOptions = {
   /** Diameter in image px (as seen on the current background); tools convert to document px. */
   size: number;
   /** 0..1 */
@@ -33,9 +37,11 @@ export interface PaintOptions {
   spacing: number;
   pressureSize: boolean;
   pressureOpacity: boolean;
-  /** Present on tools that paint a colour. */
-  color?: string;
-}
+  /** Diameter at zero pressure as a fraction of `size` (pressure -> size). */
+  minSize: number;
+  /** Pressure curve exponent (1 = linear, > 1 = softer start). */
+  gamma: number;
+};
 
 /** Cursor the stage should show. */
 export type ToolCursor = { kind: "ring"; diameter: number } | { kind: "css"; value: string };
@@ -46,8 +52,10 @@ export interface Tool {
   readonly label: string;
   /** Single-key shortcut (lowercase), e.g. `"b"`. */
   readonly shortcut: string;
-  /** Editable options, or `null` for tools without options. */
-  readonly options: PaintOptions | null;
+  /** Icon name in `ui/icons.ts` (unknown names get a fallback glyph). */
+  readonly icon: string;
+  /** Editable options (rendered by the options bar), or `null`. */
+  readonly options: ToolOptions | null;
 
   /**
    * Pointer pressed on the stage.

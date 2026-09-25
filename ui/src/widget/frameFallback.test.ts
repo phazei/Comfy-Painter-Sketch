@@ -11,8 +11,12 @@ import {
 describe("normalizeHexColor", () => {
   it("expands short forms and lowercases", () => {
     expect(normalizeHexColor("#FA0")).toBe("#ffaa00");
-    expect(normalizeHexColor("fa08")).toBe("#ffaa0088");
     expect(normalizeHexColor(" #AbCdEf ")).toBe("#abcdef");
+  });
+
+  it("drops alpha so the background is opaque like the IMAGE output", () => {
+    expect(normalizeHexColor("fa08")).toBe("#ffaa00");
+    expect(normalizeHexColor("#11223380")).toBe("#112233");
   });
 
   it("falls back on invalid input", () => {

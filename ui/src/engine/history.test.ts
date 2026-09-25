@@ -38,6 +38,18 @@ describe("HistoryStack", () => {
     expect(h.totalBytes).toBe(500);
   });
 
+  it("offers the newest entry for merging only while nothing is redoable", () => {
+    const h = new HistoryStack<ReturnType<typeof entry>>(1000);
+    expect(h.mergeTarget()).toBeUndefined();
+    h.push(entry("a", 1));
+    h.push(entry("b", 1));
+    expect(h.mergeTarget()?.name).toBe("b");
+    h.undo();
+    expect(h.mergeTarget()).toBeUndefined();
+    h.redo();
+    expect(h.mergeTarget()?.name).toBe("b");
+  });
+
   it("counts redo entries toward the cap", () => {
     const h = new HistoryStack<ReturnType<typeof entry>>(100);
     h.push(entry("a", 40));

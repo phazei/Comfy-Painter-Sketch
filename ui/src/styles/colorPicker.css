@@ -1,0 +1,177 @@
+/*
+ * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid
+ * collisions with ComfyUI. Injected together with editor.css by inject.ts.
+ * CSS variables are inherited from .cps-root (editor.css).
+ */
+
+/* ── Picker container ──────────────────────────────────────────────────── */
+
+.cps-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 200px;
+  user-select: none;
+}
+
+/* ── Title row ─────────────────────────────────────────────────────────── */
+
+.cps-picker-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cps-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 2px;
+}
+
+/* ── SV square ─────────────────────────────────────────────────────────── */
+
+.cps-picker-sv {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  flex: none;
+}
+
+.cps-picker-sv-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Thumb marker on the SV square */
+.cps-picker-sv-thumb {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  will-change: left, top;
+}
+
+/* ── Hue slider ────────────────────────────────────────────────────────── */
+
+.cps-picker-hue {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    to right,
+    #f00 0%,
+    #ff0 16.67%,
+    #0f0 33.33%,
+    #0ff 50%,
+    #00f 66.67%,
+    #f0f 83.33%,
+    #f00 100%
+  );
+  cursor: ew-resize;
+  touch-action: none;
+  flex: none;
+}
+
+.cps-picker-hue-thumb {
+  position: absolute;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  will-change: left;
+}
+
+/* ── Hex input row ─────────────────────────────────────────────────────── */
+
+.cps-picker-hex-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cps-picker-hex-label {
+  font-size: 10px;
+  color: var(--cps-fg-muted);
+  flex: none;
+}
+
+.cps-picker-hex-input {
+  flex: 1 1 auto;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--cps-border);
+  border-radius: 3px;
+  background: var(--cps-input-bg);
+  color: var(--cps-fg);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+  outline: none;
+  min-width: 0;
+}
+
+.cps-picker-hex-input:focus {
+  border-color: var(--cps-accent);
+}
+
+.cps-picker-hex-input.cps-invalid {
+  border-color: #c0392b;
+  color: #c0392b;
+}
+
+/* ── Old / new preview ─────────────────────────────────────────────────── */
+
+.cps-picker-preview {
+  display: flex;
+  height: 16px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--cps-border);
+  cursor: pointer;
+  flex: none;
+}
+
+.cps-picker-preview-old,
+.cps-picker-preview-new {
+  flex: 1 1 auto;
+}
+
+.cps-picker-preview-old {
+  cursor: pointer; /* click to revert */
+}
+
+/* ── Recent colours ────────────────────────────────────────────────────── */
+
+.cps-picker-recents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: none;
+}
+
+.cps-picker-recent {
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);
+  cursor: pointer;
+  padding: 0;
+  background: transparent; /* set via inline style */
+  flex: none;
+}
+
+.cps-picker-recent:hover {
+  outline: 2px solid var(--cps-accent);
+  outline-offset: 1px;
+}

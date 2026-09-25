@@ -56,6 +56,15 @@ export class HistoryStack<T extends Sized> {
   }
 
   /**
+   * The newest undo entry, only while nothing is redoable (the entry a
+   * continuing gesture may merge into).
+   * @returns The entry, or `undefined`.
+   */
+  mergeTarget(): T | undefined {
+    return this.redoStack.length ? undefined : this.undoStack[this.undoStack.length - 1];
+  }
+
+  /**
    * Record a new operation. Clears the redo stack, then enforces the cap.
    *
    * @param entry - The applied operation.

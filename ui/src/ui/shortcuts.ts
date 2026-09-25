@@ -1,21 +1,39 @@
 /**
  * Editor keyboard shortcuts (SPEC "Brush shortcuts", "Canvas / view",
- * "Undo / Redo", Tools table incl. Quick Mask `Q`; Photoshop conventions).
- * Returns whether a key was handled so
- * the keyboard scope stops only those.
+ * "Undo / Redo", "Color", Tools table incl. Quick Mask `Q`; Photoshop
+ * conventions). Returns whether a key was handled so the keyboard scope
+ * stops only those.
+ *
+ * | Key | Action |
+ * |---|---|
+ * | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | undo / redo |
+ * | Ctrl+0 / Ctrl+1 / Ctrl+= / Ctrl+- | fit / 100% / zoom in / out |
+ * | `[` `]` (Shift: hardness) | size (tools with a `size` / `hardness` option) |
+ * | `1`..`9`, `0` | opacity 10%..90%, 100% |
+ * | Q | Quick Mask |
+ * | X / D | swap / reset FG-BG colours |
+ * | F | toggle fullscreen (shell `fullscreen` event) |
+ * | Esc | close an open popover, else leave fullscreen |
+ * | tool keys | from the tool registry (B, E, ...) |
  */
 
-import type { PaintOptions } from "../tools/types";
+import type { ToolOptions } from "../tools/options";
 import type { EditorSession } from "../widget/sessions";
 
 /** Side effects the shortcuts need from the UI. */
 export interface ShortcutEffects {
-  /** Tool options changed (refresh the options strip + cursor). */
+  /** Tool options changed (refresh the options bar + cursor). */
   optionsChanged(): void;
   /** View changed. */
   viewChanged(): void;
   /** Cancel an in-progress drag (before switching tools). */
   cancelDrag(): void;
+  /** Fullscreen requested. */
+  fullscreen(): void;
+  /** Close an open popover. @returns `true` if one was open. */
+  closePopover(): boolean;
+  /** Leave fullscreen. @returns `true` if the editor was fullscreen. */
+  exitFullscreen(): boolean;
 }
 
 /**
@@ -31,6 +49,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
 
+  if (key === "escape" && !ctrl && !event.altKey) return effects.closePopover() || effects.exitFullscreen();
+
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());
     if ((key === "z" && event.shiftKey) || (key === "y" && !event.shiftKey)) return run(() => editor.redo());
@@ -44,45 +64,62 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
 
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {
-    if (!options) return false;
     const up = event.code === "BracketRight" || key === "]" || key === "}";
-    if (event.shiftKey) options.hardness = stepHardness(options.hardness, up);
-    else options.size = stepSize(options.size, up);
-    effects.optionsChanged();
+    const changed = event.shiftKey
+      ? stepOption(options, "hardness", (v) => stepHardness(v, up))
+      : stepOption(options, "size", (v) => stepSize(v, up));
+    if (changed === null) return false;
+    if (changed) effects.optionsChanged();
     return true;
   }
 
   const digit = /^Digit([0-9])$/.exec(event.code)?.[1] ?? (/^[0-9]$/.test(key) ? key : null);
   if (digit !== null && !event.shiftKey) {
-    if (!options) return false;
-    setOpacity(options, digit === "0" ? 1 : Number(digit) / 10);
-    effects.optionsChanged();
+    const changed = stepOption(options, "opacity", () => (digit === "0" ? 1 : Number(digit) / 10));
+    if (changed === null) return false;
+    if (changed) effects.optionsChanged();
     return true;
   }
 
-  if (!event.shiftKey && key === "q") {
-    // Quick Mask: toggle the paint target (decision 6).
-    effects.cancelDrag();
-    editor.togglePaintTarget();
-    return true;
-  }
-
-  if (!event.shiftKey && key.length === 1) {
-    const tool = tools.byShortcut(key);
-    if (tool) {
-      if (tool.id !== tools.active.id) {
-        effects.cancelDrag();
-        tools.setActive(tool.id);
-      }
+  if (event.shiftKey || key.length !== 1) return false;
+  switch (key) {
+    case "q":
+      // Quick Mask: toggle the paint target (decision 6).
+      effects.cancelDrag();
+      editor.togglePaintTarget();
       return true;
-    }
+    case "x":
+      editor.colors.swap();
+      return true;
+    case "d":
+      editor.colors.reset();
+      return true;
+    case "f":
+      effects.fullscreen();
+      return true;
   }
-  return false;
+  const tool = tools.byShortcut(key);
+  if (!tool) return false;
+  if (tool.id !== tools.active.id) {
+    effects.cancelDrag();
+    tools.setActive(tool.id);
+  }
+  return true;
 }
 
 function run(action: () => void): true {
   action();
   return true;
+}
+
+/**
+ * Apply `next` to a numeric option if the tool has it.
+ * @returns `null` if the option is missing, else whether it changed.
+ */
+function stepOption(options: ToolOptions | null, key: string, next: (value: number) => number): boolean | null {
+  const value = options?.get(key);
+  if (!options || typeof value !== "number") return null;
+  return options.set(key, next(value));
 }
 
 /**
@@ -106,8 +143,4 @@ export function stepSize(size: number, up: boolean): number {
 export function stepHardness(hardness: number, up: boolean): number {
   const next = Math.round((hardness + (up ? 0.25 : -0.25)) * 4) / 4;
   return Math.min(1, Math.max(0, next));
-}
-
-function setOpacity(options: PaintOptions, value: number): void {
-  options.opacity = value;
 }

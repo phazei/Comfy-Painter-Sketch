@@ -1,0 +1,212 @@
+/*
+ * PainterSketch layers panel (M3.3): header (title + opacity), scrolling row
+ * list, footer actions. Lives inside .cps-side-content (editor.css); theme
+ * variables come from .cps-root. Injected by styles/inject.ts.
+ */
+
+.cps-layers {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  font-size: 11px;
+}
+
+.cps-layers-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--cps-border);
+}
+
+.cps-layers-title {
+  font-weight: 600;
+  color: var(--cps-fg-muted);
+}
+
+.cps-layers-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cps-layers-footer {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 3px 4px;
+  border-top: 1px solid var(--cps-border);
+}
+
+.cps-layers-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+
+.cps-layer-row {
+  position: relative;
+  padding: 3px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  border-left: 2px solid transparent;
+  cursor: default;
+  user-select: none;
+  touch-action: none;
+}
+
+.cps-layer-paint,
+.cps-layer-mask {
+  cursor: pointer;
+}
+
+.cps-layer-row:hover:not(.cps-layer-background) {
+  background: var(--cps-hover);
+}
+
+.cps-layer-row.cps-selected {
+  background: var(--cps-active-bg);
+  border-left-color: var(--cps-accent);
+}
+
+.cps-layer-row.cps-standby {
+  border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);
+}
+
+.cps-layer-row.cps-dragging {
+  opacity: 0.5;
+}
+
+.cps-layer-row.cps-drop-above::before,
+.cps-layer-row.cps-drop-below::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--cps-accent);
+  pointer-events: none;
+}
+
+.cps-layer-row.cps-drop-above::before {
+  top: -1px;
+}
+
+.cps-layer-row.cps-drop-below::after {
+  bottom: -1px;
+}
+
+.cps-layer-main,
+.cps-layer-extra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cps-layer-extra {
+  margin: 2px 0 0 42px;
+}
+
+.cps-layer-thumb-box {
+  flex: 0 0 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cps-layer-thumb {
+  display: block;
+  /* Hard cap so a freshly-created canvas (default 300×150) never escapes the
+   * thumb-box before update() applies its inline style. */
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--cps-border);
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%),
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%);
+  background-position: 0 0, 4px 4px;
+  background-size: 8px 8px;
+}
+
+.cps-layer-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cps-layer-row.cps-hidden-layer .cps-layer-name,
+.cps-layer-row.cps-hidden-layer .cps-layer-thumb {
+  opacity: 0.5;
+}
+
+.cps-layer-rename {
+  width: 100%;
+  height: 18px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  border: 1px solid var(--cps-accent);
+  border-radius: 3px;
+  background: var(--cps-input-bg);
+  color: var(--cps-fg);
+  font: inherit;
+}
+
+.cps-layer-button {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--cps-fg-muted);
+}
+
+.cps-layer-button:hover:not(:disabled) {
+  color: var(--cps-fg);
+}
+
+.cps-layer-eye.cps-off,
+.cps-layer-lock:not(.cps-on) {
+  opacity: 0.55;
+}
+
+.cps-layer-lock.cps-on {
+  color: var(--cps-fg);
+}
+
+.cps-layer-lock:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.cps-layer-swatch {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--cps-fg-muted);
+  border-radius: 3px;
+}
+
+.cps-layer-swatch:hover:not(:disabled) {
+  border-color: var(--cps-fg);
+}
+
+.cps-layer-opacity .cps-num-value {
+  min-width: 3em;
+  height: 18px;
+}
+
+.cps-layers .cps-native-color {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}

@@ -10,9 +10,12 @@
  *   middle-button pointer events (`@pointerdown/move/up.capture`, used for
  *   graph panning) to the graph in the CAPTURE phase, before any listener on
  *   our element runs. The only way to see them first is a capture listener on
- *   `window`, so one is attached while the pointer is over the stage (or a
- *   guarded drag is in progress) and removed afterwards. Guarded events are
- *   stopped there and handed to the editor directly.
+ *   `window`, so one is attached while the pointer is over the editor root
+ *   (or a guarded drag is in progress) and removed afterwards. Guarded events
+ *   are stopped there and handed to the editor directly: wheel over the stage
+ *   zooms; wheel over the rest (rail, bar, side panel, popovers) goes to
+ *   `onChromeWheel` with the default left alone (native scrolling).
+ *   Middle-drag is only guarded when it starts on the stage.
  *   `data-capture-wheel="true"` is also set: the frontend honours it when our
  *   element contains focus.
  */
@@ -32,6 +35,12 @@ export interface IsolationOptions {
   stage: HTMLElement;
   /** Editor wheel handler (zoom). Receives the already-stopped event. */
   onWheel: (event: WheelEvent) => void;
+  /**
+   * Wheel over the rest of the editor (rail, options bar, side panel,
+   * popovers). Propagation is stopped (never reaches the graph); default is
+   * NOT prevented, so native scrolling works unless the handler prevents it.
+   */
+  onChromeWheel: (event: WheelEvent) => void;
   /** Editor handler for middle-button pointer events (already stopped). */
   onMiddlePointer: (event: PointerEvent) => void;
 }
@@ -62,7 +71,7 @@ const GUARDED_POINTER = ["pointerdown", "pointermove", "pointerup", "pointercanc
  * @returns Handle that removes every listener it added.
  */
 export function isolateEvents(options: IsolationOptions): EventIsolation {
-  const { root, stage, onWheel, onMiddlePointer } = options;
+  const { root, stage, onWheel, onChromeWheel, onMiddlePointer } = options;
   const controller = new AbortController();
   const { signal } = controller;
 
@@ -71,18 +80,23 @@ export function isolateEvents(options: IsolationOptions): EventIsolation {
   // Middle-click autoscroll / paste on Linux.
   stage.addEventListener("auxclick", (e) => e.preventDefault(), { signal });
 
-  stage.dataset["captureWheel"] = "true";
+  root.dataset["captureWheel"] = "true";
 
   let hovering = false;
   let middleDrag = false;
   let armed = false;
 
   const inStage = (target: EventTarget | null): boolean => target instanceof Node && stage.contains(target);
+  const inRoot = (target: EventTarget | null): boolean => target instanceof Node && root.contains(target);
 
   const wheelGuard = (event: WheelEvent): void => {
-    if (!inStage(event.target)) return;
-    event.preventDefault();
+    if (!inRoot(event.target)) return;
     event.stopPropagation();
+    if (!inStage(event.target)) {
+      onChromeWheel(event);
+      return;
+    }
+    event.preventDefault();
     onWheel(event);
   };
   const pointerGuard = (event: PointerEvent): void => {
@@ -115,10 +129,11 @@ export function isolateEvents(options: IsolationOptions): EventIsolation {
     hovering = true;
     sync();
   };
+  // Armed over the whole root (rail, bar, side panel and popovers included).
   // pointermove also arms, in case the element mounted under a resting cursor.
-  stage.addEventListener("pointerenter", enter, { signal });
-  stage.addEventListener("pointermove", enter, { signal });
-  stage.addEventListener(
+  root.addEventListener("pointerenter", enter, { signal });
+  root.addEventListener("pointermove", enter, { signal });
+  root.addEventListener(
     "pointerleave",
     () => {
       hovering = false;

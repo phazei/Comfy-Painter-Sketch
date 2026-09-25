@@ -15,6 +15,9 @@
  * So the widget value is kept current after every edit, and dirty layers are
  * also uploaded on a short debounce after each edit; `serializeValue` just
  * flushes whatever is still pending.
+ *
+ * The DOM widget element is the host's stable container (`host.element`);
+ * the editor root inside it is what fullscreen re-parents (`ui/fullscreen.ts`).
  */
 
 import type { DOMWidget, InputSpecV1, LGraphNode } from "../types/comfy";
@@ -40,7 +43,7 @@ export function createPainterSketchWidget(
   const controller = new PainterSketchController(node);
   controller.setValue(options.default ?? "");
 
-  const widget = node.addDOMWidget<HTMLDivElement, string>(inputName, DOM_WIDGET_TYPE, controller.host.root, {
+  const widget = node.addDOMWidget<HTMLDivElement, string>(inputName, DOM_WIDGET_TYPE, controller.host.element, {
     getValue: () => controller.getValue(),
     setValue: (value) => controller.setValue(value),
     getMinHeight: () => WIDGET_MIN_HEIGHT,

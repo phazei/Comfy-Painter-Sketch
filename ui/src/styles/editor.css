@@ -1,16 +1,23 @@
 /*
  * PainterSketch editor styles. Every selector is scoped under .cps-* so we
  * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.
+ * Colours come from ComfyUI's palette variables where they exist (so the
+ * editor follows the user's theme), with dark fallbacks.
  */
 
 .cps-root {
   --cps-rail-width: 36px;
-  --cps-bg: #1e1e1e;
-  --cps-rail-bg: #262626;
-  --cps-border: #3a3a3a;
-  --cps-fg: #d0d0d0;
-  --cps-fg-muted: #7a7a7a;
-  --cps-accent: #3b82f6;
+  --cps-bar-height: 28px;
+  --cps-panel-width: 180px;
+  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);
+  --cps-surface: var(--comfy-menu-bg, #353535);
+  --cps-input-bg: var(--comfy-input-bg, #222);
+  --cps-fg: var(--input-text, #ddd);
+  --cps-fg-muted: var(--descrip-text, #999);
+  --cps-border: var(--border-color, #4e4e4e);
+  --cps-accent: var(--p-primary-color, #3b82f6);
+  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);
+  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);
 
   position: relative;
   box-sizing: border-box;
@@ -22,7 +29,7 @@
   min-height: 244px;
   min-width: 0;
   overflow: hidden;
-  background: var(--cps-bg);
+  background: var(--cps-chrome-bg);
   border: 1px solid var(--cps-border);
   border-radius: 4px;
   color: var(--cps-fg);
@@ -34,6 +41,10 @@
 .cps-root *::before,
 .cps-root *::after {
   box-sizing: border-box;
+}
+
+.cps-root [hidden] {
+  display: none !important;
 }
 
 .cps-focus-sink {
@@ -48,36 +59,18 @@
   pointer-events: none;
 }
 
-/* ── Tool rail ─────────────────────────────────────────────────────────── */
-
-.cps-rail {
-  flex: 0 0 var(--cps-rail-width);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 0;
-  background: var(--cps-rail-bg);
-  border-right: 1px solid var(--cps-border);
-  overflow: hidden;
+.cps-icon {
+  display: block;
+  flex: none;
 }
 
-.cps-rail-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
+/* ── Shared buttons ────────────────────────────────────────────────────── */
 
-.cps-rail-spacer {
-  flex: 1 1 auto;
-}
-
-.cps-rail-button {
+.cps-rail-button,
+.cps-icon-button {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -86,137 +79,195 @@
   cursor: pointer;
 }
 
-.cps-rail-button:hover:not(:disabled) {
-  background: #333;
+.cps-rail-button {
+  width: 28px;
+  height: 28px;
 }
 
-.cps-rail-button.cps-active {
+.cps-icon-button {
+  width: 24px;
+  height: 22px;
+}
+
+.cps-rail-button:hover:not(:disabled),
+.cps-icon-button:hover:not(:disabled) {
+  background: var(--cps-hover);
+}
+
+.cps-rail-button.cps-active,
+.cps-icon-button.cps-active {
   border-color: var(--cps-accent);
-  background: #2d3a52;
-}
-
-.cps-rail-button svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.6;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  background: var(--cps-active-bg);
 }
 
 .cps-rail-button:disabled {
   color: var(--cps-fg-muted);
+  opacity: 0.5;
   cursor: default;
 }
 
-/* ── Main column: options strip + stage ────────────────────────────────── */
+/* ── Tool rail ─────────────────────────────────────────────────────────── */
 
-.cps-main {
+.cps-rail {
+  flex: 0 0 var(--cps-rail-width);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--cps-chrome-bg);
+  border-right: 1px solid var(--cps-border);
+}
+
+/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */
+.cps-root.cps-has-keys .cps-rail {
+  box-shadow: inset 2px 0 0 #fff;
+}
+
+.cps-rail-tools {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
+  padding: 4px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.cps-rail-tools::-webkit-scrollbar,
+.cps-bar-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.cps-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+}
+
+.cps-rail-group:last-child {
+  border-bottom: 0;
+}
+
+.cps-rail-spacer {
+  flex: 1 1 auto;
+}
+
+.cps-rail-swatches {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 6px;
+  border-top: 1px solid var(--cps-border);
+}
+
+/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */
+
+.cps-swatches {
+  position: relative;
+  width: 30px;
+  height: 30px;
+}
+
+.cps-swatch {
+  position: absolute;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 1px solid #000;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);
+  cursor: pointer;
+}
+
+.cps-swatch-fg {
+  left: 0;
+  top: 0;
+  z-index: 1;
+}
+
+.cps-swatch-bg {
+  right: 0;
+  bottom: 0;
+}
+
+.cps-swatch-swap,
+.cps-swatch-reset {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-swatch-swap {
+  right: 0;
+  top: 0;
+}
+
+.cps-swatch-reset {
+  left: 0;
+  bottom: 0;
+}
+
+.cps-swatch-swap:hover,
+.cps-swatch-reset:hover {
+  color: var(--cps-fg);
+}
+
+.cps-reset-bg,
+.cps-reset-fg {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--cps-fg-muted);
+}
+
+.cps-reset-fg {
+  left: 0;
+  top: 0;
+  background: #000;
+}
+
+.cps-reset-bg {
+  right: 0;
+  bottom: 0;
+  background: #fff;
+}
+
+/* Colours do not apply while painting the mask. */
+.cps-root.cps-quickmask .cps-swatches {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
+.cps-native-color {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Body: stage + side panel ──────────────────────────────────────────── */
+
+.cps-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
   min-width: 0;
   min-height: 0;
 }
-
-.cps-options {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 8px;
-  padding: 3px 6px;
-  background: var(--cps-rail-bg);
-  border-bottom: 1px solid var(--cps-border);
-}
-
-.cps-options[hidden] {
-  display: none;
-}
-
-.cps-opt {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.cps-opt[hidden] {
-  display: none;
-}
-
-.cps-opt input[type="range"] {
-  width: 64px;
-  margin: 0;
-}
-
-.cps-opt-value {
-  min-width: 2.2em;
-  color: var(--cps-fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.cps-color {
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid var(--cps-border);
-  background: none;
-  cursor: pointer;
-}
-
-.cps-opt-toggle input {
-  margin: 0;
-}
-
-/* Quick Mask indicator + mask visibility toggle. */
-.cps-mask-badge {
-  padding: 1px 6px;
-  border-radius: 3px;
-  color: #fff;
-  font-weight: 600;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
-  white-space: nowrap;
-}
-
-.cps-mask-badge[hidden] {
-  display: none;
-}
-
-.cps-mask-eye {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--cps-fg);
-  cursor: pointer;
-}
-
-.cps-mask-eye:hover {
-  background: #333;
-}
-
-.cps-mask-eye.cps-off {
-  color: var(--cps-fg-muted);
-}
-
-.cps-mask-eye svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* ── Stage ─────────────────────────────────────────────────────────────── */
 
 .cps-stage {
   position: relative;
@@ -224,6 +275,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  background: var(--cps-input-bg);
   touch-action: none;
   outline: none;
   cursor: crosshair;
@@ -270,6 +322,25 @@
   text-overflow: ellipsis;
 }
 
-.cps-note[hidden] {
-  display: none;
+.cps-side {
+  flex: 0 0 var(--cps-panel-width);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--cps-chrome-bg);
+  border-left: 1px solid var(--cps-border);
+}
+
+.cps-side-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.cps-side-placeholder {
+  padding: 6px 8px;
+  color: var(--cps-fg-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--cps-border);
 }

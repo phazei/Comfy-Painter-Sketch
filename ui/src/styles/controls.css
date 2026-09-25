@@ -1,0 +1,216 @@
+/*
+ * PainterSketch options bar, option controls and popovers (split from
+ * editor.css to keep files small; theme variables are defined on .cps-root
+ * there). Injected together by styles/inject.ts.
+ */
+
+/* ── Main column: options bar + body ───────────────────────────────────── */
+
+.cps-main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cps-bar {
+  flex: 0 0 var(--cps-bar-height);
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: var(--cps-chrome-bg);
+  border-bottom: 1px solid var(--cps-border);
+}
+
+.cps-bar-leading,
+.cps-bar-trailing {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.cps-bar-leading:empty {
+  display: none;
+}
+
+.cps-bar-trailing {
+  border-left: 1px solid var(--cps-border);
+}
+
+.cps-bar-scroller {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.cps-bar-sep {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  background: var(--cps-border);
+}
+
+/* Number option: scrubby label + value button. */
+.cps-num,
+.cps-select {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cps-num-label {
+  color: var(--cps-fg-muted);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.cps-num-label:hover,
+.cps-num-label.cps-scrubbing {
+  color: var(--cps-fg);
+}
+
+.cps-num-value,
+.cps-select select,
+.cps-num-input {
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--cps-border);
+  border-radius: 3px;
+  background: var(--cps-input-bg);
+  color: var(--cps-fg);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.cps-num-value {
+  min-width: 3.4em;
+  text-align: right;
+  cursor: pointer;
+}
+
+.cps-num-value:hover,
+.cps-select select:hover {
+  border-color: var(--cps-fg-muted);
+}
+
+.cps-toggle {
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--cps-border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cps-toggle:hover {
+  background: var(--cps-hover);
+}
+
+.cps-toggle.cps-active {
+  border-color: var(--cps-accent);
+  background: var(--cps-active-bg);
+  color: var(--cps-fg);
+}
+
+.cps-dim {
+  opacity: 0.45;
+}
+
+/* Quick Mask indicator. */
+.cps-mask-badge {
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #fff;
+  font-weight: 600;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+/* ── Popovers ──────────────────────────────────────────────────────────── */
+
+.cps-popover-host {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cps-popover {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: auto;
+  padding: 6px;
+  background: var(--cps-surface);
+  border: 1px solid var(--cps-border);
+  border-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.cps-slider-pop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cps-slider {
+  width: 120px;
+  margin: 0;
+  accent-color: var(--cps-accent);
+}
+
+.cps-num-input {
+  width: 48px;
+  text-align: right;
+  user-select: text;
+  outline: none;
+}
+
+.cps-num-input:focus {
+  border-color: var(--cps-accent);
+}
+
+.cps-num-unit {
+  min-width: 1.2em;
+  color: var(--cps-fg-muted);
+}
+
+/* Collapsed option group (pen pressure): icon button + popover. */
+.cps-option-group {
+  flex: none;
+  color: var(--cps-fg-muted);
+}
+
+.cps-option-group.cps-on {
+  color: var(--cps-accent);
+}
+
+.cps-group-pop {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.cps-group-title {
+  color: var(--cps-fg-muted);
+  font-weight: 600;
+}

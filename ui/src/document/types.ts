@@ -21,7 +21,7 @@ export type BlendMode = "normal";
 /** Opaque text-layer data (defined in M6). */
 export type TextData = Record<string, unknown>;
 
-/** One layer. Pixel data lives in `file` (PNG sized exactly `bounds`). */
+/** One layer. Pixel data lives in `file` (WebP or PNG sized exactly `bounds`). */
 export interface Layer {
   id: string;
   name: string;
@@ -31,7 +31,7 @@ export interface Layer {
   /** 0..1 */
   opacity: number;
   blendMode: BlendMode;
-  /** `"painter-sketch/<name>.png [input]"`, or `null` for an empty layer. */
+  /** `"painter-sketch/<name>.<webp|png> [input]"`, or `null` for an empty layer. */
   file: string | null;
   /** Mask display colour. */
   color?: string;

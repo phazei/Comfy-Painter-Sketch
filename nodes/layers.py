@@ -1,8 +1,10 @@
 """
-nodes/layers.py -- Resolve and load per-layer PNG files for PainterSketch.
+nodes/layers.py -- Resolve and load per-layer image files for PainterSketch.
 
 Each layer in the manifest carries a ``file`` field like
-``"painter-sketch/<name>.png [input]"``.  This module:
+``"painter-sketch/<name>.webp [input]"`` (older documents: ``.png``).  The
+extension is not checked: PIL detects the format from the bytes, so any format
+it reads (WebP with alpha, PNG) loads the same way.  This module:
   1. Validates that the annotated path stays inside the ``painter-sketch/``
      subfolder (path-traversal guard).
   2. Checks the file exists via ``folder_paths.exists_annotated_filepath``.
@@ -12,7 +14,7 @@ Each layer in the manifest carries a ``file`` field like
 The returned tensor dimensions are exactly ``bounds.width x bounds.height`` as
 recorded in the layer's document bounds.  If the loaded image differs in size
 we warn and resize with PIL LANCZOS before returning (the frontend is supposed
-to upload a correctly-sized PNG, so size mismatch means the document is stale).
+to upload a correctly-sized image, so size mismatch means the document is stale).
 
 Callers (composite.py) never see PIL objects; they only see torch tensors or
 None for missing/skipped files.
@@ -76,13 +78,13 @@ def load_layer_rgba(
     layer: Layer,
     bounds: Bounds,
 ) -> torch.Tensor | None:
-    """Load a layer's PNG file and return an RGBA float32 tensor.
+    """Load a layer's image file (WebP or PNG) and return an RGBA float32 tensor.
 
     Returns ``None`` when the layer has no file (``file is None``), the file
     is unsafe, or the file is missing; logs a warning in each case.
 
     The returned tensor is ``[bounds.height, bounds.width, 4]`` float32 in
-    ``[0, 1]`` (straight alpha, matching the frontend's saved PNGs).
+    ``[0, 1]`` (straight alpha, matching the frontend's saved images).
 
     Args:
         layer: Validated :class:`~document.Layer` from the manifest.
@@ -111,7 +113,7 @@ def load_layer_rgba(
     expected_w, expected_h = bounds.width, bounds.height
     if pil_img.size != (expected_w, expected_h):
         log.warning(
-            "layers: layer %r PNG size %s != bounds %dx%d; resizing",
+            "layers: layer %r image size %s != bounds %dx%d; resizing",
             layer.id, pil_img.size, expected_w, expected_h,
         )
         pil_img = pil_img.resize((expected_w, expected_h), Image.LANCZOS)

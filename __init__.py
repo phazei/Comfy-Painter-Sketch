@@ -12,6 +12,10 @@ path, which never calls ``comfy_entrypoint()``.  See AGENTS.md.
 WEB_DIRECTORY: ComfyUI auto-loads every ``*.js`` file found under this
 directory as an extension entry point.  The built frontend bundle lives in
 ``js/`` and is committed so users never need to run a build.
+
+Server route: ``POST /painter-sketch/cleanup`` (settings cleanup button) is
+registered at import time, while ComfyUI loads custom nodes and before it
+collects ``PromptServer.instance.routes``; see ``nodes/cleanup_route.py``.
 """
 
 import logging
@@ -20,10 +24,14 @@ from comfy_api.latest import ComfyExtension, io
 from typing_extensions import override
 
 from .nodes import ALL_NODES
+from .nodes.cleanup_route import register_routes
 
 log = logging.getLogger("paintersketch")
 
 WEB_DIRECTORY = "./js"
+
+register_routes()
+
 
 
 class PainterSketchExtension(ComfyExtension):

@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import type { BrushDynamics } from "./brush";
-import { createSpacer, dabAlpha, dabSize, normalizePressure, placeDabs, stampStops } from "./brush";
+import {
+  createSpacer,
+  curvePressure,
+  dabAlpha,
+  dabSize,
+  normalizePressure,
+  placeDabs,
+  pressureSizeFactor,
+  stampStops,
+} from "./brush";
 
 const dyn: BrushDynamics = {
   size: 10,
@@ -28,6 +37,31 @@ describe("pressure", () => {
     expect(dabSize(0.5, { ...dyn, pressureSize: true, gamma: 2 })).toBe(2.5);
     expect(dabAlpha(0.5, { ...dyn, flow: 0.8 })).toBe(0.8);
     expect(dabAlpha(0.5, { ...dyn, flow: 0.8, pressureOpacity: true })).toBeCloseTo(0.4);
+  });
+});
+
+describe("pressure curve", () => {
+  it("maps zero pressure to the min size and full pressure to 1", () => {
+    expect(pressureSizeFactor(0, 0.25, 1)).toBe(0.25);
+    expect(pressureSizeFactor(1, 0.25, 2)).toBe(1);
+    expect(pressureSizeFactor(0.5, 0.2, 1)).toBeCloseTo(0.6);
+  });
+
+  it("bends the curve with gamma (> 1 softer start, < 1 harder start)", () => {
+    expect(pressureSizeFactor(0.5, 0, 2)).toBeCloseTo(0.25);
+    expect(pressureSizeFactor(0.25, 0, 0.5)).toBeCloseTo(0.5);
+    expect(curvePressure(0.5, 1)).toBe(0.5);
+  });
+
+  it("clamps inputs and falls back to linear on invalid gamma", () => {
+    expect(pressureSizeFactor(2, -1, 1)).toBe(1);
+    expect(pressureSizeFactor(0, 3, 1)).toBe(1);
+    expect(pressureSizeFactor(0.5, Number.NaN, 0)).toBe(0.5);
+    expect(curvePressure(0.5, Number.NaN)).toBe(0.5);
+  });
+
+  it("applies gamma to pressure -> opacity too", () => {
+    expect(dabAlpha(0.5, { ...dyn, pressureOpacity: true, gamma: 2 })).toBeCloseTo(0.25);
   });
 });
 

@@ -14,7 +14,11 @@ describe("contentHash", () => {
 
 describe("layerFileName", () => {
   it("prefixes with a sanitized doc id", () => {
-    expect(layerFileName("abcdefghijk", "00ff")).toBe("ps-abcdefgh-00ff.png");
-    expect(layerFileName("../..", "00ff")).toBe("ps-doc-00ff.png");
+    expect(layerFileName("abcdefghijk", "00ff", "png")).toBe("ps-abcdefgh-00ff.png");
+    expect(layerFileName("../..", "00ff", "png")).toBe("ps-doc-00ff.png");
+  });
+
+  it("uses the extension of the actual format", () => {
+    expect(layerFileName("abc", "00ff", "webp")).toBe("ps-abc-00ff.webp");
   });
 });

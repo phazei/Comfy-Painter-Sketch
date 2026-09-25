@@ -84,6 +84,20 @@ export function curvePressure(pressure: number, gamma: number): number {
 }
 
 /**
+ * Pressure -> size factor (SPEC "Pressure": min size %, gamma):
+ * `min + (1 - min) * pressure^gamma`, so zero pressure gives `min` and full
+ * pressure gives 1.
+ * @param pressure - 0..1 (normalized).
+ * @param minSizeRatio - Factor at zero pressure, 0..1 (clamped).
+ * @param gamma - Curve exponent (> 0; invalid = linear).
+ * @returns Factor in `[min, 1]`.
+ */
+export function pressureSizeFactor(pressure: number, minSizeRatio: number, gamma: number): number {
+  const min = Number.isFinite(minSizeRatio) ? Math.min(1, Math.max(0, minSizeRatio)) : 0;
+  return min + (1 - min) * curvePressure(pressure, gamma);
+}
+
+/**
  * Dab diameter for a pressure.
  * @param pressure - 0..1 (normalized).
  * @param dyn - Brush dynamics.
@@ -91,9 +105,7 @@ export function curvePressure(pressure: number, gamma: number): number {
  */
 export function dabSize(pressure: number, dyn: BrushDynamics): number {
   if (!dyn.pressureSize) return Math.max(MIN_SIZE, dyn.size);
-  const p = curvePressure(pressure, dyn.gamma);
-  const min = Math.min(1, Math.max(0, dyn.minSizeRatio));
-  return Math.max(MIN_SIZE, dyn.size * (min + (1 - min) * p));
+  return Math.max(MIN_SIZE, dyn.size * pressureSizeFactor(pressure, dyn.minSizeRatio, dyn.gamma));
 }
 
 /**

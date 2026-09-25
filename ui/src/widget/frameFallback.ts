@@ -26,7 +26,9 @@ export interface FallbackFrame {
 
 /**
  * Normalize a CSS hex colour (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, with or
- * without the leading `#`) to lowercase `#rrggbb[aa]`.
+ * without the leading `#`) to lowercase opaque `#rrggbb`. Alpha is dropped on
+ * purpose: the node's `IMAGE` output has no alpha and Python ignores it too, so
+ * the editor must draw the background opaque to match the output.
  *
  * @param value - Raw widget value.
  * @param fallback - Returned when `value` is not a valid hex colour.
@@ -37,9 +39,9 @@ export function normalizeHexColor(value: unknown, fallback: string = FALLBACK_DE
   const hex = value.trim().replace(/^#/, "").toLowerCase();
   if (!/^[0-9a-f]+$/.test(hex)) return fallback;
   if (hex.length === 3 || hex.length === 4) {
-    return `#${[...hex].map((c) => c + c).join("")}`;
+    return `#${[...hex.slice(0, 3)].map((c) => c + c).join("")}`;
   }
-  if (hex.length === 6 || hex.length === 8) return `#${hex}`;
+  if (hex.length === 6 || hex.length === 8) return `#${hex.slice(0, 6)}`;
   return fallback;
 }
 

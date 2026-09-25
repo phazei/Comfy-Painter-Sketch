@@ -6,12 +6,15 @@
 
 import { app } from "@comfy/scripts/app.js";
 
+import { SETTINGS } from "./settings";
 import { EXTENSION_NAME, NODE_NAME, WIDGET_SPEC_TYPE } from "./widget/constants";
 import { installNodeHooks } from "./widget/nodeHooks";
 import { createPainterSketchWidget } from "./widget/painterWidget";
 
 app.registerExtension({
   name: EXTENSION_NAME,
+
+  settings: SETTINGS,
 
   getCustomWidgets: () => ({
     [WIDGET_SPEC_TYPE]: (node, inputName, inputData) => createPainterSketchWidget(node, inputName, inputData),

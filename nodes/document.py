@@ -23,7 +23,7 @@ Layer model:
     locked         -- bool (read-only by Python; doesn't affect compositing)
     opacity        -- 0-1 float (clamped on parse)
     blendMode      -- "normal" only in v1
-    file           -- "painter-sketch/<name>.png [input]" or null
+    file           -- "painter-sketch/<name>.<webp|png> [input]" or null
     invert         -- bool, mask layers only (default False)
 """
 

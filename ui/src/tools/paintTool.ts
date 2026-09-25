@@ -4,9 +4,10 @@
  * stroke buffer. Shift+click draws a straight segment from where the previous
  * stroke ended (Photoshop behavior), then continues as a normal stroke.
  *
- * `options.size` is in image px (what the user sees on the current
- * background); it is divided by the frame-map scale to get document px, so a
- * 20 px brush looks 20 px on any image size (decision 4).
+ * `size` is in image px (what the user sees on the current background); it
+ * is divided by the frame-map scale to get document px, so a 20 px brush
+ * looks 20 px on any image size (decision 4). The paint colour is the
+ * editor's foreground colour (`editor.colors.fg`).
  */
 
 import { createSpacer, placeDabs } from "../engine/brush";
@@ -14,36 +15,88 @@ import { imageLengthToDoc } from "../engine/frameMap";
 import type { BrushDynamics, Dab, SpacerState, StrokeSample } from "../engine/brush";
 import type { Editor } from "../engine/editor";
 import type { StrokeMode } from "../engine/stroke";
+import { OptionSet } from "./options";
+import type { OptionDescriptor, OptionGroup } from "./options";
 import type { PaintOptions, Tool, ToolCursor, ToolPointer } from "./types";
 
-/** Pressure curve used until M7 exposes settings. */
-const PRESSURE_CURVE = { minSizeRatio: 0.1, gamma: 1 };
+/** Options bar layout shared by brush-like tools (SPEC Tools table, Pressure). */
+export const PAINT_OPTION_DESCRIPTORS: readonly OptionDescriptor[] = [
+  { kind: "number", key: "size", label: "Size", title: "Brush size ([ / ])", min: 1, max: 1000, step: 1, unit: "px", curve: "pow" },
+  { kind: "number", key: "hardness", label: "Hard", title: "Hardness (Shift+[ / ])", min: 0, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "opacity", label: "Opac", title: "Opacity (1..9, 0)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "flow", label: "Flow", title: "Flow (per-dab strength)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 200, step: 1, unit: "%", scale: 100 },
+  { kind: "toggle", key: "pressureSize", label: "Size", title: "Pen pressure controls size", group: "pressure" },
+  { kind: "toggle", key: "pressureOpacity", label: "Opacity", title: "Pen pressure controls opacity", group: "pressure" },
+  {
+    kind: "number",
+    key: "minSize",
+    label: "Min size",
+    title: "Size at zero pressure (% of size)",
+    min: 0,
+    max: 100,
+    step: 1,
+    unit: "%",
+    scale: 100,
+    group: "pressure",
+    dependsOn: ["pressureSize"],
+  },
+  {
+    kind: "number",
+    key: "gamma",
+    label: "Curve \u03b3",
+    title: "Pressure curve (1 = linear, > 1 = softer start)",
+    min: 0.2,
+    max: 5,
+    step: 0.05,
+    group: "pressure",
+    dependsOn: ["pressureSize", "pressureOpacity"],
+  },
+];
+
+/** The pressure options live behind one stylus button in the bar. */
+export const PAINT_OPTION_GROUPS: readonly OptionGroup[] = [
+  { id: "pressure", icon: "stylus", title: "Pen pressure", activeWhen: ["pressureSize", "pressureOpacity"] },
+];
+
+/** Static description of a brush-like tool. */
+export interface PaintToolSpec {
+  id: string;
+  label: string;
+  shortcut: string;
+  icon: string;
+  mode: StrokeMode;
+  defaults: PaintOptions;
+}
 
 /**
  * A brush-like tool.
  */
 export class PaintTool implements Tool {
-  readonly options: PaintOptions;
+  readonly id: string;
+  readonly label: string;
+  readonly shortcut: string;
+  readonly icon: string;
+  readonly options: OptionSet;
+  /** Stored option values (edited in place through {@link options}). */
+  readonly values: PaintOptions;
+  private readonly mode: StrokeMode;
   private spacer: SpacerState | null = null;
   private last: ToolPointer | null = null;
   /** Current stroke's full-pressure diameter in document px. */
   private docSize = 1;
 
   /**
-   * @param id - Tool id.
-   * @param label - Display label.
-   * @param shortcut - Single-key shortcut.
-   * @param mode - Paint or erase.
-   * @param defaults - Initial options.
+   * @param spec - Id, label, shortcut, icon, mode and default options.
    */
-  constructor(
-    readonly id: string,
-    readonly label: string,
-    readonly shortcut: string,
-    private readonly mode: StrokeMode,
-    defaults: PaintOptions,
-  ) {
-    this.options = { ...defaults };
+  constructor(spec: PaintToolSpec) {
+    this.id = spec.id;
+    this.label = spec.label;
+    this.shortcut = spec.shortcut;
+    this.icon = spec.icon;
+    this.mode = spec.mode;
+    this.values = { ...spec.defaults };
+    this.options = new OptionSet(PAINT_OPTION_DESCRIPTORS, this.values, PAINT_OPTION_GROUPS);
   }
 
   /** @inheritdoc */
@@ -52,12 +105,12 @@ export class PaintTool implements Tool {
     if (!first) return;
     const style = {
       mode: this.mode,
-      opacity: this.options.opacity,
-      hardness: this.options.hardness,
-      color: this.options.color ?? "#000000",
+      opacity: this.values.opacity,
+      hardness: this.values.hardness,
+      color: editor.colors.fg,
     };
     // Size is fixed per stroke in doc px (the image may change size mid-stroke).
-    this.docSize = imageLengthToDoc(editor.frameMap, this.options.size);
+    this.docSize = imageLengthToDoc(editor.frameMap, this.values.size);
     if (!editor.beginStroke(style, this.docSize)) return;
     this.spacer = createSpacer();
     const lineStart = first.shiftKey ? editor.lastStrokeEnd : null;
@@ -90,7 +143,7 @@ export class PaintTool implements Tool {
 
   /** @inheritdoc */
   cursor(): ToolCursor {
-    return { kind: "ring", diameter: this.options.size };
+    return { kind: "ring", diameter: this.values.size };
   }
 
   private feed(editor: Editor, samples: readonly ToolPointer[]): void {
@@ -108,13 +161,15 @@ export class PaintTool implements Tool {
 
   /** Spacing is a fraction of the diameter, so it scales with `docSize` too. */
   private dynamics(): BrushDynamics {
+    const v = this.values;
     return {
       size: this.docSize,
-      flow: this.options.flow,
-      spacing: this.options.spacing,
-      pressureSize: this.options.pressureSize,
-      pressureOpacity: this.options.pressureOpacity,
-      ...PRESSURE_CURVE,
+      flow: v.flow,
+      spacing: v.spacing,
+      pressureSize: v.pressureSize,
+      pressureOpacity: v.pressureOpacity,
+      minSizeRatio: v.minSize,
+      gamma: v.gamma,
     };
   }
 }

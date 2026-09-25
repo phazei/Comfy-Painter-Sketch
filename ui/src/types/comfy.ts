@@ -176,9 +176,38 @@ export type CustomWidgetConstructor = (
   app: ComfyApp,
 ) => { widget?: IBaseWidget; minWidth?: number; minHeight?: number } | IBaseWidget | undefined;
 
+/**
+ * One settings-panel entry (subset of frontend `SettingParams`,
+ * `src/platform/settings/types.ts`).
+ */
+export interface SettingParams {
+  /** Unique id, prefixed `PainterSketch.`. */
+  id: string;
+  name: string;
+  type: "boolean" | "number" | "slider" | "combo" | "text" | "hidden" | SettingCustomRenderer;
+  defaultValue: unknown;
+  /** Panel path; defaults to `id.split(".")`. */
+  category?: string[];
+  tooltip?: string;
+  attrs?: Record<string, unknown>;
+  options?: Array<string | { text: string; value?: string | number }>;
+  sortOrder?: number;
+  onChange?: (newValue: unknown, oldValue?: unknown) => void;
+}
+
+/** Custom renderer for a setting row (returns the element to mount). */
+export type SettingCustomRenderer = (
+  name: string,
+  setter: (v: unknown) => void,
+  value: unknown,
+  attrs?: Record<string, unknown>,
+) => HTMLElement;
+
 /** Extension definition (subset of frontend `ComfyExtension`). */
 export interface ComfyExtension {
   name: string;
+  /** Settings-panel entries registered with the extension. */
+  settings?: SettingParams[];
   getCustomWidgets?(app: ComfyApp): Record<string, CustomWidgetConstructor>;
   beforeRegisterNodeDef?(
     nodeType: LGraphNodeConstructor,
@@ -202,6 +231,10 @@ export interface ToastMessage {
 /** `app.extensionManager` (subset; every member optional at runtime). */
 export interface ExtensionManager {
   toast?: { add?: (message: ToastMessage) => void };
+  /** Settings store facade (`get` / `set` by setting id). */
+  setting?: { get?: (id: string) => unknown };
+  /** Command store facade (`execute` by command id). */
+  command?: { execute?: (id: string) => Promise<void> | void };
 }
 
 /** The ComfyUI `app` singleton (subset). */
@@ -209,6 +242,13 @@ export interface ComfyApp {
   registerExtension(extension: ComfyExtension): void;
   /** Set up during app init; guard every access. */
   extensionManager?: ExtensionManager;
+  /** Legacy UI facade; `settings.getSettingValue` is the older settings reader. */
+  ui?: { settings?: { getSettingValue?: (id: string) => unknown } };
+  /**
+   * The `LGraphCanvas` (subset; both renderers). `graph` is the graph being
+   * viewed (a subgraph while inside one). Set up during app init.
+   */
+  canvas?: { graph?: LGraph | null } | null;
   /** Execution outputs keyed by NodeLocatorId (`"12"` or `"<subgraph-uuid>:12"`). */
   readonly nodeOutputs: Partial<Record<string, NodeExecutionOutput>>;
   /** Preview image URLs (often `blob:`) keyed by NodeLocatorId. */

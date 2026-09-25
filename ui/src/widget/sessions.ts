@@ -109,8 +109,10 @@ export function fileSignature(doc: Pick<PainterDocument, "frame" | "layers">): s
  * -- which may hold newer unsaved strokes and undo history -- can be reused.
  * The last few signatures are accepted because an upload may finish between
  * the frontend capturing the widget value and the node being recreated.
- * An older manifest (graph undo, reopening a file after discarding changes)
- * does not match and is restored from its files instead.
+ * An older manifest (reopening a file after discarding changes) does not
+ * match and is restored from its files instead -- except for a session handed
+ * off by a node re-created in the same task (graph undo/redo, see
+ * `attachDecision.ts` / `handoff.ts`), which is always kept.
  *
  * @param session - Candidate session.
  * @param doc - Parsed manifest.

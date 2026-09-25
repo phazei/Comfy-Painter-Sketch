@@ -114,7 +114,7 @@ interface Layer {
   kind: 'paint' | 'text' | 'mask'
   visible: boolean; locked: boolean; opacity: number
   blendMode: 'normal'
-  file: string | null                               // "painter-sketch/xyz.png [input]"
+  file: string | null                               // "painter-sketch/xyz.webp [input]"
   color?: string                                    // mask display color
   invert?: boolean                                  // mask layers, default false
   textData?: TextData                               // text layers
@@ -134,23 +134,36 @@ interface Region {                                  // future: Output Regions
   it. Initially `bounds = {x:0, y:0, width:frame.width, height:frame.height}`;
   it grows in 256 px chunks while painting off-frame, capped at 3x the frame per
   axis and 16384 px.
-- **Layer PNG:** RGBA, exactly `bounds.width x bounds.height`; PNG pixel `(px,py)`
+- **Layer image:** RGBA, exactly `bounds.width x bounds.height`; pixel `(px,py)`
   sits at frame coords `(bounds.x+px, bounds.y+py)`. Straight (non-premultiplied)
   alpha. `file: null` = empty layer.
-- **File names:** `painter-sketch/ps-<docId8>-<hash>.png`, stored in the widget as
-  `"painter-sketch/ps-<docId8>-<hash>.png [input]"`. The hash is of the content,
-  so edits produce new names and unchanged layers are not re-uploaded. A fully
-  erased layer saves as `file: null`.
+- **Format:** Mask layers are always **PNG** (lossless). Paint layers use the
+  setting `PainterSketch.PaintQuality` (50-100, default **99**): below 100 = lossy
+  WebP at that quality; 100 = PNG. (Measured: Chrome's canvas lossless WebP was
+  ~2x the PNG size, while lossy 99% was ~1/3 of the PNG with no visible
+  difference.) If the browser can't encode WebP, PNG. Python reads any format PIL
+  supports.
+- **File names:** `painter-sketch/ps-<docId8>-<hash>.<webp|png>`, stored in the
+  widget as `"painter-sketch/ps-<docId8>-<hash>.webp [input]"`. The hash is of the
+  content, so edits produce new names and unchanged layers are not re-uploaded. A
+  fully erased layer saves as `file: null`.
 - **Upload timing:** `serializeValue` only runs at queue time (inside
-  `graphToPrompt`); save/export/tab switch read `widget.value`. So the widget
-  value is updated after every edit and dirty layers upload ~1 s after the last
-  edit; `serializeValue` just flushes pending uploads. File references change only
-  after a successful upload. A failed upload toasts and blocks the queue (same as
-  core Painter); pixels stay in memory, still dirty.
+  `graphToPrompt`); save/export/tab switch read `widget.value`. The widget value
+  (layer metadata) updates after every edit; dirty layers upload when the editor
+  **loses focus/engagement**, after **~5 s idle**, at **queue** (`serializeValue`
+  flushes), and on **Ctrl+S** while the editor has focus (we intercept, flush,
+  then run `Comfy.SaveWorkflow` so the saved workflow has the latest files; if
+  the upload fails, a confirm asks "Upload failed; save anyway without the latest
+  paint?"; Ctrl+Shift+S is not intercepted). Also on fullscreen exit and session
+  detach (tab switch / node removal).
+  File references change only after a successful upload. A failed upload toasts
+  and blocks the queue (same as core Painter); pixels stay in memory, still dirty.
+- **Cleanup:** files accumulate by design (older workflow versions and graph undo
+  may reference them). A settings button runs a two-step cleanup (see Settings).
 - **Paint layers** (`kind: "paint"`, later `"text"`): composited bottom -> top,
   Normal blend, straight-alpha "over", multiplied by layer `opacity`. Hidden
   (`visible: false`) layers are skipped.
-- **Mask layers** (`kind: "mask"`): mask value = PNG **alpha** (RGB ignored).
+- **Mask layers** (`kind: "mask"`): mask value = image **alpha** (RGB ignored).
   `opacity` and `color` are display-only and do NOT affect `MASK`. Per-layer
   `invert`, then union (max) of visible mask layers, then node `invert_mask`.
 - **Frame mismatch:** if the run-time image is `W x H` and `frame` is `fw x fh`,
@@ -199,6 +212,12 @@ interface Region {                                  // future: Output Regions
 ### Color
 - Foreground / background swatches, X swaps, D resets to black/white
 - Hex field, compact SV square + hue slider, a few recent colors
+- FG/BG are editor session state (not saved in the document). Recent colors
+  (max 10) persist in `localStorage["PainterSketch.recentColors"]`.
+- Picker: live update while dragging; click outside commits; Esc reverts and closes.
+
+### View / window shortcuts
+- `F` toggles fullscreen; `Esc` closes an open popover / rename first, then exits fullscreen.
 
 ### Brush shortcuts
 - `[` / `]` size, Shift+`[` / `]` hardness
@@ -209,11 +228,41 @@ interface Region {                                  // future: Output Regions
   lock, opacity, thumbnails
 - Background (input image) row at the bottom, locked, not deletable
 - Mask layers shown with their color swatch
+- Mask row at the top (v1: exactly one; not addable/deletable/movable): eye,
+  color swatch (picker), invert, overlay opacity. Clicking the mask row turns
+  Quick Mask on; clicking a paint row turns it off.
+- New layer goes above the active paint layer, named "Layer N". The last paint
+  layer can't be deleted. Painting on a locked layer shows "Layer is locked."
+- Undoable: add, delete (keeps pixels), duplicate, reorder, rename, opacity, mask
+  color/invert/opacity -- one scrub or picker session = one undo step.
+  Visibility and lock are not undoable (Photoshop-like).
+- Side panel auto-collapses below 520 px editor width; the user's toggle wins
+  until the width crosses 520 again. Fullscreen opens it and restores on exit.
 
 ### Pressure
 - Pointer Events `pressure` with `getCoalescedEvents()`
 - Mouse/touch without pressure = full pressure
-- Simple curve (min size %, gamma) in brush options
+- Simple curve (min size %, gamma) in brush options; pressure -> size and
+  pressure -> opacity toggles. Spacing is also a brush option.
+
+### Settings (ComfyUI settings panel, category "PainterSketch")
+- `PainterSketch.PaintQuality`: paint layer WebP quality, 50-100, default 99 (100 = PNG).
+- `PainterSketch.Cleanup`: **Clean up files** button. Step 1 (dry run) counts
+  deletable files; a confirm explains "N files (X MB) in `input/painter-sketch/`
+  are not used by any saved workflow, open workflow or unsaved draft, and are older
+  than 24 hours. Delete them? This affects all workflows." Step 2 deletes.
+  - Referenced = file name appears in any saved workflow JSON under every user's
+    `workflows` folder, or in the references the frontend sends (all open
+    workflow tabs + locally stored drafts).
+  - Only `ps-*.{png,webp}` directly in `input/painter-sketch/`, mtime older than
+    24 h. Never follows symlinks.
+  - Also scanned: `<user>/subgraphs/**/*.json` (saved subgraph blueprints) and,
+    client-side, graph-undo/redo history of open tabs. Other browsers' drafts
+    can't be seen -- hence the 24 h age floor. Workflows that couldn't be scanned
+    are reported in the confirm. A symlinked/junctioned `painter-sketch/` folder
+    is refused.
+  - This is the project's **one server route** (`POST /painter-sketch/cleanup`,
+    body `{dryRun, referenced: string[]}`).
 
 ### Undo / Redo
 - Buttons in the UI, and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y while the editor is active
@@ -222,6 +271,11 @@ interface Region {                                  // future: Output Regions
 Per-layer move/free transform (whole-drawing Move is M5), rotation, feathering/refine edge, blend modes, brush presets beyond
 a couple, layer masks (per-layer), smoothing/stabilizer, symmetry, PSD export,
 per-image paint in a batch, multiple mask layers in the UI, output regions.
+
+### Future (v2): Apply mask to IMAGE
+Option to bake the mask into the `IMAGE` output: fill the masked area with a
+color, or cut it out as transparency. ComfyUI `IMAGE` is RGB, so transparency
+likely means an extra RGBA/alpha output or relying on image+mask consumers.
 
 ### Future: Output Regions
 Draw numbered rectangles on the canvas (e.g. one per person); each becomes its
@@ -275,10 +329,10 @@ own output pair.
 - [x] `MASK` output (union of mask layers) + `invert_mask` (browser-verified)
 
 ### M3 -- UI shell
-- [ ] Left tool rail, top options bar, color picker, layers panel
-- [ ] Fullscreen re-parenting
+- [x] Left tool rail, top options bar, color picker, layers panel (browser-verified)
+- [x] Fullscreen re-parenting (browser-verified)
 - [x] Clear button (confirm, undoable) (pulled into M1)
-- [ ] Keyboard shortcuts scoped to the active editor
+- [x] Keyboard shortcuts scoped to the active editor (browser-verified)
 
 ### M4 -- Tools
 - [ ] Paint bucket (typed-array flood fill), eyedropper (+ Alt)
@@ -312,6 +366,8 @@ own output pair.
 - **View on node resize:** "fit" mode is sticky (initial, Ctrl+0, Fit button) and
   re-fits on resize. After a manual zoom/pan, resize keeps the zoom and the
   centered image point. Pan is clamped so at least 64 px of the image stays visible.
+- The `background` colour is always used opaque; any alpha from the picker is
+  ignored (the `IMAGE` output has no alpha).
 - Hidden mask layers are excluded from `MASK` (same rule as paint layers). Painting
   on a hidden mask, or queueing while a hidden mask has paint, shows the note
   "The mask is hidden; show it to output it."
@@ -333,6 +389,10 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: Storage revised after measurements: masks PNG, paint lossy WebP default 99 (100 = PNG); cleanup settings row shows file stats.
+- 2026-09-24: Storage: WebP layers (masks lossless-verified via VP8L sniff, paint quality setting default 100 = lossless), upload on focus loss / 5 s idle / queue / Ctrl+S, settings-panel cleanup button with the one server route.
+- 2026-09-24: M3 browser round 1 fixes: click-to-engage focus rule + white rail edge as focus indicator; slider popover drag fixed; pressure options moved behind a stylus button (declarative option groups, nested popovers); background colour alpha ignored in both editor and Python (`#rgba`/`#rrggbbaa` accepted); `document` tooltip removed; graph undo no longer blanks the node (element/session hand-off) and never rolls back paint.
+- 2026-09-24: M3 code landed (browser check pending). Shell regions (rail / options bar / stage / side panel / in-root popover host); declarative tool options with scrubby labels; `editor.ts` split into ~7 engine modules. Layers panel with a `layers` history entry type. Fullscreen moves the editor root (child of a stable `.cps-widget` wrapper) into a body overlay (z-index 1790: above ComfyUI menus, below PrimeVue dialogs/toasts). In fullscreen, keys we don't use are swallowed except browser keys (F1-F24, Ctrl+R/W/T/N/L/Tab/PgUp/PgDn, devtools, Alt+arrows) and Ctrl+S / Ctrl+Enter. Clicking editor buttons no longer takes focus from the hidden key-sink input.
 - 2026-09-24: M2 browser-verified. Hidden mask layers stay excluded from `MASK`; queueing with a hidden, painted mask shows the note "The mask is hidden; show it to output it."
 - 2026-09-24: M2 code landed. New docs include a "Mask" layer (older docs get one lazily). Quick Mask paints white+alpha coverage. Overlay = tint of coverage (after per-layer invert) above paint; node `invert_mask` affects output only. Interim mask eye toggle until the M3 layers panel.
 - 2026-09-24: Whole-drawing Move tool planned as the first M5 item (non-destructive placement, not undoable -- Esc/Reset instead, no rotation).

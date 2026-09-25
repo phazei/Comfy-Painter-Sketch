@@ -1,29 +1,13 @@
 ﻿/**
- * Left tool rail: one button per registered tool, the Quick Mask toggle,
- * then Undo/Redo/Fit/Clear
- * (always visible, SPEC "Canvas / view"). Minimal M1 version; M3 replaces
- * the look.
+ * Left tool rail: tool buttons generated from the tool registry metadata
+ * (id, label, shortcut, icon -- no per-tool markup), then Quick Mask, then
+ * the always-visible actions (Undo, Redo, Fit, Clear, Fullscreen; SPEC
+ * "Canvas / view"). Renders into the shell's `rail.tools` region; the swatch
+ * widget lives in `rail.swatchSlot`.
  */
 
 import type { Tool } from "../tools/types";
-
-// ── Icons ─────────────────────────────────────────────────────────────────────
-
-/** SVG path data (24x24) per tool id / action. */
-const ICONS: Readonly<Record<string, string>> = {
-  brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
-  eraser: "M7 20h10M4 14l8-8 6 6-8 8H7z",
-  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
-  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
-  // Four corner brackets indicating "fit to view".
-  fit:
-    "M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4",
-  clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
-  // Photoshop's Quick Mask: a rectangle with a circle in it.
-  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
-};
-
-// ── Component ─────────────────────────────────────────────────────────────────
+import { setIcon } from "./icons";
 
 /** Callbacks from the rail. */
 export interface ToolRailActions {
@@ -36,45 +20,48 @@ export interface ToolRailActions {
   fit(): void;
   /** Clear canvas (the handler confirms). */
   clear(): void;
+  /** Fullscreen requested (F). */
+  fullscreen(): void;
 }
 
 /**
- * Tool rail element with update hooks.
+ * Tool rail buttons with update hooks.
  */
 export class ToolRail {
-  readonly element: HTMLDivElement;
   private readonly toolButtons = new Map<string, HTMLButtonElement>();
   private readonly toolBox: HTMLDivElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
   private readonly quickMaskButton: HTMLButtonElement;
+  private readonly fullscreenButton: HTMLButtonElement;
+  private toolIds = "";
 
   /**
+   * @param container - Shell region to render into.
    * @param actions - Button handlers.
    */
-  constructor(private readonly actions: ToolRailActions) {
-    this.element = document.createElement("div");
-    this.element.className = "cps-rail";
-    this.toolBox = document.createElement("div");
-    this.toolBox.className = "cps-rail-group";
+  constructor(container: HTMLElement, private readonly actions: ToolRailActions) {
+    this.toolBox = group();
     this.quickMaskButton = railButton("quickMask", "Quick Mask (Q)", () => this.actions.toggleQuickMask());
     this.quickMaskButton.classList.add("cps-rail-quickmask");
     this.quickMaskButton.setAttribute("aria-pressed", "false");
+    const maskGroup = group();
+    maskGroup.appendChild(this.quickMaskButton);
     const spacer = document.createElement("div");
     spacer.className = "cps-rail-spacer";
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
     this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
-    const fitButton = railButton("fit", "Fit to view (Ctrl+0)", () => this.actions.fit());
-    const clearButton = railButton("clear", "Clear canvas", () => this.actions.clear());
-    this.element.append(
-      this.toolBox,
-      this.quickMaskButton,
-      spacer,
+    this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
+    this.fullscreenButton.setAttribute("aria-pressed", "false");
+    const actionGroup = group();
+    actionGroup.append(
       this.undoButton,
       this.redoButton,
-      fitButton,
-      clearButton,
+      railButton("fit", "Fit to view (Ctrl+0)", () => this.actions.fit()),
+      railButton("clear", "Clear canvas", () => this.actions.clear()),
+      this.fullscreenButton,
     );
+    container.append(this.toolBox, maskGroup, spacer, actionGroup);
   }
 
   /**
@@ -89,19 +76,23 @@ export class ToolRail {
   }
 
   /**
-   * Rebuild tool buttons.
+   * Rebuild tool buttons from registry metadata (skipped when unchanged).
    * @param tools - Tools in order.
    * @param activeId - Active tool id.
    */
   setTools(tools: readonly Tool[], activeId: string): void {
-    this.toolBox.replaceChildren();
-    this.toolButtons.clear();
-    for (const tool of tools) {
-      const button = railButton(tool.id, `${tool.label} (${tool.shortcut.toUpperCase()})`, () =>
-        this.actions.selectTool(tool.id),
-      );
-      this.toolButtons.set(tool.id, button);
-      this.toolBox.appendChild(button);
+    const ids = tools.map((t) => t.id).join(",");
+    if (ids !== this.toolIds) {
+      this.toolIds = ids;
+      this.toolBox.replaceChildren();
+      this.toolButtons.clear();
+      for (const tool of tools) {
+        const title = tool.shortcut ? `${tool.label} (${tool.shortcut.toUpperCase()})` : tool.label;
+        const button = railButton(tool.icon, title, () => this.actions.selectTool(tool.id));
+        button.dataset["tool"] = tool.id;
+        this.toolButtons.set(tool.id, button);
+        this.toolBox.appendChild(button);
+      }
     }
     this.setActive(activeId);
   }
@@ -126,6 +117,25 @@ export class ToolRail {
     this.undoButton.disabled = !canUndo;
     this.redoButton.disabled = !canRedo;
   }
+
+  /**
+   * Show the fullscreen state (the same button exits).
+   * @param on - Editor is fullscreen.
+   */
+  setFullscreen(on: boolean): void {
+    const title = on ? "Exit fullscreen (F / Esc)" : "Fullscreen (F)";
+    this.fullscreenButton.classList.toggle("cps-active", on);
+    this.fullscreenButton.setAttribute("aria-pressed", String(on));
+    this.fullscreenButton.title = title;
+    this.fullscreenButton.setAttribute("aria-label", title);
+    setIcon(this.fullscreenButton, on ? "exitFullscreen" : "fullscreen");
+  }
+}
+
+function group(): HTMLDivElement {
+  const element = document.createElement("div");
+  element.className = "cps-rail-group";
+  return element;
 }
 
 function railButton(icon: string, title: string, onClick: () => void): HTMLButtonElement {
@@ -133,14 +143,8 @@ function railButton(icon: string, title: string, onClick: () => void): HTMLButto
   button.type = "button";
   button.className = "cps-rail-button";
   button.title = title;
+  button.setAttribute("aria-label", title);
   button.addEventListener("click", onClick);
-  const svgNs = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNs, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS(svgNs, "path");
-  path.setAttribute("d", ICONS[icon] ?? "M4 4h16v16H4z");
-  svg.appendChild(path);
-  button.appendChild(svg);
+  setIcon(button, icon);
   return button;
 }

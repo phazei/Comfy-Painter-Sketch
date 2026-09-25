@@ -1,5 +1,5 @@
 /**
- * Content hash for layer PNG file names. A small non-cryptographic 53-bit
+ * Content hash for layer image file names. A small non-cryptographic 53-bit
  * hash (cyrb53) is used instead of `crypto.subtle`, which is unavailable on
  * plain-http LAN origins. Collisions only matter within one document's
  * uploads, where 53 bits is ample.
@@ -28,14 +28,18 @@ export function contentHash(bytes: Uint8Array, seed = 0): string {
   return value.toString(16).padStart(14, "0");
 }
 
+/** File extension of an encoded layer (follows the actual format). */
+export type LayerFileExt = "webp" | "png";
+
 /**
- * Upload file name for a layer PNG.
+ * Upload file name for an encoded layer image.
  *
  * @param docId - Document id (prefix for traceability in `input/`).
- * @param hash - Content hash from {@link contentHash}.
- * @returns e.g. `ps-abcd1234-0123456789abcd.png`.
+ * @param hash - Content hash from {@link contentHash} (of the encoded bytes).
+ * @param ext - Extension matching the encoded format.
+ * @returns e.g. `ps-abcd1234-0123456789abcd.webp`.
  */
-export function layerFileName(docId: string, hash: string): string {
+export function layerFileName(docId: string, hash: string, ext: LayerFileExt): string {
   const prefix = docId.replace(/[^a-z0-9]/gi, "").slice(0, 8) || "doc";
-  return `ps-${prefix}-${hash}.png`;
+  return `ps-${prefix}-${hash}.${ext}`;
 }

@@ -1,0 +1,99 @@
+/*
+ * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
+ *
+ * .cps-widget is the DOM widget element and never moves; the editor root is
+ * its child and moves into .cps-fullscreen (on document.body) while
+ * fullscreen, leaving the placeholder button behind.
+ *
+ * z-index: above ComfyUI's static chrome (top menu 1001, splitter overlay
+ * 999, side bars) but below PrimeVue layers (modal/overlay/menu base 1800,
+ * tooltips 2000). Toasts share the modal counter with dialogs, so "above
+ * dialogs, below toasts" is not possible; dialogs/toasts showing on top of
+ * the editor is the safer choice.
+ */
+
+.cps-widget {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */
+  min-height: 244px;
+  min-width: 0;
+}
+
+.cps-widget > .cps-root {
+  flex: 1 1 auto;
+}
+
+.cps-fullscreen-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--border-color, #4e4e4e);
+  border-radius: 4px;
+  background: var(--comfy-menu-secondary-bg, #292929);
+  color: var(--descrip-text, #999);
+  font: 12px/1.4 system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+  appearance: none;
+}
+
+.cps-fullscreen-placeholder:hover {
+  color: var(--input-text, #ddd);
+  border-color: var(--p-primary-color, #3b82f6);
+}
+
+.cps-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1790;
+  box-sizing: border-box;
+  display: flex;
+  /* Top strip holds the exit button so it never covers the options bar. */
+  padding: 40px 12px 12px;
+  background: color-mix(in srgb, var(--bg-color, #202020) 92%, black);
+  overscroll-behavior: contain;
+}
+
+.cps-fullscreen > .cps-root {
+  flex: 1 1 auto;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.cps-fullscreen-exit {
+  position: absolute;
+  top: 6px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-color, #4e4e4e);
+  border-radius: 4px;
+  background: var(--comfy-menu-bg, #353535);
+  color: var(--input-text, #ddd);
+  font: 12px/1 system-ui, sans-serif;
+  cursor: pointer;
+  appearance: none;
+}
+
+.cps-fullscreen-exit:hover {
+  background: color-mix(in srgb, var(--input-text, #ddd) 14%, var(--comfy-menu-bg, #353535));
+}
+
+.cps-fullscreen-exit:focus-visible,
+.cps-fullscreen-placeholder:focus-visible {
+  outline: 2px solid var(--p-primary-color, #3b82f6);
+  outline-offset: 1px;
+}

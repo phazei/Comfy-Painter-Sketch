@@ -28,7 +28,8 @@ optionally draw a mask) directly inside the node, output `IMAGE` and `MASK`.
 
 ### Explicitly out of scope
 
-No sessions, no custom server routes, no iframe, no separate application, no AI
+No sessions, no custom server routes (single exception: `POST
+/painter-sketch/cleanup` for the settings cleanup button, see SPEC), no iframe, no separate application, no AI
 prompt box / "describe the next generation" dock, no output comparison pane, no
 run button inside the editor. Use ComfyUI's own endpoints (`/upload/image`,
 `/view`) and its own queue.
@@ -60,14 +61,14 @@ detail against the local frontend/backend source listed under Local References.
   `ALL_NODES`.
 - Category: an existing ComfyUI category (`image`), not a custom top-level one.
 - Logging: `logging.getLogger("paintersketch.<module>")`. Short, actionable messages.
-- The Python side is deliberately thin: resolve the saved layer/mask PNGs from the
+- The Python side is deliberately thin: resolve the saved layer/mask images from the
   `input` folder, composite over the input image, return `IMAGE`/`MASK` and a
   UI preview of the input image. All editing logic lives in the frontend.
 - Treat widget values that name files as untrusted: resolve through
   `folder_paths.get_annotated_filepath()` and verify with
   `folder_paths.exists_annotated_filepath()`; never join raw strings into paths.
 - Use `node_helpers.pillow(Image.open, path)` for loading (retries truncated images).
-- `fingerprint_inputs` hashes the saved PNG(s) so edits re-execute the node and
+- `fingerprint_inputs` hashes the saved layer files (stat) so edits re-execute the node and
   unchanged edits hit the cache.
 
 ### JavaScript / TypeScript (frontend)
@@ -139,6 +140,18 @@ ui/src/
 
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
+- Tool options are **declarative** (descriptors: slider/number/toggle/select),
+  rendered generically by the options bar. No per-tool UI code.
+- `ui/shell.ts` owns the regions (rail, options bar, stage, side panel) and the
+  popover host, which lives **inside** the editor root so popovers follow it into
+  fullscreen. Wheel isolation covers the whole root: the stage zooms, the options
+  bar scrolls sideways, other regions scroll natively, nothing reaches the graph.
+- The element passed to `addDOMWidget` is a stable wrapper (`.cps-widget`) that
+  never moves; only the editor root inside it moves (fullscreen). Both renderers
+  only check that the wrapper is their child.
+- Clicking non-text controls in the editor must not take DOM focus (keyboard
+  scope prevents it on pointerdown and redirects stray focus to the hidden
+  key-sink input); otherwise ChangeTracker's graph undo also fires on Ctrl+Z.
 - Python mirrors this split: `nodes/document.py` (manifest parse), `nodes/layers.py`
   (safe file resolve + load), `nodes/composite.py` (pure torch). Python tests:
   `python -m unittest discover tests` with ComfyUI on `sys.path` (ComfyUI venv).
@@ -158,10 +171,15 @@ ui/src/
 ### Persistence model
 
 - The saved state is a **versioned layer document** (JSON manifest with
-  `version`, canvas size, layers, text data, mask) plus per-layer PNGs.
+  `version`, canvas size, layers, text data, mask) plus one image per layer
+  (masks PNG; paint lossy WebP per setting -- see SPEC "Saved-file contract").
 - Pixel data is uploaded to ComfyUI's `input` folder via `POST /upload/image`
-  (subfolder per project, e.g. `painter-sketch/`) inside the widget's
-  `serializeValue` -- only when dirty -- the same pattern the core `Painter` uses.
+  (subfolder `painter-sketch/`), only when dirty. Upload timing is in SPEC
+  (focus loss, 5 s idle, queue via `serializeValue`, intercepted Ctrl+S).
+- The cleanup route (`nodes/cleanup_route.py`) is registered at import time via
+  `PromptServer.instance.routes` and is a no-op when no server exists (tests).
+  Its filename regex is shared with `ui/src/cleanup/references.ts`; a test fails
+  if the two copies differ.
 - The widget value stores the manifest (file references, not base64). Never put
   base64 image data in the workflow JSON.
 - Every load path runs through `document/` migration + validation. Unknown or
@@ -246,8 +264,20 @@ works in one renderer when a renderer-neutral approach exists.
 
 ### Keyboard Shortcuts
 ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
-- Editor shortcuts are active only while the editor "has focus": pointer is over
-  the in-node editor, or fullscreen is open. Otherwise every key goes to ComfyUI.
+- Editor shortcuts are active only while the editor owns keyboard focus (its
+  hidden key-sink input or a text field inside the editor root). Rule
+  (`ui/focusPolicy.ts`):
+  - Hover focuses the editor only if no text field elsewhere has focus, and
+    releases it on leave.
+  - Any click inside the editor "engages" it: the sink takes focus (even from
+    another node's text field) and keeps it after the pointer leaves, until the
+    next click / focus move outside the editor. Text fields, `<select>` and range
+    sliders inside the editor keep native focus/drag behaviour.
+  - Fullscreen always owns the keyboard.
+  - The rail's white left edge shows real focus state (focusin/focusout), never
+    hover guesses.
+  - Never `preventDefault()` `pointerdown` on `<input type=range>`: it kills
+    native slider dragging.
 - While active, handle the key, then `preventDefault()` + `stopPropagation()` so
   Ctrl+Z undoes a stroke, not a graph edit. Let keys through when an `<input>` /
   `<textarea>` (text tool, hex field) is the target.
@@ -269,6 +299,20 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
   value (or a module-level store keyed by a stable id) is lost. Unsaved in-memory
   edits must be flushed to the widget value before teardown, or kept in a
   module-level `Map` keyed by a stable document id, not on the node object.
+- **Graph undo/redo** (ChangeTracker) calls `app.loadGraphData`, which in one
+  synchronous task removes every node (`onRemoved`) and re-creates it with the
+  **same id**. Nodes 2.0 reuses the Vue widget component (same key) and never
+  re-inserts `widget.element`, so a disposed element leaves a blank node. We
+  hand off the old wrapper element + session + cached background to the new
+  node (`widget/handoff.ts`, offer expires after a microtask so tab switches /
+  deletions never match). Attach/fork/restore rules are a pure function in
+  `widget/attachDecision.ts`.
+- ChangeTracker snapshots our `document` widget value as part of the graph, so a
+  graph undo can restore an older manifest. A handed-off live session is always
+  kept: **graph undo never rolls back paint**; paint undo is ours alone.
+- Keep widget values small. ComfyUI fails to save workflow drafts when a widget
+  value is very large ("Failed to save workflow draft"). Our manifest holds only
+  file references (~250 bytes per layer); never inline pixel data or history.
 - `node.id` is a **string** (frontend >= 1.46). Always compare with `String(node.id)`.
 - Store per-node document state in the widget value, not in custom `node.*`
   properties (the frontend's ECS direction discourages new instance properties).
