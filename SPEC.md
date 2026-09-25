@@ -56,11 +56,19 @@ Recorded so they can be revisited deliberately. Each lists what we rejected.
    input -- important for inpainting. Off-frame paint is kept, just not output.
    *Deferred:* output regions (see Future: Output Regions). The data model
    reserves `regions: []` so they can be added without a migration.
-4. **Upstream size change = scale to fit.** Document content is stored in frame
-   coordinates. On a new size, scale uniformly by `min(newW/oldW, newH/oldH)` and
-   center (contain). Same aspect -> exact fit. Different aspect -> paint keeps its
-   proportions, centered; anything that falls outside the new frame survives
-   off-frame. A small "size changed" note appears with an option to undo.
+4. **Upstream size change = scale to fit, non-destructively.** Layer pixels stay
+   in the document's own `frame` coordinates (the size the paint was started on)
+   and are **never resampled** when the upstream size changes. Both the editor
+   and Python map document -> current image with the same transform:
+   `s = min(W/fw, H/fh)`, centered (contain). Same aspect -> exact fit. The editor
+   draws layers through this transform, and maps pointer input back through its
+   inverse, so strokes made on a differently sized image land in document
+   coordinates. Flipping between image sizes is lossless and creates no undo
+   entries. **Clear** (confirm, undoable) resets the document to the current
+   image size.
+   *Rejected (M1 first cut):* resampling layers on each size change -- repeated
+   A->B->A with different aspects shrank the paint (product of the two `min`
+   factors < 1) and blurred it.
 5. **Masks are layers.** Layer `kind` is `"paint" | "text" | "mask"`. v1 creates a
    single mask layer by default and the UI may limit it to one, but the document,
    compositor and Python all handle N mask layers. Each mask layer stores its own
@@ -94,6 +102,7 @@ Recorded so they can be revisited deliberately. Each lists what we rejected.
 ```ts
 interface PainterDocument {
   version: 1
+  docId: string                                     // stable frontend identity (live-session key); Python ignores it
   frame: { width: number; height: number }         // image frame the paint was made on
   bounds: { x: number; y: number; width: number; height: number } // paint area, frame coords
   regions: Region[]                                 // reserved, always [] in v1 (decision 3)
@@ -116,6 +125,44 @@ interface Region {                                  // future: Output Regions
   rect: { x: number; y: number; width: number; height: number } // frame coords
 }
 ```
+
+### Saved-file contract (frontend writes, Python reads)
+
+- **Widget value** = `JSON.stringify(PainterDocument)`, or `""` for an empty document.
+- **Coordinates:** everything is in *frame* pixels. `bounds` is the paint area and
+  may extend past the frame (negative `x`/`y`, larger size) but always contains
+  it. Initially `bounds = {x:0, y:0, width:frame.width, height:frame.height}`;
+  it grows in 256 px chunks while painting off-frame, capped at 3x the frame per
+  axis and 16384 px.
+- **Layer PNG:** RGBA, exactly `bounds.width x bounds.height`; PNG pixel `(px,py)`
+  sits at frame coords `(bounds.x+px, bounds.y+py)`. Straight (non-premultiplied)
+  alpha. `file: null` = empty layer.
+- **File names:** `painter-sketch/ps-<docId8>-<hash>.png`, stored in the widget as
+  `"painter-sketch/ps-<docId8>-<hash>.png [input]"`. The hash is of the content,
+  so edits produce new names and unchanged layers are not re-uploaded. A fully
+  erased layer saves as `file: null`.
+- **Upload timing:** `serializeValue` only runs at queue time (inside
+  `graphToPrompt`); save/export/tab switch read `widget.value`. So the widget
+  value is updated after every edit and dirty layers upload ~1 s after the last
+  edit; `serializeValue` just flushes pending uploads. File references change only
+  after a successful upload. A failed upload toasts and blocks the queue (same as
+  core Painter); pixels stay in memory, still dirty.
+- **Paint layers** (`kind: "paint"`, later `"text"`): composited bottom -> top,
+  Normal blend, straight-alpha "over", multiplied by layer `opacity`. Hidden
+  (`visible: false`) layers are skipped.
+- **Mask layers** (`kind: "mask"`): mask value = PNG **alpha** (RGB ignored).
+  `opacity` and `color` are display-only and do NOT affect `MASK`. Per-layer
+  `invert`, then union (max) of visible mask layers, then node `invert_mask`.
+- **Frame mismatch:** if the run-time image is `W x H` and `frame` is `fw x fh`,
+  apply decision 4: `s = min(W/fw, H/fh)`, offset `((W-fw*s)/2, (H-fh*s)/2)`;
+  each layer is scaled by `s` (bilinear) and placed at
+  `offset + bounds.xy * s` (Python `round()`, halves to even; size
+  `max(1, round(wh*s))` -- the frontend's `layerPlacement()` reproduces this),
+  then cropped to `W x H`. The frontend uses the same
+  transform for display (never resampling the stored pixels), so preview and
+  output agree.
+- **Unknown `version`** or unreadable manifest: log a warning, output the image
+  unchanged and a zero mask. Missing layer file: warn, treat as empty.
 
 ## Feature Scope (v1)
 
@@ -172,7 +219,7 @@ interface Region {                                  // future: Output Regions
 - Buttons in the UI, and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y while the editor is active
 
 ## Not in v1 (maybe later)
-Move/transform tool, feathering/refine edge, blend modes, brush presets beyond
+Per-layer move/free transform (whole-drawing Move is M5), rotation, feathering/refine edge, blend modes, brush presets beyond
 a couple, layer masks (per-layer), smoothing/stabilizer, symmetry, PSD export,
 per-image paint in a batch, multiple mask layers in the UI, output regions.
 
@@ -216,12 +263,12 @@ own output pair.
 - [x] Background from upstream preview lookup + our `ui` preview after execution; updates live when the upstream changes (browser-verified)
 
 ### M1 -- Paint end to end
-- [ ] Engine: document model v1, layer canvases, compositor, viewport (pan/zoom)
-- [ ] Tool interface; brush + eraser with stroke buffer, hardness, spacing, pressure, coalesced events, Shift+click line
-- [ ] Undo/redo (dirty-rect) with buttons
-- [ ] Persistence: upload on `serializeValue`, restore on load, survives tab switch + subgraph
-- [ ] Python composites layers over the batch -> `IMAGE`; fingerprinting
-- [ ] Size-change scale-to-fit
+- [x] Engine: document model v1, layer canvases, compositor, viewport (pan/zoom)
+- [x] Tool interface; brush + eraser with stroke buffer, hardness, spacing, pressure, coalesced events, Shift+click line
+- [x] Undo/redo (dirty-rect) with buttons
+- [x] Persistence: upload on `serializeValue`, restore on load, survives tab switch + subgraph
+- [x] Python composites layers over the batch -> `IMAGE`; fingerprinting
+- [x] Size-change scale-to-fit (non-destructive mapping, browser-verified)
 
 ### M2 -- Mask
 - [ ] Mask layer kind, Quick Mask toggle, colored overlay display
@@ -230,14 +277,18 @@ own output pair.
 ### M3 -- UI shell
 - [ ] Left tool rail, top options bar, color picker, layers panel
 - [ ] Fullscreen re-parenting
-- [ ] Clear button (confirm, undoable)
+- [x] Clear button (confirm, undoable) (pulled into M1)
 - [ ] Keyboard shortcuts scoped to the active editor
 
 ### M4 -- Tools
 - [ ] Paint bucket (typed-array flood fill), eyedropper (+ Alt)
 - [ ] Line + arrow, rectangle, ellipse
 
-### M5 -- Selection
+### M5 -- Move + Selection
+- [ ] Move tool (`V`): reposition/scale the whole drawing (all layers + masks) relative to the image, to realign paint to a similar but offset image
+  - Drag = move; **scroll while dragging = scale** around the cursor (scroll without dragging still zooms the view); arrows nudge 1 px, Shift+arrows 10 px; Esc cancels the current drag; "Reset position" button. No rotation.
+  - Non-destructive: stored as document `placement: {x, y, scale}` (frame px, identity default), applied after the frame map by both the editor and Python; pixels are never resampled. Needs a saved-file contract addition (Python must apply it).
+  - Undo: kept **out of the paint history**. While the Move tool is active, Ctrl+Z/Y step through placement changes only (like Photoshop's in-transform undo); with other tools undo affects paint only. Paint patches are in document coords, so they stay valid under any placement.
 - [ ] Coverage-mask selection engine, cached marching ants, add/subtract/intersect
 - [ ] Rect / ellipse marquee, lasso, magic wand
 - [ ] Clip painting to selection, fill/clear selection, selection to mask
@@ -256,7 +307,13 @@ own output pair.
   size and all layers; the background shows the `background` color.
   `width`/`height` only apply to a fresh, empty document.
 - A **Clear** button resets the document (all layers and masks) after a
-  `window.confirm()`. Clearing is undoable.
+  `window.confirm()`. Clearing is undoable. The frame becomes the current image
+  size (or stays `doc.frame` when disconnected).
+- **View on node resize:** "fit" mode is sticky (initial, Ctrl+0, Fit button) and
+  re-fits on resize. After a manual zoom/pan, resize keeps the zoom and the
+  centered image point. Pan is clamped so at least 64 px of the image stays visible.
+- Brush size is in *current image* pixels; strokes convert to document pixels
+  (`size / s`) at pointer-down.
 
 ## Open Questions
 
@@ -273,4 +330,7 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: Whole-drawing Move tool planned as the first M5 item (non-destructive placement, separate undo scoped to the Move tool, no rotation).
+- 2026-09-24: M1 browser-verified. Fix: upstream size changes no longer resample layers (repeated A->B->A shrank paint); display maps doc -> image via `engine/frameMap.ts`. Clear button pulled forward from M3. Sticky fit + pan clamp + Fit button.
+- 2026-09-24: M1 code landed (browser check pending). `docId` added to the document. Undo patches in frame coords; bounds growth is not an undo step; scale-to-fit is one undo entry. Live sessions kept in a module map (max 6 detached) so tab switches keep unsaved strokes + undo. An inverted mask layer with no paint = full mask.
 - 2026-09-24: M0 code landed. Document widget via `getCustomWidgets` (`PAINTERSKETCH`); local TS types (official types package is empty). Installed ComfyUI frontend is 1.52.7; source reference is 1.55.x.

@@ -124,7 +124,8 @@ ui/src/
   engine/                 -- rendering + editing, no DOM UI
     compositor.ts         -- layers -> display canvas, export composite/mask
     history.ts            -- undo/redo (dirty-rect patches, not full snapshots)
-    viewport.ts           -- pan/zoom, screen<->document coords
+    viewport.ts           -- pan/zoom, screen<->image coords, pan clamp
+    frameMap.ts           -- document frame <-> current image mapping (matches Python)
     brush.ts              -- stamp generation, spacing, pressure curve
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
   tools/                  -- one file per tool implementing a common Tool interface
@@ -132,8 +133,15 @@ ui/src/
     marquee.ts lasso.ts magicWand.ts ...
   ui/                     -- toolbar rail, options bar, layers panel,
                              color picker, fullscreen host
+  geometry/               -- shared rect/size helpers (pure)
   styles/                 -- CSS (injected by main.ts)
 ```
+
+- Tools produce brush dabs / operations; the engine owns the stroke buffer,
+  layer canvases and history.
+- Python mirrors this split: `nodes/document.py` (manifest parse), `nodes/layers.py`
+  (safe file resolve + load), `nodes/composite.py` (pure torch). Python tests:
+  `python -m unittest discover tests` with ComfyUI on `sys.path` (ComfyUI venv).
 
 - **Tools are objects implementing one interface** (e.g. `onPointerDown/Move/Up`,
   `onKey`, `drawOverlay`, `cursor`, `options`). No `if (tool === "brush")` chains
@@ -159,6 +167,10 @@ ui/src/
 - Every load path runs through `document/` migration + validation. Unknown or
   broken documents load as an empty paint layer with a toast, never a crash.
 - Bump `version` for any breaking manifest change and add a migration.
+
+### Git
+The maintainer makes all commits. Agents update `SPEC.md` checkboxes/log as work
+lands but never run `git commit`.
 
 ## Code Style
 
@@ -220,7 +232,7 @@ works in one renderer when a renderer-neutral approach exists.
   output preview is drawn by an `onDrawBackground` the frontend installs on
   node classes; we override it on our prototype only, without calling the
   original (the one exception to "call original first").
-- Nodes 2.0 forwards `wheel` and `pointerdown` to the graph in the capture phase,
+- Nodes 2.0 forwards `wheel` and `pointerdown` (incl. middle-drag) to the graph in the capture phase,
   before our element sees them. We add a capture-phase `window` listener only
   while the pointer is over our canvas and stop the event there; also set
   `data-capture-wheel="true"`. Nodes 2.0 ignores `getMinHeight` for DOM widgets,
@@ -241,6 +253,12 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
   `<textarea>` (text tool, hex field) is the target.
 - Register listeners in the capture phase on `window` while active and remove them
   when inactive / on node removal. No always-on global listeners.
+- The frontend keybinding service listens on `window` (bubble) and LiteGraph on its
+  canvas, so our capture listeners beat both. ComfyUI's graph-undo listener
+  (ChangeTracker) is also window-capture but registers before extensions, so
+  propagation can't stop it; it ignores keys when focus is in an `INPUT`. While
+  hovered, the editor focuses a hidden read-only `<input>` (unless another text
+  field has focus) and hands focus back on leave.
 
 ### Node Lifecycle
 - `nodeCreated` fires inside the constructor, **before** `node.graph` is set.

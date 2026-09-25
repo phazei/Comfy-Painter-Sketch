@@ -191,9 +191,24 @@ export interface ComfyExtension {
 // app + api singletons
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Toast message (subset of PrimeVue `ToastMessageOptions`). */
+export interface ToastMessage {
+  severity?: "success" | "info" | "warn" | "error";
+  summary?: string;
+  detail?: string;
+  life?: number;
+}
+
+/** `app.extensionManager` (subset; every member optional at runtime). */
+export interface ExtensionManager {
+  toast?: { add?: (message: ToastMessage) => void };
+}
+
 /** The ComfyUI `app` singleton (subset). */
 export interface ComfyApp {
   registerExtension(extension: ComfyExtension): void;
+  /** Set up during app init; guard every access. */
+  extensionManager?: ExtensionManager;
   /** Execution outputs keyed by NodeLocatorId (`"12"` or `"<subgraph-uuid>:12"`). */
   readonly nodeOutputs: Partial<Record<string, NodeExecutionOutput>>;
   /** Preview image URLs (often `blob:`) keyed by NodeLocatorId. */
@@ -205,6 +220,8 @@ export interface ComfyApp {
 /** The ComfyUI `api` singleton (subset). */
 export interface ComfyApi {
   apiURL(route: string): string;
+  /** `fetch` against the API base, adding auth headers. */
+  fetchApi(route: string, options?: RequestInit): Promise<Response>;
   addEventListener(
     type: "executed",
     listener: (event: CustomEvent<ExecutedWsMessage>) => void,
