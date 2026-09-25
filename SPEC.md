@@ -106,6 +106,7 @@ interface PainterDocument {
   frame: { width: number; height: number }         // image frame the paint was made on
   bounds: { x: number; y: number; width: number; height: number } // paint area, frame coords
   regions: Region[]                                 // reserved, always [] in v1 (decision 3)
+  placement?: { x: number; y: number; scale: number } // Move tool; default identity
   activeLayerId: string
   layers: Layer[]                                   // bottom -> top, background excluded
 }
@@ -167,6 +168,14 @@ interface Region {                                  // future: Output Regions
   `opacity` and `color` are display-only and do NOT affect `MASK`. Per-layer
   `invert`, then union (max) of visible mask layers, then node `invert_mask`.
 - **No image:** the run-time image is `width` x `height` filled with `background`.
+- **Placement** (Move tool): optional `placement: {x, y, scale}` on the document,
+  default / missing = `{x:0, y:0, scale:1}`; `scale` clamped to [0.05, 20]. In
+  document-frame px, scaling about the frame centre `c = (fw/2, fh/2)`: a document
+  point `p` is placed at `p' = (p - c) * scale + c + (x, y)`, then the frame map
+  below maps `p'` to the image. Combined, layer pixels land at
+  `image = offset + s * (c * (1 - scale) + (x, y)) + s * scale * p`, i.e. effective
+  scale `s * scale`. Python and the editor use this one formula (with the same
+  rounding as below). Placement never resamples stored pixels.
 - **Frame mismatch:** if the run-time image is `W x H` and `frame` is `fw x fh`,
   apply decision 4: `s = min(W/fw, H/fh)`, offset `((W-fw*s)/2, (H-fh*s)/2)`;
   each layer is scaled by `s` (bilinear) and placed at
@@ -203,8 +212,15 @@ interface Region {                                  // future: Output Regions
 | Quick Mask target | Q | toggle painting on mask vs. paint layer |
 
 ### Selection (applies to all selection tools)
-- Shift = add, Alt = subtract, Shift+Alt = intersect (Photoshop modifiers)
-- Ctrl+D deselect, Ctrl+Shift+I invert, Ctrl+A select all
+- Shift = add, Alt = subtract, Shift+Alt = intersect (Photoshop modifiers), fixed
+  at pointer-down. With no selection, those keys act as constraints instead
+  (square/circle, from centre, lasso straight segments).
+- Ctrl+D deselect, Ctrl+Shift+I, Shift+F7 or the options-bar **Invert** button inverts (Ctrl+Shift+I only while the editor owns the keyboard), Ctrl+A select all = the current image area (in doc coords via the document map, so it ignores doc frame size and Move placement; bounds grow to cover it). An inverted selection also shows ants along the frame.
+- Cursor badge next to the crosshair while a selection exists: + (Shift, add), − (Alt, subtract), × (Shift+Alt, intersect); fixed during a drag.
+- Selection is editor session state (not saved); selection changes are undoable.
+- Lasso: freehand drag; press Alt during the drag for straight segments; release
+  the button with Alt held to keep clicking vertices; close by releasing Alt,
+  double-click, or clicking near the start; Esc cancels.
 - Painting, filling and erasing are clipped to the selection
 - Delete / Backspace clears the selection on the target layer
 - Alt+Backspace fill with foreground, Ctrl+Backspace fill with background
@@ -340,14 +356,14 @@ own output pair.
 - [x] Line + arrow, rectangle, ellipse (browser-verified)
 
 ### M5 -- Move + Selection
-- [ ] Move tool (`V`): reposition/scale the whole drawing (all layers + masks) relative to the image, to realign paint to a similar but offset image
+- [x] **Move drawing** (layers-panel footer toggle, no shortcut; `V` is reserved for a future element Move tool): reposition/scale the whole drawing (all layers + masks) relative to the image, to realign paint to a similar but offset image (browser-verified)
   - Drag = move; **scroll while dragging = scale** around the cursor (scroll without dragging still zooms the view); arrows nudge 1 px, Shift+arrows 10 px; Esc cancels the current drag; "Reset position" button. No rotation.
-  - Non-destructive: stored as document `placement: {x, y, scale}` (frame px, identity default), applied after the frame map by both the editor and Python; pixels are never resampled. Needs a saved-file contract addition (Python must apply it).
+  - Non-destructive: stored as document `placement: {x, y, scale}` (frame px, identity default), applied after the frame map by both the editor and Python; pixels are never resampled. Contract: see "Placement" in the saved-file contract. X/Y are shown in image px, stored in doc-frame px.
   - Placement is relative to the current image -- with no image connected, that's the `width` x `height` background, so Move works the same.
   - Undo: placement is **not undoable** and stays out of the paint history; Ctrl+Z/Y always undo paint only (also while the Move tool is active). Recovery = Esc during a drag, drag it back, or "Reset position". Paint patches are in document coords, so they stay valid under any placement.
-- [ ] Coverage-mask selection engine, cached marching ants, add/subtract/intersect
-- [ ] Rect / ellipse marquee, lasso, magic wand
-- [ ] Clip painting to selection, fill/clear selection, selection to mask
+- [x] Coverage-mask selection engine, cached marching ants, add/subtract/intersect (browser-verified)
+- [x] Rect / ellipse marquee, lasso, magic wand (browser-verified)
+- [x] Clip painting to selection, fill/clear selection, selection to mask (browser-verified)
 
 ### M6 -- Text
 - [ ] Text layers, textarea overlay editing, re-edit on double-click, rasterize on save
@@ -395,6 +411,9 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: M5 browser-verified. Ctrl+Shift+I restored (editor-scoped); Ctrl+A = current image area; new isometric "Move drawing" icon.
+- 2026-09-24: M5 round 1 fixes: ants built from closed contours (no pulsing on diagonals; 4k wand ~65 ms); Invert button + Shift+F7 + Ctrl+Shift+I (editor-scoped); +/−/× cursor badges; whole-drawing Move moved from the rail to a "Move drawing" toggle in the layers footer (hidden tool, `rail: false`).
+- 2026-09-24: M5 code landed. Move: `documentMap(doc, imageSize)` is the single doc<->image mapping (includes placement); wheel-scale while dragging 1.05/notch. Selection: cropped coverage `{rect, data, outside}` in doc coords, combine via min/max, empty result deselects, selection changes are undoable (`selection` history entry), clipping applied in `StrokeBuffer.compositeBuffer` + fill `clip`. Delete/Backspace always swallowed while the editor has the keyboard. Shift+F7 also inverts. Lasso Alt rule per Photoshop (Alt at start with a selection = subtract; re-press Alt for straight segments). Wand defaults tol 32 / contiguous / AA / all layers.
 - 2026-09-24: M4 browser-verified. Fixes: SVG cursors for eyedropper (incl. Alt) and bucket; with no image, width/height are the image size in editor and Python (doc frame no longer overrides), disconnect copies the size into the widgets.
 - 2026-09-24: M4 code landed. Bucket defaults tol 32 / contiguous / AA / all layers; fill grows bounds to cover the visible image; 4k fill ~185 ms. Eyedropper: Alt+click -> BG; `altEyedropper` tool flag gives Alt = temporary eyedropper (brush, bucket, shapes; not eraser). Shapes are pixel shapes rasterized on release (one undo patch); "both" = FG stroke + BG fill; Alt at pointer-down = eyedropper, Alt during drag = from centre; Esc cancels any tool drag. Rail tool groups (`tools/toolGroups.ts`, flyout via long-press/right-click) reusable for M5 marquees.
 - 2026-09-24: Storage revised after measurements: masks PNG, paint lossy WebP default 99 (100 = PNG); cleanup settings row shows file stats.

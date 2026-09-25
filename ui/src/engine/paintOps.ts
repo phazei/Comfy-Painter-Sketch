@@ -190,6 +190,10 @@ export class PaintOps {
       applyLayersEntry(s, entry, side === "after");
       return;
     }
+    if (entry.kind === "selection") {
+      s.selection.set(side === "before" ? entry.before : entry.after);
+      return;
+    }
     if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
     const data = side === "before" ? entry.before : entry.after;
     s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);

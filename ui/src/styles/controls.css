@@ -142,6 +142,19 @@
   white-space: nowrap;
 }
 
+/* Selection actions (shown while a selection exists). */
+.cps-selection-actions:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cps-selection-actions .cps-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
 /* ── Popovers ──────────────────────────────────────────────────────────── */
 
 .cps-popover-host {

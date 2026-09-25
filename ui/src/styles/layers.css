@@ -38,10 +38,25 @@
 .cps-layers-footer {
   flex: none;
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 2px;
   padding: 3px 4px;
   border-top: 1px solid var(--cps-border);
+}
+
+/* "Move drawing" toggle sits at the left; a thin divider separates it from
+   the Add/Duplicate/Delete buttons on the right. */
+.cps-layers-move-drawing {
+  margin-right: auto;
+}
+
+.cps-layers-footer-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--cps-border);
+  flex: none;
+  margin: 0 2px;
 }
 
 .cps-layers-action:disabled {

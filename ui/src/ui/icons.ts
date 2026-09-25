@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Inline SVG icons for the editor UI: one 24x24 path set per name, drawn as
  * 20 px outline glyphs (stroke = currentColor, round caps/joins) so every
  * icon shares one style. Strings are constants from this module, so setting
@@ -43,6 +43,29 @@ const PATHS: Readonly<Record<string, string>> = {
   arrow: "M5 19 19 5M11 5h8v8",
   rectangle: "M4 6h16v12H4z",
   ellipse: "M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7z",
+  // Move tool (V): four-way arrow.
+  move: "M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3",
+  // Move drawing: back sheet (down-left, partially hidden) + front sheet (up-right),
+  // small four-way arrow centred on the front sheet.
+  // Isometric layer stack: top sheet (diamond) with a 4-way diagonal move
+  // arrow, lower sheet shown as an open chevron underneath.
+  moveDrawing:
+    "M12 2.5 21.5 8.5 12 14.5 2.5 8.5z" +
+    "M2.5 13.5V15L12 20.5 21.5 15v-1.5" +
+    "M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4" +
+    "M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
+  // Selection (M): dashed rectangle.
+  marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
+  // Elliptical marquee (M): dashed ellipse (8 arcs of the rectangle's ellipse).
+  marqueeEllipse:
+    "M19.7 10.5A8 6 0 0 1 19.7 13.5M18.9 15A8 6 0 0 1 16 17.2M14.1 17.8A8 6 0 0 1 9.9 17.8M8 17.2A8 6 0 0 1 5.1 15" +
+    "M4.3 13.5A8 6 0 0 1 4.3 10.5M5.1 9A8 6 0 0 1 8 6.8M9.9 6.2A8 6 0 0 1 14.1 6.2M16 6.8A8 6 0 0 1 18.9 9",
+  // Lasso (L): rope loop with a knot and a dangling tail.
+  lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
+  // Magic wand (W): diagonal stick with a sparkle at its tip.
+  magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
+  // "Selection to mask": dashed square with the Quick Mask circle.
+  selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
 };
 
 /** Glyph for unknown icon names. */

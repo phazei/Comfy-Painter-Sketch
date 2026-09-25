@@ -8,12 +8,26 @@
  *   ox = (W - fw * s) / 2,  oy = (H - fh * s) / 2
  *   image = offset + doc * s
  *
+ * The Move tool's document `placement {x, y, scale}` (SPEC "Saved-file
+ * contract", Placement) is composed in: scaling by `k = scale` about the
+ * frame centre `c = (fw/2, fh/2)` and moving by `(x, y)` document px gives
+ *
+ *   effective scale  = s * k
+ *   effective offset = offset + s * (c * (1 - k) + (x, y))
+ *
+ * evaluated in the same order as `nodes/composite.py::_layout`, so both sides
+ * round to the same pixels. The result is still a plain {@link FrameMap}, so
+ * every consumer (compositor, pointer input, brush size, fill, sampling,
+ * selection) stays placement-agnostic: build it with {@link documentMap}.
+ *
  * {@link layerPlacement} additionally reproduces the integer destination rect
  * `nodes/composite.py::_place_layer` uses (Python `round`, i.e. round half to
  * even), so the on-screen layer lands on exactly the pixels Python writes.
  * Pure, no DOM.
  */
 
+import { isIdentityPlacement } from "../document/placement";
+import type { Placement } from "../document/types";
 import type { Point, Rect, Size } from "../geometry/rect";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -34,20 +48,43 @@ export const IDENTITY_MAP: Readonly<FrameMap> = { scale: 1, offsetX: 0, offsetY:
 // ── Mapping ───────────────────────────────────────────────────────────────────
 
 /**
- * Document -> image transform (contain, centred). A pure function of the two
- * sizes: flipping images A -> B -> A returns exactly the original mapping.
+ * Document -> image transform (contain, centred), with an optional Move-tool
+ * placement composed in (see module doc). A pure function of its inputs:
+ * flipping images A -> B -> A returns exactly the original mapping.
  * Degenerate sizes (zero/negative/non-finite) yield the identity.
  *
  * @param frame - Document frame (`fw x fh`).
  * @param image - Current image size (`W x H`).
+ * @param placement - Document placement (`undefined` = identity; assumed valid, see `document/placement.ts`).
  * @returns Scale and offset.
  */
-export function frameMap(frame: Size, image: Size): FrameMap {
+export function frameMap(frame: Size, image: Size, placement?: Readonly<Placement>): FrameMap {
   const { width: fw, height: fh } = frame;
   const { width: W, height: H } = image;
   if (!(fw > 0 && fh > 0 && W > 0 && H > 0) || ![fw, fh, W, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
-  const scale = Math.min(W / fw, H / fh);
-  return { scale, offsetX: (W - fw * scale) / 2, offsetY: (H - fh * scale) / 2 };
+  const s = Math.min(W / fw, H / fh);
+  const offsetX = (W - fw * s) / 2;
+  const offsetY = (H - fh * s) / 2;
+  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
+  const k = placement.scale;
+  return {
+    scale: s * k,
+    offsetX: offsetX + s * ((fw / 2) * (1 - k) + placement.x),
+    offsetY: offsetY + s * ((fh / 2) * (1 - k) + placement.y),
+  };
+}
+
+/**
+ * THE document -> current-image map of a document (frame fit + placement).
+ * Everything that converts between document and image coords uses this (via
+ * `Editor.frameMap` where an editor is at hand).
+ *
+ * @param doc - Document frame and placement.
+ * @param image - Current image size.
+ * @returns Scale and offset.
+ */
+export function documentMap(doc: { readonly frame: Size; readonly placement?: Readonly<Placement> }, image: Size): FrameMap {
+  return frameMap(doc.frame, image, doc.placement);
 }
 
 /**
@@ -82,6 +119,22 @@ export function docRectToImage(map: FrameMap, r: Rect): Rect {
     y: map.offsetY + r.y * map.scale,
     width: r.width * map.scale,
     height: r.height * map.scale,
+  };
+}
+
+/**
+ * Image rect -> document rect (fractional; inverse of {@link docRectToImage}).
+ * E.g. the current image's area in document coords: `imageRectToDoc(map, frameRect(imageSize))`.
+ * @param map - Transform from {@link frameMap}.
+ * @param r - Image rect.
+ * @returns Document rect.
+ */
+export function imageRectToDoc(map: FrameMap, r: Rect): Rect {
+  return {
+    x: (r.x - map.offsetX) / map.scale,
+    y: (r.y - map.offsetY) / map.scale,
+    width: r.width / map.scale,
+    height: r.height / map.scale,
   };
 }
 

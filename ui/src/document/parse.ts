@@ -10,6 +10,7 @@
 import { containsRect, frameRect } from "../geometry/rect";
 import type { Rect, Size } from "../geometry/rect";
 import { createId, createPaintLayer } from "./create";
+import { readPlacement } from "./placement";
 import { DOCUMENT_VERSION } from "./types";
 import type { Layer, LayerKind, PainterDocument, Region, TextData } from "./types";
 
@@ -114,6 +115,9 @@ function validate(data: Record<string, unknown>): ParseResult {
   const regions = readRegions(data["regions"]);
   if (!regions) repaired = true;
 
+  const placed = readPlacement(data["placement"]);
+  if (placed.repaired) repaired = true;
+
   return {
     status: "ok",
     repaired,
@@ -123,6 +127,7 @@ function validate(data: Record<string, unknown>): ParseResult {
       frame,
       bounds,
       regions: regions ?? [],
+      ...(placed.placement ? { placement: placed.placement } : {}),
       activeLayerId,
       layers,
     },

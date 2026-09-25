@@ -2,6 +2,7 @@
  * Document -> widget value string.
  */
 
+import { isIdentityPlacement } from "./placement";
 import type { Layer, PainterDocument } from "./types";
 
 /**
@@ -12,6 +13,7 @@ import type { Layer, PainterDocument } from "./types";
  * @returns JSON string for the `document` widget.
  */
 export function stringifyDocument(doc: PainterDocument): string {
+  const p = doc.placement;
   return JSON.stringify({
     version: doc.version,
     docId: doc.docId,
@@ -22,6 +24,8 @@ export function stringifyDocument(doc: PainterDocument): string {
       index: r.index,
       rect: { x: r.rect.x, y: r.rect.y, width: r.rect.width, height: r.rect.height },
     })),
+    // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
+    ...(p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {}),
     activeLayerId: doc.activeLayerId,
     layers: doc.layers.map(serializeLayer),
   });
@@ -56,6 +60,7 @@ export function cloneDocument(doc: PainterDocument): PainterDocument {
     frame: { ...doc.frame },
     bounds: { ...doc.bounds },
     regions: doc.regions.map((r) => ({ ...r, rect: { ...r.rect } })),
+    ...(doc.placement ? { placement: { ...doc.placement } } : {}),
     layers: doc.layers.map((l) => ({ ...l, ...(l.textData ? { textData: { ...l.textData } } : {}) })),
   };
 }

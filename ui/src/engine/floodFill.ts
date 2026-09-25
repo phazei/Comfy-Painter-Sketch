@@ -1,5 +1,5 @@
 /**
- * Pure flood fill on RGBA typed arrays (paint bucket; later the magic wand).
+ * Pure flood fill on RGBA typed arrays (paint bucket; magic wand via `wand.ts`).
  * Produces a coverage mask (`Uint8Array`, 0-255) plus its bounding box; the
  * caller blends a colour through it (`coverageBlend.ts`).
  *

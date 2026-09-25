@@ -17,7 +17,7 @@
 
 import { targetLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import { isEmptyRect, roundOutRect } from "../geometry/rect";
+import { isEmptyRect, rectEquals, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
 import type { CompositeLayer } from "./compositor";
 import { readDocRegion } from "./docComposite";
@@ -25,11 +25,22 @@ import type { DocCompositeInput } from "./docComposite";
 import { HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { floodFill } from "./floodFill";
-import { frameMap } from "./frameMap";
+import { documentMap } from "./frameMap";
 import { averageColor, blendCoverage, hexToRgb, rgbToHex } from "./pixelColor";
+import type { Selection } from "./selection";
+import { wandSelection } from "./wand";
+import type { WandOptions } from "./wand";
 
 /** Which pixels a tool looks at. */
 export type SampleSource = "layer" | "all";
+
+/** A magic-wand pick. */
+export interface WandRequest extends WandOptions {
+  /** Click position, document coords. */
+  point: Point;
+  /** Active paint layer or the visible composite. */
+  sample: SampleSource;
+}
 
 /** A paint-bucket fill. */
 export interface FillRequest {
@@ -79,14 +90,16 @@ export class PixelOps {
     const bounds = s.store.bounds;
     if (!inside(bounds, px, py)) return false;
 
-    const source = req.sample === "all" ? readDocRegion(this.compositeInput(), bounds) : s.store.read(layer.id, bounds)?.data;
+    const source = this.sampleArea(bounds, req.sample, layer);
     if (!source) return false;
-    const { coverage, bbox } = floodFill(source.data, bounds.width, bounds.height, {
+    const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
       x: px - bounds.x,
       y: py - bounds.y,
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
+      // M5: confined to (and scaled by) the selection.
+      clip: s.selection.coverage(bounds),
     });
     if (isEmptyRect(bbox)) return false;
 
@@ -106,6 +119,27 @@ export class PixelOps {
     s.runtime.touch(layer.id);
     s.afterEdit();
     return true;
+  }
+
+  // ── Magic wand ──────────────────────────────────────────────────────────
+
+  /**
+   * Magic-wand coverage at a point (not applied: the tool combines it with
+   * the current selection via `Editor.selection.apply`). Samples like the
+   * bucket, over the paint bounds united with the image rect, without growing
+   * the bounds (the wand edits no pixels). "Current layer" is the active paint
+   * layer (colours, also in Quick Mask; like the eyedropper).
+   * @param req - Click position, matching options and sample source.
+   * @returns Selection in document coords, or `null` (nothing matched / loading / outside).
+   */
+  wandSelection(req: WandRequest): Selection | null {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    const area = unionRect(this.imageRectInDoc(), s.store.bounds);
+    if (!inside(area, Math.floor(req.point.x), Math.floor(req.point.y))) return null;
+    const layer = targetLayer(s.doc, "paint");
+    const source = req.sample === "all" || !layer ? this.sampleArea(area, "all", null) : this.sampleArea(area, "layer", layer);
+    return source ? wandSelection(source, area, req.point, req) : null;
   }
 
   // ── Sampling ────────────────────────────────────────────────────────────
@@ -141,6 +175,24 @@ export class PixelOps {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
+  /**
+   * RGBA of a document area as the bucket / wand see it: the visible
+   * composite, or one layer (transparent outside the bounds).
+   */
+  private sampleArea(area: Rect, sample: SampleSource, layer: Layer | null): Uint8ClampedArray | null {
+    if (sample === "all" || !layer) return readDocRegion(this.compositeInput(), area)?.data ?? null;
+    const read = this.s.store.read(layer.id, area);
+    if (read && rectEquals(read.rect, area)) return read.data.data;
+    const out = new Uint8ClampedArray(area.width * area.height * 4);
+    if (!read) return out;
+    const { rect, data } = read;
+    for (let y = 0; y < rect.height; y++) {
+      const src = y * rect.width * 4;
+      out.set(data.data.subarray(src, src + rect.width * 4), ((rect.y - area.y + y) * area.width + (rect.x - area.x)) * 4);
+    }
+    return out;
+  }
+
   /** Same lock/visibility rules (and notes) as strokes. */
   private canEdit(layer: Layer): boolean {
     if (layer.locked) {
@@ -157,7 +209,7 @@ export class PixelOps {
   /** The current image's rect in document coords (rounded out). */
   private imageRectInDoc(): Rect {
     const s = this.s;
-    const map = frameMap(s.doc.frame, s.imageSize);
+    const map = documentMap(s.doc, s.imageSize);
     const size = s.imageSize;
     return roundOutRect({
       x: -map.offsetX / map.scale,
@@ -177,7 +229,7 @@ export class PixelOps {
     return {
       background: s.background,
       imageSize: s.imageSize,
-      map: frameMap(s.doc.frame, s.imageSize),
+      map: documentMap(s.doc, s.imageSize),
       bounds: s.store.bounds,
       layers,
     };

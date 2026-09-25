@@ -13,6 +13,7 @@ Document model (v1, SPEC.md "Document Model" section):
     frame:  {width, height}               -- integer pixel dims of the image frame
     bounds: {x, y, width, height}         -- paint area in frame coords (may extend outside)
     regions: []                            -- reserved
+    placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
     activeLayerId: str
     layers: Layer[]                        -- bottom -> top; background NOT included
 
@@ -29,6 +30,7 @@ Layer model:
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 
 log = logging.getLogger("paintersketch.document")
@@ -41,6 +43,12 @@ _FRAME_MAX = 8192
 # bounds may extend up to 3x the frame max in each direction so off-frame paint
 # that was created at a larger document size is tolerated without crashing.
 _BOUNDS_MAX = _FRAME_MAX * 3
+
+PLACEMENT_MIN_SCALE = 0.05
+"""Smallest Move-tool scale (SPEC "Saved-file contract", Placement)."""
+
+PLACEMENT_MAX_SCALE = 20.0
+"""Largest Move-tool scale."""
 
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
@@ -72,12 +80,29 @@ class Layer:
     invert: bool        # mask layers: invert alpha before union
 
 
+@dataclass(frozen=True)
+class Placement:
+    """Move-tool placement of the whole drawing (document-frame px).
+
+    A document point ``p`` is placed at ``(p - c) * scale + c + (x, y)`` with
+    ``c`` the frame centre, before the frame-mismatch map is applied.
+    """
+    x: float = 0.0
+    y: float = 0.0
+    scale: float = 1.0
+
+
+IDENTITY_PLACEMENT = Placement()
+"""Default placement (no move, no scale)."""
+
+
 @dataclass
 class Document:
     """Fully validated v1 PainterDocument."""
     frame: Frame
     bounds: Bounds
     layers: list[Layer] = field(default_factory=list)
+    placement: Placement = IDENTITY_PLACEMENT
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -127,6 +152,37 @@ def _parse_bounds(raw: dict) -> Bounds | None:
         log.warning("document: bounds (%d,%d,%d,%d) exceed sane cap %d", x, y, w, h, _BOUNDS_MAX)
         return None
     return Bounds(x=x, y=y, width=w, height=h)
+
+
+def _finite(value: object, default: float) -> float:
+    """Return value as float if it is a finite number (bools excluded), else default."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    value = float(value)
+    return value if math.isfinite(value) else default
+
+
+def parse_placement(raw: object) -> Placement:
+    """Leniently validate the optional 'placement' object (never fails).
+
+    Missing / non-object -> identity; non-finite fields fall back to their
+    identity value; ``scale`` is clamped to [0.05, 20]. Mirrors
+    ``ui/src/document/placement.ts``.
+
+    Args:
+        raw: The manifest's ``placement`` value (any JSON value or None).
+
+    Returns:
+        Validated :class:`Placement`.
+    """
+    if raw is None:
+        return IDENTITY_PLACEMENT
+    if not isinstance(raw, dict):
+        log.warning("document: 'placement' is not an object; using identity")
+        return IDENTITY_PLACEMENT
+    scale = _finite(raw.get("scale"), 1.0)
+    scale = max(PLACEMENT_MIN_SCALE, min(PLACEMENT_MAX_SCALE, scale))
+    return Placement(x=_finite(raw.get("x"), 0.0), y=_finite(raw.get("y"), 0.0), scale=scale)
 
 
 def _parse_layer(raw: dict, idx: int) -> Layer | None:
@@ -191,6 +247,7 @@ def parse_document(raw: str) -> Document | None:
     - Unknown layer kinds are skipped with a warning.  ``"text"`` is kept
       (rasterised by the frontend before saving, so Python sees it as paint).
     - Missing ``bounds``: fall back to frame-sized bounds at (0, 0).
+    - ``placement`` is lenient (:func:`parse_placement`); missing = identity.
 
     Args:
         raw: The ``document`` widget value.
@@ -242,7 +299,9 @@ def parse_document(raw: str) -> Document | None:
         if layer is not None:
             layers.append(layer)
 
-    return Document(frame=frame, bounds=bounds, layers=layers)
+    placement = parse_placement(doc.get("placement"))
+
+    return Document(frame=frame, bounds=bounds, layers=layers, placement=placement)
 
 
 def frame_size(doc: Document | None) -> tuple[int, int] | None:

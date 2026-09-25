@@ -66,6 +66,7 @@ export class FrameOps {
     const frame = { width: Math.round(size.width), height: Math.round(size.height) };
     s.doc.frame = frame;
     s.doc.bounds = frameRect(frame);
+    delete s.doc.placement;
     s.frameSource = source;
     s.store.reset(s.doc.bounds);
     for (const layer of s.doc.layers) {
@@ -75,14 +76,16 @@ export class FrameOps {
       s.runtime.bump(layer.id);
     }
     s.history.clear();
+    s.selection.set(null); // document coords changed meaning
     s.lastStrokeEnd = null;
     s.syncViewFrame();
+    s.events.emit("placement", undefined);
     s.afterEdit();
   }
 
   /**
-   * Clear all paint and reset the frame to the current image size, as one
-   * undoable step.
+   * Clear all paint and reset the frame to the current image size and the
+   * placement to identity, as one undoable step.
    */
   clear(): void {
     const s = this.s;
@@ -107,6 +110,8 @@ export class FrameOps {
     const s = this.s;
     s.doc.frame = { ...state.frame };
     s.doc.bounds = { ...state.bounds };
+    if (state.placement) s.doc.placement = { ...state.placement };
+    else delete s.doc.placement;
     s.frameSource = state.source;
     s.store.reset(state.bounds);
     for (const layer of s.doc.layers) {
@@ -116,13 +121,15 @@ export class FrameOps {
       s.runtime.touch(layer.id);
     }
     s.syncViewFrame();
+    s.events.emit("placement", undefined);
   }
 
   private captureSnapshot(): DocSnapshot {
     const s = this.s;
     const pixels = new Map<string, ImageData>();
     for (const layer of s.doc.layers) pixels.set(layer.id, s.store.snapshot(layer.id));
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, pixels };
+    const placement = s.doc.placement ? { ...s.doc.placement } : undefined;
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels };
   }
 }
 

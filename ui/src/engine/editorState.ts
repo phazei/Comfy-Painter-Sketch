@@ -17,6 +17,7 @@ import { Emitter } from "./emitter";
 import { HistoryStack } from "./history";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
+import { SelectionState } from "./selectionState";
 import { StrokeBuffer } from "./stroke";
 import { ViewState } from "./view";
 
@@ -30,6 +31,8 @@ export class EditorState {
   readonly stroke = new StrokeBuffer();
   readonly runtime = new LayerRuntimeTable();
   readonly store: LayerStore;
+  /** Current selection (session state, not saved); strokes are clipped to it. */
+  readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
 
   doc: PainterDocument;
   frameSource: FrameSource;
@@ -64,6 +67,7 @@ export class EditorState {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, layer.file !== null);
     }
+    this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
   }
 
@@ -78,9 +82,9 @@ export class EditorState {
     return size ? { ...size } : { ...this.doc.frame };
   }
 
-  /** No paint ever and nothing in history that depends on the frame. */
+  /** No paint ever and nothing in history that depends on the frame (selection steps don't count). */
   get isEmpty(): boolean {
-    return !this.runtime.hasPaint && !this.history.canUndo && !this.history.canRedo;
+    return !this.runtime.hasPaint && !this.history.some((entry) => entry.kind !== "selection");
   }
 
   /** The view fits the image, not the document frame. */

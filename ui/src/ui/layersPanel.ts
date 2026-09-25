@@ -40,6 +40,8 @@ export interface LayersPanelContext {
   beforeEdit(): void;
   /** A text field of the panel lost focus: hand keyboard focus back. */
   releaseFocus(): void;
+  /** Toggle the "Move drawing" mode (activates / deactivates the Move tool). */
+  toggleMoveDrawing(): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -54,6 +56,7 @@ export class LayersPanel {
   private readonly addButton: HTMLButtonElement;
   private readonly duplicateButton: HTMLButtonElement;
   private readonly deleteButton: HTMLButtonElement;
+  private readonly moveDrawingButton: HTMLButtonElement;
   private readonly rows = new Map<string, LayerRow>();
   private readonly maskControls = new Map<string, OptionControl>();
   private readonly drag: LayerDrag;
@@ -83,7 +86,10 @@ export class LayersPanel {
     this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
     this.deleteButton = footerButton("trash", "Delete layer", () => this.withEditor((e) => e.layerOps.remove()));
-    footer.append(this.addButton, this.duplicateButton, this.deleteButton);
+    this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
+    const footerDivider = document.createElement("div");
+    footerDivider.className = "cps-layers-footer-divider";
+    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.duplicateButton, this.deleteButton);
     this.element.append(header, this.list, footer);
 
     this.maskColor = new MaskColorPicker(ctx.pickColor);
@@ -121,6 +127,15 @@ export class LayersPanel {
       ];
     }
     this.sync();
+  }
+
+  /**
+   * Sync the "Move drawing" toggle button highlight to the current mode.
+   * @param active - The Move drawing tool is currently active.
+   */
+  setMoveDrawing(active: boolean): void {
+    this.moveDrawingButton.classList.toggle("cps-active", active);
+    this.moveDrawingButton.setAttribute("aria-pressed", String(active));
   }
 
   /** Remove listeners and DOM. */
@@ -325,6 +340,22 @@ function footerButton(icon: string, title: string, onClick: () => void): HTMLBut
   button.type = "button";
   button.title = title;
   setIcon(button, icon, 16);
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+/**
+ * Build the "Move drawing" toggle button for the footer left side.
+ * @param onClick - Called when the button is clicked.
+ * @returns The button.
+ */
+function moveDrawingBtn(onClick: () => void): HTMLButtonElement {
+  const button = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
+  button.type = "button";
+  button.title = "Move drawing \u2014 reposition/scale all layers against the image";
+  button.setAttribute("aria-label", "Move drawing \u2014 reposition/scale all layers against the image");
+  button.setAttribute("aria-pressed", "false");
+  setIcon(button, "moveDrawing", 16);
   button.addEventListener("click", onClick);
   return button;
 }

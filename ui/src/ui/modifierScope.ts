@@ -1,7 +1,8 @@
 /**
- * Tracks Alt and Space modifier keys for one keyboard scope, wiring window
- * `keydown`/`keyup` listeners only while the scope is active. Clearing both
+ * Tracks Alt, Space and Shift for one keyboard scope, wiring window
+ * `keydown`/`keyup` listeners only while the scope is active. Clearing all
  * modifiers on window `blur` prevents stuck keys after focus leaves the page.
+ * Shift is observed only (never prevented or stopped).
  *
  * Extracted from `keyboard.ts` to keep {@link KeyboardScope} under the
  * ~400-line guideline.
@@ -13,6 +14,8 @@ export interface ModifierHandlers {
   onSpaceChange(down: boolean): void;
   /** Alt held or released (temporary eyedropper). Absent = not tracked. */
   onAltChange?(down: boolean): void;
+  /** Shift held or released (selection-mode cursor badge). Absent = not tracked. */
+  onShiftChange?(down: boolean): void;
 }
 
 /**
@@ -23,6 +26,7 @@ export interface ModifierHandlers {
 export class ModifierScope {
   private spaceDown = false;
   private altDown = false;
+  private shiftDown = false;
   private listening = false;
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
@@ -32,16 +36,20 @@ export class ModifierScope {
     } else if (event.key === " " || event.code === "Space") {
       this.setSpace(true);
     }
+    // Shift is only observed (never prevented): the flag is exact on every key event.
+    this.setShift(event.shiftKey);
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
     if (event.key === "Alt") this.setAlt(false);
     else if (event.key === " " || event.code === "Space") this.setSpace(false);
+    this.setShift(event.shiftKey);
   };
 
   private readonly onBlur = (): void => {
     this.setSpace(false);
     this.setAlt(false);
+    this.setShift(false);
   };
 
   /**
@@ -81,6 +89,7 @@ export class ModifierScope {
     window.removeEventListener("blur", this.onBlur);
     this.setSpace(false);
     this.setAlt(false);
+    this.setShift(false);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
@@ -95,5 +104,11 @@ export class ModifierScope {
     if (this.altDown === down) return;
     this.altDown = down;
     this.handlers.onAltChange?.(down);
+  }
+
+  private setShift(down: boolean): void {
+    if (this.shiftDown === down) return;
+    this.shiftDown = down;
+    this.handlers.onShiftChange?.(down);
   }
 }

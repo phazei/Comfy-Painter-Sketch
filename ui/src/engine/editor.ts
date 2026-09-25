@@ -16,7 +16,8 @@
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
- * document is drawn through {@link Editor.frameMap}. History (decision 10):
+ * document is drawn through {@link Editor.frameMap} (frame fit + Move-tool
+ * placement, `placementOps.ts`; not undoable). History (decision 10):
  * dirty-rect patches, Clear = full snapshots. Masks (decisions 5/6) are
  * ordinary layers whose alpha is coverage; Quick Mask picks the paint target.
  */
@@ -32,7 +33,7 @@ import { DocIO } from "./docIO";
 import type { EditorEvents, FrameSource, LayerRuntime } from "./editorTypes";
 import { EditorState } from "./editorState";
 import type { Emitter } from "./emitter";
-import { frameMap } from "./frameMap";
+import { documentMap } from "./frameMap";
 import type { FrameMap } from "./frameMap";
 import { FrameOps } from "./frameOps";
 import { LayerDisplay } from "./layerDisplay";
@@ -41,6 +42,8 @@ import type { LayerStore } from "./layerStore";
 import { EditorMaskOps } from "./editorMaskOps";
 import { PaintOps } from "./paintOps";
 import { PixelOps } from "./pixelOps";
+import { PlacementOps } from "./placementOps";
+import { SelectionOps } from "./selectionOps";
 import type { ShapeSpec } from "./shapes";
 import { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
@@ -68,6 +71,10 @@ export class Editor {
   readonly layerOps: LayerOps;
   /** Paint-bucket fill and eyedropper sampling. */
   readonly pixelOps: PixelOps;
+  /** Move-tool placement of the whole drawing (not undoable). */
+  readonly placement: PlacementOps;
+  /** Selection (session state, undoable) and its pixel commands. */
+  readonly selection: SelectionOps;
 
   private readonly s: EditorState;
   private readonly frames: FrameOps;
@@ -93,6 +100,8 @@ export class Editor {
     this.display = new LayerDisplay(this.s);
     this.layerOps = new LayerOps(this.s);
     this.pixelOps = new PixelOps(this.s);
+    this.placement = new PlacementOps(this.s);
+    this.selection = new SelectionOps(this.s);
     this.maskOps = new EditorMaskOps(this.s, this.paint);
   }
 
@@ -156,9 +165,12 @@ export class Editor {
     return this.s.imageSize;
   }
 
-  /** Document -> image transform (same as Python's frame-mismatch placement). */
+  /**
+   * Document -> image transform: frame fit + Move-tool placement, same as
+   * Python's `_layout` (see `frameMap.ts` {@link documentMap}).
+   */
   get frameMap(): FrameMap {
-    return frameMap(this.s.doc.frame, this.s.imageSize);
+    return documentMap(this.s.doc, this.s.imageSize);
   }
 
   /**
@@ -364,7 +376,7 @@ export class Editor {
 
   /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes(): number {
-    return this.s.store.bytes + this.s.history.totalBytes;
+    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes;
   }
 
   /** Release everything. */
@@ -373,6 +385,7 @@ export class Editor {
     this.s.store.dispose();
     this.display.dispose();
     this.pixelOps.dispose();
+    this.s.selection.dispose();
     this.s.history.clear();
     this.stamps.clear();
     this.events.clear();

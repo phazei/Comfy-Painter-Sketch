@@ -21,6 +21,16 @@ Frame-mismatch scaling (decision 4, SPEC.md "Saved-file contract"):
         (offset_x + bounds.x * s, offset_y + bounds.y * s)
     then the whole result is cropped to W x H.
 
+Placement (Move tool, SPEC.md "Saved-file contract"):
+    Document placement {x, y, scale} is composed into the map above, scaling
+    about the frame centre c = (fw/2, fh/2):
+        eff_s  = s * scale
+        eff_ox = offset_x + s * (c.x * (1 - scale) + x)   (same for y)
+    and the layer is placed with (eff_s, eff_ox, eff_oy) using the same
+    rounding. Identity placement yields exactly (s, offset_x, offset_y).
+    The frontend (`ui/src/engine/frameMap.ts`) evaluates the same expressions
+    in the same order, so both round to the same integer rect.
+
 Compositing (SPEC.md "Paint layers"):
     Normal blend, straight-alpha "over":
         out_rgb = layer_rgb * (layer_alpha * opacity) + bg_rgb * (1 - layer_alpha * opacity)
@@ -39,7 +49,7 @@ import logging
 import torch
 import torch.nn.functional as F
 
-from .document import Bounds, Document, Frame, Layer
+from .document import IDENTITY_PLACEMENT, Bounds, Document, Frame, Layer, Placement
 
 log = logging.getLogger("paintersketch.composite")
 
@@ -57,6 +67,26 @@ def _scale_factor(W: int, H: int, fw: int, fh: int) -> float:
         Scale factor ``s = min(W/fw, H/fh)``.
     """
     return min(W / fw, H / fh)
+
+
+def _layout(W: int, H: int, frame: Frame, placement: Placement) -> tuple[float, float, float]:
+    """Effective document -> image map: frame-mismatch fit composed with placement.
+
+    Args:
+        W, H:      run-time image dimensions.
+        frame:     document frame.
+        placement: Move-tool placement (identity = plain frame map).
+
+    Returns:
+        ``(eff_s, eff_ox, eff_oy)`` for :func:`_place_layer`.
+    """
+    s = _scale_factor(W, H, frame.width, frame.height)
+    ox = (W - frame.width * s) / 2.0
+    oy = (H - frame.height * s) / 2.0
+    k = placement.scale
+    eff_ox = ox + s * ((frame.width / 2) * (1 - k) + placement.x)
+    eff_oy = oy + s * ((frame.height / 2) * (1 - k) + placement.y)
+    return s * k, eff_ox, eff_oy
 
 
 def _place_layer(
@@ -138,6 +168,7 @@ def composite_paint_layers(
     layer_tensors: dict[str, torch.Tensor | None],
     bounds: Bounds,
     frame: Frame,
+    placement: Placement = IDENTITY_PLACEMENT,
 ) -> torch.Tensor:
     """Composite visible paint/text layers over a base image batch.
 
@@ -150,14 +181,13 @@ def composite_paint_layers(
         layer_tensors: Map from layer id to ``[lh, lw, 4]`` RGBA tensor or None.
         bounds:        Document bounds (used for placement calculation).
         frame:         Document frame size.
+        placement:     Move-tool placement (default identity).
 
     Returns:
         ``[B, H, W, 3]`` float32 composited image.
     """
     B, H, W = base_rgb.shape[:3]
-    s = _scale_factor(W, H, frame.width, frame.height)
-    ox = (W - frame.width * s) / 2.0
-    oy = (H - frame.height * s) / 2.0
+    s, ox, oy = _layout(W, H, frame, placement)
 
     out = base_rgb.clone()
 
@@ -192,6 +222,7 @@ def combine_mask_layers(
     W: int,
     H: int,
     invert_mask: bool,
+    placement: Placement = IDENTITY_PLACEMENT,
 ) -> torch.Tensor:
     """Build the final MASK tensor from visible mask layers.
 
@@ -212,13 +243,12 @@ def combine_mask_layers(
         frame:         Document frame.
         W, H:          Output canvas size.
         invert_mask:   Node-level invert flag.
+        placement:     Move-tool placement (default identity).
 
     Returns:
         ``[H, W]`` float32 mask in [0, 1].
     """
-    s = _scale_factor(W, H, frame.width, frame.height)
-    ox = (W - frame.width * s) / 2.0
-    oy = (H - frame.height * s) / 2.0
+    s, ox, oy = _layout(W, H, frame, placement)
 
     combined = torch.zeros((H, W), dtype=torch.float32)
     has_mask = False
@@ -276,11 +306,11 @@ def run_composite(
     B, H, W = base_rgb.shape[:3]
 
     image = composite_paint_layers(
-        base_rgb, doc.layers, layer_tensors, doc.bounds, doc.frame
+        base_rgb, doc.layers, layer_tensors, doc.bounds, doc.frame, doc.placement
     )
 
     mask_hw = combine_mask_layers(
-        doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask
+        doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask, doc.placement
     )
     # Broadcast mask to batch
     mask = mask_hw.unsqueeze(0).expand(B, -1, -1)

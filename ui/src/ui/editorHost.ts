@@ -26,6 +26,7 @@ import { FullscreenMount } from "./fullscreen";
 import { KeyboardScope } from "./keyboard";
 import { LayersPanel } from "./layersPanel";
 import { OptionsBar } from "./optionsBar";
+import { SelectionActions } from "./selectionActions";
 import { EditorShell } from "./shell";
 import type { SidePanel } from "./sidePanel";
 import { handleShortcut } from "./shortcuts";
@@ -82,6 +83,8 @@ export class EditorHost {
   private readonly optionsBar: OptionsBar;
   private readonly swatches: SwatchWidget;
   private readonly layers: LayersPanel;
+  /** "Selection to mask" (options bar, while a selection exists). */
+  private readonly selectionActions = new SelectionActions();
   private readonly keyboard: KeyboardScope;
   private readonly resizeObserver: ResizeObserver;
   private readonly fullscreen: FullscreenMount;
@@ -91,6 +94,8 @@ export class EditorHost {
   private unbind: Array<() => void> = [];
   private wasVisible = false;
   private disposed = false;
+  /** Last rail-tool id before switching to Move drawing (restored on toggle-off). */
+  private prevRailToolId: string | null = null;
 
   /**
    * @param events - Owner callbacks.
@@ -138,6 +143,7 @@ export class EditorHost {
     });
     this.shell.rail.swatchSlot.appendChild(this.swatches.element);
     this.optionsBar = new OptionsBar(this.shell.bar, this.shell.popoverHost, () => this.optionsChanged());
+    this.shell.bar.leading.append(this.selectionActions.element);
 
     // ── M3.3: layers panel in the side panel ──────────────────────────────
     this.layers = new LayersPanel({
@@ -146,6 +152,7 @@ export class EditorHost {
       pickColor: (anchor, options) => openColorPicker(this.shell.popoverHost, anchor, options),
       beforeEdit: () => this.input.cancel(),
       releaseFocus: () => this.keyboard.reclaimFocus(),
+      toggleMoveDrawing: () => this.toggleMoveDrawing(),
     });
     this.shell.sidePanel.content.replaceChildren(this.layers.element);
 
@@ -172,6 +179,7 @@ export class EditorHost {
         this.view.requestOverlay();
       },
       setAlt: (down) => this.setAlt(down),
+      setShift: (down) => this.setShift(down),
       viewChanged: () => this.view.requestRender(),
     });
     this.keyboard = new KeyboardScope(this.root, {
@@ -193,6 +201,7 @@ export class EditorHost {
           : false,
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
       onAltChange: (down) => this.setAlt(down),
+      onShiftChange: (down) => this.setShift(down),
       onSave: () => this.events.onSave?.(),
       onDeactivate: () => this.events.onDisengage?.(),
     });
@@ -224,6 +233,7 @@ export class EditorHost {
     this.unbind = [];
     this.session = session;
     this.layers.setEditor(session?.editor ?? null);
+    this.selectionActions.setEditor(session?.editor ?? null);
     if (session) {
       const { editor, tools } = session;
       this.unbind.push(
@@ -232,10 +242,13 @@ export class EditorHost {
         editor.events.on("note", (text) => this.view.showNote(text)),
         editor.events.on("mask", () => this.syncMask()),
         editor.events.on("change", () => this.syncMask()),
+        // Move tool: live X / Y / Scale fields.
+        editor.events.on("placement", () => this.optionsBar.refresh()),
+        // Selection: marching ants + "To mask" button.
+        editor.events.on("selection", () => (this.selectionActions.sync(), this.view.requestOverlay())),
         editor.colors.events.on("change", (colors) => this.swatches.setColors(colors)),
         tools.events.on("change", () => this.syncTools()),
       );
-      this.rail.setTools(tools.list(), tools.active.id, tools.groups);
       this.swatches.setColors(editor.colors.current);
       this.syncTools();
       this.syncMask();
@@ -302,14 +315,47 @@ export class EditorHost {
   }
 
   // ── Sync ────────────────────────────────────────────────────────────────
-
   private syncTools(): void {
     const session = this.session;
     if (!session) return;
-    this.rail.setActive(session.tools.active.id);
+    // Clear prevRailToolId when the user selects a rail tool directly.
+    if (session.tools.active.rail !== false && session.tools.active.id !== "move") {
+      this.prevRailToolId = null;
+    }
+    this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
     this.optionsBar.bind(session.tools.active.options);
+    this.syncMoveMode();
     this.view.syncCursor();
     this.view.requestOverlay();
+  }
+
+  /** Sync the "Move drawing" button to the current active tool. */
+  private syncMoveMode(): void {
+    const active = this.session?.tools.active;
+    this.layers.setMoveDrawing(active?.id === "move");
+  }
+
+  /**
+   * Toggle "Move drawing" mode: activate the Move tool (saving the previous
+   * rail tool) or deactivate it (returning to the previous rail tool).
+   */
+  private toggleMoveDrawing(): void {
+    const session = this.session;
+    if (!session) return;
+    const { tools } = session;
+    this.input.cancel();
+    if (tools.active.id === "move") {
+      // Deactivate: return to the previous rail tool (or brush as fallback).
+      const prev = (this.prevRailToolId && tools.get(this.prevRailToolId)) ?? tools.railTools()[0];
+      if (prev) {
+        this.prevRailToolId = null;
+        tools.setActive(prev.id);
+      }
+    } else {
+      // Activate: remember the current rail tool, then switch to Move.
+      if (tools.active.rail !== false) this.prevRailToolId = tools.active.id;
+      tools.setActive("move");
+    }
   }
 
   /** Quick Mask button and "Mask" badge (the eye lives in the layers panel). */
@@ -335,6 +381,13 @@ export class EditorHost {
     this.view.altDown = down;
     this.view.syncCursor();
     this.view.requestOverlay();
+  }
+
+  /** Shift held (keyboard or pointer modifier): selection-mode cursor badge. */
+  private setShift(down: boolean): void {
+    if (this.view.shiftDown === down) return;
+    this.view.shiftDown = down;
+    this.view.syncCursor();
   }
 
   private optionsChanged(): void {

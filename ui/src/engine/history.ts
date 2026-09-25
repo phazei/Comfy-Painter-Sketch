@@ -102,6 +102,15 @@ export class HistoryStack<T extends Sized> {
     return entry;
   }
 
+  /**
+   * Whether any entry (undo or redo side) matches.
+   * @param predicate - Test.
+   * @returns `true` if one matches.
+   */
+  some(predicate: (entry: T) => boolean): boolean {
+    return this.undoStack.some(predicate) || this.redoStack.some(predicate);
+  }
+
   /** Drop everything. */
   clear(): void {
     this.undoStack.length = 0;

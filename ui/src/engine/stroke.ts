@@ -9,6 +9,8 @@
  * Brush composites with `source-over`, eraser with `destination-out`.
  * Shape tools use the same buffer but replace its content on every move
  * ({@link StrokeBuffer.replaceContent}) instead of accumulating dabs.
+ * With a selection ({@link StrokeBuffer.setClip}) both the preview and the
+ * commit composite `buffer x selection coverage` (M5 clipping).
  */
 
 import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
@@ -46,6 +48,20 @@ export class StrokeBuffer {
   private strokeRect: Rect = EMPTY;
   private pendingPreview: Rect = EMPTY;
   private refreshed: Rect = EMPTY;
+  /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
+  private clipSource: () => CanvasImageSource | null = () => null;
+  /** Buffer x clip, composited instead of the buffer while a selection exists. */
+  private clipped: Surface | null = null;
+
+  /**
+   * Clip every composite (live preview and commit) to a selection: the
+   * buffer is multiplied by the clip's alpha right before compositing, so
+   * soft coverage never compounds over overlapping dabs.
+   * @param source - Returns the clip canvas for the current bounds, or `null`.
+   */
+  setClip(source: () => CanvasImageSource | null): void {
+    this.clipSource = source;
+  }
 
   /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
   get lastRefreshed(): Rect {
@@ -92,6 +108,7 @@ export class StrokeBuffer {
     const nextPreview = rebaseSurface(this.preview, this.bounds, bounds);
     releaseSurface(this.buffer);
     releaseSurface(this.preview);
+    this.releaseClipped();
     this.buffer = nextBuffer;
     this.preview = nextPreview;
     this.bounds = { ...bounds };
@@ -183,6 +200,7 @@ export class StrokeBuffer {
   dispose(): void {
     if (this.buffer) releaseSurface(this.buffer);
     if (this.preview) releaseSurface(this.preview);
+    this.releaseClipped();
     this.buffer = null;
     this.preview = null;
     this.style = null;
@@ -199,11 +217,36 @@ export class StrokeBuffer {
     height: number,
   ): void {
     if (!this.style) return;
+    const source = this.clipBuffer(buffer, x, y, width, height);
     ctx.save();
     ctx.globalAlpha = this.style.opacity;
     ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
-    ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
+    ctx.drawImage(source, x, y, width, height, x, y, width, height);
     ctx.restore();
+  }
+
+  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
+  private clipBuffer(buffer: Surface, x: number, y: number, width: number, height: number): HTMLCanvasElement {
+    const clip = this.clipSource();
+    if (!clip) return buffer.canvas;
+    this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
+    const { ctx } = this.clipped;
+    ctx.save();
+    // `destination-in` clears everything outside the drawn image: limit it to the region.
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
+    ctx.clearRect(x, y, width, height);
+    ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    ctx.restore();
+    return this.clipped.canvas;
+  }
+
+  private releaseClipped(): void {
+    if (this.clipped) releaseSurface(this.clipped);
+    this.clipped = null;
   }
 
   private end(): void {

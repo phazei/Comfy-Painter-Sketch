@@ -66,7 +66,7 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   const session: EditorSession = {
     docId: doc.docId,
     editor: ed,
-    tools: createDefaultTools(),
+    tools: createDefaultTools(ed),
     uploader: new LayerUploader(ed, knownFiles),
     knownFiles,
     recentSignatures: [fileSignature(ed.doc)],

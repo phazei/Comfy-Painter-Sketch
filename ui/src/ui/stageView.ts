@@ -1,6 +1,6 @@
 /**
  * Stage rendering: display canvas (compositor output), overlay canvas (brush
- * ring) and the transient note, inside the shell's stage element. Redraws
+ * ring, loupe, selection marching ants via `marchingAnts.ts`) and the transient note, inside the shell's stage element. Redraws
  * are rAF-coalesced. Backing-store size follows stage CSS size x device
  * pixel ratio x graph zoom (never cached: re-read on every sync).
  */
@@ -10,8 +10,10 @@ import { backingStoreSize } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
 import type { Tool } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
-import { cssCursor } from "./cursors";
+import { cssCursor, cursorBadge } from "./cursors";
+import type { CursorBadge } from "./cursors";
 import { drawLoupe } from "./loupe";
+import { MarchingAnts } from "./marchingAnts";
 
 /** How long transient notes stay visible. */
 const NOTE_MS = 5000;
@@ -32,10 +34,19 @@ export class StageView {
   private disposed = false;
   /** Last value written to `--cps-tool-cursor`. */
   private cursorValue = "";
+  /** Selection outline animation (redraws only while the stage is visible). */
+  private readonly ants = new MarchingAnts(() => {
+    // rAF pauses in background tabs; a hidden stage ends the loop until the next render.
+    if (this.isVisible()) this.requestOverlay();
+  });
   /** Pointer hover position, stage CSS px (`null` = outside). */
   hover: Point | null = null;
   /** Alt held: the cursor is that of `tools.resolve(true)` (temporary eyedropper). */
   altDown = false;
+  /** Shift held (selection-mode cursor badge). */
+  shiftDown = false;
+  /** Selection-mode badge on the cursor (kept fixed during a drag). */
+  private badge: CursorBadge | null = null;
 
   /**
    * @param stage - Stage element (canvases are appended to it).
@@ -132,14 +143,27 @@ export class StageView {
    * Apply the CSS cursor of the tool in effect now: the tool locked at
    * pointer-down during a drag (Alt mid-drag changes nothing), else
    * `tools.resolve(altDown)` (Alt = temporary eyedropper). Synchronous, so
-   * Alt down/up updates the cursor without pointer movement. Written to the
+   * Alt down/up updates the cursor without pointer movement. Selection tools
+   * with a selection add the Shift/Alt mode badge (`cursors.ts`). Written to the
    * `--cps-tool-cursor` property so the pan/loading class cursors still win.
    * @returns The tool in effect, or `null` without a session.
    */
   syncCursor(): Tool | null {
     const session = this.session();
-    const tool = session ? (this.getDragTool() ?? session.tools.resolve(this.altDown)) : null;
-    const value = tool ? cssCursor(tool.cursor()) : "crosshair";
+    const dragTool = this.getDragTool();
+    const tool = session ? (dragTool ?? session.tools.resolve(this.altDown)) : null;
+    // Selection-mode badge: follows the modifiers between drags; during a
+    // drag (or a pending polygonal lasso) the one from pointer-down stays.
+    const locked = dragTool !== null || (tool?.pending?.() ?? false);
+    if (!locked) {
+      this.badge = cursorBadge({
+        combinesSelection: tool?.combinesSelection ?? false,
+        hasSelection: session?.editor.selection.active ?? false,
+        shift: this.shiftDown,
+        alt: this.altDown,
+      });
+    }
+    const value = tool ? cssCursor(tool.cursor(), this.badge) : "crosshair";
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -154,6 +178,7 @@ export class StageView {
     if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
     if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
     if (this.noteTimer !== null) clearTimeout(this.noteTimer);
+    this.ants.dispose();
     this.canvas.width = this.canvas.height = 0;
     this.overlay.width = this.overlay.height = 0;
   }
@@ -204,11 +229,13 @@ export class StageView {
     const session = this.session();
     const tool = this.syncCursor();
     const hover = this.hover;
+    const pr = this.pixelRatio;
+    const overlay = tool?.overlay?.() ?? null;
+    // Marching ants (selection + in-progress marquee) are drawn regardless of hover.
+    if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
-    const pr = this.pixelRatio;
-    const overlay = tool.overlay?.() ?? null;
-    if (overlay) {
+    if (overlay?.kind === "loupe") {
       drawLoupe(ctx, hover.x * pr, hover.y * pr, pr, overlay);
       return;
     }

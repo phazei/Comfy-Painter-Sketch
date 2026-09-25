@@ -47,6 +47,17 @@ export interface Region {
   rect: Rect;
 }
 
+/**
+ * Move-tool placement of the whole drawing, in document-frame px: a document
+ * point `p` is shown at `(p - c) * scale + c + (x, y)`, `c` = frame centre
+ * (SPEC "Saved-file contract", Placement). See `document/placement.ts`.
+ */
+export interface Placement {
+  x: number;
+  y: number;
+  scale: number;
+}
+
 /** The layer document. */
 export interface PainterDocument {
   version: typeof DOCUMENT_VERSION;
@@ -60,6 +71,8 @@ export interface PainterDocument {
   /** Paint area in frame coords; always contains the frame rect. */
   bounds: Rect;
   regions: Region[];
+  /** Move tool; `undefined` = identity (saved only when non-identity). */
+  placement?: Placement;
   activeLayerId: string;
   /** Bottom -> top; background excluded. */
   layers: Layer[];

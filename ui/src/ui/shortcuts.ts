@@ -16,10 +16,13 @@
  * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
  * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
  * | Shift+group key | cycle the group (Shift+U shapes) |
+ * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
+ * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace) |
  */
 
 import type { ToolOptions } from "../tools/options";
 import type { EditorSession } from "../widget/sessions";
+import { handleSelectionShortcut } from "./selectionShortcuts";
 
 /** Side effects the shortcuts need from the UI. */
 export interface ShortcutEffects {
@@ -55,6 +58,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }
+  // Selection: Ctrl+A/D, Shift+F7, Delete/Backspace, Alt/Ctrl+Backspace.
+  if (handleSelectionShortcut(event, editor, () => effects.cancelDrag())) return true;
 
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());
@@ -66,6 +71,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     return false;
   }
   if (event.altKey || ctrl) return false;
+  // Tool-specific keys first (Move: arrow nudges).
+  if (tools.active.onKey?.(editor, event)) return true;
 
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {

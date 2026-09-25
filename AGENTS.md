@@ -146,6 +146,14 @@ ui/src/
 - Tools sharing a rail slot/key (shapes on `U`, marquees on `M`) are a tool
   group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
   tool makes Alt-at-pointer-down a temporary eyedropper.
+- Optional Tool hooks: `onWheel` (Move scale-while-dragging), `onKey` (arrow
+  nudges), `pending()` / `onHover()` (lasso polygon in progress). Descriptor kinds
+  include `button`.
+- All doc <-> image conversion goes through `documentMap(doc, imageSize)` /
+  `editor.frameMap` (includes Move placement). Never call `frameMap(doc.frame, ...)`
+  directly or re-derive the formula.
+- Selection coverage is rasterized without a canvas (`engine/selectionRaster.ts`)
+  so it's unit-testable (the test environment has no canvas).
 - Tool options are **declarative** (descriptors: slider/number/toggle/select),
   rendered generically by the options bar. No per-tool UI code.
 - `ui/shell.ts` owns the regions (rail, options bar, stage, side panel) and the

@@ -4,7 +4,9 @@
  */
 
 import type { LayerChange } from "../document/layerList";
+import type { Placement } from "../document/types";
 import type { Rect, Size } from "../geometry/rect";
+import type { Selection } from "./selection";
 
 /** Where the document frame size came from. */
 export type FrameSource = "widgets" | "image" | "document";
@@ -24,6 +26,8 @@ export interface DocSnapshot {
   frame: Size;
   bounds: Rect;
   source: FrameSource;
+  /** Move-tool placement (`undefined` = identity); Clear resets it. */
+  placement?: Placement;
   /** Per-layer pixels covering `bounds`; `null` = every layer empty. */
   pixels: Map<string, ImageData> | null;
 }
@@ -56,7 +60,9 @@ export interface LayersEntry {
 export type HistoryEntry =
   | { kind: "patch"; layerId: string; x: number; y: number; before: ImageData; after: ImageData; bytes: number }
   | { kind: "clear"; before: DocSnapshot; after: DocSnapshot; bytes: number }
-  | LayersEntry;
+  | LayersEntry
+  /** Selection change (new / all / deselect / invert); no pixels. */
+  | { kind: "selection"; before: Selection | null; after: Selection | null; bytes: number };
 
 /** Editor events. */
 export interface EditorEvents {
@@ -73,6 +79,10 @@ export interface EditorEvents {
   mask: undefined;
   /** Layer list or layer metadata changed (order, names, visibility, lock, opacity, active layer). */
   layers: undefined;
+  /** Move-tool placement changed (live during a drag; not a history event). */
+  placement: undefined;
+  /** Selection changed (redraw the marching ants, selection actions). */
+  selection: undefined;
 }
 
 /** Note shown when painting on a locked layer. */

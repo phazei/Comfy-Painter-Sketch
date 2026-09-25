@@ -19,7 +19,13 @@ const INNER = 22;
  * @param pr - Backing px per CSS px.
  * @param overlay - Loupe colours.
  */
-export function drawLoupe(ctx: CanvasRenderingContext2D, x: number, y: number, pr: number, overlay: ToolOverlay): void {
+export function drawLoupe(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  pr: number,
+  overlay: Extract<ToolOverlay, { kind: "loupe" }>,
+): void {
   const outer = OUTER * pr;
   const inner = INNER * pr;
   const half = (from: number, to: number, color: string): void => {

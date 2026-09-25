@@ -7,6 +7,7 @@
  *   opens a slider popover (in the shell's popover host) with a typed field.
  * - toggle: compact pill button (`aria-pressed`).
  * - select: label + `<select>`.
+ * - button: command pill (`set(key, true)` performs it; dim while `get(key) === false`).
  *
  * Controls write through `ToolOptions.set` (which clamps/snaps) and call
  * `changed()`; `refresh()` re-reads values (after shortcuts etc.).
@@ -20,7 +21,7 @@ import {
   sliderToDisplay,
   toDisplay,
 } from "../tools/options";
-import type { NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
+import type { ButtonOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
 import type { PopoverHandle, PopoverHost } from "./popover";
 import { scrubValue } from "./scrub";
 
@@ -58,6 +59,8 @@ export function createControl(desc: OptionDescriptor, ctx: ControlContext): Opti
       return toggleControl(desc, ctx);
     case "select":
       return selectControl(desc, ctx);
+    case "button":
+      return buttonControl(desc, ctx);
   }
 }
 
@@ -214,6 +217,23 @@ function toggleControl(desc: ToggleOption, ctx: ControlContext): OptionControl {
     element.classList.toggle("cps-active", on);
     element.setAttribute("aria-pressed", String(on));
     element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
+  };
+  refresh();
+  return { element, refresh };
+}
+
+function buttonControl(desc: ButtonOption, ctx: ControlContext): OptionControl {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "cps-toggle cps-command";
+  element.textContent = desc.label;
+  if (desc.title) element.title = desc.title;
+  element.addEventListener("click", () => {
+    ctx.options.set(desc.key, true);
+    ctx.changed();
+  });
+  const refresh = (): void => {
+    element.classList.toggle("cps-dim", ctx.options.get(desc.key) === false);
   };
   refresh();
   return { element, refresh };

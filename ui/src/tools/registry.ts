@@ -2,11 +2,16 @@
  * Tool registry: the set of tools for one editor session and which is active.
  */
 
+import type { Editor } from "../engine/editor";
 import { Emitter } from "../engine/emitter";
 import { createBrushTool } from "./brush";
 import { createEraserTool } from "./eraser";
 import { createEyedropperTool } from "./eyedropper";
 import { createFillTool } from "./fill";
+import { createLassoTool } from "./lasso";
+import { createMagicWandTool } from "./magicWand";
+import { MARQUEE_GROUP, createMarqueeTools } from "./marquee";
+import { createMoveTool } from "./move";
 import { SHAPE_GROUP, createShapeTools } from "./shapeTools";
 import { ToolGroupState } from "./toolGroups";
 import type { ToolGroupSpec } from "./toolGroups";
@@ -63,6 +68,11 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
+  /** Rail tools (tools with `rail !== false`), in registration order. */
+  railTools(): Tool[] {
+    return [...this.tools.values()].filter((t) => t.rail !== false);
+  }
+
   /**
    * Tool by id.
    * @param id - Tool id.
@@ -79,6 +89,7 @@ export class ToolRegistry {
    */
   byShortcut(key: string): Tool | undefined {
     for (const tool of this.tools.values()) {
+      if (tool.rail === false) continue;
       if (tool.shortcut !== key) continue;
       // Group keys pick the group's last-used tool.
       const group = this.groups.groupOf(tool.id);
@@ -129,14 +140,25 @@ export class ToolRegistry {
 }
 
 /**
- * The M1 tool set: brush and eraser.
+ * The session tool set (brush first = default active).
+ * @param editor - Session editor (the Move tool's options read its placement).
  * @returns New registry.
  */
-export function createDefaultTools(): ToolRegistry {
+export function createDefaultTools(editor: Editor): ToolRegistry {
   const eyedropper = createEyedropperTool();
   const registry = new ToolRegistry(
-    [createBrushTool(), createEraserTool(), createFillTool(), eyedropper, ...createShapeTools()],
-    [SHAPE_GROUP],
+    [
+      createBrushTool(),
+      createEraserTool(),
+      createFillTool(),
+      eyedropper,
+      ...createShapeTools(),
+      createMoveTool(editor),
+      ...createMarqueeTools(),
+      createLassoTool(),
+      createMagicWandTool(),
+    ],
+    [SHAPE_GROUP, MARQUEE_GROUP],
   );
   registry.setAltTool(eyedropper.temporary);
   return registry;

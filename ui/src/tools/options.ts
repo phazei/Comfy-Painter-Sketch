@@ -1,6 +1,6 @@
 /**
  * Declarative tool options: each tool lists option descriptors (number,
- * toggle, select) and the options bar renders them generically -- no
+ * toggle, select, command button) and the options bar renders them generically -- no
  * per-tool UI code. Numbers are described in DISPLAY units (e.g. hardness
  * 0..100 %) with a `scale` to the stored value (0..1). Pure helpers here do
  * clamping, step snapping, formatting and the slider curve.
@@ -57,8 +57,17 @@ export interface SelectOption extends BaseOption {
   choices: ReadonlyArray<{ value: string; label: string }>;
 }
 
+/**
+ * Command button (e.g. Move's "Reset position"). Clicking calls
+ * `ToolOptions.set(key, true)`; the tool performs the action there. The
+ * button is dimmed while `get(key) === false` (nothing to do).
+ */
+export interface ButtonOption extends BaseOption {
+  kind: "button";
+}
+
 /** Any option descriptor. */
-export type OptionDescriptor = NumberOption | ToggleOption | SelectOption;
+export type OptionDescriptor = NumberOption | ToggleOption | SelectOption | ButtonOption;
 
 /**
  * Descriptors sharing `group === id` shown behind one icon button (which
@@ -200,6 +209,7 @@ export function coerceOption(desc: OptionDescriptor, value: OptionValue): Option
     case "number":
       return typeof value === "number" ? fromDisplay(desc, value * (desc.scale ?? 1)) : undefined;
     case "toggle":
+    case "button":
       return typeof value === "boolean" ? value : undefined;
     case "select":
       return typeof value === "string" && desc.choices.some((c) => c.value === value) ? value : undefined;
