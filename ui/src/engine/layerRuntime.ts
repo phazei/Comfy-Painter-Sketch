@@ -73,6 +73,21 @@ export class LayerRuntimeTable {
   }
 
   /**
+   * The paint bounds changed size: a layer with content keeps its pixels at
+   * the same document positions, but its saved file (sized to the old
+   * bounds) no longer matches the manifest's `bounds`, so it must upload
+   * again. Dirty + next version (an in-flight upload of the old size can't
+   * mark it clean); the pixel revision is unchanged.
+   * @param layerId - Layer id.
+   */
+  resized(layerId: string): void {
+    const rt = this.entries.get(layerId);
+    if (!rt?.hasContent) return;
+    rt.dirty = true;
+    rt.version++;
+  }
+
+  /**
    * Committed pixels of a layer changed without an edit (restore, cancel):
    * only invalidates caches keyed by the revision.
    * @param layerId - Layer id.

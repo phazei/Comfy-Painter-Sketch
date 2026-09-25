@@ -13,6 +13,9 @@
  * - `layerOps.ts`    -- layer list commands (exposed as {@link Editor.layerOps})
  * - `pixelOps.ts`    -- bucket fill + eyedropper sampling ({@link Editor.pixelOps})
  * - `editorMaskOps.ts` -- Quick Mask / paint target delegation
+ * - `moveOps.ts`     -- layer Move tool ({@link Editor.layerMove})
+ * - `textOps.ts`     -- text layers ({@link Editor.text}; `textLayer.ts`,
+ *   `textRender.ts`, rasterize gate `rasterize.ts`)
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -40,6 +43,7 @@ import { LayerDisplay } from "./layerDisplay";
 import { LayerOps } from "./layerOps";
 import type { LayerStore } from "./layerStore";
 import { EditorMaskOps } from "./editorMaskOps";
+import { LayerMoveOps } from "./moveOps";
 import { PaintOps } from "./paintOps";
 import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
@@ -47,6 +51,7 @@ import { SelectionOps } from "./selectionOps";
 import type { ShapeSpec } from "./shapes";
 import { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
+import { TextOps } from "./textOps";
 import type { ViewState } from "./view";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
@@ -73,8 +78,12 @@ export class Editor {
   readonly pixelOps: PixelOps;
   /** Move-tool placement of the whole drawing (not undoable). */
   readonly placement: PlacementOps;
+  /** Layer Move tool (V): move the active layer's content (undoable). */
+  readonly layerMove: LayerMoveOps;
   /** Selection (session state, undoable) and its pixel commands. */
   readonly selection: SelectionOps;
+  /** Text tool: create / edit / commit text layers (M6b). */
+  readonly text: TextOps;
 
   private readonly s: EditorState;
   private readonly frames: FrameOps;
@@ -101,8 +110,10 @@ export class Editor {
     this.layerOps = new LayerOps(this.s);
     this.pixelOps = new PixelOps(this.s);
     this.placement = new PlacementOps(this.s);
+    this.layerMove = new LayerMoveOps(this.s);
     this.selection = new SelectionOps(this.s);
     this.maskOps = new EditorMaskOps(this.s, this.paint);
+    this.text = new TextOps(this.s, this.layerOps);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -147,13 +158,7 @@ export class Editor {
    * warning: it will not be in the MASK output).
    * @returns `true` if a hidden-but-painted mask exists.
    */
-  hiddenMaskHasContent(): boolean {
-    for (const layer of this.s.doc.layers) {
-      if (layer.kind !== "mask" || layer.visible) continue;
-      if (this.s.runtime.get(layer.id)?.hasContent) return true;
-    }
-    return false;
-  }
+  hiddenMaskHasContent(): boolean { return this.maskOps.hiddenMaskHasContent(); }
 
   /** Background drawn under the paint. */
   get background(): FrameBackground {
@@ -351,11 +356,11 @@ export class Editor {
 
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
-  /** Undo the last operation. */
-  undo(): void { this.paint.undo(); }
+  /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
+  undo(): void { if (!this.text.editing || this.text.commit()) this.paint.undo(); }
 
-  /** Redo the last undone operation. */
-  redo(): void { this.paint.redo(); }
+  /** Redo the last undone operation (an open text edit is committed first). */
+  redo(): void { this.text.commit(); this.paint.redo(); }
 
   // ── Cloning / teardown ──────────────────────────────────────────────────
 

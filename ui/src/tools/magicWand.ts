@@ -3,7 +3,7 @@
  * matching the colour under the pointer -- the paint bucket's flood fill and
  * sampling (`Editor.pixelOps.wandSelection`, `engine/wand.ts`) turned into
  * a selection. Options mirror the bucket (Photoshop defaults: tolerance 32,
- * contiguous, anti-alias, all layers). The modifiers at pointer-down pick
+ * contiguous, anti-alias; sample defaults to the background). The modifiers at pointer-down pick
  * the mode (`selectionModifiers.ts`: Shift add, Alt subtract, Shift+Alt
  * intersect); Alt is never the eyedropper. One `selection` history entry.
  */
@@ -40,7 +40,8 @@ export class MagicWandTool implements Tool {
   readonly label = "Magic wand";
   readonly shortcut = "w";
   readonly icon = "magicWand";
-  readonly values: WandToolOptions = { tolerance: 32, contiguous: true, antiAlias: true, sample: "all" };
+  /** Default sample: the background (select regions of the input image). */
+  readonly values: WandToolOptions = { tolerance: 32, contiguous: true, antiAlias: true, sample: "background" };
   readonly options = new OptionSet(DESCRIPTORS, this.values);
   readonly combinesSelection = true;
 

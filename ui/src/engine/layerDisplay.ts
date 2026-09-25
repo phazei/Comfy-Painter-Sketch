@@ -2,10 +2,12 @@
  * What the compositor draws each frame: visible paint layers (with the live
  * stroke preview for the layer being painted) and visible mask layers as
  * cached tints ({@link MaskTint}) that re-tint only the region the stroke
- * dirtied since the last frame.
+ * dirtied since the last frame. A Move-tool drag shows its layer offset
+ * (`EditorState.movePreview`) without touching pixels.
  */
 
 import { maskDisplayColor } from "../document/masks";
+import type { Point } from "../geometry/rect";
 import type { CompositeLayer, MaskOverlay } from "./compositor";
 import type { EditorState } from "./editorState";
 import { MaskTint } from "./maskTint";
@@ -32,9 +34,16 @@ export class LayerDisplay {
       if (!layer.visible || layer.kind === "mask") continue;
       const surface = s.store.ensure(layer.id);
       const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
-      out.push({ source, opacity: layer.opacity });
+      const offset = this.moveOffset(layer.id);
+      out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
     }
     return out;
+  }
+
+  /** Move-tool drag offset of a layer (document px), or `undefined`. */
+  private moveOffset(layerId: string): Point | undefined {
+    const p = this.s.movePreview;
+    return p && p.layerId === layerId && (p.dx !== 0 || p.dy !== 0) ? { x: p.dx, y: p.dy } : undefined;
   }
 
   /**
@@ -59,7 +68,8 @@ export class LayerDisplay {
       const invert = layer.invert === true;
       const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
       const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
-      out.push({ tint: canvas, color, opacity: layer.opacity, invert });
+      const offset = this.moveOffset(layer.id);
+      out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...(offset ? { offset } : {}) });
     }
     return out;
   }

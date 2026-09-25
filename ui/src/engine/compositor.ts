@@ -12,7 +12,7 @@
  */
 
 import { containsRect, frameRect } from "../geometry/rect";
-import type { Rect, Size } from "../geometry/rect";
+import type { Point, Rect, Size } from "../geometry/rect";
 import { docRectToImage, layerPlacement } from "./frameMap";
 import type { FrameMap } from "./frameMap";
 import { docRectToStage } from "./viewport";
@@ -27,6 +27,8 @@ export type FrameBackground = { kind: "image"; image: CanvasImageSource } | { ki
 export interface CompositeLayer {
   source: CanvasImageSource;
   opacity: number;
+  /** Move-tool drag preview: draw shifted by this many document px. */
+  offset?: Point;
 }
 
 /** One mask layer's overlay (already tinted, see `maskTint.ts`). */
@@ -39,6 +41,8 @@ export interface MaskOverlay {
   opacity: number;
   /** Per-layer invert: the image area outside the layer's bounds is fully tinted. */
   invert: boolean;
+  /** Move-tool drag preview: draw shifted by this many document px. */
+  offset?: Point;
 }
 
 /** Everything needed for one frame. */
@@ -119,17 +123,22 @@ export function composite(input: CompositeInput): void {
   const placed = layerPlacement(map, bounds);
   const resampled = placed.width !== bounds.width || placed.height !== bounds.height;
   if (resampled) ctx.imageSmoothingEnabled = true;
+  // A Move-tool drag previews a layer at shifted bounds (where it lands on commit).
+  const at = (offset: Point | undefined): Rect =>
+    offset ? layerPlacement(map, { ...bounds, x: bounds.x + offset.x, y: bounds.y + offset.y }) : placed;
   for (const layer of input.layers) {
     if (layer.opacity <= 0) continue;
     ctx.globalAlpha = layer.opacity;
-    ctx.drawImage(layer.source, placed.x, placed.y, placed.width, placed.height);
+    const r = at(layer.offset);
+    ctx.drawImage(layer.source, r.x, r.y, r.width, r.height);
   }
   // Mask overlays: same placement; an inverted mask is also fully tinted over
   // the image outside the placed layer (Python: 0 there before invert).
   for (const mask of input.masks) {
     if (mask.opacity <= 0) continue;
     ctx.globalAlpha = mask.opacity;
-    ctx.drawImage(mask.tint, placed.x, placed.y, placed.width, placed.height);
+    const r = at(mask.offset);
+    ctx.drawImage(mask.tint, r.x, r.y, r.width, r.height);
     if (mask.invert) {
       // (image rect) minus (placed rect); clip first because the placed rect
       // may stick out of the image on one axis.
@@ -140,7 +149,7 @@ export function composite(input: CompositeInput): void {
       ctx.fillStyle = mask.color;
       ctx.beginPath();
       ctx.rect(0, 0, imageSize.width, imageSize.height);
-      ctx.rect(placed.x, placed.y, placed.width, placed.height);
+      ctx.rect(r.x, r.y, r.width, r.height);
       ctx.fill("evenodd");
       ctx.restore();
     }

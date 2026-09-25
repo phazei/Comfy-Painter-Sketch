@@ -9,8 +9,10 @@ Covers:
   - composite_paint_layers: passthrough, single layer, hidden skipped, opacity
   - combine_mask_layers: no masks=zeros, single mask, per-layer invert, node invert
   - run_composite: red paint layer over grey; frame-mismatch scale+center
+  - text layers (with textData) composite exactly like paint layers
 """
 
+import json
 import sys
 import os
 import unittest
@@ -21,7 +23,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from nodes.document import Bounds, Document, Frame, Layer
+from nodes.document import Bounds, Document, Frame, Layer, parse_document
 from nodes.composite import (
     _place_layer, _scale_factor,
     composite_paint_layers, combine_mask_layers, run_composite,
@@ -159,6 +161,39 @@ class TestCompositePaintLayers(unittest.TestCase):
         # All batch items identical
         self.assertTrue(torch.allclose(result[0], result[1]))
         self.assertTrue(torch.allclose(result[0], result[2]))
+
+
+class TestTextLayer(unittest.TestCase):
+    """Text layers (SPEC M6b) are rasterized by the frontend: Python composites them like paint."""
+
+    def _manifest(self, kind):
+        return json.dumps({
+            "version": 1, "docId": "abcd1234",
+            "frame": {"width": 10, "height": 10},
+            "bounds": {"x": 0, "y": 0, "width": 10, "height": 10},
+            "regions": [], "activeLayerId": "t1",
+            "layers": [{
+                "id": "t1", "name": "Hello", "kind": kind, "visible": True, "locked": False,
+                "opacity": 0.5, "blendMode": "normal", "file": "painter-sketch/ps-abcd1234-1.webp [input]",
+                "textData": {"text": "Hello", "x": 1, "y": 8, "font": "Arial", "size": 8,
+                             "color": "#ff0000", "bold": False, "italic": False, "align": "left"},
+            }],
+        })
+
+    def test_text_layer_composites_like_paint(self):
+        base = torch.full((1, 10, 10, 3), 0.5)
+        rgba = _rgba(10, 10, r=1.0, a=1.0)
+        results = []
+        for kind in ("text", "paint"):
+            doc = parse_document(self._manifest(kind))
+            self.assertIsNotNone(doc)
+            self.assertEqual(doc.layers[0].kind, kind)
+            image, mask = run_composite(base, doc, {"t1": rgba}, invert_mask=False)
+            results.append(image)
+            self.assertAlmostEqual(mask.sum().item(), 0.0)  # never part of MASK
+        self.assertTrue(torch.allclose(results[0], results[1]))
+        # opacity 0.5: 1.0 * 0.5 + 0.5 * 0.5
+        self.assertAlmostEqual(results[0][0, 5, 5, 0].item(), 0.75, places=4)
 
 
 class TestCombineMaskLayers(unittest.TestCase):

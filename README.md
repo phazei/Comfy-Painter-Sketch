@@ -4,17 +4,18 @@ A paint node for ComfyUI. Connect an image, paint on it and draw masks right
 inside the node, and get `IMAGE` + `MASK` out. A fullscreen button opens the
 same editor bigger when you need room.
 
-> **Status: early development.** Nothing is usable yet. See [SPEC.md](SPEC.md)
-> for the plan and progress.
+> **Status: pre-release.** All v1 features are implemented; final polish is in
+> progress. See [SPEC.md](SPEC.md) for details and progress.
 
-## Features (planned for v1)
+## Features
 
 - Paint directly in the node; fullscreen when you want it
 - Input image is a live background: re-roll upstream and your paint stays
 - Brush and eraser with size, hardness, opacity, flow, spacing and pen pressure
 - Paint bucket, eyedropper, line / arrow, rectangle, ellipse, text
-- Selections: marquee, lasso, magic wand
-- Layers: add, reorder, hide, lock, opacity
+- Selections: marquee, lasso, magic wand; painting is clipped to the selection
+- Layers: add, reorder, hide, lock, opacity; Move layer tool (Ctrl = pick layer under cursor)
+- Move drawing: realign all paint to a similar but offset image, non-destructively
 - Mask layer with Quick Mask-style editing (`Q`), red overlay, invert option
 - Batch in, batch out: the same paint and mask apply to every image
 - Undo / redo (buttons and shortcuts)

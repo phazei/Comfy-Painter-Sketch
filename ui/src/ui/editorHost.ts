@@ -8,6 +8,10 @@
  * Later stages plug in through {@link EditorHost.shell} (side panel, popover
  * host, `pick-color` and `fullscreen` events, root element).
  *
+ * Rail/options-bar sync (tool changes, mask state, history) is delegated to
+ * {@link HostSync} (`hostSync.ts`), which owns those five sub-components
+ * (rail, swatches, options bar, selection actions, layers panel).
+ *
  * M3.2: handles `pick-color` from the shell by opening the custom
  * {@link openColorPicker} popover; sets `request.handled = true` to suppress
  * the native `<input type=color>` fallback in `shell.ts`.
@@ -18,22 +22,17 @@
  * leaving restores the panel state and re-fits if the view was fitting.
  */
 
-import { DEFAULT_MASK_COLOR } from "../document/create";
-import { maskDisplayColor } from "../document/masks";
 import type { EditorSession } from "../widget/sessions";
 import { openColorPicker } from "./colorPicker";
 import { FullscreenMount } from "./fullscreen";
+import { HostSync } from "./hostSync";
 import { KeyboardScope } from "./keyboard";
-import { LayersPanel } from "./layersPanel";
-import { OptionsBar } from "./optionsBar";
-import { SelectionActions } from "./selectionActions";
 import { EditorShell } from "./shell";
 import type { SidePanel } from "./sidePanel";
 import { handleShortcut } from "./shortcuts";
 import { StageInput } from "./stageInput";
 import { StageView } from "./stageView";
-import { SwatchWidget } from "./swatches";
-import { ToolRail } from "./toolRail";
+import { TextOverlay } from "./textOverlay";
 
 /** Callbacks from the host to its owner. */
 export interface EditorHostEvents {
@@ -79,12 +78,10 @@ export class EditorHost {
   readonly input: StageInput;
 
   private readonly view: StageView;
-  private readonly rail: ToolRail;
-  private readonly optionsBar: OptionsBar;
-  private readonly swatches: SwatchWidget;
-  private readonly layers: LayersPanel;
-  /** "Selection to mask" (options bar, while a selection exists). */
-  private readonly selectionActions = new SelectionActions();
+  /** Rail/options-bar sync layer (owns rail, swatches, options bar, selection actions, layers). */
+  private readonly sync: HostSync;
+  /** Text tool's in-canvas `<textarea>` + rasterize prompt. */
+  private readonly textOverlay: TextOverlay;
   private readonly keyboard: KeyboardScope;
   private readonly resizeObserver: ResizeObserver;
   private readonly fullscreen: FullscreenMount;
@@ -94,8 +91,6 @@ export class EditorHost {
   private unbind: Array<() => void> = [];
   private wasVisible = false;
   private disposed = false;
-  /** Last rail-tool id before switching to Move drawing (restored on toggle-off). */
-  private prevRailToolId: string | null = null;
 
   /**
    * @param events - Owner callbacks.
@@ -115,46 +110,17 @@ export class EditorHost {
     this.element = this.fullscreen.container;
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
-    this.rail = new ToolRail(this.shell.rail.tools, {
-      selectTool: (id) => {
-        this.input.cancel();
-        this.session?.tools.setActive(id);
-      },
-      toggleQuickMask: () => {
-        this.input.cancel();
-        this.session?.editor.togglePaintTarget();
-      },
-      undo: () => this.session?.editor.undo(),
-      redo: () => this.session?.editor.redo(),
-      fit: () => {
-        this.session?.editor.view.fit();
-        this.view.requestRender();
-      },
-      clear: () => this.confirmClear(),
-      fullscreen: () => this.shell.events.emit("fullscreen", undefined),
-    }, this.shell.popoverHost);
-    this.swatches = new SwatchWidget({
-      pick: (slot, anchor) => {
-        const colors = this.session?.editor.colors;
-        if (colors) this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
-      },
-      swap: () => this.session?.editor.colors.swap(),
-      reset: () => this.session?.editor.colors.reset(),
-    });
-    this.shell.rail.swatchSlot.appendChild(this.swatches.element);
-    this.optionsBar = new OptionsBar(this.shell.bar, this.shell.popoverHost, () => this.optionsChanged());
-    this.shell.bar.leading.append(this.selectionActions.element);
-
-    // ── M3.3: layers panel in the side panel ──────────────────────────────
-    this.layers = new LayersPanel({
-      sidePanel: this.shell.sidePanel,
-      popovers: this.shell.popoverHost,
-      pickColor: (anchor, options) => openColorPicker(this.shell.popoverHost, anchor, options),
-      beforeEdit: () => this.input.cancel(),
-      releaseFocus: () => this.keyboard.reclaimFocus(),
-      toggleMoveDrawing: () => this.toggleMoveDrawing(),
-    });
-    this.shell.sidePanel.content.replaceChildren(this.layers.element);
+    // ── Rail / options-bar sync (owns layers panel too) ───────────────────
+    // `releaseFocus` closes over `this.keyboard` which is assigned below;
+    // it is only ever called after construction completes.
+    this.sync = new HostSync(
+      () => this.session,
+      () => this.optionsChanged(),
+      () => this.input.cancel(),
+      () => this.keyboard.reclaimFocus(),
+      this.shell,
+    );
+    this.shell.sidePanel.content.replaceChildren(this.sync.layers.element);
 
     // ── M3.2: wire the colour picker ──────────────────────────────────────
     this.shell.events.on("pick-color", (request) => {
@@ -180,6 +146,7 @@ export class EditorHost {
       },
       setAlt: (down) => this.setAlt(down),
       setShift: (down) => this.setShift(down),
+      setCtrl: (down) => this.setCtrl(down),
       viewChanged: () => this.view.requestRender(),
     });
     this.keyboard = new KeyboardScope(this.root, {
@@ -202,6 +169,7 @@ export class EditorHost {
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
       onAltChange: (down) => this.setAlt(down),
       onShiftChange: (down) => this.setShift(down),
+      onCtrlChange: (down) => this.setCtrl(down),
       onSave: () => this.events.onSave?.(),
       onDeactivate: () => this.events.onDisengage?.(),
     });
@@ -209,6 +177,8 @@ export class EditorHost {
     // ── M3.4: fullscreen (rail button and `F` emit this) ─────────────────
     this.shell.events.on("fullscreen", () => this.fullscreen.toggle());
 
+    this.textOverlay = new TextOverlay(this.stage, this.root, () => this.sync.optionsBar.refresh());
+    this.view.onRendered = () => this.textOverlay.sync();
 
     this.resizeObserver = new ResizeObserver(() => this.handleResize());
     this.resizeObserver.observe(this.stage);
@@ -232,27 +202,28 @@ export class EditorHost {
     for (const off of this.unbind) off();
     this.unbind = [];
     this.session = session;
-    this.layers.setEditor(session?.editor ?? null);
-    this.selectionActions.setEditor(session?.editor ?? null);
+    this.sync.bindEditor(session?.editor ?? null);
+    this.textOverlay.bind(session);
     if (session) {
       const { editor, tools } = session;
       this.unbind.push(
         editor.events.on("render", () => this.view.requestRender()),
-        editor.events.on("history", () => this.syncHistory()),
+        editor.events.on("history", () => this.sync.syncHistory()),
         editor.events.on("note", (text) => this.view.showNote(text)),
-        editor.events.on("mask", () => this.syncMask()),
-        editor.events.on("change", () => this.syncMask()),
+        editor.events.on("mask", () => this.sync.syncMask()),
+        editor.events.on("change", () => this.sync.syncMask()),
         // Move tool: live X / Y / Scale fields.
-        editor.events.on("placement", () => this.optionsBar.refresh()),
+        editor.events.on("placement", () => this.sync.optionsBar.refresh()),
         // Selection: marching ants + "To mask" button.
-        editor.events.on("selection", () => (this.selectionActions.sync(), this.view.requestOverlay())),
-        editor.colors.events.on("change", (colors) => this.swatches.setColors(colors)),
-        tools.events.on("change", () => this.syncTools()),
+        editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.view.requestOverlay())),
+        editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),
+        // Tool switch: chrome (rail, options, Move drawing toggle) + stage cursor/ring now.
+        tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay())),
       );
-      this.swatches.setColors(editor.colors.current);
-      this.syncTools();
-      this.syncMask();
-      this.syncHistory();
+      this.sync.swatches.setColors(editor.colors.current);
+      this.sync.syncTools();
+      this.sync.syncMask();
+      this.sync.syncHistory();
       this.view.syncView();
     }
     this.view.requestRender();
@@ -308,101 +279,11 @@ export class EditorHost {
     this.resizeObserver.disconnect();
     this.input.dispose();
     this.keyboard.dispose();
-    this.layers.dispose();
+    this.sync.dispose();
+    this.textOverlay.dispose();
     this.view.dispose();
     this.shell.dispose();
     this.root.remove();
-  }
-
-  // ── Sync ────────────────────────────────────────────────────────────────
-  private syncTools(): void {
-    const session = this.session;
-    if (!session) return;
-    // Clear prevRailToolId when the user selects a rail tool directly.
-    if (session.tools.active.rail !== false && session.tools.active.id !== "move") {
-      this.prevRailToolId = null;
-    }
-    this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
-    this.optionsBar.bind(session.tools.active.options);
-    this.syncMoveMode();
-    this.view.syncCursor();
-    this.view.requestOverlay();
-  }
-
-  /** Sync the "Move drawing" button to the current active tool. */
-  private syncMoveMode(): void {
-    const active = this.session?.tools.active;
-    this.layers.setMoveDrawing(active?.id === "move");
-  }
-
-  /**
-   * Toggle "Move drawing" mode: activate the Move tool (saving the previous
-   * rail tool) or deactivate it (returning to the previous rail tool).
-   */
-  private toggleMoveDrawing(): void {
-    const session = this.session;
-    if (!session) return;
-    const { tools } = session;
-    this.input.cancel();
-    if (tools.active.id === "move") {
-      // Deactivate: return to the previous rail tool (or brush as fallback).
-      const prev = (this.prevRailToolId && tools.get(this.prevRailToolId)) ?? tools.railTools()[0];
-      if (prev) {
-        this.prevRailToolId = null;
-        tools.setActive(prev.id);
-      }
-    } else {
-      // Activate: remember the current rail tool, then switch to Move.
-      if (tools.active.rail !== false) this.prevRailToolId = tools.active.id;
-      tools.setActive("move");
-    }
-  }
-
-  /** Quick Mask button and "Mask" badge (the eye lives in the layers panel). */
-  private syncMask(): void {
-    const editor = this.session?.editor;
-    if (!editor) return;
-    const mask = editor.maskLayer;
-    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
-    const targeting = editor.paintTarget === "mask";
-    this.rail.setQuickMask(targeting, color);
-    this.root.classList.toggle("cps-quickmask", targeting);
-    this.optionsBar.setMask({ targeting, color });
-  }
-
-  private syncHistory(): void {
-    const editor = this.session?.editor;
-    this.rail.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
-  }
-
-  /** Alt held (keyboard or pointer modifier): the cursor follows `ToolRegistry.resolve`. */
-  private setAlt(down: boolean): void {
-    if (this.view.altDown === down) return;
-    this.view.altDown = down;
-    this.view.syncCursor();
-    this.view.requestOverlay();
-  }
-
-  /** Shift held (keyboard or pointer modifier): selection-mode cursor badge. */
-  private setShift(down: boolean): void {
-    if (this.view.shiftDown === down) return;
-    this.view.shiftDown = down;
-    this.view.syncCursor();
-  }
-
-  private optionsChanged(): void {
-    this.optionsBar.refresh();
-    this.session?.tools.notifyOptions();
-    this.view.requestOverlay();
-  }
-
-  /** Clear button: confirm, then one undoable Clear (SPEC Behavior Notes). */
-  private confirmClear(): void {
-    const editor = this.session?.editor;
-    if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint? This can be undone.")) return;
-    this.input.cancel();
-    editor.clear();
   }
 
   // ── Fullscreen ──────────────────────────────────────────────────────────
@@ -411,7 +292,7 @@ export class EditorHost {
   private fullscreenChanged(open: boolean): void {
     const panel = this.shell.sidePanel;
     const view = this.session?.editor.view;
-    this.rail.setFullscreen(open);
+    this.sync.rail.setFullscreen(open);
     this.root.classList.toggle("cps-is-fullscreen", open);
     this.keyboard.setCaptureScope(open ? this.fullscreen.overlayElement : null);
     if (open) {
@@ -432,7 +313,6 @@ export class EditorHost {
 
   // ── Sizing ──────────────────────────────────────────────────────────────
 
-
   private handleResize(): void {
     const visible = this.isVisible();
     if (visible && !this.wasVisible) this.events.onBecameVisible?.();
@@ -441,5 +321,37 @@ export class EditorHost {
     // paint, so redraw now instead of showing one blank frame (mounts).
     if (this.view.syncBackingStore()) this.view.renderNow();
     else this.view.requestRender();
+  }
+
+  // ── Modifier keys ────────────────────────────────────────────────────────
+
+  /** Alt held (keyboard or pointer modifier): the cursor follows `ToolRegistry.resolve`. */
+  private setAlt(down: boolean): void {
+    if (this.view.altDown === down) return;
+    this.view.altDown = down;
+    this.view.syncCursor();
+    this.view.requestOverlay();
+  }
+
+  /** Ctrl/Cmd held (keyboard or pointer modifier): the cursor follows `ToolRegistry.resolve` (temporary Move). */
+  private setCtrl(down: boolean): void {
+    if (this.view.ctrlDown === down) return;
+    this.view.ctrlDown = down;
+    this.view.syncCursor();
+    this.view.requestOverlay();
+  }
+
+  /** Shift held (keyboard or pointer modifier): selection-mode cursor badge. */
+  private setShift(down: boolean): void {
+    if (this.view.shiftDown === down) return;
+    this.view.shiftDown = down;
+    this.view.syncCursor();
+  }
+
+  // ── Options ─────────────────────────────────────────────────────────────
+
+  private optionsChanged(): void {
+    this.sync.optionsChanged();
+    this.view.requestOverlay();
   }
 }

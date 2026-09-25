@@ -3,6 +3,7 @@
  */
 
 import { isIdentityPlacement } from "./placement";
+import { serializeTextData } from "./textData";
 import type { Layer, PainterDocument } from "./types";
 
 /**
@@ -44,7 +45,7 @@ function serializeLayer(layer: Layer): Record<string, unknown> {
   };
   if (layer.color !== undefined) out["color"] = layer.color;
   if (layer.invert !== undefined) out["invert"] = layer.invert;
-  if (layer.textData !== undefined) out["textData"] = layer.textData;
+  if (layer.kind === "text" && layer.textData !== undefined) out["textData"] = serializeTextData(layer.textData);
   return out;
 }
 

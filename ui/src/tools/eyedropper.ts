@@ -1,8 +1,9 @@
 /**
  * Eyedropper tool (I): click or drag to sample a colour into the foreground;
  * Alt+click with the eyedropper itself samples into the background
- * (Photoshop). Samples the active paint layer or everything visible
- * (background included), as a point or a 3x3 / 5x5 average. A fully
+ * (Photoshop). Samples the active paint layer, everything visible
+ * (background included; the default) or only the background, as a point
+ * or a 3x3 / 5x5 average. A fully
  * transparent sample leaves the colour unchanged. Quick Mask does not
  * matter: it always picks colours.
  *

@@ -50,6 +50,35 @@ describe("HistoryStack", () => {
     expect(h.mergeTarget()?.name).toBe("b");
   });
 
+  it("joins the next accepted entry into the newest one", () => {
+    const combine = (a: ReturnType<typeof entry>, b: ReturnType<typeof entry>) => entry(`${a.name}+${b.name}`, a.bytes + b.bytes);
+    const h = new HistoryStack<ReturnType<typeof entry>>(1000, combine);
+    h.push(entry("a", 1));
+    h.joinNext();
+    h.push(entry("b", 2));
+    h.push(entry("c", 4));
+    expect(h.undo()?.name).toBe("c");
+    expect(h.undo()?.name).toBe("a+b");
+    expect(h.totalBytes).toBe(7);
+    // Undo/redo drop a pending join.
+    h.redo();
+    h.joinNext();
+    h.undo();
+    h.redo();
+    h.push(entry("d", 1));
+    expect(h.undoDepth).toBe(2);
+  });
+
+  it("discards the newest entry without making it redoable", () => {
+    const h = new HistoryStack<ReturnType<typeof entry>>(1000);
+    h.push(entry("a", 3));
+    h.push(entry("b", 5));
+    expect(h.discardNewest()?.name).toBe("b");
+    expect(h.canRedo).toBe(false);
+    expect(h.totalBytes).toBe(3);
+    expect(h.mergeTarget()?.name).toBe("a");
+  });
+
   it("counts redo entries toward the cap", () => {
     const h = new HistoryStack<ReturnType<typeof entry>>(100);
     h.push(entry("a", 40));

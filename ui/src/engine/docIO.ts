@@ -4,7 +4,9 @@
  * `widget/persistence.ts` through the `Editor` facade.
  */
 
+import type { Size } from "../geometry/rect";
 import type { EditorState } from "./editorState";
+import { renderTextLayer } from "./textLayer";
 
 /**
  * Restore/upload bookkeeping over a shared {@link EditorState}.
@@ -39,15 +41,30 @@ export class DocIO {
   /**
    * Draw a restored layer image (WebP or PNG) into a layer (not an undo
    * step, not dirty).
+   *
+   * A file whose size differs from `bounds` was saved before a bounds
+   * growth, so its origin is unknown. A text layer is then re-rendered from
+   * its `textData` (the source of truth; otherwise its first move would
+   * jump by the growth) and marked dirty so a matching file is uploaded.
    * @param layerId - Layer id.
    * @param image - Decoded image (sized to `bounds`).
    */
   restoreLayerPixels(layerId: string, image: CanvasImageSource): void {
-    const surface = this.s.store.ensure(layerId);
+    const s = this.s;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    const bounds = s.store.bounds;
+    const size = imageSize(image);
+    if (layer?.kind === "text" && layer.textData && (size.width !== bounds.width || size.height !== bounds.height)) {
+      renderTextLayer(s, layer);
+      s.runtime.touch(layerId);
+      s.events.emit("render", undefined);
+      return;
+    }
+    const surface = s.store.ensure(layerId);
     surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
     surface.ctx.drawImage(image, 0, 0);
-    this.s.runtime.bump(layerId);
-    this.s.events.emit("render", undefined);
+    s.runtime.bump(layerId);
+    s.events.emit("render", undefined);
   }
 
   /**
@@ -64,4 +81,16 @@ export class DocIO {
     if (rt.version === version) rt.dirty = false;
     this.s.events.emit("change", undefined);
   }
+}
+
+/** Pixel size of a decoded image (`naturalWidth` for `<img>`, else `width`). */
+function imageSize(image: CanvasImageSource): Size {
+  if (typeof HTMLImageElement !== "undefined" && image instanceof HTMLImageElement) {
+    return { width: image.naturalWidth, height: image.naturalHeight };
+  }
+  const sized = image as { width?: unknown; height?: unknown };
+  return {
+    width: typeof sized.width === "number" ? sized.width : 0,
+    height: typeof sized.height === "number" ? sized.height : 0,
+  };
 }

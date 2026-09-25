@@ -16,6 +16,7 @@ import { applyLayerChange, isPaintLike } from "../document/layerList";
 import type { LayerChange } from "../document/layerList";
 import type { LayerPixels, LayersEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { renderTextLayer } from "./textLayer";
 
 /** Fixed history cost of a structural entry (metadata), bytes. */
 export const LAYERS_ENTRY_BASE_BYTES = 256;
@@ -84,8 +85,17 @@ export function applyLayersEntry(s: EditorState, entry: LayersEntry, forward: bo
     if (!applyLayerChange(s.doc.layers, change, forward)) continue;
     if (change.op !== "insert" && change.op !== "remove") continue;
     const appeared = (change.op === "insert") === forward;
-    if (appeared) installLayerPixels(s, change.layer.id, change.pixels);
-    else s.runtime.remove(change.layer.id);
+    if (appeared) {
+      installLayerPixels(s, change.layer.id, change.pixels);
+      // A text layer recorded without pixels (created by the text tool) renders from its data.
+      const layer = s.doc.layers.find((l) => l.id === change.layer.id);
+      if (!change.pixels && layer?.kind === "text") {
+        renderTextLayer(s, layer);
+        s.runtime.touch(layer.id);
+      }
+    } else {
+      s.runtime.remove(change.layer.id);
+    }
   }
   const active = forward ? entry.activeAfter : entry.activeBefore;
   if (s.doc.layers.some((l) => l.id === active && isPaintLike(l))) s.doc.activeLayerId = active;

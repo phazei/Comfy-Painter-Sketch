@@ -48,6 +48,7 @@ export class LayerUploader {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private failureNotified = false;
   private disposed = false;
+  private readonly settledListeners = new Set<() => void>();
 
   /**
    * @param editor - Editor whose layers are uploaded.
@@ -56,7 +57,23 @@ export class LayerUploader {
   constructor(
     private readonly editor: Editor,
     private readonly knownFiles: Set<string>,
-  ) {}
+      ) {}
+
+  /** @returns Whether an upload batch is in progress. */
+  get busy(): boolean {
+    return this.running !== null;
+  }
+
+  /**
+   * Listen for the end of each upload batch (success or failure; not after
+   * dispose). Called before the batch's `flush()` promise settles.
+   * @param listener - Callback.
+   * @returns Unsubscribe function.
+   */
+  onSettled(listener: () => void): () => void {
+    this.settledListeners.add(listener);
+    return () => this.settledListeners.delete(listener);
+  }
 
   /**
    * Idle fallback: upload {@link IDLE_UPLOAD_DELAY_MS} after the last call
@@ -93,12 +110,14 @@ export class LayerUploader {
       await this.running;
     } finally {
       this.running = null;
+      if (!this.disposed) for (const listener of [...this.settledListeners]) listener();
     }
   }
 
   /** Stop scheduled uploads. In-flight requests finish but are ignored. */
   dispose(): void {
     this.disposed = true;
+    this.settledListeners.clear();
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = null;
   }

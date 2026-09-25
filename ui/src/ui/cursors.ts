@@ -9,7 +9,7 @@
  *   2. White stroke (~1.75 px) matching the toolbar style.
  * No fills are added; the paths are open strokes just as in the toolbar.
  *
- * The crosshair and the Move tool's `move` are plain CSS keywords
+ * The crosshair, the Move tool's `move` and the text tool's `text` are plain CSS keywords
  * (browser-native, no image needed).
  * Ring cursors (brush/eraser) also keep the plain crosshair; the size ring
  * itself is drawn on the overlay canvas.
@@ -50,7 +50,7 @@ const ICON_COLOR = "#fff";
  * bucket: drip bottom is the end of `c0 1.5-.8 2.5-1.8 2.5` from (21,17)
  *         → (21-1.8, 17+2.5) = (19.2, 19.5) → rounded (19, 20).
  */
-const HOTSPOTS: Readonly<Record<Exclude<CursorIcon, "crosshair" | "move">, readonly [number, number]>> = {
+const HOTSPOTS: Readonly<Record<Exclude<CursorIcon, "crosshair" | "move" | "text">, readonly [number, number]>> = {
   eyedropper: [3, 21],
   bucket: [19, 20],
 };
@@ -74,6 +74,8 @@ export function iconCursor(icon: CursorIcon): string {
   if (icon === "crosshair") return "crosshair";
   // Move tool: the native four-way cursor.
   if (icon === "move") return "move";
+  // Text tool: the native I-beam.
+  if (icon === "text") return "text";
   const cached = cache.get(icon);
   if (cached) return cached;
 

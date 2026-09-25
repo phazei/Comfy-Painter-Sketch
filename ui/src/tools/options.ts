@@ -1,6 +1,7 @@
 /**
  * Declarative tool options: each tool lists option descriptors (number,
- * toggle, select, command button) and the options bar renders them generically -- no
+ * toggle, select, command button, free text with suggestions) and the
+ * options bar renders them generically -- no
  * per-tool UI code. Numbers are described in DISPLAY units (e.g. hardness
  * 0..100 %) with a `scale` to the stored value (0..1). Pure helpers here do
  * clamping, step snapping, formatting and the slider curve.
@@ -66,8 +67,26 @@ export interface ButtonOption extends BaseOption {
   kind: "button";
 }
 
+/**
+ * Free text with suggestions (e.g. the text tool's font): a menu of
+ * `suggestions()` (re-read on refresh, e.g. recent fonts first) plus an
+ * editable {@link TextOption.customLabel} entry that turns the menu into a
+ * text field. Stored values are trimmed, non-empty, at most `maxLength`.
+ */
+export interface TextOption extends BaseOption {
+  kind: "text";
+  /** Menu entries, in display order. */
+  suggestions: () => readonly string[];
+  /** Menu entry that switches to typing, e.g. `"Custom font..."`. */
+  customLabel: string;
+  /** Longest accepted value (default 100). */
+  maxLength?: number;
+  /** Preview each entry in its own value as a font family (font menus). */
+  previewFont?: boolean;
+}
+
 /** Any option descriptor. */
-export type OptionDescriptor = NumberOption | ToggleOption | SelectOption | ButtonOption;
+export type OptionDescriptor = NumberOption | ToggleOption | SelectOption | ButtonOption | TextOption;
 
 /**
  * Descriptors sharing `group === id` shown behind one icon button (which
@@ -213,6 +232,11 @@ export function coerceOption(desc: OptionDescriptor, value: OptionValue): Option
       return typeof value === "boolean" ? value : undefined;
     case "select":
       return typeof value === "string" && desc.choices.some((c) => c.value === value) ? value : undefined;
+    case "text": {
+      if (typeof value !== "string") return undefined;
+      const clean = value.replace(/\s+/g, " ").trim();
+      return clean && clean.length <= (desc.maxLength ?? 100) ? clean : undefined;
+    }
   }
 }
 

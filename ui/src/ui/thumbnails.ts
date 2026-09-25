@@ -1,10 +1,10 @@
 /**
  * Layer thumbnails for the layers panel: small canvases (aspect preserved,
  * checkerboard via CSS behind transparent paint) redrawn only when their
- * cache key -- the layer's pixel revision plus geometry -- changes, and at
- * most once per {@link THUMB_MIN_INTERVAL_MS} (never per pointermove: the
- * revision only moves when a stroke commits, an undo applies or a restore
- * lands).
+ * cache key -- the layer's pixel revision plus geometry plus Move-drawing
+ * placement (x/y/scale) -- changes, and at most once per
+ * {@link THUMB_MIN_INTERVAL_MS} (never per pointermove: the revision only
+ * moves when a stroke commits, an undo applies or a restore lands).
  */
 
 import type { FrameBackground } from "../engine/compositor";

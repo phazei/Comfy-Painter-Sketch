@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { Editor } from "../engine/editor";
 import type { WandRequest } from "../engine/pixelOps";
 import type { Selection, SelectionMode } from "../engine/selection";
+import { createEyedropperTool } from "./eyedropper";
+import { createFillTool, SAMPLE_CHOICES } from "./fill";
 import { createMagicWandTool } from "./magicWand";
 import type { Tool, ToolPointer } from "./types";
 
@@ -34,14 +36,17 @@ describe("magic wand", () => {
     const t = createMagicWandTool();
     expect(t.shortcut).toBe("w");
     expect((t as Tool).altEyedropper).toBeFalsy();
-    expect(t.values).toEqual({ tolerance: 32, contiguous: true, antiAlias: true, sample: "all" });
+    expect(t.values).toEqual({ tolerance: 32, contiguous: true, antiAlias: true, sample: "background" });
+    expect(createFillTool().values.sample).toBe("background");
+    expect(createEyedropperTool().values.sample).toBe("all");
+    expect(SAMPLE_CHOICES.map((c) => c.value)).toEqual(["layer", "all", "background"]);
   });
 
   it("click applies the wand coverage with the modifier mode", () => {
     const t = createMagicWandTool();
     const a = fakeEditor(false);
     t.onPointerDown(a.editor, [at(3.5, 4.5, true)]);
-    expect(a.requests[0]).toEqual({ point: { x: 3.5, y: 4.5 }, tolerance: 32, contiguous: true, antiAlias: true, sample: "all" });
+    expect(a.requests[0]).toEqual({ point: { x: 3.5, y: 4.5 }, tolerance: 32, contiguous: true, antiAlias: true, sample: "background" });
     expect(a.calls).toEqual([{ sel: PICKED, mode: "replace" }]);
 
     const b = fakeEditor(true);

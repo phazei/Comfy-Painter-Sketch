@@ -4,6 +4,8 @@
 
 import { frameRect } from "../geometry/rect";
 import type { Size } from "../geometry/rect";
+import { nameFromText } from "./textData";
+import type { TextData } from "./textData";
 import { DOCUMENT_VERSION } from "./types";
 import type { Layer, PainterDocument } from "./types";
 
@@ -40,6 +42,16 @@ export function createPaintLayer(name: string): Layer {
     blendMode: "normal",
     file: null,
   };
+}
+
+/**
+ * A new, empty, visible text layer (SPEC M6b).
+ *
+ * @param textData - Initial text data (usually empty text at the click point).
+ * @returns Layer with `file: null`, named after its text.
+ */
+export function createTextLayer(textData: TextData): Layer {
+  return { ...createPaintLayer(nameFromText(textData.text)), kind: "text", textData };
 }
 
 /** Default mask display colour (decision 5). */

@@ -45,7 +45,7 @@ export type PaintOptions = {
 };
 
 /** Named stage cursor icon; the CSS definitions live in `ui/cursors.ts`. */
-export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move";
+export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move" | "text";
 
 /**
  * Cursor the stage should show: a brush-size ring (drawn on the overlay, over
@@ -68,6 +68,15 @@ export interface Tool {
    * (Photoshop: brush, bucket, shapes). Honoured by {@link ToolRegistry.resolve}.
    */
   readonly altEyedropper?: boolean;
+  /**
+   * While Ctrl (Cmd) is held over the stage this tool acts as the layer Move
+   * tool with auto-select (Photoshop). Default ON for rail tools: omit it to
+   * opt in, set `false` to opt out (the Move layer tool itself, Text -- which
+   * uses Ctrl+drag to move its text). Hidden tools (`rail: false`) never
+   * opt in. Ctrl beats Alt: Ctrl+Alt = Move, not the eyedropper. Honoured by
+   * {@link ToolRegistry.resolve}.
+   */
+  readonly ctrlMove?: boolean;
   /**
    * Selection tool: with a selection, Shift / Alt / Shift+Alt at
    * pointer-down add / subtract / intersect (`selectionModifiers.ts`). The

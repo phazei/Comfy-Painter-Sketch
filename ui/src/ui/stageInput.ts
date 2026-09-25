@@ -35,14 +35,16 @@ export interface StageInputHost {
   setAlt?(down: boolean): void;
   /** Shift state seen on a pointer event (keeps the selection-mode cursor badge in sync). */
   setShift?(down: boolean): void;
+  /** Ctrl/Cmd state seen on a pointer event (keeps the temporary-Move cursor in sync). */
+  setCtrl?(down: boolean): void;
   /** View changed by pan/zoom. */
   viewChanged(): void;
 }
 
 /**
  * A drag in progress. Tool drags keep the tool resolved at pointer-down
- * (`ToolRegistry.resolve`, Alt = temporary eyedropper) until release, even
- * if Alt changes mid-drag.
+ * (`ToolRegistry.resolve`: Ctrl = temporary layer Move, else Alt = temporary
+ * eyedropper) until release, even if Ctrl/Alt change mid-drag.
  */
 type DragMode = { kind: "tool"; pointerId: number; tool: Tool } | { kind: "pan"; pointerId: number; last: Point };
 
@@ -131,11 +133,10 @@ export class StageInput {
   /** Abort any drag in progress and a pending multi-press tool interaction (tool switch, detach). */
   cancel(): void {
     const drag = this.drag;
-    this.drag = null;
+    this.abortDrag();
     this.endToolDrag();
     const session = this.host.session();
     if (session) {
-      if (drag?.kind === "tool") drag.tool.onCancel(session.editor);
       const active = session.tools.active;
       if (active !== (drag?.kind === "tool" ? drag.tool : null) && active.pending?.()) active.onCancel(session.editor);
     }
@@ -164,6 +165,13 @@ export class StageInput {
 
   private down(event: PointerEvent): void {
     const session = this.host.session();
+    // Same mouse pressed again while "dragging", or a new primary pointer
+    // (pen after mouse, a new pen contact): the old press lost its pointerup
+    // (see move()). End it as a cancel instead of ignoring every later press.
+    const stale = this.drag;
+    if (stale && ((stale.pointerId === event.pointerId && event.pointerType === "mouse") || (stale.pointerId !== event.pointerId && event.isPrimary))) {
+      this.abortDrag();
+    }
     if (!session || this.drag) return;
     const pan = event.button === 1 || (event.button === 0 && this.host.isSpaceDown());
     if (!pan && event.button !== 0) return;
@@ -178,7 +186,9 @@ export class StageInput {
     // Modifiers first: the cursor badge in effect now is the one kept for the drag.
     this.host.setShift?.(event.shiftKey);
     this.host.setAlt?.(event.altKey);
-    const tool = session.tools.resolve(event.altKey);
+    const ctrl = event.ctrlKey || event.metaKey;
+    this.host.setCtrl?.(ctrl);
+    const tool = session.tools.resolve(event.altKey, ctrl);
     this.drag = { kind: "tool", pointerId: event.pointerId, tool };
     this.lastToolEvent = event;
     this.modifierWatch.start();
@@ -190,6 +200,7 @@ export class StageInput {
     const point = this.toStage(event);
     this.host.setShift?.(event.shiftKey);
     this.host.setAlt?.(event.altKey);
+    this.host.setCtrl?.(event.ctrlKey || event.metaKey);
     const drag = this.drag;
     const session = this.host.session();
     // Button up during a pending multi-press interaction (polygonal lasso): rubber band.
@@ -203,6 +214,13 @@ export class StageInput {
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.stopPropagation();
     if (!session) return;
+    // A modal dialog during the press (the rasterize confirm) swallows the
+    // mouse's pointerup: a buttonless move ends the drag (as a cancel).
+    // Same for a pen that lost contact without a pointerup.
+    if ((event.pointerType === "mouse" || event.pointerType === "pen") && event.buttons === 0) {
+      this.up(event, true);
+      return;
+    }
     if (drag.kind === "pan") {
       session.editor.view.pan(point.x - drag.last.x, point.y - drag.last.y);
       drag.last = point;
@@ -229,6 +247,22 @@ export class StageInput {
     }
     // Tool overlays (marquee outline) follow the new modifiers without pointer movement.
     this.setHover(this.toStage(last));
+  }
+
+  /**
+   * End the drag in progress as a cancel (tool `onCancel`, pan class and
+   * pointer capture cleared). No-op without a drag.
+   */
+  private abortDrag(): void {
+    const drag = this.drag;
+    if (!drag) return;
+    this.drag = null;
+    this.stage.classList.remove("cps-panning");
+    this.release(drag.pointerId);
+    this.endToolDrag();
+    this.host.setDragging(false);
+    const session = this.host.session();
+    if (drag.kind === "tool" && session) drag.tool.onCancel(session.editor);
   }
 
   private endToolDrag(): void {

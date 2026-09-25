@@ -5,6 +5,9 @@
  * - Widget value: `""` for a never-painted document, else the manifest JSON
  *   of the attached session (file refs = last successful uploads). Updated on
  *   every document change so tab switches / workflow saves capture it.
+ *   Value changes ComfyUI can't observe (edits, finished upload batches)
+ *   request a ChangeTracker capture (`graphSync.ts`) so the workflow draft
+ *   restored on page reload has them.
  * - Uploads (saved-file contract, Upload timing): dirty layers upload when
  *   the editor disengages or leaves fullscreen, when the session detaches,
  *   ~5 s after the last edit (idle fallback), at queue (`serialize`), and on
@@ -43,6 +46,7 @@ import { resolveFallbackFrame, widgetDimension } from "./frameFallback";
 import type { FallbackFrame } from "./frameFallback";
 import { handoffKey, offerHandoff, takeHandoff } from "./handoff";
 import type { LoadedBackground, NodeHandoff } from "./handoff";
+import { EDIT_SYNC_DELAY_MS, requestGraphSync, UPLOAD_SYNC_DELAY_MS } from "./graphSync";
 import { findUpstreamNode, inputSlotIndex, isInputConnected, sourceFromExecuted, sourceFromNode } from "./imageSource";
 import type { ImageSource } from "./imageSource";
 import {
@@ -146,8 +150,19 @@ export class PainterSketchController {
     if (!this.handoff && typeof value === "string" && value === this.valueCache) return;
     const parsed = parseDocument(value);
     if (parsed.status === "ok") {
-      this.attach(this.sessionFor(parsed.document));
+      const existing = findSession(parsed.document.docId);
+      const session = this.sessionFor(parsed.document);
+      const handedOff = session === this.handoff;
+      this.attach(session);
       this.handoff = null;
+      // The graph holds `value`, but a re-attached session (uploads finished
+      // while this tab was in the background) or a fork (new docId) differs:
+      // let the ChangeTracker / draft see ours. Not for graph undo/redo
+      // (handed off): capturing then would push an entry and clear redo.
+      const reusedOrForked = session === existing || session.docId !== parsed.document.docId;
+      if (!handedOff && reusedOrForked && this.valueCache !== value) {
+        requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
+      }
       return;
     }
     if (parsed.status === "invalid") {
@@ -409,10 +424,15 @@ export class PainterSketchController {
     attachSession(session, this);
     const { editor } = session;
     const offChange = editor.events.on("change", () => {
-      this.syncValue();
+      // During an upload batch the settled hook below syncs once at the end.
+      if (this.syncValue() && !session.uploader.busy) requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
       if (editor.dirty) session.uploader.schedule();
     });
-    this.sessionUnbind = offChange;
+    const offSettled = session.uploader.onSettled(() => requestGraphSync(this.node, UPLOAD_SYNC_DELAY_MS));
+    this.sessionUnbind = () => {
+      offChange();
+      offSettled();
+    };
     this.host.setSession(session);
     this.contentKey = "";
     this.syncValue();
@@ -435,11 +455,14 @@ export class PainterSketchController {
     }
   }
 
-  private syncValue(): void {
+  /** @returns `true` if the widget value changed. */
+  private syncValue(): boolean {
     const editor = this.session?.editor;
-    if (!editor) return;
+    if (!editor) return false;
     const untouched = !editor.hasPaint && editor.doc.layers.every((l) => l.file === null);
+    const previous = this.valueCache;
     this.valueCache = untouched ? "" : stringifyDocument(editor.doc);
+    return this.valueCache !== previous;
   }
 
   // ── Background resolution ───────────────────────────────────────────────

@@ -43,6 +43,8 @@ const PATHS: Readonly<Record<string, string>> = {
   arrow: "M5 19 19 5M11 5h8v8",
   rectangle: "M4 6h16v12H4z",
   ellipse: "M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7z",
+  // Text tool (T): a serif "T" (also the text-layer badge in the layers panel).
+  text: "M5 7.5V5h14v2.5M12 5v14M9 19h6",
   // Move tool (V): four-way arrow.
   move: "M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3",
   // Move drawing: back sheet (down-left, partially hidden) + front sheet (up-right),

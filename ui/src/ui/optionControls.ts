@@ -8,6 +8,7 @@
  * - toggle: compact pill button (`aria-pressed`).
  * - select: label + `<select>`.
  * - button: command pill (`set(key, true)` performs it; dim while `get(key) === false`).
+ * - text: suggestion menu + "Custom..." text field (`textOptionControl.ts`).
  *
  * Controls write through `ToolOptions.set` (which clamps/snaps) and call
  * `changed()`; `refresh()` re-reads values (after shortcuts etc.).
@@ -24,6 +25,7 @@ import {
 import type { ButtonOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
 import type { PopoverHandle, PopoverHost } from "./popover";
 import { scrubValue } from "./scrub";
+import { textControl } from "./textOptionControl";
 
 /** What a control needs from the bar. */
 export interface ControlContext {
@@ -61,6 +63,8 @@ export function createControl(desc: OptionDescriptor, ctx: ControlContext): Opti
       return selectControl(desc, ctx);
     case "button":
       return buttonControl(desc, ctx);
+    case "text":
+      return textControl(desc, ctx);
   }
 }
 

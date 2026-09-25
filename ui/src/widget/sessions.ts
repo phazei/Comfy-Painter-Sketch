@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Module-level registry of live editor sessions, keyed by the document's
  * `docId` (stored in the manifest).
  *
@@ -162,4 +162,39 @@ export function releaseSession(docId: string): void {
   session.alive = false;
   session.uploader.dispose();
   session.editor.dispose();
+}
+
+
+/**
+ * Whether any live session has dirty layers not yet uploaded.
+ *
+ * @returns `true` when at least one session has pending uploads.
+ */
+export function pendingUploads(): boolean {
+  for (const session of sessions.values()) {
+    if (session.alive && session.editor.dirty) return true;
+  }
+  return false;
+}
+
+/**
+ * Flush all live sessions' uploads concurrently.
+ *
+ * Each session's uploader already toasts on failure; errors are collected so
+ * the caller can decide whether to proceed anyway.
+ *
+ * @returns Resolves with an array of per-session errors (empty = all ok).
+ */
+export async function flushAll(): Promise<Error[]> {
+  const errors: Error[] = [];
+  await Promise.all(
+    [...sessions.values()]
+      .filter((s) => s.alive && s.editor.dirty)
+      .map((s) =>
+        s.uploader.flush().catch((err: unknown) => {
+          errors.push(err instanceof Error ? err : new Error(String(err)));
+        }),
+      ),
+  );
+  return errors;
 }

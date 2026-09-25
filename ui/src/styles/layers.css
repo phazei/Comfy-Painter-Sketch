@@ -130,11 +130,29 @@
 }
 
 .cps-layer-thumb-box {
+  position: relative;
   flex: 0 0 38px;
   height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* Text layer badge ("T") over the thumbnail's bottom-right corner. */
+.cps-layer-text-badge {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  padding: 1px;
+  border-radius: 3px;
+  background: var(--cps-chrome-bg);
+  color: var(--cps-fg);
+  pointer-events: none;
+}
+
+.cps-layer-text-badge[hidden] {
+  display: none;
 }
 
 .cps-layer-thumb {

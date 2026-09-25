@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createEmptyDocument, createMaskLayer, createPaintLayer } from "./create";
-import { ensureMaskLayer, findMaskLayer, findPaintLayer, maskDisplayColor, targetLayer } from "./masks";
+import { activeEditLayer, ensureMaskLayer, findMaskLayer, findPaintLayer, maskDisplayColor, targetLayer } from "./masks";
 import type { PainterDocument } from "./types";
 
 /** A pre-M2 document: paint layers only. */
@@ -59,6 +59,19 @@ describe("ensureMaskLayer", () => {
     expect(created).toBe(false);
     expect(layer.id).toBe(doc.layers[1]?.id);
     expect(JSON.stringify(doc)).toBe(before);
+  });
+});
+
+describe("activeEditLayer", () => {
+  it("picks the mask under Quick Mask, else the active paint-like layer", () => {
+    const doc = createEmptyDocument({ width: 8, height: 8 }, "doc00001");
+    expect(activeEditLayer(doc, "mask")?.kind).toBe("mask");
+    expect(activeEditLayer(doc, "paint")?.id).toBe(doc.activeLayerId);
+    const text = { ...createPaintLayer("T"), kind: "text" as const };
+    doc.layers.push(text);
+    doc.activeLayerId = text.id;
+    expect(activeEditLayer(doc, "paint")?.id).toBe(text.id);
+    expect(activeEditLayer(paintOnlyDoc(), "mask")).toBeUndefined();
   });
 });
 

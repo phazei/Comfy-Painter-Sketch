@@ -21,7 +21,7 @@
  * Fullscreen ({@link KeyboardScope.setCaptureScope}): active without hover;
  * unhandled keys filtered by {@link fullscreenKeyPolicy}.
  *
- * Alt/Space/Shift modifier tracking is delegated to {@link ModifierScope}.
+ * Alt/Space/Shift/Ctrl modifier tracking is delegated to {@link ModifierScope}.
  */
 
 import { describeElement, hoverMayTakeFocus, isScopeActive, isTextEntry, mayKeepFocus, pointerFocusAction } from "./focusPolicy";
@@ -44,6 +44,8 @@ export interface KeyboardHandlers {
   onAltChange?(down: boolean): void;
   /** Shift held/released (selection-mode cursor badge). */
   onShiftChange?(down: boolean): void;
+  /** Ctrl/Cmd held/released (temporary layer Move tool; observed only). */
+  onCtrlChange?(down: boolean): void;
   /**
    * Ctrl/Cmd+S while the editor owns the keyboard (focus in the root or the
    * fullscreen overlay). The event is already prevented and stopped; the
@@ -156,6 +158,8 @@ export class KeyboardScope {
       onSpaceChange: (down) => handlers.onSpaceChange(down),
       onAltChange: (down) => handlers.onAltChange?.(down),
       onShiftChange: (down) => handlers.onShiftChange?.(down),
+      onCtrlChange: (down) => handlers.onCtrlChange?.(down),
+      isTextTarget: (target) => this.isForeignTextTarget(target),
     });
     root.addEventListener("pointerenter", this.enter);
     root.addEventListener("pointerleave", this.leave);

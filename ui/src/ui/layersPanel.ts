@@ -11,6 +11,7 @@
  */
 
 import type { Editor } from "../engine/editor";
+import { imageRectToDoc } from "../engine/frameMap";
 import { maskDisplayColor } from "../document/masks";
 import { isPaintLike } from "../document/layerList";
 import type { Layer } from "../document/types";
@@ -227,23 +228,32 @@ export class LayersPanel {
     if (!editor || this.ctx.sidePanel.collapsed || !this.element.isConnected) return;
     const doc = editor.doc;
     const bounds = editor.bounds;
-    const frame = doc.frame;
-    const geometry = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}|${frame.width}x${frame.height}`;
-    const region = { x: -bounds.x, y: -bounds.y, width: frame.width, height: frame.height };
+    const imageSize = editor.imageSize;
+    // Use the full document->image map (frame fit + Move-tool placement) so
+    // thumbnails show each layer as it sits over the current image, matching
+    // the Background thumbnail framing. imageRectToDoc maps the image footprint
+    // back to document coords; subtracting bounds gives canvas-pixel coords.
+    const fmap = editor.frameMap;
+    const imgInDoc = imageRectToDoc(fmap, { x: 0, y: 0, width: imageSize.width, height: imageSize.height });
+    const region = { x: imgInDoc.x - bounds.x, y: imgInDoc.y - bounds.y, width: imgInDoc.width, height: imgInDoc.height };
+    // Placement encoded in fmap; include it in the cache key so a placement
+    // change (x/y/scale) invalidates without waiting for a pixel revision bump.
+    const placement = doc.placement;
+    const placementKey = placement ? `${placement.x},${placement.y},${placement.scale}` : "0,0,1";
+    const geometry = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}|${imageSize.width}x${imageSize.height}|${placementKey}`;
     for (const layer of doc.layers) {
       const row = this.rows.get(layer.id);
       if (!row) continue;
       const mask = layer.kind === "mask";
       const invert = mask && layer.invert === true;
       const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
-      row.thumb.update(key, frame, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
+      row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
     }
     const bg = this.rows.get(BACKGROUND_ID);
     if (bg) {
       const background = editor.background;
-      const size = editor.imageSize;
       const id = background.kind === "fill" ? background.color : this.backgroundId(background.image);
-      bg.thumb.update(`${id}|${size.width}x${size.height}`, size, { kind: "background", background, size });
+      bg.thumb.update(`${id}|${imageSize.width}x${imageSize.height}`, imageSize, { kind: "background", background, size: imageSize });
     }
   }
 
@@ -322,6 +332,7 @@ function rowModel(layer: Readonly<Layer>, selected: boolean, standby: boolean): 
     model.color = maskDisplayColor(layer);
     model.invert = layer.invert === true;
   }
+  if (layer.kind === "text") model.text = true;
   return model;
 }
 

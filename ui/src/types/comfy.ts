@@ -98,6 +98,8 @@ export interface LGraph {
   id: string;
   /** `false` for subgraphs; used to build node locator ids. */
   isRootGraph?: boolean;
+  /** The root graph (the graph itself for the root; the parent root for subgraphs). */
+  rootGraph?: LGraph;
   /** Marks the graph as changed (what `BaseWidget.setValue` calls after a user edit). */
   incrementVersion?(): void;
 }
@@ -237,6 +239,15 @@ export interface ExtensionManager {
   setting?: { get?: (id: string) => unknown };
   /** Command store facade (`execute` by command id). */
   command?: { execute?: (id: string) => Promise<void> | void };
+  /**
+   * Workflow store facade. The active workflow's `changeTracker` snapshots the
+   * graph for undo and drives draft persistence (`graphChanged`).
+   */
+  workflow?: {
+    activeWorkflow?: {
+      changeTracker?: { captureCanvasState?: () => void; checkState?: () => void } | null;
+    } | null;
+  };
 }
 
 /** The ComfyUI `app` singleton (subset). */
@@ -244,6 +255,8 @@ export interface ComfyApp {
   registerExtension(extension: ComfyExtension): void;
   /** Set up during app init; guard every access. */
   extensionManager?: ExtensionManager;
+  /** The root graph of the active workflow (unset before init). */
+  readonly graph?: LGraph | null;
   /** Legacy UI facade; `settings.getSettingValue` is the older settings reader. */
   ui?: { settings?: { getSettingValue?: (id: string) => unknown } };
   /**

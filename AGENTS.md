@@ -145,13 +145,24 @@ ui/src/
   layer canvases and history.
 - Tools sharing a rail slot/key (shapes on `U`, marquees on `M`) are a tool
   group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
-  tool makes Alt-at-pointer-down a temporary eyedropper.
+  tool makes Alt-at-pointer-down a temporary eyedropper. Rail tools also get
+  Ctrl = temporary Move layer with auto-select (`ctrlMove`, default on; off for
+  Move layer, Text, hidden tools). Precedence: Ctrl > Alt > active tool; resolved
+  at pointer-down, locked for the drag. Modifier tracking is observe-only.
 - Optional Tool hooks: `onWheel` (Move scale-while-dragging), `onKey` (arrow
   nudges), `pending()` / `onHover()` (lasso polygon in progress). Descriptor kinds
   include `button`.
 - All doc <-> image conversion goes through `documentMap(doc, imageSize)` /
   `editor.frameMap` (includes Move placement). Never call `frameMap(doc.frame, ...)`
   directly or re-derive the formula.
+- `engine/rasterize.ts` `preparePixelEdit` is the **single gate** before any
+  pixel edit (lock / hidden-mask notes, text-layer rasterize confirm). New
+  pixel-editing paths must call it.
+- Layer moves go through per-kind handlers in `engine/layerMovers.ts` (paint/mask
+  translate pixels; text updates `textData`). Move preview = draw the layer
+  offset; pixels move once, on commit.
+- Descriptor kinds: slider/number/toggle/select/button/text. An open text edit is
+  a `Tool.pending` interaction.
 - Selection coverage is rasterized without a canvas (`engine/selectionRaster.ts`)
   so it's unit-testable (the test environment has no canvas).
 - Tool options are **declarative** (descriptors: slider/number/toggle/select),
@@ -324,6 +335,13 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
 - ChangeTracker snapshots our `document` widget value as part of the graph, so a
   graph undo can restore an older manifest. A handed-off live session is always
   kept: **graph undo never rolls back paint**; paint undo is ours alone.
+- **Drafts only persist on ChangeTracker captures.** ComfyUI writes workflow
+  drafts (what a page reload restores) on `graphChanged`, which only fires when
+  `captureCanvasState()` sees a change -- triggered by mouseup/keyup/keydown/
+  queue, never by an async widget value change. After our value changes on its
+  own (upload finished, debounced edits, re-attach) we call the active
+  workflow's `changeTracker.captureCanvasState()` (`widget/graphSync.ts`), only
+  when our node is in `app.graph`, and never during graph undo/redo.
 - Keep widget values small. ComfyUI fails to save workflow drafts when a widget
   value is very large ("Failed to save workflow draft"). Our manifest holds only
   file references (~250 bytes per layer); never inline pixel data or history.

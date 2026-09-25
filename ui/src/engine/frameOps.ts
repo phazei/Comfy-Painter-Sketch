@@ -4,6 +4,7 @@
  * Clear (one undoable step holding full before/after snapshots).
  */
 
+import type { TextData } from "../document/types";
 import { frameRect } from "../geometry/rect";
 import type { Size } from "../geometry/rect";
 import type { FrameBackground } from "./compositor";
@@ -118,18 +119,32 @@ export class FrameOps {
       const data = state.pixels?.get(layer.id);
       if (data) s.store.write(layer.id, state.bounds.x, state.bounds.y, data);
       else s.store.ensure(layer.id);
+      // Cleared text layers become (empty) paint layers; undo restores the text.
+      const textData = state.text?.get(layer.id);
+      if (textData) {
+        layer.kind = "text";
+        layer.textData = textData;
+      } else if (layer.kind === "text") {
+        layer.kind = "paint";
+        delete layer.textData;
+      }
       s.runtime.touch(layer.id);
     }
     s.syncViewFrame();
     s.events.emit("placement", undefined);
+    s.events.emit("layers", undefined);
   }
 
   private captureSnapshot(): DocSnapshot {
     const s = this.s;
     const pixels = new Map<string, ImageData>();
-    for (const layer of s.doc.layers) pixels.set(layer.id, s.store.snapshot(layer.id));
+    const text = new Map<string, TextData>();
+    for (const layer of s.doc.layers) {
+      pixels.set(layer.id, s.store.snapshot(layer.id));
+      if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
+    }
     const placement = s.doc.placement ? { ...s.doc.placement } : undefined;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels };
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text };
   }
 }
 

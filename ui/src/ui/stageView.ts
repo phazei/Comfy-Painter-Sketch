@@ -43,10 +43,14 @@ export class StageView {
   hover: Point | null = null;
   /** Alt held: the cursor is that of `tools.resolve(true)` (temporary eyedropper). */
   altDown = false;
+  /** Ctrl/Cmd held: the cursor is that of `tools.resolve(alt, true)` (temporary layer Move). */
+  ctrlDown = false;
   /** Shift held (selection-mode cursor badge). */
   shiftDown = false;
   /** Selection-mode badge on the cursor (kept fixed during a drag). */
   private badge: CursorBadge | null = null;
+  /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
+  onRendered: (() => void) | null = null;
 
   /**
    * @param stage - Stage element (canvases are appended to it).
@@ -142,8 +146,8 @@ export class StageView {
   /**
    * Apply the CSS cursor of the tool in effect now: the tool locked at
    * pointer-down during a drag (Alt mid-drag changes nothing), else
-   * `tools.resolve(altDown)` (Alt = temporary eyedropper). Synchronous, so
-   * Alt down/up updates the cursor without pointer movement. Selection tools
+   * `tools.resolve(altDown, ctrlDown)` (Ctrl = temporary layer Move, else
+   * Alt = temporary eyedropper). Synchronous, so Alt/Ctrl down/up updates the cursor without pointer movement. Selection tools
    * with a selection add the Shift/Alt mode badge (`cursors.ts`). Written to the
    * `--cps-tool-cursor` property so the pan/loading class cursors still win.
    * @returns The tool in effect, or `null` without a session.
@@ -151,7 +155,7 @@ export class StageView {
   syncCursor(): Tool | null {
     const session = this.session();
     const dragTool = this.getDragTool();
-    const tool = session ? (dragTool ?? session.tools.resolve(this.altDown)) : null;
+    const tool = session ? (dragTool ?? session.tools.resolve(this.altDown, this.ctrlDown)) : null;
     // Selection-mode badge: follows the modifiers between drags; during a
     // drag (or a pending polygonal lasso) the one from pointer-down stays.
     const locked = dragTool !== null || (tool?.pending?.() ?? false);
@@ -213,6 +217,7 @@ export class StageView {
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
+    this.onRendered?.();
   }
 
   /**

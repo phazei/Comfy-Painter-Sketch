@@ -3,7 +3,7 @@
  * Enter commits, Escape cancels, blur commits), visibility eye and lock.
  * Mask rows add a second line with the colour swatch, an invert toggle and
  * the overlay opacity control; the Background row is static (locked, not
- * selectable). Rows are reused across updates (keyed by layer id) so a
+ * selectable). Text layers get a "T" badge on the thumbnail. Rows are reused across updates (keyed by layer id) so a
  * double-click survives the re-render the first click causes.
  */
 
@@ -28,6 +28,8 @@ export interface RowModel {
   color?: string;
   /** Mask invert. */
   invert?: boolean;
+  /** Editable text layer ("T" badge on the thumbnail). */
+  text?: boolean;
 }
 
 /** Row callbacks (ids are layer ids). */
@@ -53,6 +55,7 @@ export class LayerRow {
   private readonly lock: HTMLButtonElement;
   private readonly swatch: HTMLButtonElement | null = null;
   private readonly invertButton: HTMLButtonElement | null = null;
+  private readonly textBadge: HTMLSpanElement | null = null;
   private model: RowModel | null = null;
   private editor: HTMLInputElement | null = null;
   private icons = { eye: "", lock: "" };
@@ -77,6 +80,14 @@ export class LayerRow {
     const thumbBox = document.createElement("span");
     thumbBox.className = "cps-layer-thumb-box";
     thumbBox.appendChild(this.thumb.canvas);
+    if (kind === "paint") {
+      this.textBadge = document.createElement("span");
+      this.textBadge.className = "cps-layer-text-badge";
+      this.textBadge.title = "Text layer (click it with the Text tool to edit)";
+      this.textBadge.hidden = true;
+      setIcon(this.textBadge, "text", 12);
+      thumbBox.appendChild(this.textBadge);
+    }
     this.nameEl = document.createElement("span");
     this.nameEl.className = "cps-layer-name";
     main.append(thumbBox, this.nameEl);
@@ -133,6 +144,7 @@ export class LayerRow {
     el.classList.toggle("cps-selected", model.selected);
     el.classList.toggle("cps-standby", model.standby);
     el.classList.toggle("cps-hidden-layer", !model.visible);
+    if (this.textBadge) this.textBadge.hidden = model.text !== true;
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
     if (this.eye) {

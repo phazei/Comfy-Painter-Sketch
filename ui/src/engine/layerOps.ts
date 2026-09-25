@@ -33,6 +33,7 @@ import {
   installLayerPixels,
   releaseRemovedLayers,
 } from "./layerHistory";
+import { pickLayer } from "./layerPick";
 
 /**
  * Layer list commands over a shared {@link EditorState}.
@@ -71,6 +72,22 @@ export class LayerOps {
    */
   canDuplicate(layerId: string): boolean {
     return canDuplicateLayer(this.s.doc.layers, layerId);
+  }
+
+  /**
+   * Move-tool auto-select: the topmost visible, unlocked paint/text layer
+   * with a visible pixel at a document point ({@link pickLayer}; reads one
+   * pixel per candidate layer).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns Layer id, or `null` if nothing is hit.
+   */
+  pickAt(x: number, y: number): string | null {
+    const s = this.s;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
+    // Layers without a surface have no pixels (and must not get one here).
+    return pickLayer(s.doc.layers, (id) => (s.store.get(id) ? (s.store.read(id, rect)?.data.data[3] ?? 0) : 0));
   }
 
   // ── Not undoable ────────────────────────────────────────────────────────
@@ -127,11 +144,18 @@ export class LayerOps {
    * @returns New layer id, or `null` while loading.
    */
   add(): string | null {
-    const s = this.s;
+    return this.addLayer(createPaintLayer(nextLayerName(this.s.doc.layers)));
+  }
+
+  /**
+   * Insert a prepared, empty layer (e.g. a new text layer) above the active
+   * paint layer and make it active, as one undoable add.
+   * @param layer - New layer (fresh id, not yet in the document).
+   * @returns Its id, or `null` while loading.
+   */
+  addLayer(layer: Layer): string | null {
     if (!this.ready()) return null;
-    const layer = createPaintLayer(nextLayerName(s.doc.layers));
-    const index = paintInsertIndex(s.doc);
-    this.insert(layer, index, null);
+    this.insert(layer, paintInsertIndex(this.s.doc), null);
     return layer.id;
   }
 

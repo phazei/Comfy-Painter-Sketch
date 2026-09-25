@@ -5,6 +5,9 @@
  */
 
 import type { Rect, Size } from "../geometry/rect";
+import type { TextData } from "./textData";
+
+export type { TextData } from "./textData";
 
 /** Current manifest version. Bump + add a migration for breaking changes. */
 export const DOCUMENT_VERSION = 1;
@@ -17,9 +20,6 @@ export type LayerKind = "paint" | "text" | "mask";
 
 /** Blend modes (Normal only in v1, decision 11). */
 export type BlendMode = "normal";
-
-/** Opaque text-layer data (defined in M6). */
-export type TextData = Record<string, unknown>;
 
 /** One layer. Pixel data lives in `file` (WebP or PNG sized exactly `bounds`). */
 export interface Layer {
@@ -37,6 +37,7 @@ export interface Layer {
   color?: string;
   /** Mask layers: invert before union. */
   invert?: boolean;
+  /** Text layers only (`kind: "text"`): editable text, see `textData.ts`. */
   textData?: TextData;
 }
 

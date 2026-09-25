@@ -24,15 +24,16 @@ export function findMaskLayer(doc: Readonly<PainterDocument>): Layer | undefined
 }
 
 /**
- * The paint layer strokes go to when not in Quick Mask: the active layer if
- * it is a paint layer, else the top-most paint layer.
+ * The layer strokes go to when not in Quick Mask: the active layer if it is
+ * paint-like (paint, or text -- editing text pixels asks to rasterize it,
+ * `engine/rasterize.ts`), else the top-most paint layer.
  *
  * @param doc - Document.
  * @returns The paint layer, or `undefined` if the document has none.
  */
 export function findPaintLayer(doc: Readonly<PainterDocument>): Layer | undefined {
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  if (active?.kind === "paint") return active;
+  if (active && active.kind !== "mask") return active;
   for (let i = doc.layers.length - 1; i >= 0; i--) {
     const layer = doc.layers[i];
     if (layer?.kind === "paint") return layer;
@@ -49,6 +50,21 @@ export function findPaintLayer(doc: Readonly<PainterDocument>): Layer | undefine
  */
 export function targetLayer(doc: Readonly<PainterDocument>, target: PaintTarget): Layer | undefined {
   return target === "mask" ? findMaskLayer(doc) : findPaintLayer(doc);
+}
+
+/**
+ * Layer whole-layer edits (the Move tool) act on: the mask under Quick Mask,
+ * else the active layer if it is paint-like (paint or text), else the
+ * top-most paint layer.
+ *
+ * @param doc - Document.
+ * @param target - Paint target.
+ * @returns The layer, or `undefined` if none exists.
+ */
+export function activeEditLayer(doc: Readonly<PainterDocument>, target: PaintTarget): Layer | undefined {
+  if (target === "mask") return findMaskLayer(doc);
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  return active && active.kind !== "mask" ? active : findPaintLayer(doc);
 }
 
 /**

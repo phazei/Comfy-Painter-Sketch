@@ -21,6 +21,13 @@ export class ViewState {
   /** On-screen px per stage CSS px (graph zoom). */
   private displayScale = 1;
 
+  /**
+   * @param onChange - Called after every user view command (fit, 100%, zoom,
+   *   pan) so the owner can repaint; never called from {@link setStage} /
+   *   {@link setFrame}, which run inside a render.
+   */
+  constructor(private readonly onChange: () => void = () => {}) {}
+
   /** Current transform. */
   get current(): ViewTransform {
     return this.transform;
@@ -78,6 +85,7 @@ export class ViewState {
   fit(): void {
     this.fitting = true;
     this.refit();
+    this.onChange();
   }
 
   /**
@@ -119,6 +127,7 @@ export class ViewState {
   private setTransform(next: ViewTransform): void {
     this.fitting = false;
     this.transform = clampOffset(next, this.frame, this.stage);
+    this.onChange();
   }
 
   private refit(): boolean {

@@ -12,7 +12,9 @@ import { createLassoTool } from "./lasso";
 import { createMagicWandTool } from "./magicWand";
 import { MARQUEE_GROUP, createMarqueeTools } from "./marquee";
 import { createMoveTool } from "./move";
+import { createMoveLayerTool } from "./moveLayer";
 import { SHAPE_GROUP, createShapeTools } from "./shapeTools";
+import { createTextTool } from "./text";
 import { ToolGroupState } from "./toolGroups";
 import type { ToolGroupSpec } from "./toolGroups";
 import type { Tool } from "./types";
@@ -126,17 +128,45 @@ export class ToolRegistry {
     this.altTool = tool;
   }
 
+  // ── Ctrl = temporary layer Move ─────────────────────────────────────────
+
+  private ctrlTool: Tool | null = null;
+
   /**
-   * Tool that should receive stage input / draw the cursor right now: the
-   * Alt tool while Alt is held and the active tool opts in
-   * (`Tool.altEyedropper`), else the active tool.
+   * Tool that takes over while Ctrl is held in tools that opt in (`Tool.ctrlMove`).
+   * @param tool - Usually the layer Move tool; `null` disables.
+   */
+  setCtrlTool(tool: Tool | null): void {
+    this.ctrlTool = tool;
+  }
+
+  /**
+   * Tool that should receive stage input / draw the cursor right now.
+   * Precedence: Ctrl first -- the Ctrl tool (layer Move) while Ctrl is held
+   * and the active tool opts in ({@link ctrlMoves}); then Alt -- the Alt
+   * tool (eyedropper) while Alt is held and the active tool has
+   * `Tool.altEyedropper`; else the active tool. So Ctrl+Alt in the brush
+   * is Move, not the eyedropper.
    * @param altHeld - Alt is down.
+   * @param ctrlHeld - Ctrl (or Cmd) is down.
    * @returns The effective tool.
    */
-  resolve(altHeld: boolean): Tool {
+  resolve(altHeld: boolean, ctrlHeld = false): Tool {
     const active = this.active;
+    if (ctrlHeld && this.ctrlTool && this.ctrlTool !== active && ctrlMoves(active)) return this.ctrlTool;
     return altHeld && active.altEyedropper && this.altTool ? this.altTool : active;
   }
+}
+
+/**
+ * Whether Ctrl turns a tool into the temporary layer Move tool: rail tools
+ * unless they opt out (`ctrlMove: false`), and never while the tool has a
+ * pending multi-press interaction (polygonal lasso).
+ * @param tool - Active tool.
+ * @returns `true` if Ctrl substitutes the Move tool.
+ */
+export function ctrlMoves(tool: Tool): boolean {
+  return tool.rail !== false && tool.ctrlMove !== false && !(tool.pending?.() ?? false);
 }
 
 /**
@@ -146,6 +176,7 @@ export class ToolRegistry {
  */
 export function createDefaultTools(editor: Editor): ToolRegistry {
   const eyedropper = createEyedropperTool();
+  const moveLayer = createMoveLayerTool();
   const registry = new ToolRegistry(
     [
       createBrushTool(),
@@ -153,7 +184,10 @@ export function createDefaultTools(editor: Editor): ToolRegistry {
       createFillTool(),
       eyedropper,
       ...createShapeTools(),
+      createTextTool(editor),
       createMoveTool(editor),
+      // Photoshop order: Move, then the selection tools.
+      moveLayer,
       ...createMarqueeTools(),
       createLassoTool(),
       createMagicWandTool(),
@@ -161,5 +195,6 @@ export function createDefaultTools(editor: Editor): ToolRegistry {
     [SHAPE_GROUP, MARQUEE_GROUP],
   );
   registry.setAltTool(eyedropper.temporary);
+  registry.setCtrlTool(moveLayer);
   return registry;
 }

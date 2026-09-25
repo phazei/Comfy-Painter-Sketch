@@ -37,6 +37,15 @@ export class EditorMaskOps {
   }
 
   /**
+   * Whether any mask layer is hidden AND has ever held paint (queue-time
+   * warning: it will not be in the MASK output).
+   * @returns `true` if a hidden-but-painted mask exists.
+   */
+  hiddenMaskHasContent(): boolean {
+    return this.s.doc.layers.some((l) => l.kind === "mask" && !l.visible && this.s.runtime.get(l.id)?.hasContent === true);
+  }
+
+  /**
    * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
    * @param target - New target.
    */

@@ -1,8 +1,9 @@
 /**
- * Tracks Alt, Space and Shift for one keyboard scope, wiring window
+ * Tracks Alt, Space, Shift and Ctrl/Cmd for one keyboard scope, wiring window
  * `keydown`/`keyup` listeners only while the scope is active. Clearing all
  * modifiers on window `blur` prevents stuck keys after focus leaves the page.
- * Shift is observed only (never prevented or stopped).
+ * Shift and Ctrl/Cmd are observed only (never prevented or stopped), so Ctrl
+ * chords (Ctrl+Z, Ctrl+A, ...) reach the shortcut handlers unchanged.
  *
  * Extracted from `keyboard.ts` to keep {@link KeyboardScope} under the
  * ~400-line guideline.
@@ -16,6 +17,10 @@ export interface ModifierHandlers {
   onAltChange?(down: boolean): void;
   /** Shift held or released (selection-mode cursor badge). Absent = not tracked. */
   onShiftChange?(down: boolean): void;
+  /** Ctrl or Cmd held or released (temporary layer Move tool). Absent = not tracked. */
+  onCtrlChange?(down: boolean): void;
+  /** Whether a key event targets a text field (Space there never arms pan). Absent = never. */
+  isTextTarget?(target: EventTarget | null): boolean;
 }
 
 /**
@@ -27,6 +32,7 @@ export class ModifierScope {
   private spaceDown = false;
   private altDown = false;
   private shiftDown = false;
+  private ctrlDown = false;
   private listening = false;
 
   private readonly onKeyDown = (event: KeyboardEvent): void => {
@@ -34,22 +40,27 @@ export class ModifierScope {
       event.preventDefault();
       this.setAlt(true);
     } else if (event.key === " " || event.code === "Space") {
-      this.setSpace(true);
+      // A space typed into a text field (text tool, layer rename, hex) is
+      // text, not temporary pan: it must not turn the next drag into a pan.
+      if (!this.handlers.isTextTarget?.(event.target)) this.setSpace(true);
     }
-    // Shift is only observed (never prevented): the flag is exact on every key event.
+    // Shift/Ctrl are only observed (never prevented): the flags are exact on every key event.
     this.setShift(event.shiftKey);
+    this.setCtrl(event.ctrlKey || event.metaKey);
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
     if (event.key === "Alt") this.setAlt(false);
     else if (event.key === " " || event.code === "Space") this.setSpace(false);
     this.setShift(event.shiftKey);
+    this.setCtrl(event.ctrlKey || event.metaKey);
   };
 
   private readonly onBlur = (): void => {
     this.setSpace(false);
     this.setAlt(false);
     this.setShift(false);
+    this.setCtrl(false);
   };
 
   /**
@@ -90,6 +101,7 @@ export class ModifierScope {
     this.setSpace(false);
     this.setAlt(false);
     this.setShift(false);
+    this.setCtrl(false);
   }
 
   // ── Internals ─────────────────────────────────────────────────────────────
@@ -110,5 +122,11 @@ export class ModifierScope {
     if (this.shiftDown === down) return;
     this.shiftDown = down;
     this.handlers.onShiftChange?.(down);
+  }
+
+  private setCtrl(down: boolean): void {
+    if (this.ctrlDown === down) return;
+    this.ctrlDown = down;
+    this.handlers.onCtrlChange?.(down);
   }
 }

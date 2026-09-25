@@ -9,10 +9,14 @@
  * image in document coords -- so a click anywhere on the image works even
  * when its aspect differs from `doc.frame`. Clicks outside both the image
  * and the bounds do nothing. One dirty-rect undo patch (decision 10) covering
- * the coverage bbox. Sampling "all layers" reads `docComposite.ts`.
+ * the coverage bbox.
  *
- * Eyedropper: always samples colours (also in Quick Mask): the active paint
- * layer, or the visible composite incl. the background.
+ * Sampling (bucket, wand, eyedropper) goes through one path
+ * ({@link sampleTarget} + `sampleArea`): one layer, "All layers" (the
+ * visible composite incl. the background) or "Background" (only the input
+ * image / background-colour frame, as displayed), both via `docComposite.ts`.
+ *
+ * Eyedropper: always samples colours (also in Quick Mask).
  */
 
 import { targetLayer } from "../document/masks";
@@ -20,25 +24,45 @@ import type { Layer } from "../document/types";
 import { isEmptyRect, rectEquals, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
 import type { CompositeLayer } from "./compositor";
-import { readDocRegion } from "./docComposite";
-import type { DocCompositeInput } from "./docComposite";
-import { HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, MASK_STROKE_COLOR } from "./editorTypes";
+import { readDocRegion, sceneFor } from "./docComposite";
+import type { DocCompositeInput, SceneSource } from "./docComposite";
+import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { preparePixelEdit } from "./rasterize";
 import { floodFill } from "./floodFill";
-import { documentMap } from "./frameMap";
+import { documentMap, imageRectToDoc } from "./frameMap";
 import { averageColor, blendCoverage, hexToRgb, rgbToHex } from "./pixelColor";
 import type { Selection } from "./selection";
 import { wandSelection } from "./wand";
 import type { WandOptions } from "./wand";
 
-/** Which pixels a tool looks at. */
-export type SampleSource = "layer" | "all";
+/**
+ * Which pixels a tool looks at: one layer, everything visible, or only the
+ * background (input image / background-colour frame, as displayed).
+ */
+export type SampleSource = "layer" | "all" | "background";
+
+/** Where a sample is read from once the layer is known ({@link sampleTarget}). */
+export type SampleTarget = { kind: "layer"; layer: Layer } | { kind: "scene"; source: SceneSource };
+
+/**
+ * Resolve a sample source: `"layer"` reads that layer's pixels (falling back
+ * to everything visible when there is no layer), the others render the scene.
+ * Pure; the single decision shared by bucket, wand and eyedropper.
+ * @param sample - Tool option.
+ * @param layer - Layer `"layer"` means (target / active paint layer), if any.
+ * @returns What to read.
+ */
+export function sampleTarget(sample: SampleSource, layer: Layer | null | undefined): SampleTarget {
+  if (sample === "layer") return layer ? { kind: "layer", layer } : { kind: "scene", source: "all" };
+  return { kind: "scene", source: sample };
+}
 
 /** A magic-wand pick. */
 export interface WandRequest extends WandOptions {
   /** Click position, document coords. */
   point: Point;
-  /** Active paint layer or the visible composite. */
+  /** Active paint layer, the visible composite or the background only. */
   sample: SampleSource;
 }
 
@@ -50,7 +74,7 @@ export interface FillRequest {
   tolerance: number;
   contiguous: boolean;
   antiAlias: boolean;
-  /** Current (target) layer or the visible composite. */
+  /** Current (target) layer, the visible composite or the background only. */
   sample: SampleSource;
   /** 0..1 */
   opacity: number;
@@ -81,7 +105,8 @@ export class PixelOps {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
-    if (!layer || !this.canEdit(layer)) return false;
+    // A rasterized text layer is filled right away (the fill joins the rasterize step).
+    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
     const px = Math.floor(req.point.x);
     const py = Math.floor(req.point.y);
     const image = this.imageRectInDoc();
@@ -90,7 +115,7 @@ export class PixelOps {
     const bounds = s.store.bounds;
     if (!inside(bounds, px, py)) return false;
 
-    const source = this.sampleArea(bounds, req.sample, layer);
+    const source = this.sampleArea(bounds, sampleTarget(req.sample, layer));
     if (!source) return false;
     const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
       x: px - bounds.x,
@@ -137,8 +162,7 @@ export class PixelOps {
     if (s.loading || s.stroke.active) return null;
     const area = unionRect(this.imageRectInDoc(), s.store.bounds);
     if (!inside(area, Math.floor(req.point.x), Math.floor(req.point.y))) return null;
-    const layer = targetLayer(s.doc, "paint");
-    const source = req.sample === "all" || !layer ? this.sampleArea(area, "all", null) : this.sampleArea(area, "layer", layer);
+    const source = this.sampleArea(area, sampleTarget(req.sample, targetLayer(s.doc, "paint")));
     return source ? wandSelection(source, area, req.point, req) : null;
   }
 
@@ -147,23 +171,19 @@ export class PixelOps {
   /**
    * Colour under a point (eyedropper).
    * @param point - Document coords.
-   * @param source - Active paint layer or the visible composite.
+   * @param source - Active paint layer, the visible composite, or the background only.
    * @param size - Sample window side: 1 (point), 3 or 5 (average).
    * @returns `#rrggbb`, or `null` if the window is fully transparent / off the layer.
    */
   sampleColor(point: Point, source: SampleSource, size: number): string | null {
-    const s = this.s;
     const r = Math.max(0, Math.floor((size - 1) / 2));
     const rect: Rect = { x: Math.floor(point.x) - r, y: Math.floor(point.y) - r, width: r * 2 + 1, height: r * 2 + 1 };
-    let data: ImageData | null | undefined;
-    if (source === "layer") {
-      const layer = targetLayer(s.doc, "paint");
-      data = layer ? s.store.read(layer.id, rect)?.data : null;
-    } else {
-      this.scratch ??= document.createElement("canvas");
-      data = readDocRegion(this.compositeInput(), rect, this.scratch);
-    }
-    const rgb = data ? averageColor(data.data) : null;
+    const layer = targetLayer(this.s.doc, "paint");
+    // "Current layer" with no paint layer samples nothing (unlike bucket/wand, which fall back).
+    if (source === "layer" && !layer) return null;
+    this.scratch ??= document.createElement("canvas");
+    const data = this.sampleArea(rect, sampleTarget(source, layer), this.scratch);
+    const rgb = data ? averageColor(data) : null;
     return rgb ? rgbToHex(rgb) : null;
   }
 
@@ -176,12 +196,14 @@ export class PixelOps {
   // ── Internals ───────────────────────────────────────────────────────────
 
   /**
-   * RGBA of a document area as the bucket / wand see it: the visible
-   * composite, or one layer (transparent outside the bounds).
+   * RGBA of a document area as the bucket / wand / eyedropper see it: the
+   * visible composite, the background only, or one layer (transparent
+   * outside the bounds). The one sampling path of all three tools.
+   * @param scratch - Reusable canvas for scene reads (eyedropper drags).
    */
-  private sampleArea(area: Rect, sample: SampleSource, layer: Layer | null): Uint8ClampedArray | null {
-    if (sample === "all" || !layer) return readDocRegion(this.compositeInput(), area)?.data ?? null;
-    const read = this.s.store.read(layer.id, area);
+  private sampleArea(area: Rect, target: SampleTarget, scratch?: HTMLCanvasElement): Uint8ClampedArray | null {
+    if (target.kind === "scene") return readDocRegion(sceneFor(this.compositeInput(), target.source), area, scratch)?.data ?? null;
+    const read = this.s.store.read(target.layer.id, area);
     if (read && rectEquals(read.rect, area)) return read.data.data;
     const out = new Uint8ClampedArray(area.width * area.height * 4);
     if (!read) return out;
@@ -193,30 +215,12 @@ export class PixelOps {
     return out;
   }
 
-  /** Same lock/visibility rules (and notes) as strokes. */
-  private canEdit(layer: Layer): boolean {
-    if (layer.locked) {
-      this.s.events.emit("note", LOCKED_LAYER_NOTE);
-      return false;
-    }
-    if (!layer.visible) {
-      this.s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
-      return false;
-    }
-    return true;
-  }
-
   /** The current image's rect in document coords (rounded out). */
   private imageRectInDoc(): Rect {
     const s = this.s;
     const map = documentMap(s.doc, s.imageSize);
     const size = s.imageSize;
-    return roundOutRect({
-      x: -map.offsetX / map.scale,
-      y: -map.offsetY / map.scale,
-      width: size.width / map.scale,
-      height: size.height / map.scale,
-    });
+    return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
   }
 
   private compositeInput(): DocCompositeInput {

@@ -4,8 +4,8 @@
  * document placement (`Editor.placement`); pixels are never resampled.
  *
  * Activated by the "Move drawing" toggle in the layers panel footer -- not a
- * rail tool and has no keyboard shortcut (V is reserved for the future
- * per-layer Move tool).
+ * rail tool and has no keyboard shortcut (V is the per-layer Move tool,
+ * `moveLayer.ts`).
  *
  * - Drag moves (whole image px, so an unscaled drawing stays pixel-exact).
  * - Wheel while the button is held scales around the cursor
@@ -111,11 +111,13 @@ class MoveOptions implements ToolOptions {
 export class MoveTool implements Tool {
   readonly id = "move";
   readonly label = "Move drawing";
-  /** No keyboard shortcut; V is reserved for the future element Move tool. */
+  /** No keyboard shortcut; V is the layer Move tool (`moveLayer.ts`). */
   readonly shortcut = "";
   readonly icon = "moveDrawing";
   /** Hidden from the tool rail; activated by the layers panel footer toggle. */
   readonly rail = false;
+  /** Ctrl never swaps in the layer Move tool while moving the drawing. */
+  readonly ctrlMove = false;
   readonly options: ToolOptions;
   private drag: MoveDrag | null = null;
 

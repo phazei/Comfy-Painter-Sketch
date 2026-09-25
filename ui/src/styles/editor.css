@@ -307,6 +307,36 @@
   pointer-events: none;
 }
 
+/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a
+ * transform; the canvas shows the glyphs, the textarea only the caret. */
+.cps-text-edit {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: content-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 1px dashed rgba(128, 160, 255, 0.9);
+  background: transparent;
+  color: transparent;
+  resize: none;
+  overflow: hidden;
+  white-space: pre;
+  transform-origin: 0 0;
+  cursor: text;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-indent: 0;
+  text-transform: none;
+  font-kerning: auto;
+  touch-action: auto;
+}
+
+.cps-text-edit::selection {
+  background: rgba(80, 140, 255, 0.35);
+}
+
 .cps-note {
   position: absolute;
   left: 50%;

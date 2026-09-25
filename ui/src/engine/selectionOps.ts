@@ -24,10 +24,11 @@ import type { Layer } from "../document/types";
 import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 import { boundsCap } from "./bounds";
-import { HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, MASK_STROKE_COLOR } from "./editorTypes";
+import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import { blendCoverage, hexToRgb } from "./pixelColor";
+import { preparePixelEdit } from "./rasterize";
 import {
   clipSelection,
   combineSelection,
@@ -206,17 +207,12 @@ export class SelectionOps {
     return layer && this.canEdit(layer) ? layer : null;
   }
 
-  /** Same lock/visibility rules (and notes) as strokes and the bucket. */
+  /**
+   * The shared pixel-edit gate (`rasterize.ts`): lock/visibility notes, and a
+   * text layer is rasterized first (the edit joins that undo step).
+   */
   private canEdit(layer: Layer): boolean {
-    if (layer.locked) {
-      this.s.events.emit("note", LOCKED_LAYER_NOTE);
-      return false;
-    }
-    if (!layer.visible) {
-      this.s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
-      return false;
-    }
-    return true;
+    return preparePixelEdit(this.s, layer) !== "blocked";
   }
 
   /**

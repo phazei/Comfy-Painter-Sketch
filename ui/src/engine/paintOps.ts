@@ -3,7 +3,10 @@
  * (decision 6), strokes (brush dabs or one shape) through the stroke buffer, and undo/redo of
  * dirty-rect patches (decision 10). Patches are in document coords;
  * re-applying one first widens bounds to cover it. Structural layer entries
- * are applied by `layerHistory.ts`.
+ * are applied by `layerHistory.ts`, Move-tool translate entries by
+ * `layerTranslate.ts`, text entries by `textLayer.ts`; group entries
+ * (rasterize + edit) apply their parts in order. Strokes pass the pixel-edit
+ * gate of `rasterize.ts` first (lock / hidden / text layers).
  */
 
 import { targetLayer } from "../document/masks";
@@ -14,11 +17,14 @@ import type { Dab } from "./brush";
 import { renderShape } from "./shapeRender";
 import { shapeBounds } from "./shapes";
 import type { ShapeSpec } from "./shapes";
-import { HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, MASK_STROKE_COLOR } from "./editorTypes";
+import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import type { FrameOps } from "./frameOps";
 import { applyLayersEntry } from "./layerHistory";
+import { applyTranslateEntry } from "./layerTranslate";
+import { preparePixelEdit } from "./rasterize";
+import { applyTextEntry } from "./textLayer";
 import type { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
 
@@ -81,14 +87,8 @@ export class PaintOps {
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer) return false;
-    if (layer.locked) {
-      s.events.emit("note", LOCKED_LAYER_NOTE);
-      return false;
-    }
-    if (!layer.visible) {
-      s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : "The layer is hidden.");
-      return false;
-    }
+    // A rasterize prompt silently ends this press (see rasterize.ts); the next stroke joins it.
+    if (preparePixelEdit(s, layer) !== "proceed") return false;
     const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     s.strokeLayerId = layer.id;
     s.strokeDiameter = Math.max(1, maxDiameter);
@@ -161,19 +161,21 @@ export class PaintOps {
 
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
-  /** Undo the last operation (no-op while stroking). */
+  /** Undo the last operation (no-op while stroking; cancels a Move drag preview). */
   undo(): void {
     const s = this.s;
     if (!s.history.canUndo || s.stroke.active) return;
+    s.movePreview = null;
     const entry = s.history.undo();
     if (entry) this.applyEntry(entry, "before");
     s.afterEdit();
   }
 
-  /** Redo the last undone operation (no-op while stroking). */
+  /** Redo the last undone operation (no-op while stroking; cancels a Move drag preview). */
   redo(): void {
     const s = this.s;
     if (!s.history.canRedo || s.stroke.active) return;
+    s.movePreview = null;
     const entry = s.history.redo();
     if (entry) this.applyEntry(entry, "after");
     s.afterEdit();
@@ -192,6 +194,19 @@ export class PaintOps {
     }
     if (entry.kind === "selection") {
       s.selection.set(side === "before" ? entry.before : entry.after);
+      return;
+    }
+    if (entry.kind === "translate") {
+      applyTranslateEntry(s, entry, side === "after");
+      return;
+    }
+    if (entry.kind === "text") {
+      applyTextEntry(s, entry, side === "after");
+      return;
+    }
+    if (entry.kind === "group") {
+      const parts = side === "after" ? entry.entries : [...entry.entries].reverse();
+      for (const part of parts) this.applyEntry(part, side);
       return;
     }
     if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;

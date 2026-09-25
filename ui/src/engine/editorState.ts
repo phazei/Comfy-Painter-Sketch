@@ -12,9 +12,10 @@ import { containsRect, unionRect } from "../geometry/rect";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { growBounds } from "./bounds";
 import type { FrameBackground } from "./compositor";
+import { groupEntries } from "./editorTypes";
 import type { EditorEvents, FrameSource, HistoryEntry } from "./editorTypes";
 import { Emitter } from "./emitter";
-import { HistoryStack } from "./history";
+import { DEFAULT_HISTORY_BYTES, HistoryStack } from "./history";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
 import { SelectionState } from "./selectionState";
@@ -26,8 +27,9 @@ import { ViewState } from "./view";
  */
 export class EditorState {
   readonly events = new Emitter<EditorEvents>();
-  readonly view = new ViewState();
-  readonly history = new HistoryStack<HistoryEntry>();
+  /** View commands (Fit, Ctrl+0/1, zoom, pan) emit `render` themselves, whoever calls them. */
+  readonly view = new ViewState(() => this.events.emit("render", undefined));
+  readonly history = new HistoryStack<HistoryEntry>(DEFAULT_HISTORY_BYTES, groupEntries);
   readonly stroke = new StrokeBuffer();
   readonly runtime = new LayerRuntimeTable();
   readonly store: LayerStore;
@@ -53,6 +55,16 @@ export class EditorState {
   strokeDiameter = 1;
   /** Where the previous stroke ended, document coords. */
   lastStrokeEnd: Point | null = null;
+  /**
+   * Move-tool drag in progress: the layer is drawn offset by (dx, dy)
+   * document px; pixels move only on commit (`moveOps.ts`).
+   */
+  movePreview: { layerId: string; dx: number; dy: number } | null = null;
+  /**
+   * Asks the user whether a text layer may be rasterized (`rasterize.ts`);
+   * the UI installs a `window.confirm` (the engine has no DOM UI). Default: no.
+   */
+  confirmRasterize: () => boolean = () => false;
 
   /**
    * @param doc - Document (copied).
@@ -94,7 +106,9 @@ export class EditorState {
 
   /**
    * Grow bounds to cover `need`. Chunked + capped for strokes; exact and
-   * uncapped when re-applying history.
+   * uncapped when re-applying history. Every layer with content is marked
+   * for re-upload: layer files are sized to `bounds`, and a file saved at
+   * the old bounds would be restored at the wrong origin.
    * @param need - Document rect that must be covered.
    * @param chunked - Stroke growth (256 px chunks, capped).
    */
@@ -106,6 +120,7 @@ export class EditorState {
       this.store.rebase(next);
       this.stroke.rebase(next);
       this.doc.bounds = { ...next };
+      for (const layer of this.doc.layers) this.runtime.resized(layer.id);
     }
   }
 

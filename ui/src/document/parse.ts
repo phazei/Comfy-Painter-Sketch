@@ -10,9 +10,11 @@
 import { containsRect, frameRect } from "../geometry/rect";
 import type { Rect, Size } from "../geometry/rect";
 import { createId, createPaintLayer } from "./create";
+import { log } from "../log";
 import { readPlacement } from "./placement";
+import { readTextData } from "./textData";
 import { DOCUMENT_VERSION } from "./types";
-import type { Layer, LayerKind, PainterDocument, Region, TextData } from "./types";
+import type { Layer, LayerKind, PainterDocument, Region } from "./types";
 
 /** Largest accepted frame/bounds side in pixels. */
 export const MAX_DOCUMENT_SIDE = 16384;
@@ -157,7 +159,16 @@ function readLayer(value: unknown): Layer | null {
   };
   if (typeof value["color"] === "string") layer.color = value["color"];
   if (typeof value["invert"] === "boolean") layer.invert = value["invert"];
-  if (isRecord(value["textData"])) layer.textData = value["textData"] as TextData;
+  if (layer.kind === "text") {
+    // Lenient: unusable text data keeps the layer (and its pixels) as paint.
+    const textData = readTextData(value["textData"]);
+    if (textData) {
+      layer.textData = textData;
+    } else {
+      log.warn(`text layer ${id} has no usable textData; loading it as a paint layer`);
+      layer.kind = "paint";
+    }
+  }
   return layer;
 }
 

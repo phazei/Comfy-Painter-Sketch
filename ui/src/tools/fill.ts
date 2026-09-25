@@ -22,10 +22,14 @@ export type FillOptions = {
   sample: SampleSource;
 };
 
-/** Sample-source choices shared by the bucket and eyedropper. */
+/**
+ * Sample-source choices shared by the bucket, magic wand and eyedropper.
+ * "Background" = the input image (or background-colour frame) only.
+ */
 export const SAMPLE_CHOICES = [
   { value: "layer", label: "Current layer" },
   { value: "all", label: "All layers" },
+  { value: "background", label: "Background" },
 ] as const;
 
 const DESCRIPTORS: readonly OptionDescriptor[] = [
@@ -45,7 +49,8 @@ export class FillTool implements Tool {
   readonly shortcut = "g";
   readonly icon = "bucket";
   readonly altEyedropper = true;
-  readonly values: FillOptions = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample: "all" };
+  /** Default sample: the background (fill regions of the input image, not of earlier paint). */
+  readonly values: FillOptions = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample: "background" };
   readonly options = new OptionSet(DESCRIPTORS, this.values);
 
   /** @inheritdoc */

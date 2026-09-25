@@ -95,6 +95,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Text option (font): menu, or a field while typing a custom value. */
+.cps-text-option select {
+  max-width: 11em;
+}
+
+.cps-text-field {
+  width: 10em;
+}
+
+.cps-text-field[hidden],
+.cps-text-option select[hidden] {
+  display: none;
+}
+
 .cps-num-value {
   min-width: 3.4em;
   text-align: right;

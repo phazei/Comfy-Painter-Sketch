@@ -1,6 +1,7 @@
 /**
  * "What the user sees", rendered in DOCUMENT coordinates, for tools that
- * sample all layers (paint bucket, eyedropper): the background (image or
+ * sample all layers or only the background ({@link sceneFor}; paint bucket,
+ * magic wand, eyedropper): the background (image or
  * fill) mapped through the inverse frame map (decision 4 -- the image may
  * have a different size than `doc.frame`), then visible paint layers bottom
  * -> top at their opacity (Normal blend). Mask tints are not included: they
@@ -13,6 +14,7 @@
 
 import type { Rect, Size } from "../geometry/rect";
 import type { CompositeLayer, FrameBackground } from "./compositor";
+import { imageRectToDoc } from "./frameMap";
 import type { FrameMap } from "./frameMap";
 
 /** Scene description in document terms. */
@@ -28,6 +30,22 @@ export interface DocCompositeInput {
   layers: readonly CompositeLayer[];
 }
 
+/** Which part of the scene a sampling tool reads (the "layer" source reads pixels directly, not the scene). */
+export type SceneSource = "all" | "background";
+
+/**
+ * The scene a sampling tool sees: everything visible (`"all"`), or only the
+ * background (`"background"`: the input image, or the `width x height`
+ * background-colour frame when no image is connected) -- same placement,
+ * no paint layers.
+ * @param input - Full scene.
+ * @param source - Scene part.
+ * @returns Scene to render (`input` itself for `"all"`).
+ */
+export function sceneFor(input: DocCompositeInput, source: SceneSource): DocCompositeInput {
+  return source === "background" ? { ...input, layers: [] } : input;
+}
+
 /**
  * Draw the scene for a document rect into a context whose (0,0) is `rect`'s
  * top-left, 1 canvas px per document px.
@@ -41,18 +59,17 @@ export function drawDocRegion(ctx: CanvasRenderingContext2D, input: DocComposite
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.clearRect(0, 0, rect.width, rect.height);
-  // Image rect in document coords: inverse of `image = offset + doc * s`.
-  const bx = -map.offsetX / map.scale - rect.x;
-  const by = -map.offsetY / map.scale - rect.y;
-  const bw = imageSize.width / map.scale;
-  const bh = imageSize.height / map.scale;
+  // Image rect in document coords (the documentMap, incl. Move placement).
+  const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize.width, height: imageSize.height });
+  const bx = image.x - rect.x;
+  const by = image.y - rect.y;
   if (input.background.kind === "image") {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(input.background.image, bx, by, bw, bh);
+    ctx.drawImage(input.background.image, bx, by, image.width, image.height);
   } else {
     ctx.fillStyle = input.background.color;
-    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillRect(bx, by, image.width, image.height);
   }
   for (const layer of input.layers) {
     if (layer.opacity <= 0) continue;

@@ -118,7 +118,7 @@ interface Layer {
   file: string | null                               // "painter-sketch/xyz.webp [input]"
   color?: string                                    // mask display color
   invert?: boolean                                  // mask layers, default false
-  textData?: TextData                               // text layers
+  textData?: TextData                               // text layers: {text, x, y, font, size, color, bold, italic, align, lineHeight?}, doc px; (x,y) = first-line baseline at its left/centre/right edge per align
 }
 interface Region {                                  // future: Output Regions
   id: string
@@ -157,6 +157,7 @@ interface Region {                                  // future: Output Regions
   the upload fails, a confirm asks "Upload failed; save anyway without the latest
   paint?"; Ctrl+Shift+S is not intercepted). Also on fullscreen exit and session
   detach (tab switch / node removal).
+  Also: F5 / Ctrl+R / Ctrl+Shift+R (any time uploads are pending) are intercepted, flushed (3 s cap), then reloaded; flush on tab hidden / window blur. No `beforeunload` prompt of our own (ComfyUI already asks).
   File references change only after a successful upload. A failed upload toasts
   and blocks the queue (same as core Painter); pixels stay in memory, still dirty.
 - **Cleanup:** files accumulate by design (older workflow versions and graph undo
@@ -201,11 +202,11 @@ interface Region {                                  // future: Output Regions
 |---|---|---|
 | Brush | B | size, hardness, opacity, flow, spacing, color, pressure -> size / opacity toggles. **Click, then Shift+click draws a straight stroke from the last point** |
 | Eraser | E | size, hardness, opacity, pressure, Shift+click straight line |
-| Paint bucket | G | tolerance, contiguous, sample current layer / all layers, anti-alias |
-| Eyedropper | I | sample current layer / all layers. **Alt held in brush/bucket/shape = eyedropper** |
+| Paint bucket | G | tolerance, contiguous, sample **background** (default) / current layer / all layers, anti-alias, opacity |
+| Eyedropper | I | sample all layers (default) / current layer / background; point / 3x3 / 5x5. Alt+click = BG colour. **Alt held in brush/bucket/shape = eyedropper** |
 | Rect marquee / Ellipse marquee | M (Shift+M cycles) | Shift = square/circle once started |
 | Lasso | L | freehand; Alt-click adds polygon points |
-| Magic wand | W | tolerance, contiguous, sample current layer / all layers |
+| Magic wand | W | tolerance, contiguous, anti-alias, sample **background** (default) / current layer / all layers |
 | Line / Arrow | U (Shift+U cycles shapes) | width, color, arrowhead none / end / both. Shift snaps to 15 deg |
 | Rectangle / Ellipse | U (Shift+U) | stroke / fill / both, stroke width. Shift = square/circle |
 | Text | T | font, size, color, bold/italic, alignment |
@@ -365,11 +366,39 @@ own output pair.
 - [x] Rect / ellipse marquee, lasso, magic wand (browser-verified)
 - [x] Clip painting to selection, fill/clear selection, selection to mask (browser-verified)
 
-### M6 -- Text
-- [ ] Text layers, textarea overlay editing, re-edit on double-click, rasterize on save
+### M6 -- Move tool + Text
+- [x] **M6a Move tool (`V`, "Move layer")** (browser-verified) -- moves the *active layer's content* (not the whole drawing; that's "Move drawing").
+  - Paint layers: translate pixels by whole doc px; bounds grow so nothing is clipped; one drag = one undo entry (exactly reversible). Mask layer: same (moves the mask). Arrows nudge 1 image px, Shift+arrows 10; Esc cancels the drag. Locked layer -> note.
+  - Text layers: changes `textData` position and re-renders (lossless).
+  - No saved-file contract change: moved layers are just re-uploaded; text is rasterized at its new position.
+  - Ctrl held with any other rail tool (not Text) = temporary Move layer; Ctrl+click/drag auto-selects the topmost visible, unlocked paint/text layer with pixels under the cursor (Quick Mask turns off). Move tool option **Auto-select** (default off) does this without Ctrl. Nothing hit = nothing moves.
+  - Later (not M6): move only the selection's contents (cut/copy-move).
+- [x] **M6b Text tool (`T`)** (browser-verified) -- point text only (Enter = new line, grows as you type; no wrapping boxes in v1).
+  - Click empty canvas = new text layer (named after its first words) with an in-canvas `<textarea>` editor; click/double-click existing text = re-edit; Ctrl+drag with the text tool moves the text; Esc / click away commits; empty text on commit = layer removed.
+  - Options: font, size (image px), color (FG), bold, italic, alignment (left/center/right).
+  - Fonts: short curated list of widely available fonts + free-typed font name + recent fonts (localStorage). Missing font on re-edit shows a note ("Font 'X' isn't installed; editing will use a fallback"). Output never depends on fonts (rasterized pixels).
+  - `textData` saved in the layer (small); the layer image is also uploaded so Python never renders text.
+  - Painting/erasing/filling/shapes on a text layer asks "Rasterize text layer? It will no longer be editable as text." -- OK converts to a paint layer (part of the same undo step), Cancel aborts.
+  - Text tool while Quick Mask is on: switch the target back to paint and create a normal text layer (type-mask is out of scope).
 
 ### M7 -- Polish
-- [ ] Error toasts, settings (default mask color, pressure curve), README, example workflow
+- [ ] Error toasts: audit every failure path (upload, restore/missing files, cleanup route, bad manifest) for a clear, non-spammy toast
+- [ ] Settings: default mask color, default pressure curve (+ existing PaintQuality / Cleanup)
+- [ ] README: real feature list, shortcuts table, screenshots/GIF, install, storage + cleanup explanation
+- [ ] Example workflow (`example_workflows/`), e.g. LoadImage -> PainterSketch -> inpaint
+- [ ] Code health: split `ui/src/widget/controller.ts` (~573 lines) and `ui/src/ui/colorPicker.ts` (~421); `engine/editor.ts` sits at ~399 (extract before adding to it)
+- [ ] Known warts to fix or accept:
+  - Esc in the mask color picker restores the color but leaves an empty undo step
+  - `fullscreenKeys.ts` calls `preventDefault` on a bare Control keydown (harmless; modifier tracking is meant to be observe-only)
+  - An upload that finishes while the node's workflow tab is in the background doesn't update that tab's draft until you return to it
+  - Paint/mask files in documents saved before the bounds-growth re-upload fix may be offset; they can't be repaired automatically (text layers are)
+- [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before a first release
+
+### Handoff notes (for the next session)
+- M0-M6 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
+- Work style that worked: small, scoped agents with explicit concurrency rules; coordinator builds and runs all tests (`cd ui && npm run typecheck && npm test && npm run build`; Python `-m unittest discover tests` with the ComfyUI venv and `PYTHONPATH` = ComfyUI folder). Long-running agent sessions get large -- start fresh agents per task.
+- Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
+- Future ideas already agreed (not scheduled): move selection contents (cut/copy-move), apply mask to IMAGE (v2), output regions, text boxes with wrapping, searchable installed-font picker, type-mask text.
 
 ## Behavior Notes
 
@@ -411,11 +440,15 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-24: M6 complete. Late fixes: bounds growth now re-uploads every layer (other layers kept old-size files -> offset after reload, and slightly wrong Python output); restored text layers with mismatched files re-render from `textData`. Reload guard for F5/Ctrl+R (flush then reload; no extra prompt, ComfyUI already asks); flush on tab hidden / window blur. Drafts: we trigger `changeTracker.captureCanvasState()` after uploads/edits so page reload restores the latest paint.
+- 2026-09-24: Ctrl = temporary Move layer with auto-select (Photoshop); thumbnails now follow Move drawing placement.
+- 2026-09-24: M6 browser-verified. Fixes: every view command repaints (Fit button bug); stuck middle-button/pen drag recovery (likely cause of the "Move drawing ignored" bug); Space in text fields no longer arms pan. New Sample choice "Background" (input image only), default for bucket and wand; eyedropper keeps "All layers". Rasterize "paint again" note removed.
+- 2026-09-24: M6 code landed. Move layer: `translate {layerId,dx,dy}` history entry (no pixels; bounds grow first; patch fallback at the cap); nudges merge; per-kind movers in `engine/layerMovers.ts`. Text: `rasterize.ts` is the single gate before pixel edits (lock/hidden notes too); rasterize + next edit = one undo step; the press that triggers the confirm paints nothing; create+empty = no history; Clear turns text layers into empty paint layers; clicking another text while editing switches to it. New `text` option descriptor kind (font menu + custom).
 - 2026-09-24: M5 browser-verified. Ctrl+Shift+I restored (editor-scoped); Ctrl+A = current image area; new isometric "Move drawing" icon.
 - 2026-09-24: M5 round 1 fixes: ants built from closed contours (no pulsing on diagonals; 4k wand ~65 ms); Invert button + Shift+F7 + Ctrl+Shift+I (editor-scoped); +/−/× cursor badges; whole-drawing Move moved from the rail to a "Move drawing" toggle in the layers footer (hidden tool, `rail: false`).
 - 2026-09-24: M5 code landed. Move: `documentMap(doc, imageSize)` is the single doc<->image mapping (includes placement); wheel-scale while dragging 1.05/notch. Selection: cropped coverage `{rect, data, outside}` in doc coords, combine via min/max, empty result deselects, selection changes are undoable (`selection` history entry), clipping applied in `StrokeBuffer.compositeBuffer` + fill `clip`. Delete/Backspace always swallowed while the editor has the keyboard. Shift+F7 also inverts. Lasso Alt rule per Photoshop (Alt at start with a selection = subtract; re-press Alt for straight segments). Wand defaults tol 32 / contiguous / AA / all layers.
 - 2026-09-24: M4 browser-verified. Fixes: SVG cursors for eyedropper (incl. Alt) and bucket; with no image, width/height are the image size in editor and Python (doc frame no longer overrides), disconnect copies the size into the widgets.
-- 2026-09-24: M4 code landed. Bucket defaults tol 32 / contiguous / AA / all layers; fill grows bounds to cover the visible image; 4k fill ~185 ms. Eyedropper: Alt+click -> BG; `altEyedropper` tool flag gives Alt = temporary eyedropper (brush, bucket, shapes; not eraser). Shapes are pixel shapes rasterized on release (one undo patch); "both" = FG stroke + BG fill; Alt at pointer-down = eyedropper, Alt during drag = from centre; Esc cancels any tool drag. Rail tool groups (`tools/toolGroups.ts`, flyout via long-press/right-click) reusable for M5 marquees.
+- 2026-09-24: M4 code landed. Bucket defaults tol 32 / contiguous / AA / (now: Background); fill grows bounds to cover the visible image; 4k fill ~185 ms. Eyedropper: Alt+click -> BG; `altEyedropper` tool flag gives Alt = temporary eyedropper (brush, bucket, shapes; not eraser). Shapes are pixel shapes rasterized on release (one undo patch); "both" = FG stroke + BG fill; Alt at pointer-down = eyedropper, Alt during drag = from centre; Esc cancels any tool drag. Rail tool groups (`tools/toolGroups.ts`, flyout via long-press/right-click) reusable for M5 marquees.
 - 2026-09-24: Storage revised after measurements: masks PNG, paint lossy WebP default 99 (100 = PNG); cleanup settings row shows file stats.
 - 2026-09-24: Storage: WebP layers (masks lossless-verified via VP8L sniff, paint quality setting default 100 = lossless), upload on focus loss / 5 s idle / queue / Ctrl+S, settings-panel cleanup button with the one server route.
 - 2026-09-24: M3 browser round 1 fixes: click-to-engage focus rule + white rail edge as focus indicator; slider popover drag fixed; pressure options moved behind a stylus button (declarative option groups, nested popovers); background colour alpha ignored in both editor and Python (`#rgba`/`#rrggbbaa` accepted); `document` tooltip removed; graph undo no longer blanks the node (element/session hand-off) and never rolls back paint.
