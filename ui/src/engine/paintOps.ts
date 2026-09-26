@@ -25,7 +25,6 @@ import { applyLayersEntry } from "./layerHistory";
 import { applyTranslateEntry } from "./layerTranslate";
 import { preparePixelEdit } from "./rasterize";
 import { applyTextEntry } from "./textLayer";
-import type { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
 
 /**
@@ -35,12 +34,10 @@ export class PaintOps {
   /**
    * @param s - Shared editor state.
    * @param frames - Frame operations (Clear snapshots for undo).
-   * @param stamps - Dab stamp cache.
    */
   constructor(
     private readonly s: EditorState,
     private readonly frames: FrameOps,
-    private readonly stamps: StampCache,
   ) {}
 
   // ── Quick Mask / paint target ───────────────────────────────────────────
@@ -92,7 +89,7 @@ export class PaintOps {
     const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     s.strokeLayerId = layer.id;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle);
+    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle, s.strokeDiameter);
     s.events.emit("history", undefined);
     return true;
   }
@@ -106,11 +103,11 @@ export class PaintOps {
     if (!s.stroke.active || dabs.length === 0) return;
     let need: Rect = { x: 0, y: 0, width: 0, height: 0 };
     for (const dab of dabs) {
-      const r = dab.size / 2 + 1;
+      const r = (dab.size / 2) * s.stroke.reach + 2;
       need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
     }
     s.ensureBounds(need, true);
-    s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
+    s.stroke.addDabs(dabs);
     s.events.emit("render", undefined);
   }
 

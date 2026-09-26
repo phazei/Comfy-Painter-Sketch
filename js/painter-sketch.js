@@ -741,19 +741,19 @@ function sampleDefaultsFrom(read) {
 const PAINT_QUALITY_ID = "PainterSketch.PaintQuality";
 const PAINT_QUALITY_DEFAULT = 99;
 const MIN = 50;
-const MAX = 100;
+const MAX$1 = 100;
 const PAINT_QUALITY_SETTING = {
   id: PAINT_QUALITY_ID,
   category: ["PainterSketch", "Storage", "Paint layer quality"],
   name: "Paint layer quality",
   tooltip: "Paint layer quality. Below 100 saves lossy WebP (much smaller); 100 saves lossless PNG. Masks are always PNG.",
   type: "slider",
-  attrs: { min: MIN, max: MAX, step: 1 },
+  attrs: { min: MIN, max: MAX$1, step: 1 },
   defaultValue: PAINT_QUALITY_DEFAULT
 };
 function normalizePaintQuality(raw) {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return PAINT_QUALITY_DEFAULT;
-  return Math.min(MAX, Math.max(MIN, Math.round(raw)));
+  return Math.min(MAX$1, Math.max(MIN, Math.round(raw)));
 }
 const SETTINGS = [
   PAINT_QUALITY_SETTING,
@@ -4650,12 +4650,14 @@ function dabSize(pressure, dyn) {
   if (!dyn.pressureSize) return Math.max(MIN_SIZE, dyn.size);
   return Math.max(MIN_SIZE, dyn.size * pressureSizeFactor(pressure, dyn.minSizeRatio, dyn.gamma));
 }
-function dabAlpha(pressure, dyn) {
-  const flow = Math.min(1, Math.max(0, dyn.flow));
-  return dyn.pressureOpacity ? flow * curvePressure(pressure, dyn.gamma) : flow;
+function dabAlpha(dyn) {
+  return Math.min(1, Math.max(0, dyn.flow));
 }
-function createSpacer() {
-  return { last: null, residual: 0 };
+function dabCap(pressure, dyn) {
+  return dyn.pressureOpacity ? curvePressure(pressure, dyn.gamma) : 1;
+}
+function createSpacer(from = null, residual = 0) {
+  return { last: from, residual: from ? Math.max(0, residual) : 0 };
 }
 function placeDabs(state, next, dyn) {
   const prev = state.last;
@@ -4690,18 +4692,28 @@ function placeDabs(state, next, dyn) {
   return dabs;
 }
 function makeDab(x, y, pressure, dyn) {
-  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(pressure, dyn) };
+  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(dyn), cap: dabCap(pressure, dyn) };
 }
-function dabBounds(dab) {
-  const r = dab.size / 2 + 1;
+function dabBounds(dab, reach = 1) {
+  const r = dab.size / 2 * reach + 2;
   return { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 };
 }
-function stampStops(hardness, radiusPx) {
-  const h = Math.min(1, Math.max(0, hardness));
-  const aaEdge = radiusPx > 1 ? 1 - 1 / radiusPx : 0;
-  const inner = Math.min(h, aaEdge);
-  if (inner <= 0) return [[0, 1], [1, 0]];
-  return [[0, 1], [inner, 1], [1, 0]];
+const FADE_CUTOFF = 1.5;
+function stampProfile(hardness, radius) {
+  const h = Math.min(1, Math.max(0, Number.isFinite(hardness) ? hardness : 0));
+  const fade = Math.max(1 - h, 1 / Math.max(1, radius));
+  const core = Math.min(h, 1 - fade / 2);
+  return { core, fade, reach: core + fade * FADE_CUTOFF };
+}
+const RING_FADE_POSITION = 0.77;
+function ringDiameter(size, hardness) {
+  const p = stampProfile(hardness, size / 2);
+  return size * Math.min(1, p.core + p.fade * RING_FADE_POSITION);
+}
+function stampAlpha(u, profile) {
+  if (u <= profile.core) return 1;
+  const t = (u - profile.core) / profile.fade;
+  return t >= FADE_CUTOFF ? 0 : Math.pow(10, -t * t);
 }
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 64;
@@ -7559,6 +7571,386 @@ class SelectionState {
     this.clip = null;
   }
 }
+const MAX = 65535;
+const TABLE_N = 1024;
+const Q_FULL = 12;
+const MIN_SPACING = 0.05;
+class CoverageMask {
+  /**
+   * @param width - Bounds width, px.
+   * @param height - Bounds height, px.
+   */
+  constructor(width, height) {
+    this.width = width;
+    this.height = height;
+    this.data = new Uint16Array(Math.max(0, width * height));
+  }
+  width;
+  height;
+  data;
+  /** `alpha x tip` and `-ln(1 - alpha x tip)` by squared distance over `[0, reach^2]`, for the current profile and flow. */
+  p = null;
+  q = null;
+  tableKey = "";
+  /**
+   * Coverage at a pixel (tests / debugging).
+   * @returns 0..1
+   */
+  at(x, y) {
+    return (this.data[y * this.width + x] ?? 0) / MAX;
+  }
+  /**
+   * Composite one segment's dabs over the coverage. A point segment is its
+   * dab `a`; a run is dabs `1..intervals` along `a -> b` (dab 0 belongs to
+   * the previous segment). Size and cap are interpolated from `a` to `b`;
+   * flow is the segment's.
+   * @param seg - Segment in document coords.
+   * @param originX - Document x of mask pixel 0.
+   * @param originY - Document y of mask pixel 0.
+   * @param profile - Stamp profile of the stroke.
+   */
+  sweep(seg, originX, originY, profile) {
+    const { a, b, intervals } = seg;
+    const alpha = Math.min(1, Math.max(0, (a.alpha + b.alpha) / 2));
+    if (alpha <= 0) return;
+    this.tables(profile, alpha);
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    if (intervals === 0 || len < 1e-6) this.stamp(a.x - originX, a.y - originY, a.size / 2, a.cap, profile);
+    else if (intervals === 1) this.stamp(b.x - originX, b.y - originY, b.size / 2, b.cap, profile);
+    else this.run(seg, originX, originY, profile, len);
+  }
+  /** One dab (the common case on curves, where every pointer sample is its own short segment). */
+  stamp(cx, cy, r, capRaw, profile) {
+    const { data, width, height } = this;
+    const p = this.p;
+    const wk = TABLE_N / (profile.reach * profile.reach * r * r);
+    const reach = r * profile.reach;
+    const reach2 = reach * reach;
+    const cap = Math.min(1, Math.max(0, capRaw)) * MAX;
+    const y0 = Math.max(0, Math.floor(cy - reach));
+    const y1 = Math.min(height - 1, Math.ceil(cy + reach));
+    for (let y = y0; y <= y1; y++) {
+      const py = y + 0.5 - cy;
+      const h2 = reach2 - py * py;
+      if (h2 <= 0) continue;
+      const h = Math.sqrt(h2);
+      const xs = Math.max(0, Math.floor(cx - h - 0.5));
+      const xe = Math.min(width - 1, Math.ceil(cx + h - 0.5));
+      const row = y * width;
+      for (let x = xs; x <= xe; x++) {
+        const i = row + x;
+        const c = data[i];
+        if (c >= MAX) continue;
+        const px = x + 0.5 - cx;
+        const w = (px * px + py * py) * wk;
+        if (w >= TABLE_N) continue;
+        const iw = w | 0;
+        const added = p[iw] + (p[iw + 1] - p[iw]) * (w - iw);
+        if (added <= 0) continue;
+        let next = c + (MAX - c) * added;
+        if (next > cap) next = c > cap ? c : cap;
+        data[i] = next + 0.5 | 0;
+      }
+    }
+  }
+  /** A run of dabs `1..intervals` from `a` to `b`, summed per pixel as `q` (see the module doc). */
+  run(seg, originX, originY, profile, len) {
+    const { data, width, height } = this;
+    const { a, b, intervals } = seg;
+    const q = this.q;
+    const wScale = TABLE_N / (profile.reach * profile.reach);
+    const ax = a.x - originX;
+    const ay = a.y - originY;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const ux = dx / len;
+    const uy = dy / len;
+    const step = len / intervals;
+    const ra = a.size / 2;
+    const rb = b.size / 2;
+    const reachMax = Math.max(ra, rb) * profile.reach;
+    const reach2 = reachMax * reachMax;
+    const capA = Math.min(1, Math.max(0, a.cap));
+    const capB = Math.min(1, Math.max(0, b.cap));
+    const m = Math.max(1, Math.ceil(MIN_SPACING * (ra + rb) / step));
+    const rem = intervals % m;
+    const remCentre = intervals - (rem - 1) / 2;
+    const wA = wScale / (ra * ra);
+    const wB = wScale / (rb * rb);
+    const wConst = ra === rb;
+    const x0 = Math.max(0, Math.floor(Math.min(ax, ax + dx) - reachMax));
+    const y0 = Math.max(0, Math.floor(Math.min(ay, ay + dy) - reachMax));
+    const x1 = Math.min(width - 1, Math.ceil(Math.max(ax, ax + dx) + reachMax));
+    const y1 = Math.min(height - 1, Math.ceil(Math.max(ay, ay + dy) + reachMax));
+    const nx = -uy * reachMax;
+    const ny = ux * reachMax;
+    for (let y = y0; y <= y1; y++) {
+      const py = y + 0.5 - ay;
+      const row = y * width;
+      let xl = Infinity;
+      let xr = -Infinity;
+      let h2 = reach2 - py * py;
+      if (h2 >= 0) {
+        const h = Math.sqrt(h2);
+        xl = -h;
+        xr = h;
+      }
+      const pyb = py - dy;
+      h2 = reach2 - pyb * pyb;
+      if (h2 >= 0) {
+        const h = Math.sqrt(h2);
+        if (dx - h < xl) xl = dx - h;
+        if (dx + h > xr) xr = dx + h;
+      }
+      if (uy !== 0) {
+        const t1 = (py - ny) / uy;
+        if (t1 >= 0 && t1 <= len) {
+          const xe2 = t1 * ux + nx;
+          if (xe2 < xl) xl = xe2;
+          if (xe2 > xr) xr = xe2;
+        }
+        const t2 = (py + ny) / uy;
+        if (t2 >= 0 && t2 <= len) {
+          const xe2 = t2 * ux - nx;
+          if (xe2 < xl) xl = xe2;
+          if (xe2 > xr) xr = xe2;
+        }
+      }
+      if (xl > xr) continue;
+      const xs = Math.max(x0, Math.floor(xl + ax - 0.5));
+      const xe = Math.min(x1, Math.ceil(xr + ax - 0.5));
+      for (let x = xs; x <= xe; x++) {
+        const i = row + x;
+        const c = data[i];
+        if (c >= MAX) continue;
+        const px = x + 0.5 - ax;
+        const s = px * ux + py * uy;
+        const along = s < 0 ? 0 : s > len ? len : s;
+        const ox = px - ux * along;
+        const oy = py - uy * along;
+        const d2 = ox * ox + oy * oy;
+        if (d2 >= reach2) continue;
+        const perp = px * uy - py * ux;
+        const p2 = perp * perp;
+        const half = Math.sqrt(reach2 - p2);
+        let k0 = Math.ceil((s - half) / step);
+        let k1 = Math.floor((s + half) / step);
+        if (k0 < 1) k0 = 1;
+        if (k1 > intervals) k1 = intervals;
+        const kStart = k0 + (m - k0 % m) % m;
+        const shift = (m - 1) / 2;
+        let sum = 0;
+        for (let k = kStart; k <= k1; k += m) {
+          const e = s - (k - shift) * step;
+          let wk = wA;
+          if (!wConst) {
+            const rk = ra + (rb - ra) * (k / intervals);
+            wk = wScale / (rk * rk);
+          }
+          const w = (p2 + e * e) * wk;
+          if (w >= TABLE_N) continue;
+          const iw = w | 0;
+          sum += m * (q[iw] + (q[iw + 1] - q[iw]) * (w - iw));
+          if (sum >= Q_FULL) break;
+        }
+        if (rem !== 0 && sum < Q_FULL && intervals >= k0 && intervals <= k1) {
+          const e = s - remCentre * step;
+          const w = (p2 + e * e) * wB;
+          if (w < TABLE_N) {
+            const iw = w | 0;
+            sum += rem * (q[iw] + (q[iw + 1] - q[iw]) * (w - iw));
+          }
+        }
+        if (sum <= 0) continue;
+        const added = sum >= Q_FULL ? 1 : 1 - Math.exp(-sum);
+        let next = c + (MAX - c) * added;
+        const cap = (capA + (capB - capA) * (along / len)) * MAX;
+        if (next > cap) next = c > cap ? c : cap;
+        data[i] = next + 0.5 | 0;
+      }
+    }
+  }
+  /**
+   * Zero an area (end of a stroke).
+   * @param rect - Mask px.
+   */
+  clear(rect) {
+    const r = this.clampRect(rect);
+    for (let y = r.y; y < r.y + r.height; y++) {
+      const from = y * this.width + r.x;
+      this.data.fill(0, from, from + r.width);
+    }
+  }
+  /**
+   * Write an area as straight-alpha RGBA (one colour, alpha = coverage).
+   * @param rect - Mask px (clamped to the mask).
+   * @param rgb - Colour.
+   * @param out - `rect.width * rect.height * 4` bytes.
+   */
+  writeRgba(rect, rgb, out) {
+    for (let y = 0; y < rect.height; y++) {
+      const src = (rect.y + y) * this.width + rect.x;
+      let p = y * rect.width * 4;
+      for (let x = 0; x < rect.width; x++, p += 4) {
+        out[p] = rgb.r;
+        out[p + 1] = rgb.g;
+        out[p + 2] = rgb.b;
+        out[p + 3] = this.data[src + x] * 255 / MAX + 0.5;
+      }
+    }
+  }
+  /**
+   * A copy re-based onto new bounds (bounds grew mid-stroke; pixels keep
+   * their document positions).
+   * @param from - Current bounds (document).
+   * @param to - New bounds (document).
+   * @returns New mask.
+   */
+  rebased(from, to) {
+    const next = new CoverageMask(to.width, to.height);
+    const ox = from.x - to.x;
+    const oy = from.y - to.y;
+    for (let y = 0; y < this.height; y++) {
+      const ty = y + oy;
+      if (ty < 0 || ty >= to.height) continue;
+      const sx0 = Math.max(0, -ox);
+      const sx1 = Math.min(this.width, to.width - ox);
+      if (sx1 <= sx0) continue;
+      const from2 = y * this.width;
+      const at = ty * to.width + sx0 + ox;
+      next.data.set(this.data.subarray(from2 + sx0, from2 + sx1), at);
+    }
+    return next;
+  }
+  /** Build `p = alpha x tip` and `q = -ln(1 - p)` by squared distance over `[0, reach^2]` (cached for the stroke). */
+  tables(profile, alpha) {
+    const key = `${profile.core}|${profile.fade}|${alpha}`;
+    if (this.q && this.tableKey === key) return;
+    const p = new Float32Array(TABLE_N + 2);
+    const q = new Float32Array(TABLE_N + 2);
+    for (let i = 0; i < TABLE_N; i++) {
+      const u = Math.sqrt(i / TABLE_N) * profile.reach;
+      p[i] = alpha * stampAlpha(u, profile);
+      q[i] = -Math.log(Math.max(1e-6, 1 - p[i]));
+    }
+    this.p = p;
+    this.q = q;
+    this.tableKey = key;
+  }
+  clampRect(rect) {
+    const x = Math.max(0, rect.x);
+    const y = Math.max(0, rect.y);
+    return {
+      x,
+      y,
+      width: Math.max(0, Math.min(this.width, rect.x + rect.width) - x),
+      height: Math.max(0, Math.min(this.height, rect.y + rect.height) - y)
+    };
+  }
+}
+const MERGE_TOLERANCE = 0.35;
+function canMerge(pts, i, j) {
+  const a = pts[i];
+  const b = pts[j];
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len > 2 * Math.max(4, a.size, b.size)) return false;
+  if (len < 1e-6) return false;
+  for (let k = i + 1; k < j; k++) {
+    const p = pts[k];
+    const rx = p.x - a.x;
+    const ry = p.y - a.y;
+    if (Math.abs(rx * dy - ry * dx) / len > MERGE_TOLERANCE) return false;
+    if (Math.abs((rx * dx + ry * dy) / len - len * (k - i) / (j - i)) > MERGE_TOLERANCE) return false;
+  }
+  return true;
+}
+function planSegments(prev, dabs) {
+  const out = [];
+  const pts = prev ? [prev, ...dabs] : [...dabs];
+  if (!prev && pts[0]) out.push({ a: pts[0], b: pts[0], intervals: 0 });
+  let i = 0;
+  while (i < pts.length - 1) {
+    const start = pts[i];
+    let j = i + 1;
+    while (j + 1 < pts.length && canMerge(pts, i, j + 1)) j++;
+    const end = pts[j];
+    if (Math.hypot(end.x - start.x, end.y - start.y) < 1e-6) out.push({ a: end, b: end, intervals: 0 });
+    else out.push({ a: start, b: end, intervals: j - i });
+    i = j;
+  }
+  return out;
+}
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  const body = m?.[1];
+  if (!body) return { r: 0, g: 0, b: 0 };
+  const full = body.length === 3 ? [...body].map((c) => c + c).join("") : body;
+  const n = parseInt(full, 16);
+  return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+}
+function rgbToHex(rgb) {
+  const part = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
+}
+function averageColor(data) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let a = 0;
+  for (let p = 0; p + 3 < data.length; p += 4) {
+    const w = data[p + 3];
+    if (w === 0) continue;
+    r += data[p] * w;
+    g += data[p + 1] * w;
+    b += data[p + 2] * w;
+    a += w;
+  }
+  if (a === 0) return null;
+  return { r: Math.round(r / a), g: Math.round(g / a), b: Math.round(b / a) };
+}
+function blendCoverage(dst, rect, coverage, coverageWidth, color, opacity) {
+  const k = Math.min(1, Math.max(0, opacity)) / 255;
+  if (k <= 0) return;
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4;
+      const sa = c * k;
+      const da = dst[p + 3] / 255;
+      const keep = da * (1 - sa);
+      const oa = sa + keep;
+      if (oa <= 0) continue;
+      dst[p] = (color.r * sa + dst[p] * keep) / oa;
+      dst[p + 1] = (color.g * sa + dst[p + 1] * keep) / oa;
+      dst[p + 2] = (color.b * sa + dst[p + 2] * keep) / oa;
+      dst[p + 3] = oa * 255;
+    }
+  }
+}
+function blendCoverageBehind(dst, rect, coverage, coverageWidth, color, opacity) {
+  const k = Math.min(1, Math.max(0, opacity)) / 255;
+  if (k <= 0) return;
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4;
+      const da = dst[p + 3] / 255;
+      const add = c * k * (1 - da);
+      const oa = da + add;
+      if (oa <= 0) continue;
+      dst[p] = (dst[p] * da + color.r * add) / oa;
+      dst[p + 1] = (dst[p + 1] * da + color.g * add) / oa;
+      dst[p + 2] = (dst[p + 2] * da + color.b * add) / oa;
+      dst[p + 3] = oa * 255;
+    }
+  }
+}
 const EMPTY = { x: 0, y: 0, width: 0, height: 0 };
 class StrokeBuffer {
   buffer = null;
@@ -7570,10 +7962,16 @@ class StrokeBuffer {
   refreshed = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
   clipSource = () => null;
-  /** Buffer x clip (x colour for dab strokes), composited instead of the raw buffer when needed. */
+  /** Buffer x clip, composited instead of the buffer while a selection exists. */
   clipped = null;
-  /** The buffer holds coverage-only dabs that still need the stroke colour. */
-  needsTint = false;
+  /** Dab coverage (bounds-sized, created by the first dab stroke). */
+  mask = null;
+  /** Document rect of coverage not yet written into the buffer canvas. */
+  maskDirty = EMPTY;
+  /** Last dab of the stroke so far (the next batch's segments start there). */
+  lastDab = null;
+  /** Stamp profile of the current stroke (hardness, largest radius). */
+  profile = stampProfile(0, 1);
   /**
    * Clip every composite (live preview and commit) to a selection: the
    * buffer is multiplied by the clip's alpha right before compositing, so
@@ -7586,6 +7984,10 @@ class StrokeBuffer {
   /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
   get lastRefreshed() {
     return { ...this.refreshed };
+  }
+  /** Stamp extent as a multiple of the radius for the current stroke ({@link StampProfile.reach}). */
+  get reach() {
+    return this.profile.reach;
   }
   /** Whether a stroke is in progress. */
   get active() {
@@ -7600,10 +8002,14 @@ class StrokeBuffer {
    * @param layer - Target layer surface (sized to `bounds`).
    * @param bounds - Current document bounds.
    * @param style - Stroke appearance.
+   * @param maxDiameter - Largest dab diameter this stroke can produce, px
+   *   (sets the stamp profile's 1 px minimum fade).
    */
-  begin(layer, bounds, style) {
+  begin(layer, bounds, style, maxDiameter = 1) {
     this.ensureSize(bounds);
     this.style = style;
+    this.profile = stampProfile(style.hardness, Math.max(1, maxDiameter / 2));
+    this.lastDab = null;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;
@@ -7627,28 +8033,28 @@ class StrokeBuffer {
     this.releaseClipped();
     this.buffer = nextBuffer;
     this.preview = nextPreview;
+    if (this.mask) this.mask = this.mask.rebased(this.bounds, bounds);
     this.bounds = { ...bounds };
   }
   /**
-   * Draw dabs into the buffer.
+   * Add dabs to the stroke coverage (written to the buffer on the next
+   * preview / commit).
    * @param dabs - Dabs in document coords.
-   * @param stamps - Stamp cache.
-   * @param maxDiameter - Largest diameter in this stroke (stamp resolution).
    */
-  addDabs(dabs, stamps, maxDiameter) {
+  addDabs(dabs) {
     if (!this.style || dabs.length === 0) return;
-    const { ctx } = this.surfaces().buffer;
-    const stamp = stamps.get(maxDiameter, this.style.hardness, "#000000");
-    this.needsTint = this.style.mode === "paint";
-    for (const dab of dabs) {
-      ctx.globalAlpha = dab.alpha;
-      const r = dab.size / 2;
-      ctx.drawImage(stamp.canvas, dab.x - r - this.bounds.x, dab.y - r - this.bounds.y, dab.size, dab.size);
-      const rect = dabBounds(dab);
+    this.surfaces();
+    const { width, height, x, y } = this.bounds;
+    if (!this.mask || this.mask.width !== width || this.mask.height !== height) this.mask = new CoverageMask(width, height);
+    for (const seg of planSegments(this.lastDab, dabs)) this.mask.sweep(seg, x, y, this.profile);
+    const touchedDabs = this.lastDab ? [this.lastDab, ...dabs] : dabs;
+    this.lastDab = dabs[dabs.length - 1] ?? this.lastDab;
+    for (const dab of touchedDabs) {
+      const rect = dabBounds(dab, this.reach);
       this.strokeRect = unionRect(this.strokeRect, rect);
       this.pendingPreview = unionRect(this.pendingPreview, rect);
+      this.maskDirty = unionRect(this.maskDirty, rect);
     }
-    ctx.globalAlpha = 1;
   }
   /**
    * Replace the buffer content with one shape (shape tools redraw the whole
@@ -7678,6 +8084,7 @@ class StrokeBuffer {
     const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
     this.pendingPreview = EMPTY;
     this.refreshed = r;
+    this.flushMask();
     if (this.style && !isEmptyRect(r)) {
       const x = r.x - this.bounds.x;
       const y = r.y - this.bounds.y;
@@ -7695,6 +8102,7 @@ class StrokeBuffer {
    */
   commit(layer) {
     const r = this.touched;
+    this.flushMask();
     if (this.style && !isEmptyRect(r)) {
       const x = r.x - this.bounds.x;
       const y = r.y - this.bounds.y;
@@ -7713,6 +8121,7 @@ class StrokeBuffer {
     this.releaseClipped();
     this.buffer = null;
     this.preview = null;
+    this.mask = null;
     this.style = null;
   }
   // ── Internals ───────────────────────────────────────────────────────────
@@ -7725,15 +8134,21 @@ class StrokeBuffer {
     ctx.drawImage(source, x, y, width, height, x, y, width, height);
     ctx.restore();
   }
-  /**
-   * The buffer region ready to composite: multiplied by the selection clip
-   * and, for dab strokes, filled with the stroke colour (or the buffer itself
-   * when neither applies).
-   */
+  /** Write pending dab coverage into the buffer canvas (stroke colour, alpha = coverage). */
+  flushMask() {
+    const r = intersectRect(roundOutRect(this.maskDirty), this.bounds);
+    this.maskDirty = EMPTY;
+    if (!this.mask || !this.style || !this.buffer || isEmptyRect(r)) return;
+    const local = { x: r.x - this.bounds.x, y: r.y - this.bounds.y, width: r.width, height: r.height };
+    const image = new ImageData(local.width, local.height);
+    const rgb = this.style.mode === "erase" ? { r: 0, g: 0, b: 0 } : hexToRgb(this.style.color);
+    this.mask.writeRgba(local, rgb, image.data);
+    this.buffer.ctx.putImageData(image, local.x, local.y);
+  }
+  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
   sourceFor(buffer, x, y, width, height) {
     const clip = this.clipSource();
-    const tint = this.needsTint && this.style ? this.style.color : null;
-    if (!clip && !tint) return buffer.canvas;
+    if (!clip) return buffer.canvas;
     this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
     const { ctx } = this.clipped;
     ctx.save();
@@ -7742,15 +8157,8 @@ class StrokeBuffer {
     ctx.clip();
     ctx.clearRect(x, y, width, height);
     ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
-    if (clip) {
-      ctx.globalCompositeOperation = "destination-in";
-      ctx.drawImage(clip, x, y, width, height, x, y, width, height);
-    }
-    if (tint) {
-      ctx.globalCompositeOperation = "source-in";
-      ctx.fillStyle = tint;
-      ctx.fillRect(x, y, width, height);
-    }
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
     ctx.restore();
     return this.clipped.canvas;
   }
@@ -7760,11 +8168,14 @@ class StrokeBuffer {
   }
   end() {
     const r = this.touched;
-    if (this.buffer && !isEmptyRect(r)) {
-      this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
+    if (!isEmptyRect(r)) {
+      const local = { x: r.x - this.bounds.x, y: r.y - this.bounds.y, width: r.width, height: r.height };
+      if (this.buffer) this.buffer.ctx.clearRect(local.x, local.y, local.width, local.height);
+      if (this.mask) this.mask.clear(local);
     }
+    this.maskDirty = EMPTY;
+    this.lastDab = null;
     this.style = null;
-    this.needsTint = false;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;
@@ -8662,16 +9073,13 @@ class PaintOps {
   /**
    * @param s - Shared editor state.
    * @param frames - Frame operations (Clear snapshots for undo).
-   * @param stamps - Dab stamp cache.
    */
-  constructor(s, frames, stamps) {
+  constructor(s, frames) {
     this.s = s;
     this.frames = frames;
-    this.stamps = stamps;
   }
   s;
   frames;
-  stamps;
   // ── Quick Mask / paint target ───────────────────────────────────────────
   /**
    * Switch the paint target. Targeting the mask adds a default mask layer to
@@ -8716,7 +9124,7 @@ class PaintOps {
     const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     s.strokeLayerId = layer.id;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle);
+    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle, s.strokeDiameter);
     s.events.emit("history", void 0);
     return true;
   }
@@ -8729,11 +9137,11 @@ class PaintOps {
     if (!s.stroke.active || dabs.length === 0) return;
     let need = { x: 0, y: 0, width: 0, height: 0 };
     for (const dab of dabs) {
-      const r = dab.size / 2 + 1;
+      const r = dab.size / 2 * s.stroke.reach + 2;
       need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
     }
     s.ensureBounds(need, true);
-    s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
+    s.stroke.addDabs(dabs);
     s.events.emit("render", void 0);
   }
   /**
@@ -8833,71 +9241,9 @@ class PaintOps {
     s.runtime.touch(entry.layerId);
   }
 }
-const MAX_STAMPS = 32;
-class StampCache {
-  stamps = /* @__PURE__ */ new Map();
-  /**
-   * Get (or render) a stamp.
-   *
-   * @param diameter - Largest diameter it will be drawn at, px.
-   * @param hardness - 0..1.
-   * @param color - CSS colour.
-   * @returns Square surface with the disc centred.
-   */
-  get(diameter, hardness, color) {
-    const size = Math.max(2, Math.ceil(diameter));
-    const key = `${size}|${hardness.toFixed(2)}|${color}`;
-    const hit = this.stamps.get(key);
-    if (hit) {
-      this.stamps.delete(key);
-      this.stamps.set(key, hit);
-      return hit;
-    }
-    const stamp = renderStamp(size, hardness, color);
-    this.stamps.set(key, stamp);
-    if (this.stamps.size > MAX_STAMPS) {
-      const oldest = this.stamps.keys().next().value;
-      if (oldest !== void 0) this.stamps.delete(oldest);
-    }
-    return stamp;
-  }
-  /** Drop all stamps. */
-  clear() {
-    this.stamps.clear();
-  }
-}
-function renderStamp(size, hardness, color) {
-  const surface = createSurface(size, size);
-  const { ctx } = surface;
-  const r = size / 2;
-  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
-  const rgb = colorToRgb(ctx, color);
-  for (const [offset, alpha] of stampStops(hardness, r)) {
-    gradient.addColorStop(offset, `rgba(${rgb}, ${alpha})`);
-  }
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(r, r, r, 0, Math.PI * 2);
-  ctx.fill();
-  return surface;
-}
-function colorToRgb(ctx, color) {
-  ctx.fillStyle = "#000000";
-  ctx.fillStyle = color;
-  const parsed = String(ctx.fillStyle);
-  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
-  if (hex) {
-    const n = parseInt(hex, 16);
-    return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
-  }
-  const rgba = /^rgba?\(([^)]+)\)$/i.exec(parsed)?.[1];
-  if (rgba) return rgba.split(",").slice(0, 3).join(",");
-  return "0, 0, 0";
-}
 class EditorBase {
   events;
   view;
-  stamps = new StampCache();
   /** FG/BG colours (session-scoped, not saved). */
   colors;
   s;
@@ -8917,7 +9263,7 @@ class EditorBase {
     this.view = this.s.view;
     this.colors = new ColorState(colors?.current);
     this.frames = new FrameOps(this.s);
-    this.paint = new PaintOps(this.s, this.frames, this.stamps);
+    this.paint = new PaintOps(this.s, this.frames);
     this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
     this.display = new LayerDisplay(this.s);
   }
@@ -9718,75 +10064,6 @@ function applyClip(coverage, width, bbox, clip) {
       const i = y * width + x;
       const c = clip[i];
       if (c < 255) coverage[i] = Math.round(coverage[i] * c / 255);
-    }
-  }
-}
-function hexToRgb(hex) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  const body = m?.[1];
-  if (!body) return { r: 0, g: 0, b: 0 };
-  const full = body.length === 3 ? [...body].map((c) => c + c).join("") : body;
-  const n = parseInt(full, 16);
-  return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
-}
-function rgbToHex(rgb) {
-  const part = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, "0");
-  return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
-}
-function averageColor(data) {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let a = 0;
-  for (let p = 0; p + 3 < data.length; p += 4) {
-    const w = data[p + 3];
-    if (w === 0) continue;
-    r += data[p] * w;
-    g += data[p + 1] * w;
-    b += data[p + 2] * w;
-    a += w;
-  }
-  if (a === 0) return null;
-  return { r: Math.round(r / a), g: Math.round(g / a), b: Math.round(b / a) };
-}
-function blendCoverage(dst, rect, coverage, coverageWidth, color, opacity) {
-  const k = Math.min(1, Math.max(0, opacity)) / 255;
-  if (k <= 0) return;
-  for (let y = 0; y < rect.height; y++) {
-    const row = (rect.y + y) * coverageWidth + rect.x;
-    for (let x = 0; x < rect.width; x++) {
-      const c = coverage[row + x];
-      if (c === 0) continue;
-      const p = (y * rect.width + x) * 4;
-      const sa = c * k;
-      const da = dst[p + 3] / 255;
-      const keep = da * (1 - sa);
-      const oa = sa + keep;
-      if (oa <= 0) continue;
-      dst[p] = (color.r * sa + dst[p] * keep) / oa;
-      dst[p + 1] = (color.g * sa + dst[p + 1] * keep) / oa;
-      dst[p + 2] = (color.b * sa + dst[p + 2] * keep) / oa;
-      dst[p + 3] = oa * 255;
-    }
-  }
-}
-function blendCoverageBehind(dst, rect, coverage, coverageWidth, color, opacity) {
-  const k = Math.min(1, Math.max(0, opacity)) / 255;
-  if (k <= 0) return;
-  for (let y = 0; y < rect.height; y++) {
-    const row = (rect.y + y) * coverageWidth + rect.x;
-    for (let x = 0; x < rect.width; x++) {
-      const c = coverage[row + x];
-      if (c === 0) continue;
-      const p = (y * rect.width + x) * 4;
-      const da = dst[p + 3] / 255;
-      const add = c * k * (1 - da);
-      const oa = da + add;
-      if (oa <= 0) continue;
-      dst[p] = (dst[p] * da + color.r * add) / oa;
-      dst[p + 1] = (dst[p + 1] * da + color.g * add) / oa;
-      dst[p + 2] = (dst[p + 2] * da + color.b * add) / oa;
-      dst[p + 3] = oa * 255;
     }
   }
 }
@@ -10607,7 +10884,6 @@ class Editor extends EditorBase {
     this.pixelOps.dispose();
     this.s.selection.dispose();
     this.s.history.clear();
-    this.stamps.clear();
     this.events.clear();
     this.colors.events.clear();
   }
@@ -10617,7 +10893,7 @@ const PAINT_OPTION_DESCRIPTORS = [
   { kind: "number", key: "hardness", label: "Hard", title: "Hardness (Shift+[ / ])", min: 0, max: 100, step: 1, unit: "%", scale: 100 },
   { kind: "number", key: "opacity", label: "Opac", title: "Opacity (1..9, 0)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
   { kind: "number", key: "flow", label: "Flow", title: "Flow (per-dab strength)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
-  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 200, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 400, step: 1, unit: "%", scale: 100 },
   { kind: "toggle", key: "pressureSize", label: "Size", title: "Pen pressure controls size", group: "pressure" },
   { kind: "toggle", key: "pressureOpacity", label: "Opacity", title: "Pen pressure controls opacity", group: "pressure" },
   {
@@ -10660,6 +10936,8 @@ class PaintTool {
   mode;
   spacer = null;
   last = null;
+  /** Distance travelled since the last dab when the previous stroke ended (a Shift-click line carries it on). */
+  residual = 0;
   /** Current stroke's full-pressure diameter in document px. */
   docSize = 1;
   /**
@@ -10686,10 +10964,9 @@ class PaintTool {
       color: editor.colors.fg
     };
     this.docSize = imageLengthToDoc(editor.frameMap, this.values.size);
-    if (!editor.beginStroke(style, this.docSize)) return;
-    this.spacer = createSpacer();
     const lineStart = first.shiftKey ? editor.lastStrokeEnd : null;
-    if (lineStart) this.feed(editor, [{ ...first, x: lineStart.x, y: lineStart.y }]);
+    if (!editor.beginStroke(style, this.docSize)) return;
+    this.spacer = lineStart ? createSpacer({ x: lineStart.x, y: lineStart.y, pressure: first.pressure }, this.residual) : createSpacer();
     this.feed(editor, samples);
   }
   /** @inheritdoc */
@@ -10701,6 +10978,7 @@ class PaintTool {
     if (!this.spacer) return;
     this.feed(editor, [sample]);
     const end = this.last ? { x: this.last.x, y: this.last.y } : { x: sample.x, y: sample.y };
+    this.residual = this.spacer.residual;
     this.spacer = null;
     this.last = null;
     editor.endStroke(end);
@@ -10712,9 +10990,9 @@ class PaintTool {
     this.last = null;
     editor.cancelStroke();
   }
-  /** @inheritdoc */
+  /** @inheritdoc -- like Photoshop's cursor, the ring shrinks with softness (`ringDiameter`). */
   cursor() {
-    return { kind: "ring", diameter: this.values.size };
+    return { kind: "ring", diameter: ringDiameter(this.values.size, this.values.hardness) };
   }
   feed(editor, samples) {
     const spacer = this.spacer;
@@ -10755,7 +11033,7 @@ function createBrushTool(pressure = PRESSURE_DEFAULTS) {
       hardness: 0.8,
       opacity: 1,
       flow: 1,
-      spacing: 0.1,
+      spacing: 0.25,
       ...pressure
     }
   });
@@ -10772,7 +11050,7 @@ function createEraserTool(pressure = PRESSURE_DEFAULTS) {
       hardness: 0.8,
       opacity: 1,
       flow: 1,
-      spacing: 0.1,
+      spacing: 0.25,
       ...pressure
     }
   });

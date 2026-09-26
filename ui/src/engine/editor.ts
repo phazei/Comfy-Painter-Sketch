@@ -274,7 +274,6 @@ export class Editor extends EditorBase {
     this.pixelOps.dispose();
     this.s.selection.dispose();
     this.s.history.clear();
-    this.stamps.clear();
     this.events.clear();
     this.colors.events.clear();
   }

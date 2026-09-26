@@ -140,7 +140,10 @@ ui/src/
     floodFill.ts          -- scanline fill on typed arrays (pure; `clip` seam for selection)
     docComposite.ts       -- "what the user sees" in doc coords (for sampling)
     shapes.ts             -- shape geometry (pure)
-    brush.ts              -- stamp generation, spacing, pressure curve
+    brush.ts              -- tip profile (measured from Photoshop), spacing, pressure curve
+    strokePath.ts         -- dabs -> straight runs (each dab owned by one segment)
+    dabMask.ts            -- 16-bit stroke coverage: every dab composited over (Photoshop)
+    stroke.ts             -- per-stroke buffer + preview, committed at opacity
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
   tools/                  -- one file per tool implementing a common Tool interface
     brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
@@ -153,6 +156,12 @@ ui/src/
 
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
+- **The brush model is measured, not designed** (SPEC "Brush engine"): the tip
+  is Photoshop's `10^-(d/R)^2` and every dab composites source-over. Do not
+  replace it with a swept-profile / max / "alpha darken" scheme again -- two
+  sessions did, from eyeballing screenshots, and every variant creased where a
+  stroke met itself. Change the tip or the combine rule only against a new
+  lossless Photoshop export, measured.
 - Tools sharing a rail slot/key (shapes on `U`, marquees on `M`) are a tool
   group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
   tool makes Alt-at-pointer-down a temporary eyedropper. Rail tools also get

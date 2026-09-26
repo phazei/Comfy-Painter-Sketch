@@ -1,7 +1,7 @@
 /**
  * Brush math: pressure curve, dab size/alpha, distance-based dab spacing and
- * stamp falloff. Pure (no canvas) so it is unit-testable; `stampCache.ts`
- * turns the falloff into pixels and `stroke.ts` draws the dabs.
+ * the stamp profile. Pure (no canvas) so it is unit-testable; `dabMask.ts`
+ * accumulates dabs into stroke coverage.
  */
 
 import type { Rect } from "../geometry/rect";
@@ -40,8 +40,10 @@ export interface Dab {
   y: number;
   /** Diameter, document px. */
   size: number;
-  /** 0..1 */
+  /** Flow: the dab's alpha (times the stamp profile), composited over, 0..1. */
   alpha: number;
+  /** Coverage cap (pen pressure -> opacity), 0..1; 1 without pressure opacity. */
+  cap: number;
 }
 
 /** Mutable spacing state carried across samples of one stroke. */
@@ -109,30 +111,46 @@ export function dabSize(pressure: number, dyn: BrushDynamics): number {
 }
 
 /**
- * Per-dab alpha for a pressure.
+ * Per-dab alpha (Photoshop "flow": each dab is composited over at this
+ * strength, `dabMask.ts`).
+ * @param dyn - Brush dynamics.
+ * @returns Flow 0..1.
+ */
+export function dabAlpha(dyn: BrushDynamics): number {
+  return Math.min(1, Math.max(0, dyn.flow));
+}
+
+/**
+ * Per-dab coverage cap for a pressure (pressure -> opacity): the most the
+ * stroke can reach around that dab.
  * @param pressure - 0..1 (normalized).
  * @param dyn - Brush dynamics.
- * @returns Alpha 0..1.
+ * @returns Cap 0..1.
  */
-export function dabAlpha(pressure: number, dyn: BrushDynamics): number {
-  const flow = Math.min(1, Math.max(0, dyn.flow));
-  return dyn.pressureOpacity ? flow * curvePressure(pressure, dyn.gamma) : flow;
+export function dabCap(pressure: number, dyn: BrushDynamics): number {
+  return dyn.pressureOpacity ? curvePressure(pressure, dyn.gamma) : 1;
 }
 
 // ── Spacing ───────────────────────────────────────────────────────────────────
 
 /**
- * Fresh spacing state for a new stroke.
- * @returns Empty state.
+ * Spacing state for a new stroke.
+ * @param from - Start the stroke here without a dab (a Shift-click line
+ *   continues from where the last stroke ended; its dabs begin one step
+ *   in, like Photoshop's), or `null`: the first sample gets a dab.
+ * @param residual - Distance already travelled since the last dab (carried
+ *   over from the previous stroke so the spacing runs on through the joint).
+ * @returns State.
  */
-export function createSpacer(): SpacerState {
-  return { last: null, residual: 0 };
+export function createSpacer(from: StrokeSample | null = null, residual = 0): SpacerState {
+  return { last: from, residual: from ? Math.max(0, residual) : 0 };
 }
 
 /**
  * Place dabs from the previous sample to `next`, evenly spaced by distance
  * (spacing x current diameter), interpolating position and pressure. The
- * first sample of a stroke always produces a dab. Mutates `state`.
+ * first sample of a stroke always produces a dab (unless the spacer was
+ * started `from` a point). Mutates `state`.
  *
  * @param state - Spacing state for this stroke.
  * @param next - New sample.
@@ -175,33 +193,89 @@ export function placeDabs(state: SpacerState, next: StrokeSample, dyn: BrushDyna
 }
 
 function makeDab(x: number, y: number, pressure: number, dyn: BrushDynamics): Dab {
-  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(pressure, dyn) };
+  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(dyn), cap: dabCap(pressure, dyn) };
 }
 
 /**
- * Pixel-covering bounds of a dab (1px antialias margin).
+ * Pixel-covering bounds of a dab (2 px margin: antialiasing plus the 1 px
+ * minimum fade of {@link stampProfile}).
  * @param dab - The dab.
+ * @param reach - Stamp extent as a multiple of the radius ({@link StampProfile.reach}).
  * @returns Rect in document px.
  */
-export function dabBounds(dab: Dab): Rect {
-  const r = dab.size / 2 + 1;
+export function dabBounds(dab: Dab, reach = 1): Rect {
+  const r = (dab.size / 2) * reach + 2;
   return { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 };
 }
 
-// ── Stamp falloff ─────────────────────────────────────────────────────────────
+// ── Stamp profile ─────────────────────────────────────────────────────────────
 
 /**
- * Radial gradient stops (offset 0..1 from centre, alpha) for a stamp.
- * Hardness 1 keeps a one-pixel antialiased edge.
- *
- * @param hardness - 0 (soft) .. 1 (hard).
- * @param radiusPx - Stamp radius in pixels.
- * @returns Stops, increasing offsets.
+ * Where the fade is cut off, in fade widths: `10^(-1.5^2)` = 0.6%. Measured
+ * from Photoshop, whose soft dot ends at 1.5 radii.
  */
-export function stampStops(hardness: number, radiusPx: number): Array<[number, number]> {
-  const h = Math.min(1, Math.max(0, hardness));
-  const aaEdge = radiusPx > 1 ? 1 - 1 / radiusPx : 0;
-  const inner = Math.min(h, aaEdge);
-  if (inner <= 0) return [[0, 1], [1, 0]];
-  return [[0, 1], [inner, 1], [1, 0]];
+export const FADE_CUTOFF = 1.5;
+
+/** Stamp shape of one stroke, in units of the dab radius. */
+export interface StampProfile {
+  /** Solid core radius. */
+  core: number;
+  /** Width of the fade after the core (at least 1 px). */
+  fade: number;
+  /** Where the stamp ends: `core + fade x FADE_CUTOFF`. */
+  reach: number;
 }
+
+/**
+ * Stamp profile for a hardness, measured from Photoshop (300 px soft round,
+ * 2026-09-25): at 0% hardness the alpha is `10^-(d/R)^2`, a Gaussian that
+ * is 10% at the cursor ring (`R`), 50% at 0.55 R and cut off at 1.5 R (fit
+ * error under 1/255). Hardness `h` keeps a solid core out to `h R` and
+ * squeezes the same fade into the remaining `(1 - h) R` (our interpolation
+ * for 0 < h < 1; 100% is a 1 px antialiased edge centred on the ring).
+ * The fade is never thinner than 1 px.
+ * @param hardness - 0..1.
+ * @param radius - Largest dab radius of the stroke, px (for the 1 px floor).
+ * @returns Profile in radius units.
+ */
+export function stampProfile(hardness: number, radius: number): StampProfile {
+  const h = Math.min(1, Math.max(0, Number.isFinite(hardness) ? hardness : 0));
+  const fade = Math.max(1 - h, 1 / Math.max(1, radius));
+  const core = Math.min(h, 1 - fade / 2);
+  return { core, fade, reach: core + fade * FADE_CUTOFF };
+}
+
+/**
+ * How far into the fade the cursor ring sits, in fade widths. Measured in
+ * Photoshop at hardness 0: an 80 px brush has a 60 px ring, a 300 px brush
+ * a 230 px ring (0.75 / 0.767; the larger one is the more precise). The
+ * tip is ~25% opaque there, not 50%.
+ */
+export const RING_FADE_POSITION = 0.77;
+
+/**
+ * Diameter of the brush cursor ring, like Photoshop's default "Normal Brush
+ * Tip" cursor: it shrinks as the brush gets softer (the full-size ring is
+ * only right for a hard brush). Sits {@link RING_FADE_POSITION} into the
+ * fade, never outside the nominal size.
+ * @param size - Brush diameter, px.
+ * @param hardness - 0..1.
+ * @returns Ring diameter, px.
+ */
+export function ringDiameter(size: number, hardness: number): number {
+  const p = stampProfile(hardness, size / 2);
+  return size * Math.min(1, p.core + p.fade * RING_FADE_POSITION);
+}
+
+/**
+ * Stamp alpha at a distance from the dab centre.
+ * @param u - Distance in radii (`d / R`).
+ * @param profile - Stamp profile ({@link stampProfile}).
+ * @returns Alpha 0..1.
+ */
+export function stampAlpha(u: number, profile: StampProfile): number {
+  if (u <= profile.core) return 1;
+  const t = (u - profile.core) / profile.fade;
+  return t >= FADE_CUTOFF ? 0 : Math.pow(10, -t * t);
+}
+

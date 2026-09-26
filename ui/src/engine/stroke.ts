@@ -7,11 +7,16 @@
  * the last frame.
  *
  * Brush composites with `source-over`, eraser with `destination-out`.
- * Dabs are accumulated as coverage only (opaque black stamps) and the
- * colour is applied once, right before compositing (`source-in` fill):
- * accumulating coloured low-alpha dabs in the 8-bit premultiplied canvas
- * drifts the colour of soft edges (visible as dark "dust" rings when painting
- * a mid-tone over the same colour).
+ * Dabs become path segments composited over each other in a 16-bit JS
+ * coverage mask (`dabMask.ts`, Photoshop's model as measured) and dirty
+ * areas are written into the buffer canvas as one colour with alpha =
+ * coverage right before compositing. So the colour is exact at every pixel
+ * (stacking coloured low-alpha dabs in the 8-bit premultiplied canvas
+ * drifted soft edges into dark "dust" rings).
+ * A Shift-click line is its own stroke composited over the previous one
+ * (Photoshop: one history state per click); its spacing carries on through
+ * the joint (`paintTool.ts`), so at 100% opacity it is pixel-identical to
+ * one continuous stroke.
  * Shape tools use the same buffer but replace its content on every move
  * ({@link StrokeBuffer.replaceContent}) instead of accumulating dabs.
  * With a selection ({@link StrokeBuffer.setClip}) both the preview and the
@@ -20,9 +25,11 @@
 
 import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
-import type { Dab } from "./brush";
-import { dabBounds } from "./brush";
-import type { StampCache } from "./stampCache";
+import type { Dab, StampProfile } from "./brush";
+import { dabBounds, stampProfile } from "./brush";
+import { CoverageMask } from "./dabMask";
+import { planSegments } from "./strokePath";
+import { hexToRgb } from "./pixelColor";
 import { createSurface, rebaseSurface, releaseSurface } from "./surface";
 import type { Surface } from "./surface";
 
@@ -55,10 +62,16 @@ export class StrokeBuffer {
   private refreshed: Rect = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
   private clipSource: () => CanvasImageSource | null = () => null;
-  /** Buffer x clip (x colour for dab strokes), composited instead of the raw buffer when needed. */
+  /** Buffer x clip, composited instead of the buffer while a selection exists. */
   private clipped: Surface | null = null;
-  /** The buffer holds coverage-only dabs that still need the stroke colour. */
-  private needsTint = false;
+  /** Dab coverage (bounds-sized, created by the first dab stroke). */
+  private mask: CoverageMask | null = null;
+  /** Document rect of coverage not yet written into the buffer canvas. */
+  private maskDirty: Rect = EMPTY;
+  /** Last dab of the stroke so far (the next batch's segments start there). */
+  private lastDab: Dab | null = null;
+  /** Stamp profile of the current stroke (hardness, largest radius). */
+  private profile: StampProfile = stampProfile(0, 1);
 
   /**
    * Clip every composite (live preview and commit) to a selection: the
@@ -73,6 +86,11 @@ export class StrokeBuffer {
   /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
   get lastRefreshed(): Rect {
     return { ...this.refreshed };
+  }
+
+  /** Stamp extent as a multiple of the radius for the current stroke ({@link StampProfile.reach}). */
+  get reach(): number {
+    return this.profile.reach;
   }
 
   /** Whether a stroke is in progress. */
@@ -90,10 +108,14 @@ export class StrokeBuffer {
    * @param layer - Target layer surface (sized to `bounds`).
    * @param bounds - Current document bounds.
    * @param style - Stroke appearance.
+   * @param maxDiameter - Largest dab diameter this stroke can produce, px
+   *   (sets the stamp profile's 1 px minimum fade).
    */
-  begin(layer: Surface, bounds: Rect, style: StrokeStyle): void {
+  begin(layer: Surface, bounds: Rect, style: StrokeStyle, maxDiameter = 1): void {
     this.ensureSize(bounds);
     this.style = style;
+    this.profile = stampProfile(style.hardness, Math.max(1, maxDiameter / 2));
+    this.lastDab = null;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;
@@ -118,30 +140,30 @@ export class StrokeBuffer {
     this.releaseClipped();
     this.buffer = nextBuffer;
     this.preview = nextPreview;
+    if (this.mask) this.mask = this.mask.rebased(this.bounds, bounds);
     this.bounds = { ...bounds };
   }
 
   /**
-   * Draw dabs into the buffer.
+   * Add dabs to the stroke coverage (written to the buffer on the next
+   * preview / commit).
    * @param dabs - Dabs in document coords.
-   * @param stamps - Stamp cache.
-   * @param maxDiameter - Largest diameter in this stroke (stamp resolution).
    */
-  addDabs(dabs: readonly Dab[], stamps: StampCache, maxDiameter: number): void {
+  addDabs(dabs: readonly Dab[]): void {
     if (!this.style || dabs.length === 0) return;
-    const { ctx } = this.surfaces().buffer;
-    // Coverage only; the colour is applied once in `sourceFor` (no premultiplied drift).
-    const stamp = stamps.get(maxDiameter, this.style.hardness, "#000000");
-    this.needsTint = this.style.mode === "paint";
-    for (const dab of dabs) {
-      ctx.globalAlpha = dab.alpha;
-      const r = dab.size / 2;
-      ctx.drawImage(stamp.canvas, dab.x - r - this.bounds.x, dab.y - r - this.bounds.y, dab.size, dab.size);
-      const rect = dabBounds(dab);
+    this.surfaces();
+    const { width, height, x, y } = this.bounds;
+    if (!this.mask || this.mask.width !== width || this.mask.height !== height) this.mask = new CoverageMask(width, height);
+    for (const seg of planSegments(this.lastDab, dabs)) this.mask.sweep(seg, x, y, this.profile);
+    // The first segment starts at the previous batch's last dab: refresh around it too.
+    const touchedDabs = this.lastDab ? [this.lastDab, ...dabs] : dabs;
+    this.lastDab = dabs[dabs.length - 1] ?? this.lastDab;
+    for (const dab of touchedDabs) {
+      const rect = dabBounds(dab, this.reach);
       this.strokeRect = unionRect(this.strokeRect, rect);
       this.pendingPreview = unionRect(this.pendingPreview, rect);
+      this.maskDirty = unionRect(this.maskDirty, rect);
     }
-    ctx.globalAlpha = 1;
   }
 
   /**
@@ -173,6 +195,7 @@ export class StrokeBuffer {
     const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
     this.pendingPreview = EMPTY;
     this.refreshed = r;
+    this.flushMask();
     if (this.style && !isEmptyRect(r)) {
       const x = r.x - this.bounds.x;
       const y = r.y - this.bounds.y;
@@ -191,6 +214,7 @@ export class StrokeBuffer {
    */
   commit(layer: Surface): void {
     const r = this.touched;
+    this.flushMask();
     if (this.style && !isEmptyRect(r)) {
       const x = r.x - this.bounds.x;
       const y = r.y - this.bounds.y;
@@ -211,6 +235,7 @@ export class StrokeBuffer {
     this.releaseClipped();
     this.buffer = null;
     this.preview = null;
+    this.mask = null;
     this.style = null;
   }
 
@@ -233,15 +258,22 @@ export class StrokeBuffer {
     ctx.restore();
   }
 
-  /**
-   * The buffer region ready to composite: multiplied by the selection clip
-   * and, for dab strokes, filled with the stroke colour (or the buffer itself
-   * when neither applies).
-   */
+  /** Write pending dab coverage into the buffer canvas (stroke colour, alpha = coverage). */
+  private flushMask(): void {
+    const r = intersectRect(roundOutRect(this.maskDirty), this.bounds);
+    this.maskDirty = EMPTY;
+    if (!this.mask || !this.style || !this.buffer || isEmptyRect(r)) return;
+    const local: Rect = { x: r.x - this.bounds.x, y: r.y - this.bounds.y, width: r.width, height: r.height };
+    const image = new ImageData(local.width, local.height);
+    const rgb = this.style.mode === "erase" ? { r: 0, g: 0, b: 0 } : hexToRgb(this.style.color);
+    this.mask.writeRgba(local, rgb, image.data);
+    this.buffer.ctx.putImageData(image, local.x, local.y);
+  }
+
+  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
   private sourceFor(buffer: Surface, x: number, y: number, width: number, height: number): HTMLCanvasElement {
     const clip = this.clipSource();
-    const tint = this.needsTint && this.style ? this.style.color : null;
-    if (!clip && !tint) return buffer.canvas;
+    if (!clip) return buffer.canvas;
     this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
     const { ctx } = this.clipped;
     ctx.save();
@@ -251,15 +283,8 @@ export class StrokeBuffer {
     ctx.clip();
     ctx.clearRect(x, y, width, height);
     ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
-    if (clip) {
-      ctx.globalCompositeOperation = "destination-in";
-      ctx.drawImage(clip, x, y, width, height, x, y, width, height);
-    }
-    if (tint) {
-      ctx.globalCompositeOperation = "source-in";
-      ctx.fillStyle = tint;
-      ctx.fillRect(x, y, width, height);
-    }
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
     ctx.restore();
     return this.clipped.canvas;
   }
@@ -271,11 +296,14 @@ export class StrokeBuffer {
 
   private end(): void {
     const r = this.touched;
-    if (this.buffer && !isEmptyRect(r)) {
-      this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
+    if (!isEmptyRect(r)) {
+      const local: Rect = { x: r.x - this.bounds.x, y: r.y - this.bounds.y, width: r.width, height: r.height };
+      if (this.buffer) this.buffer.ctx.clearRect(local.x, local.y, local.width, local.height);
+      if (this.mask) this.mask.clear(local);
     }
+    this.maskDirty = EMPTY;
+    this.lastDab = null;
     this.style = null;
-    this.needsTint = false;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;

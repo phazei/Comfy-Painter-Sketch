@@ -24,7 +24,7 @@ export function createEraserTool(pressure: Readonly<PressureDefaults> = PRESSURE
       hardness: 0.8,
       opacity: 1,
       flow: 1,
-      spacing: 0.1,
+      spacing: 0.25,
       ...pressure,
     },
   });

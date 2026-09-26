@@ -10,7 +10,7 @@
  * editor's foreground colour (`editor.colors.fg`).
  */
 
-import { createSpacer, placeDabs } from "../engine/brush";
+import { createSpacer, placeDabs, ringDiameter } from "../engine/brush";
 import { imageLengthToDoc } from "../engine/frameMap";
 import type { BrushDynamics, Dab, SpacerState, StrokeSample } from "../engine/brush";
 import type { Editor } from "../engine/editor";
@@ -25,7 +25,7 @@ export const PAINT_OPTION_DESCRIPTORS: readonly OptionDescriptor[] = [
   { kind: "number", key: "hardness", label: "Hard", title: "Hardness (Shift+[ / ])", min: 0, max: 100, step: 1, unit: "%", scale: 100 },
   { kind: "number", key: "opacity", label: "Opac", title: "Opacity (1..9, 0)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
   { kind: "number", key: "flow", label: "Flow", title: "Flow (per-dab strength)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
-  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 200, step: 1, unit: "%", scale: 100 },
+  { kind: "number", key: "spacing", label: "Spc", title: "Spacing (% of diameter)", min: 1, max: 400, step: 1, unit: "%", scale: 100 },
   { kind: "toggle", key: "pressureSize", label: "Size", title: "Pen pressure controls size", group: "pressure" },
   { kind: "toggle", key: "pressureOpacity", label: "Opacity", title: "Pen pressure controls opacity", group: "pressure" },
   {
@@ -86,6 +86,8 @@ export class PaintTool implements Tool {
   private readonly mode: StrokeMode;
   private spacer: SpacerState | null = null;
   private last: ToolPointer | null = null;
+  /** Distance travelled since the last dab when the previous stroke ended (a Shift-click line carries it on). */
+  private residual = 0;
   /** Current stroke's full-pressure diameter in document px. */
   private docSize = 1;
 
@@ -115,10 +117,15 @@ export class PaintTool implements Tool {
     };
     // Size is fixed per stroke in doc px (the image may change size mid-stroke).
     this.docSize = imageLengthToDoc(editor.frameMap, this.values.size);
-    if (!editor.beginStroke(style, this.docSize)) return;
-    this.spacer = createSpacer();
     const lineStart = first.shiftKey ? editor.lastStrokeEnd : null;
-    if (lineStart) this.feed(editor, [{ ...first, x: lineStart.x, y: lineStart.y }]);
+    if (!editor.beginStroke(style, this.docSize)) return;
+    // A Shift-click line runs from where the last stroke ended, its dabs
+    // starting where that stroke's spacing left off (no extra dab at the
+    // joint). It is its own stroke and undo step, composited over the
+    // previous one -- Photoshop's behaviour (one history state per click).
+    this.spacer = lineStart
+      ? createSpacer({ x: lineStart.x, y: lineStart.y, pressure: first.pressure }, this.residual)
+      : createSpacer();
     this.feed(editor, samples);
   }
 
@@ -132,6 +139,7 @@ export class PaintTool implements Tool {
     if (!this.spacer) return;
     this.feed(editor, [sample]);
     const end = this.last ? { x: this.last.x, y: this.last.y } : { x: sample.x, y: sample.y };
+    this.residual = this.spacer.residual;
     this.spacer = null;
     this.last = null;
     editor.endStroke(end);
@@ -145,9 +153,9 @@ export class PaintTool implements Tool {
     editor.cancelStroke();
   }
 
-  /** @inheritdoc */
+  /** @inheritdoc -- like Photoshop's cursor, the ring shrinks with softness (`ringDiameter`). */
   cursor(): ToolCursor {
-    return { kind: "ring", diameter: this.values.size };
+    return { kind: "ring", diameter: ringDiameter(this.values.size, this.values.hardness) };
   }
 
   private feed(editor: Editor, samples: readonly ToolPointer[]): void {

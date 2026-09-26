@@ -24,7 +24,6 @@ import { LayerDisplay } from "./layerDisplay";
 import type { LayerStore } from "./layerStore";
 import { PaintOps } from "./paintOps";
 import type { ShapeSpec } from "./shapes";
-import { StampCache } from "./stampCache";
 import type { StrokeStyle } from "./stroke";
 import type { ViewState } from "./view";
 
@@ -34,7 +33,6 @@ import type { ViewState } from "./view";
 export abstract class EditorBase {
   readonly events: Emitter<EditorEvents>;
   readonly view: ViewState;
-  readonly stamps = new StampCache();
   /** FG/BG colours (session-scoped, not saved). */
   readonly colors: ColorState;
 
@@ -56,7 +54,7 @@ export abstract class EditorBase {
     this.view = this.s.view;
     this.colors = new ColorState(colors?.current);
     this.frames = new FrameOps(this.s);
-    this.paint = new PaintOps(this.s, this.frames, this.stamps);
+    this.paint = new PaintOps(this.s, this.frames);
     this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
     this.display = new LayerDisplay(this.s);
   }
