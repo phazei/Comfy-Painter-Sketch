@@ -264,6 +264,32 @@ class TestCombineMaskLayers(unittest.TestCase):
         _, mask = run_composite(base, doc, {"m1": rgba, "m2": rgba}, invert_mask=False)
         self.assertAlmostEqual(mask[0, 5, 5].item(), 0.5, places=4)
 
+    def test_seven_masks_union_invert_hidden(self):
+        """M8: 7 masks, each covering its own row; per-mask invert before the
+        union, hidden masks skipped, node invert applied to the final union."""
+        base = torch.full((1, 10, 10, 3), 0.5)
+        layers, tensors = [], {}
+        for i in range(7):
+            lid = f"m{i}"
+            layers.append(_mask_layer(lid=lid, visible=(i != 3)))
+            rgba = _rgba(10, 10, a=0.0)
+            rgba[i, :, 3] = 1.0
+            tensors[lid] = rgba
+        doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=layers)
+        _, mask = run_composite(base, doc, tensors, invert_mask=False)
+        for row in range(10):
+            expected = 1.0 if row < 7 and row != 3 else 0.0
+            self.assertAlmostEqual(mask[0, row, 0].item(), expected, places=4)
+        # Inverted m6 is 0 on row 6 and 1 elsewhere; no other mask covers row 6.
+        layers[6] = _mask_layer(lid="m6", invert=True)
+        _, mask = run_composite(base, doc, tensors, invert_mask=False)
+        self.assertAlmostEqual(mask[0, 6, 0].item(), 0.0, places=4)
+        self.assertAlmostEqual(mask[0, 9, 0].item(), 1.0, places=4)
+        self.assertAlmostEqual(mask[0, 3, 0].item(), 1.0, places=4)
+        _, mask = run_composite(base, doc, tensors, invert_mask=True)
+        self.assertAlmostEqual(mask[0, 6, 0].item(), 1.0, places=4)
+        self.assertAlmostEqual(mask[0, 9, 0].item(), 0.0, places=4)
+
 
 class TestFrameMismatch(unittest.TestCase):
     def test_scale_center_paint(self):

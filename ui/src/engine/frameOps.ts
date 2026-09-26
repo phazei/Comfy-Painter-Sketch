@@ -98,6 +98,7 @@ export class FrameOps {
     const before = this.captureSnapshot();
     const after: DocSnapshot = { frame, bounds: frameRect(frame), source, pixels: null };
     this.applySnapshot(after);
+    s.solo.clear();
     s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
     s.lastStrokeEnd = null;
     s.afterEdit();

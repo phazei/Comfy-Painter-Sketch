@@ -3,7 +3,8 @@
  * stroke preview for the layer being painted) and visible mask layers as
  * cached tints ({@link MaskTint}) that re-tint only the region the stroke
  * dirtied since the last frame. A Move-tool drag shows its layer offset
- * (`EditorState.movePreview`) without touching pixels.
+ * (`EditorState.movePreview`) without touching pixels. Solo (`solo.ts`,
+ * view only) decides which layers count as shown here.
  */
 
 import { maskDisplayColor } from "../document/masks";
@@ -11,6 +12,7 @@ import type { Point } from "../geometry/rect";
 import type { CompositeLayer, MaskOverlay } from "./compositor";
 import type { EditorState } from "./editorState";
 import { MaskTint } from "./maskTint";
+import { shownOnStage } from "./solo";
 
 /**
  * Display lists for the compositor, with per-mask tint caches.
@@ -31,7 +33,7 @@ export class LayerDisplay {
     const s = this.s;
     const out: CompositeLayer[] = [];
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
+      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
       const offset = this.moveOffset(layer.id);
@@ -55,7 +57,7 @@ export class LayerDisplay {
     const out: MaskOverlay[] = [];
     const bounds = s.store.bounds;
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind !== "mask") continue;
+      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const stroking = s.strokeLayerId === layer.id && s.stroke.active;
       const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;

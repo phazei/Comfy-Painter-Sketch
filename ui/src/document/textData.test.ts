@@ -52,7 +52,7 @@ describe("text layers in documents", () => {
   const withText = (textData: unknown): string => {
     const doc = createEmptyDocument({ width: 64, height: 64 }, "abcd1234");
     const value = JSON.parse(stringifyDocument(doc));
-    value.layers.push({ id: "t1", name: "Hi", kind: "text", visible: true, locked: false, opacity: 1, blendMode: "normal", file: "painter-sketch/ps-x-1.webp [input]", textData });
+    value.layers.splice(1, 0, { id: "t1", name: "Hi", kind: "text", visible: true, locked: false, opacity: 1, blendMode: "normal", file: "painter-sketch/ps-x-1.webp [input]", textData });
     return JSON.stringify(value);
   };
 

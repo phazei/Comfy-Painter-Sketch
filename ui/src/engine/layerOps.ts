@@ -9,13 +9,18 @@
  * target instead (`Editor.setPaintTarget`).
  */
 
-import { createId, createPaintLayer } from "../document/create";
+import { soloGroup } from "./solo";
+import { createId, createMaskLayer, createPaintLayer } from "../document/create";
+import { nextMaskStyle } from "../defaults/maskDefaults";
 import {
   activeAfterRemoval,
+  canAddMask,
   canDeleteLayer,
   canDuplicateLayer,
   isPaintLike,
+  maskInsertIndex,
   nextLayerName,
+  nextMaskName,
   paintInsertIndex,
   propsDiffer,
   propsEqual,
@@ -24,6 +29,8 @@ import {
   writeProps,
 } from "../document/layerList";
 import type { LayerChange, LayerProps } from "../document/layerList";
+import { copyLayerName } from "../document/layerList";
+import { findMaskLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import type { LayerPixels } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -34,7 +41,7 @@ import {
   installLayerPixels,
   releaseRemovedLayers,
 } from "./layerHistory";
-import { pickLayer } from "./layerPick";
+import { pickLayer, pickMask } from "./layerPick";
 
 /**
  * Layer list commands over a shared {@link EditorState}.
@@ -58,12 +65,20 @@ export class LayerOps {
   }
 
   /**
-   * Whether the layer can be deleted (paint-like, not the last one).
+   * Whether the layer can be deleted (not the last paint layer / last mask).
    * @param layerId - Layer id.
    * @returns `true` if deletable.
    */
   canDelete(layerId: string): boolean {
     return canDeleteLayer(this.s.doc.layers, layerId);
+  }
+
+  /**
+   * Whether another mask can be added (M8: at most `MAX_MASKS`).
+   * @returns `true` if below the limit.
+   */
+  canAddMask(): boolean {
+    return canAddMask(this.s.doc.layers);
   }
 
   /**
@@ -89,6 +104,20 @@ export class LayerOps {
     const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
     // Layers without a surface have no pixels (and must not get one here).
     return pickLayer(s.doc.layers, (id) => (s.store.get(id) ? (s.store.read(id, rect)?.data.data[3] ?? 0) : 0));
+  }
+
+  /**
+   * Quick Mask auto-select: the topmost visible, unlocked mask with raw
+   * painted coverage at a document point ({@link pickMask}; `invert` ignored).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns Mask layer id, or `null` if nothing is hit.
+   */
+  pickMaskAt(x: number, y: number): string | null {
+    const s = this.s;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
+    return pickMask(s.doc.layers, (id) => (s.store.get(id) ? (s.store.read(id, rect)?.data.data[3] ?? 0) : 0));
   }
 
   // ── Not undoable ────────────────────────────────────────────────────────
@@ -157,6 +186,24 @@ export class LayerOps {
   addLayer(layer: Layer): string | null {
     if (!this.ready()) return null;
     this.insert(layer, paintInsertIndex(this.s.doc), null);
+    this.soloNew(layer);
+    return layer.id;
+  }
+
+  /**
+   * Add an empty mask ("Mask N", next palette colour) above the current mask
+   * and make it the current mask. The active paint layer is unchanged.
+   * @returns New mask id, or `null` while loading or at the limit.
+   */
+  addMask(): string | null {
+    const s = this.s;
+    if (!this.ready() || !canAddMask(s.doc.layers)) return null;
+    const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
+    const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
+    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
+    s.currentMaskId = layer.id;
+    this.insert(layer, index, null, false);
+    this.soloNew(layer);
     return layer.id;
   }
 
@@ -172,14 +219,27 @@ export class LayerOps {
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const source = s.doc.layers[index];
     if (!source) return null;
-    const layer: Layer = { ...source, id: createId(8), name: `${source.name} copy` };
+    const layer: Layer = { ...source, id: createId(8), name: copyLayerName(source.name, s.doc.layers) };
     this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    this.soloNew(layer);
     return layer.id;
   }
 
   /**
-   * Delete a paint layer (not the last one; masks are not deletable). The
-   * pixels stay in the undo entry.
+   * While any solo is on, a new layer takes over its group's solo, so what
+   * you just made is visible and editable (a new text layer would otherwise
+   * be hidden while typing).
+   * @param layer - Newly inserted layer.
+   */
+  private soloNew(layer: Layer): void {
+    const solo = this.s.solo.current;
+    if (solo.paint === null && solo.mask === null) return;
+    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
+  }
+
+  /**
+   * Delete a paint layer or mask (not the last of its kind). The pixels stay
+   * in the undo entry. Deleting the current mask makes the top mask current.
    * @param layerId - Layer (default: the active layer).
    * @returns `true` if deleted.
    */
@@ -195,12 +255,14 @@ export class LayerOps {
     s.runtime.remove(layerId);
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
+    if (s.currentMaskId === layerId) s.currentMaskId = null;
     this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }
 
   /**
-   * Reorder a paint layer next to another paint layer.
+   * Reorder a layer next to another of the same group (paint among paint,
+   * mask among masks).
    * @param layerId - Dragged layer.
    * @param targetId - Layer it is dropped next to.
    * @param above - Above (true) or below the target in the stack.
@@ -279,12 +341,12 @@ export class LayerOps {
     return true;
   }
 
-  private insert(layer: Layer, index: number, pixels: LayerPixels | null): void {
+  private insert(layer: Layer, index: number, pixels: LayerPixels | null, activate = true): void {
     const s = this.s;
     const activeBefore = s.doc.activeLayerId;
     s.doc.layers.splice(index, 0, layer);
     installLayerPixels(s, layer.id, pixels);
-    s.doc.activeLayerId = layer.id;
+    if (activate) s.doc.activeLayerId = layer.id;
     this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
   }
 

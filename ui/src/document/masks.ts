@@ -4,7 +4,7 @@
  * only resolve which document layer a target refers to.
  */
 
-import { createMaskLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_STYLE } from "./create";
+import { createMaskLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_STYLE, FIRST_MASK_NAME } from "./create";
 import type { MaskStyle } from "./create";
 import type { Layer, PainterDocument } from "./types";
 
@@ -12,16 +12,24 @@ import type { Layer, PainterDocument } from "./types";
 export type PaintTarget = "paint" | "mask";
 
 /**
- * The mask layer Quick Mask edits: the active layer if it is a mask, else the
- * first (bottom-most) mask layer.
+ * The current mask (M8): the mask Quick Mask edits. It is the last selected
+ * mask row (`currentMaskId`, editor UI state); if that mask no longer exists
+ * (deleted, undone) the top-most mask is used instead.
  *
  * @param doc - Document.
+ * @param currentMaskId - Last selected mask id (`null`/`undefined` = none yet).
  * @returns The mask layer, or `undefined` if the document has none.
  */
-export function findMaskLayer(doc: Readonly<PainterDocument>): Layer | undefined {
-  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  if (active?.kind === "mask") return active;
-  return doc.layers.find((l) => l.kind === "mask");
+export function findMaskLayer(doc: Readonly<PainterDocument>, currentMaskId?: string | null): Layer | undefined {
+  if (currentMaskId) {
+    const current = doc.layers.find((l) => l.id === currentMaskId);
+    if (current?.kind === "mask") return current;
+  }
+  for (let i = doc.layers.length - 1; i >= 0; i--) {
+    const layer = doc.layers[i];
+    if (layer?.kind === "mask") return layer;
+  }
+  return undefined;
 }
 
 /**
@@ -47,10 +55,15 @@ export function findPaintLayer(doc: Readonly<PainterDocument>): Layer | undefine
  *
  * @param doc - Document.
  * @param target - Paint target.
+ * @param currentMaskId - Current mask id ({@link findMaskLayer}).
  * @returns The layer, or `undefined` if none of that kind exists.
  */
-export function targetLayer(doc: Readonly<PainterDocument>, target: PaintTarget): Layer | undefined {
-  return target === "mask" ? findMaskLayer(doc) : findPaintLayer(doc);
+export function targetLayer(
+  doc: Readonly<PainterDocument>,
+  target: PaintTarget,
+  currentMaskId?: string | null,
+): Layer | undefined {
+  return target === "mask" ? findMaskLayer(doc, currentMaskId) : findPaintLayer(doc);
 }
 
 /**
@@ -60,10 +73,15 @@ export function targetLayer(doc: Readonly<PainterDocument>, target: PaintTarget)
  *
  * @param doc - Document.
  * @param target - Paint target.
+ * @param currentMaskId - Current mask id ({@link findMaskLayer}).
  * @returns The layer, or `undefined` if none exists.
  */
-export function activeEditLayer(doc: Readonly<PainterDocument>, target: PaintTarget): Layer | undefined {
-  if (target === "mask") return findMaskLayer(doc);
+export function activeEditLayer(
+  doc: Readonly<PainterDocument>,
+  target: PaintTarget,
+  currentMaskId?: string | null,
+): Layer | undefined {
+  if (target === "mask") return findMaskLayer(doc, currentMaskId);
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
   return active && active.kind !== "mask" ? active : findPaintLayer(doc);
 }
@@ -74,15 +92,17 @@ export function activeEditLayer(doc: Readonly<PainterDocument>, target: PaintTar
  *
  * @param doc - Document to update in place.
  * @param style - Style of a newly created mask (only read when one is created).
- * @returns The mask layer and whether it was just created.
+ * @param currentMaskId - Current mask id ({@link findMaskLayer}).
+ * @returns The current mask layer and whether it was just created.
  */
 export function ensureMaskLayer(
   doc: PainterDocument,
   style: () => Readonly<MaskStyle> = () => DEFAULT_MASK_STYLE,
+  currentMaskId?: string | null,
 ): { layer: Layer; created: boolean } {
-  const existing = findMaskLayer(doc);
+  const existing = findMaskLayer(doc, currentMaskId);
   if (existing) return { layer: existing, created: false };
-  const layer = createMaskLayer("Mask", style());
+  const layer = createMaskLayer(FIRST_MASK_NAME, style());
   doc.layers.push(layer);
   return { layer, created: true };
 }

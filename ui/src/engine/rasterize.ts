@@ -14,7 +14,8 @@
  */
 
 import type { Layer } from "../document/types";
-import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE } from "./editorTypes";
+import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { shownOnStage } from "./solo";
 import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { recordTextChange, textStateOf } from "./textLayer";
@@ -47,6 +48,21 @@ export function rasterizeDecision(layer: Pick<Layer, "kind">, confirm: () => boo
 export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
 
 /**
+ * Why `layer` can't be edited right now, or `null`. Order: hidden (eye) >
+ * hidden by another layer's solo > locked -- showing it is the first fix.
+ * A soloed layer with its eye off stays blocked (eye state wins).
+ * @param s - Editor state (solos).
+ * @param layer - Layer to edit.
+ * @returns Note text, or `null` if editing is allowed.
+ */
+export function editBlockNote(s: EditorState, layer: Layer): string | null {
+  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+  if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
+  if (layer.locked) return LOCKED_LAYER_NOTE;
+  return null;
+}
+
+/**
  * Gate a pixel edit on `layer`: notes for locked / hidden layers, the
  * rasterize prompt for text layers.
  * @param s - Editor state.
@@ -56,12 +72,9 @@ export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
  *   the rasterize undo step -- synchronous callers may proceed right away).
  */
 export function preparePixelEdit(s: EditorState, layer: Layer): PixelEditPlan {
-  if (layer.locked) {
-    s.events.emit("note", LOCKED_LAYER_NOTE);
-    return "blocked";
-  }
-  if (!layer.visible) {
-    s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE);
+  const note = editBlockNote(s, layer);
+  if (note) {
+    s.events.emit("note", note);
     return "blocked";
   }
   const decision = rasterizeDecision(layer, () => s.confirmRasterize());

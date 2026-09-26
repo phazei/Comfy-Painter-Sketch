@@ -19,13 +19,20 @@ describe("targetLayer", () => {
     expect(targetLayer(doc, "mask")?.kind).toBe("mask");
   });
 
-  it("prefers the active layer when it has the requested kind", () => {
+  it("resolves the current mask, falling back to the top-most mask", () => {
     const doc = createEmptyDocument({ width: 8, height: 8 }, "doc00001");
+    const first = doc.layers[1]!;
     const second = createMaskLayer("Mask 2");
     doc.layers.push(second);
-    expect(findMaskLayer(doc)?.id).toBe(doc.layers[1]?.id);
-    doc.activeLayerId = second.id;
     expect(findMaskLayer(doc)?.id).toBe(second.id);
+    expect(findMaskLayer(doc, first.id)?.id).toBe(first.id);
+    expect(targetLayer(doc, "mask", first.id)?.id).toBe(first.id);
+    expect(activeEditLayer(doc, "mask", first.id)?.id).toBe(first.id);
+    // Deleted or non-mask ids fall back to the top mask.
+    expect(findMaskLayer(doc, "gone")?.id).toBe(second.id);
+    expect(findMaskLayer(doc, doc.layers[0]!.id)?.id).toBe(second.id);
+    doc.layers = doc.layers.filter((l) => l.id !== second.id);
+    expect(findMaskLayer(doc, second.id)?.id).toBe(first.id);
   });
 
   it("falls back to the top-most paint layer when a mask is active", () => {
@@ -48,7 +55,7 @@ describe("ensureMaskLayer", () => {
     const { layer, created } = ensureMaskLayer(doc);
     expect(created).toBe(true);
     expect(doc.layers[doc.layers.length - 1]).toBe(layer);
-    expect(layer).toMatchObject({ kind: "mask", name: "Mask", color: "#ff0000", opacity: 0.5, invert: false, file: null });
+    expect(layer).toMatchObject({ kind: "mask", name: "Mask 1", color: "#ff0000", opacity: 0.5, invert: false, file: null });
     expect(doc.activeLayerId).toBe(activeBefore);
   });
 

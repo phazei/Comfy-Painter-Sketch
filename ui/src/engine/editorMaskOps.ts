@@ -33,7 +33,7 @@ export class EditorMaskOps {
 
   /** The mask layer Quick Mask edits, if the document has one. */
   get maskLayer(): Readonly<Layer> | undefined {
-    return findMaskLayer(this.s.doc);
+    return findMaskLayer(this.s.doc, this.s.currentMaskId);
   }
 
   /**
@@ -53,9 +53,25 @@ export class EditorMaskOps {
     this.paint.setPaintTarget(target);
   }
 
-  /** Toggle between the paint layer and the mask. */
+  /** Toggle between the paint layer and the current mask. */
   togglePaintTarget(): void {
     this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+  }
+
+  /**
+   * Make a mask the current mask (M8) and turn Quick Mask on.
+   * @param layerId - Mask layer id.
+   * @returns `false` if it is not a mask layer.
+   */
+  selectMask(layerId: string): boolean {
+    const s = this.s;
+    if (s.doc.layers.find((l) => l.id === layerId)?.kind !== "mask") return false;
+    const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId;
+    if (changed && s.stroke.active) s.cancelStroke();
+    s.currentMaskId = layerId;
+    if (s.target !== "mask") this.paint.setPaintTarget("mask");
+    else if (changed) s.events.emit("mask", undefined);
+    return true;
   }
 
   /**

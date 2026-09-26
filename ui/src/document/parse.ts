@@ -101,6 +101,14 @@ function validate(data: Record<string, unknown>): ParseResult {
     layers.unshift(createPaintLayer("Layer 1"));
     repaired = true;
   }
+  // Masks always sit above the paint stack (M8). Their order never affects
+  // the output (union), so moving strays up keeps the result identical.
+  const masks = layers.filter((l) => l.kind === "mask");
+  const stacked = [...layers.filter((l) => l.kind !== "mask"), ...masks];
+  if (stacked.some((l, i) => l !== layers[i])) {
+    layers.splice(0, layers.length, ...stacked);
+    repaired = true;
+  }
 
   let activeLayerId = typeof data["activeLayerId"] === "string" ? data["activeLayerId"] : "";
   if (!seen.has(activeLayerId)) {

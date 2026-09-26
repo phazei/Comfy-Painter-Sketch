@@ -46,6 +46,8 @@ import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
 import { SelectionOps } from "./selectionOps";
 import { TextOps } from "./textOps";
+import { toggleSolo } from "./solo";
+import type { SoloIds } from "./solo";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
 export type { LayerOps } from "./layerOps";
@@ -203,6 +205,18 @@ export class Editor extends EditorBase {
     return this.display.maskOverlays();
   }
 
+  /** Soloed layer ids (view only, `solo.ts`; not saved, not undoable, no effect on outputs). */
+  get solo(): Readonly<SoloIds> { return this.s.solo.current; }
+
+  /**
+   * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
+   * @param layerId - Layer id (unknown ids are ignored).
+   */
+  toggleSolo(layerId: string): void {
+    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
+  }
+
   // ── Quick Mask / paint target ───────────────────────────────────────────
 
   /** What brush/eraser strokes paint into (UI state, not saved). */
@@ -217,8 +231,15 @@ export class Editor extends EditorBase {
    */
   setPaintTarget(target: PaintTarget): void { this.maskOps.setPaintTarget(target); }
 
-  /** Toggle between the paint layer and the mask. */
+  /** Toggle between the paint layer and the current mask. */
   togglePaintTarget(): void { this.maskOps.togglePaintTarget(); }
+
+  /**
+   * Make a mask the current mask and turn Quick Mask on (mask row click).
+   * @param layerId - Mask layer id.
+   * @returns `false` if it is not a mask layer.
+   */
+  selectMask(layerId: string): boolean { return this.maskOps.selectMask(layerId); }
 
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
@@ -257,6 +278,7 @@ export class Editor extends EditorBase {
     const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
+    copy.s.currentMaskId = this.s.currentMaskId;
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
   }

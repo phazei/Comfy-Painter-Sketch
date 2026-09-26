@@ -3,8 +3,11 @@
  * Enter commits, Escape cancels, blur commits), visibility eye and lock.
  * Mask rows add a second line with the colour swatch, an invert toggle and
  * the overlay opacity control; the Background row is static (locked, not
- * selectable). Text layers get a "T" badge on the thumbnail. Rows are reused across updates (keyed by layer id) so a
- * double-click survives the re-render the first click causes.
+ * selectable). Text layers get a "T" badge on the thumbnail. The current mask
+ * has a thick left bar in its own colour; paint/text/mask rows have a small
+ * solo button (view only; Alt+click on the eye does the same). Rows are
+ * reused across updates (keyed by layer id) so a double-click survives the
+ * re-render the first click causes.
  */
 
 import type { OptionControl } from "./optionControls";
@@ -28,14 +31,26 @@ export interface RowModel {
   color?: string;
   /** Mask invert. */
   invert?: boolean;
+  /** Current mask (M8): thick left bar in the mask's colour, Quick Mask on or off. */
+  current?: boolean;
   /** Editable text layer ("T" badge on the thumbnail). */
   text?: boolean;
+  /**
+   * Solo display (view only): `"on"` = this row is soloed, `"dimmed"` =
+   * another row of its group is soloed, `"off"` = its group has no solo.
+   */
+  solo?: SoloMark;
 }
+
+/** Solo display state of a row. */
+export type SoloMark = "on" | "dimmed" | "off";
 
 /** Row callbacks (ids are layer ids). */
 export interface RowActions {
   select(id: string): void;
   toggleVisible(id: string): void;
+  /** Solo / un-solo (solo button, or Alt+click on the eye). */
+  toggleSolo(id: string): void;
   toggleLocked(id: string): void;
   rename(id: string, name: string): void;
   pickColor(id: string, anchor: HTMLElement): void;
@@ -56,6 +71,7 @@ export class LayerRow {
   private readonly swatch: HTMLButtonElement | null = null;
   private readonly invertButton: HTMLButtonElement | null = null;
   private readonly textBadge: HTMLSpanElement | null = null;
+  private readonly soloButton: HTMLButtonElement | null = null;
   private model: RowModel | null = null;
   private editor: HTMLInputElement | null = null;
   private icons = { eye: "", lock: "" };
@@ -93,8 +109,11 @@ export class LayerRow {
     main.append(thumbBox, this.nameEl);
 
     if (kind !== "background") {
-      this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
-      main.appendChild(this.eye);
+      this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
+      setIcon(this.soloButton, "solo", 11);
+      // Alt+click on the eye solos (Photoshop); it never toggles the eye then.
+      this.eye = button("cps-layer-eye", (event) => (event.altKey ? actions.toggleSolo(id) : actions.toggleVisible(id)));
+      main.append(this.soloButton, this.eye);
     }
     this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
     main.appendChild(this.lock);
@@ -145,6 +164,18 @@ export class LayerRow {
     el.classList.toggle("cps-standby", model.standby);
     el.classList.toggle("cps-hidden-layer", !model.visible);
     if (this.textBadge) this.textBadge.hidden = model.text !== true;
+    const current = model.current === true;
+    el.classList.toggle("cps-current-mask", current);
+    if (current && model.color) el.style.setProperty("--cps-mask-color", model.color);
+    else el.style.removeProperty("--cps-mask-color");
+    el.title = current ? "Current mask (Quick Mask paints into it)" : "";
+    const solo = model.solo ?? "off";
+    if (this.soloButton) {
+      this.soloButton.classList.toggle("cps-active", solo === "on");
+      this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
+      this.soloButton.title =
+        solo === "on" ? "End solo (view only)" : "Solo: show only this layer in its group (view only; Alt+click the eye)";
+    }
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
     if (this.eye) {
@@ -152,6 +183,8 @@ export class LayerRow {
       if (icon !== this.icons.eye) setIcon(this.eye, icon, 14);
       this.icons.eye = icon;
       this.eye.classList.toggle("cps-off", !model.visible);
+      this.eye.classList.toggle("cps-solo-dimmed", solo === "dimmed");
+      this.eye.classList.toggle("cps-solo-on", solo === "on");
       this.eye.setAttribute("aria-pressed", String(model.visible));
       this.eye.title =
         this.kind === "mask"
@@ -219,13 +252,14 @@ export class LayerRow {
   }
 }
 
-function button(className: string, onClick: () => void): HTMLButtonElement {
+function button(className: string, onClick: (event: MouseEvent) => void): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.className = `cps-icon-button cps-layer-button ${className}`;
   b.addEventListener("click", (event) => {
     event.stopPropagation();
-    onClick();
+    event.preventDefault();
+    onClick(event);
   });
   return b;
 }

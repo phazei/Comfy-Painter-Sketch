@@ -1,26 +1,28 @@
 /**
- * Layers panel (M3.3, SPEC "### Layers"), mounted into the shell's side
- * panel. Top -> bottom: the mask row (colour swatch, invert, overlay
- * opacity), paint layers, and the static Background row. Header: the
- * opacity of the selected row's layer; footer: New / Duplicate / Delete.
+ * Layers panel (M3.3 + M8, SPEC "### Layers"), mounted into the shell's side
+ * panel. Top -> bottom: mask rows (colour swatch, invert, overlay opacity),
+ * paint layers, and the static Background row. Header: the opacity of the
+ * selected row's layer; footer: New layer / New mask / Duplicate / Delete.
  *
  * Selection follows the paint target: clicking a paint row makes it the
- * active layer and turns Quick Mask off; clicking the mask row turns Quick
- * Mask on (so `Q`, the rail button and the panel stay in sync). All edits go
- * through `editor.layerOps`; the panel re-renders from editor events only.
+ * active layer and turns Quick Mask off; clicking a mask row makes it the
+ * current mask and turns Quick Mask on (so `Q`, the rail button and the panel
+ * stay in sync). The current mask always has a left bar in its colour; solo
+ * buttons (view only) dim the eyes of the other rows in a soloed group. All
+ * edits go through the editor; the panel re-renders from editor events only.
  */
 
 import type { Editor } from "../engine/editor";
 import { imageRectToDoc } from "../engine/frameMap";
 import { maskDisplayColor } from "../document/masks";
-import { isPaintLike } from "../document/layerList";
+import { isPaintLike, MAX_MASKS } from "../document/layerList";
 import type { Layer } from "../document/types";
-import { setIcon } from "./icons";
 import { LayerDrag } from "./layerDrag";
 import { layerOpacityControl, MaskColorPicker } from "./layerControls";
 import type { ColorPickFn, LayerTarget } from "./layerControls";
 import { LayerRow } from "./layerRow";
-import type { RowActions, RowKind, RowModel } from "./layerRow";
+import type { RowActions, RowKind } from "./layerRow";
+import { el, footerButton, moveDrawingBtn, rowModel, soloMark } from "./layersPanelParts";
 import type { OptionControl } from "./optionControls";
 import type { PopoverHost } from "./popover";
 import type { SidePanel } from "./sidePanel";
@@ -55,6 +57,7 @@ export class LayersPanel {
   private readonly list: HTMLDivElement;
   private readonly opacity: OptionControl;
   private readonly addButton: HTMLButtonElement;
+  private readonly addMaskButton: HTMLButtonElement;
   private readonly duplicateButton: HTMLButtonElement;
   private readonly deleteButton: HTMLButtonElement;
   private readonly moveDrawingButton: HTMLButtonElement;
@@ -85,12 +88,13 @@ export class LayersPanel {
     this.list = el("div", "cps-layers-list");
     const footer = el("div", "cps-layers-footer");
     this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
+    this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
-    this.deleteButton = footerButton("trash", "Delete layer", () => this.withEditor((e) => e.layerOps.remove()));
+    this.deleteButton = footerButton("trash", "Delete layer", () => this.deleteSelected());
     this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
     const footerDivider = document.createElement("div");
     footerDivider.className = "cps-layers-footer-divider";
-    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.duplicateButton, this.deleteButton);
+    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.deleteButton);
     this.element.append(header, this.list, footer);
 
     this.maskColor = new MaskColorPicker(ctx.pickColor);
@@ -123,6 +127,7 @@ export class LayersPanel {
       this.editorUnbind = [
         editor.events.on("layers", () => this.sync()),
         editor.events.on("mask", () => this.sync()),
+        editor.events.on("solo", () => this.sync()),
         editor.events.on("render", () => this.thumbs.request()),
         editor.events.on("change", () => this.thumbs.request()),
       ];
@@ -171,8 +176,10 @@ export class LayersPanel {
         const kind: RowKind = isPaintLike(layer) ? "paint" : "mask";
         const row = this.rowFor(kind, layer.id);
         const active = layer.id === doc.activeLayerId;
-        const selected = kind === "mask" ? targeting && layer.id === maskId : !targeting && active;
-        row.update(rowModel(layer, selected, targeting && active));
+        const isCurrentMask = kind === "mask" && layer.id === maskId;
+        const selected = kind === "mask" ? targeting && isCurrentMask : !targeting && active;
+        const solo = soloMark(layer, editor.solo);
+        row.update(rowModel(layer, { selected, standby: targeting && active, current: isCurrentMask, solo }));
         wanted.push(row);
       }
       const bg = this.rowFor("background", BACKGROUND_ID);
@@ -198,10 +205,20 @@ export class LayersPanel {
   private syncFooter(): void {
     const editor = this.editor;
     const target = this.selectedTarget();
-    const paintId = editor && target && editor.paintTarget !== "mask" ? target.layerId : null;
+    const targeting = editor?.paintTarget === "mask";
+    const paintId = editor && target && !targeting ? target.layerId : null;
     this.addButton.disabled = !editor;
+    const canAddMask = !!editor && editor.layerOps.canAddMask();
+    this.addMaskButton.disabled = !canAddMask;
+    this.addMaskButton.title = !editor || canAddMask ? "New mask (above the current mask)" : `At most ${MAX_MASKS} masks`;
     this.duplicateButton.disabled = !(editor && paintId && editor.layerOps.canDuplicate(paintId));
-    this.deleteButton.disabled = !(editor && paintId && editor.layerOps.canDelete(paintId));
+    const deletable = !!(editor && target && editor.layerOps.canDelete(target.layerId));
+    this.deleteButton.disabled = !deletable;
+    this.deleteButton.title = !targeting
+      ? "Delete layer"
+      : deletable
+        ? "Delete mask"
+        : "The last mask can't be deleted (clear it instead)";
     this.opacity.refresh();
     this.opacity.element.classList.toggle("cps-dim", !target);
     const label = this.opacity.element.querySelector(".cps-num-label");
@@ -272,14 +289,13 @@ export class LayersPanel {
     return {
       select: (id) =>
         this.withEditor((e) => {
-          if (e.maskLayer?.id === id) {
-            e.setPaintTarget("mask");
-            return;
-          }
+          if (e.selectMask(id)) return;
           e.layerOps.setActiveLayer(id);
           e.setPaintTarget("paint");
         }),
       toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer(e, id)?.visible)),
+      // View only: no beforeEdit (a stage drag in progress is not an edit conflict).
+      toggleSolo: (id) => this.editor?.toggleSolo(id),
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
       toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
@@ -300,6 +316,21 @@ export class LayersPanel {
   private addLayer(): void {
     this.withEditor((e) => {
       if (e.layerOps.add()) e.setPaintTarget("paint");
+    });
+  }
+
+  private addMask(): void {
+    this.withEditor((e) => {
+      const id = e.layerOps.addMask();
+      if (id) e.selectMask(id);
+    });
+  }
+
+  /** Delete the selected row's layer (the current mask in Quick Mask, else the active layer). */
+  private deleteSelected(): void {
+    this.withEditor((e) => {
+      const target = this.selectedTarget();
+      if (target) e.layerOps.remove(target.layerId);
     });
   }
 
@@ -324,49 +355,6 @@ export class LayersPanel {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function rowModel(layer: Readonly<Layer>, selected: boolean, standby: boolean): RowModel {
-  const model: RowModel = { id: layer.id, name: layer.name, visible: layer.visible, locked: layer.locked, selected, standby };
-  if (layer.kind === "mask") {
-    model.color = maskDisplayColor(layer);
-    model.invert = layer.invert === true;
-  }
-  if (layer.kind === "text") model.text = true;
-  return model;
-}
-
 function findLayer(editor: Editor, id: string): Readonly<Layer> | undefined {
   return editor.doc.layers.find((l) => l.id === id);
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
-  const element = document.createElement(tag);
-  element.className = className;
-  return element;
-}
-
-function footerButton(icon: string, title: string, onClick: () => void): HTMLButtonElement {
-  const button = el("button", "cps-icon-button cps-layers-action");
-  button.type = "button";
-  button.title = title;
-  setIcon(button, icon, 16);
-  button.addEventListener("click", onClick);
-  return button;
-}
-
-/**
- * Build the "Move drawing" toggle button for the footer left side.
- * @param onClick - Called when the button is clicked.
- * @returns The button.
- */
-function moveDrawingBtn(onClick: () => void): HTMLButtonElement {
-  const button = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
-  button.type = "button";
-  button.title = "Move drawing \u2014 reposition/scale all layers against the image";
-  button.setAttribute("aria-label", "Move drawing \u2014 reposition/scale all layers against the image");
-  button.setAttribute("aria-pressed", "false");
-  setIcon(button, "moveDrawing", 16);
-  button.addEventListener("click", onClick);
-  return button;
 }

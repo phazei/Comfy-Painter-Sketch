@@ -562,8 +562,9 @@ function createTextLayer(textData) {
 }
 const DEFAULT_MASK_COLOR = "#ff0000";
 const DEFAULT_MASK_OPACITY = 0.5;
+const FIRST_MASK_NAME = "Mask 1";
 const DEFAULT_MASK_STYLE = { color: DEFAULT_MASK_COLOR, opacity: DEFAULT_MASK_OPACITY };
-function createMaskLayer(name = "Mask", style = DEFAULT_MASK_STYLE) {
+function createMaskLayer(name = FIRST_MASK_NAME, style = DEFAULT_MASK_STYLE) {
   return {
     id: createId(8),
     name,
@@ -587,7 +588,7 @@ function createEmptyDocument(frame, docId = createId(), maskStyle = DEFAULT_MASK
     bounds: frameRect(size),
     regions: [],
     activeLayerId: layer.id,
-    layers: [layer, createMaskLayer("Mask", maskStyle)]
+    layers: [layer, createMaskLayer(FIRST_MASK_NAME, maskStyle)]
   };
 }
 const MASK_COLOR_ID = "PainterSketch.DefaultMaskColor";
@@ -625,6 +626,14 @@ function normalizeMaskOpacity(raw) {
 }
 function firstMaskStyleFrom(read) {
   return { color: normalizeMaskColor(read(MASK_COLOR_ID)), opacity: normalizeMaskOpacity(read(MASK_OPACITY_ID)) };
+}
+const MASK_PALETTE = ["#0000ff", "#00ff00", "#ffff00", "#ff00ff", "#00ffff", "#ff8000"];
+function nextMaskStyle(usedColors, first) {
+  if (usedColors.length === 0) return { ...first };
+  const used = new Set(usedColors.map((c) => normalizeMaskColor(c)));
+  const free = MASK_PALETTE.find((c) => !used.has(c));
+  const color = free ?? MASK_PALETTE[(usedColors.length - 1) % MASK_PALETTE.length] ?? DEFAULT_MASK_STYLE.color;
+  return { color, opacity: first.opacity };
 }
 const PRESSURE_DEFAULTS = {
   pressureSize: true,
@@ -887,6 +896,12 @@ function validate(data) {
   }
   if (!layers2.some((l) => l.kind === "paint")) {
     layers2.unshift(createPaintLayer("Layer 1"));
+    repaired = true;
+  }
+  const masks = layers2.filter((l) => l.kind === "mask");
+  const stacked = [...layers2.filter((l) => l.kind !== "mask"), ...masks];
+  if (stacked.some((l, i) => l !== layers2[i])) {
+    layers2.splice(0, layers2.length, ...stacked);
     repaired = true;
   }
   let activeLayerId = typeof data["activeLayerId"] === "string" ? data["activeLayerId"] : "";
@@ -1488,6 +1503,10 @@ const PATHS = {
   lock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
   unlock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 6.8-1.2",
   plus: "M12 5v14M5 12h14",
+  // Solo (view only): a ring with a centre dot ("only this one").
+  solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
+  // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
+  maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
   duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
   trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
   // Half-filled circle outline: "invert".
@@ -1652,10 +1671,16 @@ function buildOverlay(exit) {
   overlay.addEventListener("drop", noDrop);
   return overlay;
 }
-function findMaskLayer(doc) {
-  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  if (active?.kind === "mask") return active;
-  return doc.layers.find((l) => l.kind === "mask");
+function findMaskLayer(doc, currentMaskId) {
+  if (currentMaskId) {
+    const current = doc.layers.find((l) => l.id === currentMaskId);
+    if (current?.kind === "mask") return current;
+  }
+  for (let i = doc.layers.length - 1; i >= 0; i--) {
+    const layer = doc.layers[i];
+    if (layer?.kind === "mask") return layer;
+  }
+  return void 0;
 }
 function findPaintLayer(doc) {
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
@@ -1666,18 +1691,18 @@ function findPaintLayer(doc) {
   }
   return void 0;
 }
-function targetLayer(doc, target) {
-  return target === "mask" ? findMaskLayer(doc) : findPaintLayer(doc);
+function targetLayer(doc, target, currentMaskId) {
+  return target === "mask" ? findMaskLayer(doc, currentMaskId) : findPaintLayer(doc);
 }
-function activeEditLayer(doc, target) {
-  if (target === "mask") return findMaskLayer(doc);
+function activeEditLayer(doc, target, currentMaskId) {
+  if (target === "mask") return findMaskLayer(doc, currentMaskId);
   const active = doc.layers.find((l) => l.id === doc.activeLayerId);
   return active && active.kind !== "mask" ? active : findPaintLayer(doc);
 }
-function ensureMaskLayer(doc, style = () => DEFAULT_MASK_STYLE) {
-  const existing = findMaskLayer(doc);
+function ensureMaskLayer(doc, style = () => DEFAULT_MASK_STYLE, currentMaskId) {
+  const existing = findMaskLayer(doc, currentMaskId);
   if (existing) return { layer: existing, created: false };
-  const layer = createMaskLayer("Mask", style());
+  const layer = createMaskLayer(FIRST_MASK_NAME, style());
   doc.layers.push(layer);
   return { layer, created: true };
 }
@@ -1753,6 +1778,33 @@ function paintLayerCount(layers2) {
   for (const layer of layers2) if (isPaintLike(layer)) n++;
   return n;
 }
+const MAX_MASKS = 7;
+function maskLayerCount(layers2) {
+  let n = 0;
+  for (const layer of layers2) if (layer.kind === "mask") n++;
+  return n;
+}
+function canAddMask(layers2) {
+  return maskLayerCount(layers2) < MAX_MASKS;
+}
+function nextMaskName(layers2) {
+  const used = /* @__PURE__ */ new Set();
+  for (const layer of layers2) {
+    if (layer.kind !== "mask") continue;
+    const name = layer.name.trim();
+    if (name === "Mask") used.add(1);
+    const match = /^Mask (\d+)$/.exec(name);
+    if (match) used.add(Number(match[1]));
+  }
+  let n = 1;
+  while (used.has(n)) n++;
+  return `Mask ${n}`;
+}
+function maskInsertIndex(layers2, currentMaskId) {
+  const current = layers2.findIndex((l) => l.id === currentMaskId);
+  if (current >= 0 && layers2[current]?.kind === "mask") return current + 1;
+  return layers2.length;
+}
 function nextLayerName(layers2) {
   let max = 0;
   for (const layer of layers2) {
@@ -1760,6 +1812,14 @@ function nextLayerName(layers2) {
     if (match) max = Math.max(max, Number(match[1]));
   }
   return `Layer ${max + 1}`;
+}
+function copyLayerName(source, layers2) {
+  const base = source.trim().replace(/ copy(?: \d+)?$/, "");
+  const taken = new Set(layers2.map((l) => l.name.trim()));
+  if (!taken.has(`${base} copy`)) return `${base} copy`;
+  let n = 2;
+  while (taken.has(`${base} copy ${n}`)) n++;
+  return `${base} copy ${n}`;
 }
 function paintInsertIndex(doc) {
   const layers2 = doc.layers;
@@ -1771,7 +1831,8 @@ function paintInsertIndex(doc) {
 }
 function canDeleteLayer(layers2, id) {
   const layer = layers2.find((l) => l.id === id);
-  return !!layer && isPaintLike(layer) && paintLayerCount(layers2) > 1;
+  if (!layer) return false;
+  return isPaintLike(layer) ? paintLayerCount(layers2) > 1 : maskLayerCount(layers2) > 1;
 }
 function canDuplicateLayer(layers2, id) {
   const layer = layers2.find((l) => l.id === id);
@@ -1793,7 +1854,7 @@ function resolveMove(layers2, id, targetId, above) {
   const target = layers2.findIndex((l) => l.id === targetId);
   const src = layers2[from];
   const dst = layers2[target];
-  if (!src || !dst || !isPaintLike(src) || !isPaintLike(dst)) return null;
+  if (!src || !dst || isPaintLike(src) !== isPaintLike(dst)) return null;
   if (from === target) return null;
   const targetAfterRemoval = target > from ? target - 1 : target;
   const to = above ? targetAfterRemoval + 1 : targetAfterRemoval;
@@ -2002,8 +2063,10 @@ class LayerRow {
     this.nameEl.className = "cps-layer-name";
     main.append(thumbBox, this.nameEl);
     if (kind !== "background") {
-      this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
-      main.appendChild(this.eye);
+      this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
+      setIcon(this.soloButton, "solo", 11);
+      this.eye = button("cps-layer-eye", (event) => event.altKey ? actions.toggleSolo(id) : actions.toggleVisible(id));
+      main.append(this.soloButton, this.eye);
     }
     this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
     main.appendChild(this.lock);
@@ -2046,6 +2109,7 @@ class LayerRow {
   swatch = null;
   invertButton = null;
   textBadge = null;
+  soloButton = null;
   model = null;
   editor = null;
   icons = { eye: "", lock: "" };
@@ -2064,6 +2128,17 @@ class LayerRow {
     el2.classList.toggle("cps-standby", model.standby);
     el2.classList.toggle("cps-hidden-layer", !model.visible);
     if (this.textBadge) this.textBadge.hidden = model.text !== true;
+    const current = model.current === true;
+    el2.classList.toggle("cps-current-mask", current);
+    if (current && model.color) el2.style.setProperty("--cps-mask-color", model.color);
+    else el2.style.removeProperty("--cps-mask-color");
+    el2.title = current ? "Current mask (Quick Mask paints into it)" : "";
+    const solo = model.solo ?? "off";
+    if (this.soloButton) {
+      this.soloButton.classList.toggle("cps-active", solo === "on");
+      this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
+      this.soloButton.title = solo === "on" ? "End solo (view only)" : "Solo: show only this layer in its group (view only; Alt+click the eye)";
+    }
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
     if (this.eye) {
@@ -2071,6 +2146,8 @@ class LayerRow {
       if (icon !== this.icons.eye) setIcon(this.eye, icon, 14);
       this.icons.eye = icon;
       this.eye.classList.toggle("cps-off", !model.visible);
+      this.eye.classList.toggle("cps-solo-dimmed", solo === "dimmed");
+      this.eye.classList.toggle("cps-solo-on", solo === "on");
       this.eye.setAttribute("aria-pressed", String(model.visible));
       this.eye.title = this.kind === "mask" ? model.visible ? "Hide mask (also excludes it from the MASK output)" : "Show mask (hidden masks are excluded from the MASK output)" : model.visible ? "Hide layer" : "Show layer";
     }
@@ -2135,7 +2212,8 @@ function button(className, onClick) {
   b.className = `cps-icon-button cps-layer-button ${className}`;
   b.addEventListener("click", (event) => {
     event.stopPropagation();
-    onClick();
+    event.preventDefault();
+    onClick(event);
   });
   return b;
 }
@@ -2178,10 +2256,11 @@ class LayerDrag {
   }
   down(event) {
     if (event.button !== 0 || isControl(event.target) || !(event.target instanceof Element)) return;
-    const row = event.target.closest(".cps-layer-paint");
+    const row = event.target.closest(".cps-layer-paint, .cps-layer-mask");
     const id = row?.dataset["layerId"];
     if (!row || !id) return;
-    this.press = { id, pointerId: event.pointerId, startY: event.clientY, row };
+    const group2 = row.classList.contains("cps-layer-mask") ? ".cps-layer-mask" : ".cps-layer-paint";
+    this.press = { id, pointerId: event.pointerId, startY: event.clientY, row, group: group2 };
   }
   move(event) {
     const press = this.press;
@@ -2199,7 +2278,7 @@ class LayerDrag {
     }
     event.preventDefault();
     this.autoScroll(event.clientY);
-    this.drop = this.findDrop(event.clientY);
+    this.drop = this.findDrop(event.clientY, press.group);
     this.mark(this.drop);
   }
   up(event, commit) {
@@ -2218,9 +2297,9 @@ class LayerDrag {
     this.drop = null;
     this.mark(null);
   }
-  /** Paint row under (or nearest to) the pointer, above/below its middle. */
-  findDrop(clientY) {
-    const rows = [...this.list.querySelectorAll(".cps-layer-paint")];
+  /** Row of the dragged row's group under (or nearest to) the pointer, above/below its middle. */
+  findDrop(clientY, group2) {
+    const rows = [...this.list.querySelectorAll(group2)];
     let best = null;
     for (const row of rows) {
       const id = row.dataset["layerId"];
@@ -2835,6 +2914,96 @@ class MaskColorPicker {
     this.pick(anchor, { initial, title: "Mask colour", onInput: apply, onCommit: apply });
   }
 }
+function soloGroup(layer) {
+  return layer.kind === "mask" ? "mask" : "paint";
+}
+function shownOnStage(layer, solo) {
+  if (solo.paint === null && solo.mask === null) return layer.visible;
+  return solo[soloGroup(layer)] === layer.id;
+}
+function toggleSolo(solo, layer) {
+  const group2 = soloGroup(layer);
+  return { ...solo, [group2]: solo[group2] === layer.id ? null : layer.id };
+}
+function pruneSolo(solo, layers2) {
+  const keep = (group2) => {
+    const id = solo[group2];
+    return id !== null && layers2.some((l) => l.id === id && soloGroup(l) === group2) ? id : null;
+  };
+  return { paint: keep("paint"), mask: keep("mask") };
+}
+class SoloState {
+  /**
+   * @param onChange - Called after the solos changed.
+   */
+  constructor(onChange) {
+    this.onChange = onChange;
+  }
+  onChange;
+  ids = { paint: null, mask: null };
+  /** Current solos (read-only copy). */
+  get current() {
+    return this.ids;
+  }
+  /**
+   * Replace the solos.
+   * @param next - New solos.
+   */
+  set(next) {
+    if (next.paint === this.ids.paint && next.mask === this.ids.mask) return;
+    this.ids = { ...next };
+    this.onChange();
+  }
+  /** End every solo. */
+  clear() {
+    this.set({ paint: null, mask: null });
+  }
+}
+function soloMark(layer, solo) {
+  if (solo.paint === null && solo.mask === null) return "off";
+  return solo[soloGroup(layer)] === layer.id ? "on" : "dimmed";
+}
+function rowModel(layer, flags) {
+  const model = {
+    id: layer.id,
+    name: layer.name,
+    visible: layer.visible,
+    locked: layer.locked,
+    selected: flags.selected,
+    standby: flags.standby,
+    solo: flags.solo
+  };
+  if (layer.kind === "mask") {
+    model.color = maskDisplayColor(layer);
+    model.invert = layer.invert === true;
+    model.current = flags.current;
+  }
+  if (layer.kind === "text") model.text = true;
+  return model;
+}
+function el(tag, className) {
+  const element = document.createElement(tag);
+  element.className = className;
+  return element;
+}
+function footerButton(icon, title, onClick) {
+  const button2 = el("button", "cps-icon-button cps-layers-action");
+  button2.type = "button";
+  button2.title = title;
+  setIcon(button2, icon, 16);
+  button2.addEventListener("click", onClick);
+  return button2;
+}
+function moveDrawingBtn(onClick) {
+  const button2 = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
+  button2.type = "button";
+  button2.title = "Move drawing — reposition/scale all layers against the image";
+  button2.setAttribute("aria-label", "Move drawing — reposition/scale all layers against the image");
+  button2.setAttribute("aria-pressed", "false");
+  setIcon(button2, "moveDrawing", 16);
+  button2.addEventListener("click", onClick);
+  return button2;
+}
 const BACKGROUND_ID = "\0background";
 class LayersPanel {
   /**
@@ -2851,12 +3020,13 @@ class LayersPanel {
     this.list = el("div", "cps-layers-list");
     const footer = el("div", "cps-layers-footer");
     this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
+    this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
-    this.deleteButton = footerButton("trash", "Delete layer", () => this.withEditor((e) => e.layerOps.remove()));
+    this.deleteButton = footerButton("trash", "Delete layer", () => this.deleteSelected());
     this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
     const footerDivider = document.createElement("div");
     footerDivider.className = "cps-layers-footer-divider";
-    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.duplicateButton, this.deleteButton);
+    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.deleteButton);
     this.element.append(header, this.list, footer);
     this.maskColor = new MaskColorPicker(ctx.pickColor);
     this.actions = this.rowActions();
@@ -2871,6 +3041,7 @@ class LayersPanel {
   list;
   opacity;
   addButton;
+  addMaskButton;
   duplicateButton;
   deleteButton;
   moveDrawingButton;
@@ -2905,6 +3076,7 @@ class LayersPanel {
       this.editorUnbind = [
         editor.events.on("layers", () => this.sync()),
         editor.events.on("mask", () => this.sync()),
+        editor.events.on("solo", () => this.sync()),
         editor.events.on("render", () => this.thumbs.request()),
         editor.events.on("change", () => this.thumbs.request())
       ];
@@ -2948,8 +3120,10 @@ class LayersPanel {
         const kind = isPaintLike(layer) ? "paint" : "mask";
         const row = this.rowFor(kind, layer.id);
         const active = layer.id === doc.activeLayerId;
-        const selected = kind === "mask" ? targeting && layer.id === maskId : !targeting && active;
-        row.update(rowModel(layer, selected, targeting && active));
+        const isCurrentMask = kind === "mask" && layer.id === maskId;
+        const selected = kind === "mask" ? targeting && isCurrentMask : !targeting && active;
+        const solo = soloMark(layer, editor.solo);
+        row.update(rowModel(layer, { selected, standby: targeting && active, current: isCurrentMask, solo }));
         wanted.push(row);
       }
       const bg = this.rowFor("background", BACKGROUND_ID);
@@ -2974,10 +3148,16 @@ class LayersPanel {
   syncFooter() {
     const editor = this.editor;
     const target = this.selectedTarget();
-    const paintId = editor && target && editor.paintTarget !== "mask" ? target.layerId : null;
+    const targeting = editor?.paintTarget === "mask";
+    const paintId = editor && target && !targeting ? target.layerId : null;
     this.addButton.disabled = !editor;
+    const canAddMask2 = !!editor && editor.layerOps.canAddMask();
+    this.addMaskButton.disabled = !canAddMask2;
+    this.addMaskButton.title = !editor || canAddMask2 ? "New mask (above the current mask)" : `At most ${MAX_MASKS} masks`;
     this.duplicateButton.disabled = !(editor && paintId && editor.layerOps.canDuplicate(paintId));
-    this.deleteButton.disabled = !(editor && paintId && editor.layerOps.canDelete(paintId));
+    const deletable = !!(editor && target && editor.layerOps.canDelete(target.layerId));
+    this.deleteButton.disabled = !deletable;
+    this.deleteButton.title = !targeting ? "Delete layer" : deletable ? "Delete mask" : "The last mask can't be deleted (clear it instead)";
     this.opacity.refresh();
     this.opacity.element.classList.toggle("cps-dim", !target);
     const label = this.opacity.element.querySelector(".cps-num-label");
@@ -3036,14 +3216,13 @@ class LayersPanel {
   rowActions() {
     return {
       select: (id) => this.withEditor((e) => {
-        if (e.maskLayer?.id === id) {
-          e.setPaintTarget("mask");
-          return;
-        }
+        if (e.selectMask(id)) return;
         e.layerOps.setActiveLayer(id);
         e.setPaintTarget("paint");
       }),
       toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer(e, id)?.visible)),
+      // View only: no beforeEdit (a stage drag in progress is not an edit conflict).
+      toggleSolo: (id) => this.editor?.toggleSolo(id),
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
       toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
@@ -3065,6 +3244,19 @@ class LayersPanel {
       if (e.layerOps.add()) e.setPaintTarget("paint");
     });
   }
+  addMask() {
+    this.withEditor((e) => {
+      const id = e.layerOps.addMask();
+      if (id) e.selectMask(id);
+    });
+  }
+  /** Delete the selected row's layer (the current mask in Quick Mask, else the active layer). */
+  deleteSelected() {
+    this.withEditor((e) => {
+      const target = this.selectedTarget();
+      if (target) e.layerOps.remove(target.layerId);
+    });
+  }
   withEditor(fn) {
     const editor = this.editor;
     if (!editor) return;
@@ -3083,40 +3275,8 @@ class LayersPanel {
     return editor && findLayer(editor, id) ? { editor, layerId: id } : null;
   }
 }
-function rowModel(layer, selected, standby) {
-  const model = { id: layer.id, name: layer.name, visible: layer.visible, locked: layer.locked, selected, standby };
-  if (layer.kind === "mask") {
-    model.color = maskDisplayColor(layer);
-    model.invert = layer.invert === true;
-  }
-  if (layer.kind === "text") model.text = true;
-  return model;
-}
 function findLayer(editor, id) {
   return editor.doc.layers.find((l) => l.id === id);
-}
-function el(tag, className) {
-  const element = document.createElement(tag);
-  element.className = className;
-  return element;
-}
-function footerButton(icon, title, onClick) {
-  const button2 = el("button", "cps-icon-button cps-layers-action");
-  button2.type = "button";
-  button2.title = title;
-  setIcon(button2, icon, 16);
-  button2.addEventListener("click", onClick);
-  return button2;
-}
-function moveDrawingBtn(onClick) {
-  const button2 = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
-  button2.type = "button";
-  button2.title = "Move drawing — reposition/scale all layers against the image";
-  button2.setAttribute("aria-label", "Move drawing — reposition/scale all layers against the image");
-  button2.setAttribute("aria-pressed", "false");
-  setIcon(button2, "moveDrawing", 16);
-  button2.addEventListener("click", onClick);
-  return button2;
 }
 function groupControl(group2, descriptors, ctx) {
   const button2 = document.createElement("button");
@@ -5765,6 +5925,7 @@ function groupEntries(older, newer) {
 const LOCKED_LAYER_NOTE = "Layer is locked.";
 const MASK_STROKE_COLOR = "#ffffff";
 const HIDDEN_LAYER_NOTE = "The layer is hidden.";
+const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
 const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
 const TEXT_ENTRY_BYTES = 256;
 const HIT_MARGIN = 0.15;
@@ -5839,13 +6000,16 @@ function rasterizeDecision(layer, confirm) {
   if (layer.kind !== "text") return "edit";
   return confirm() ? "rasterize" : "cancel";
 }
+function editBlockNote(s, layer) {
+  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+  if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
+  if (layer.locked) return LOCKED_LAYER_NOTE;
+  return null;
+}
 function preparePixelEdit(s, layer) {
-  if (layer.locked) {
-    s.events.emit("note", LOCKED_LAYER_NOTE);
-    return "blocked";
-  }
-  if (!layer.visible) {
-    s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE);
+  const note = editBlockNote(s, layer);
+  if (note) {
+    s.events.emit("note", note);
     return "blocked";
   }
   const decision = rasterizeDecision(layer, () => s.confirmRasterize());
@@ -8317,6 +8481,11 @@ class EditorState {
   store;
   /** Current selection (session state, not saved); strokes are clipped to it. */
   selection = new SelectionState(() => this.events.emit("selection", void 0));
+  /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
+  solo = new SoloState(() => {
+    this.events.emit("solo", void 0);
+    this.events.emit("render", void 0);
+  });
   doc;
   frameSource;
   background = { kind: "fill", color: "#ffffff" };
@@ -8330,6 +8499,11 @@ class EditorState {
   pendingBackgroundSize = null;
   /** Quick Mask paint target (UI state, not saved). */
   target = "paint";
+  /**
+   * Current mask (M8): the last selected mask row, what Quick Mask paints
+   * into (UI state, not saved). `null` or a deleted id = the top-most mask.
+   */
+  currentMaskId = null;
   /** Layer the current stroke paints into. */
   strokeLayerId = null;
   /** Largest dab diameter of the current stroke, document px. */
@@ -8366,6 +8540,7 @@ class EditorState {
     }
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
+    this.events.on("layers", () => this.solo.set(pruneSolo(this.solo.current, this.doc.layers)));
   }
   /** Layer files are being restored. */
   get loading() {
@@ -8404,12 +8579,12 @@ class EditorState {
     }
   }
   /**
-   * The mask layer, adding a default one (not dirty, no history) when the
-   * document has none -- documents saved before M2 get one lazily.
+   * The current mask layer, adding a default one (not dirty, no history)
+   * when the document has none -- documents saved before M2 get one lazily.
    * @returns The mask layer.
    */
   ensureMask() {
-    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle);
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, this.currentMaskId);
     if (created) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, false);
@@ -8516,6 +8691,7 @@ class FrameOps {
     const before = this.captureSnapshot();
     const after = { frame, bounds: frameRect(frame), source, pixels: null };
     this.applySnapshot(after);
+    s.solo.clear();
     s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
     s.lastStrokeEnd = null;
     s.afterEdit();
@@ -8648,7 +8824,7 @@ class LayerDisplay {
     const s = this.s;
     const out = [];
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
+      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
       const offset = this.moveOffset(layer.id);
@@ -8670,7 +8846,7 @@ class LayerDisplay {
     const out = [];
     const bounds = s.store.bounds;
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind !== "mask") continue;
+      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const stroking = s.strokeLayerId === layer.id && s.stroke.active;
       const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
@@ -9379,6 +9555,14 @@ function pickLayer(layers2, alphaAt, threshold = PICK_ALPHA_THRESHOLD) {
   }
   return null;
 }
+function pickMask(layers2, alphaAt, threshold = PICK_ALPHA_THRESHOLD) {
+  for (let i = layers2.length - 1; i >= 0; i--) {
+    const layer = layers2[i];
+    if (!layer || !layer.visible || layer.locked || layer.kind !== "mask") continue;
+    if (alphaAt(layer.id) > threshold) return layer.id;
+  }
+  return null;
+}
 class LayerOps {
   /**
    * @param s - Shared editor state.
@@ -9398,12 +9582,19 @@ class LayerOps {
     return this.s.runtime.revision(layerId);
   }
   /**
-   * Whether the layer can be deleted (paint-like, not the last one).
+   * Whether the layer can be deleted (not the last paint layer / last mask).
    * @param layerId - Layer id.
    * @returns `true` if deletable.
    */
   canDelete(layerId) {
     return canDeleteLayer(this.s.doc.layers, layerId);
+  }
+  /**
+   * Whether another mask can be added (M8: at most `MAX_MASKS`).
+   * @returns `true` if below the limit.
+   */
+  canAddMask() {
+    return canAddMask(this.s.doc.layers);
   }
   /**
    * Whether the layer can be duplicated (paint-like).
@@ -9426,6 +9617,19 @@ class LayerOps {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
     const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
     return pickLayer(s.doc.layers, (id) => s.store.get(id) ? s.store.read(id, rect)?.data.data[3] ?? 0 : 0);
+  }
+  /**
+   * Quick Mask auto-select: the topmost visible, unlocked mask with raw
+   * painted coverage at a document point ({@link pickMask}; `invert` ignored).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns Mask layer id, or `null` if nothing is hit.
+   */
+  pickMaskAt(x, y) {
+    const s = this.s;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
+    return pickMask(s.doc.layers, (id) => s.store.get(id) ? s.store.read(id, rect)?.data.data[3] ?? 0 : 0);
   }
   // ── Not undoable ────────────────────────────────────────────────────────
   /**
@@ -9487,6 +9691,23 @@ class LayerOps {
   addLayer(layer) {
     if (!this.ready()) return null;
     this.insert(layer, paintInsertIndex(this.s.doc), null);
+    this.soloNew(layer);
+    return layer.id;
+  }
+  /**
+   * Add an empty mask ("Mask N", next palette colour) above the current mask
+   * and make it the current mask. The active paint layer is unchanged.
+   * @returns New mask id, or `null` while loading or at the limit.
+   */
+  addMask() {
+    const s = this.s;
+    if (!this.ready() || !canAddMask(s.doc.layers)) return null;
+    const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
+    const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
+    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
+    s.currentMaskId = layer.id;
+    this.insert(layer, index, null, false);
+    this.soloNew(layer);
     return layer.id;
   }
   /**
@@ -9501,13 +9722,25 @@ class LayerOps {
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const source = s.doc.layers[index];
     if (!source) return null;
-    const layer = { ...source, id: createId(8), name: `${source.name} copy` };
+    const layer = { ...source, id: createId(8), name: copyLayerName(source.name, s.doc.layers) };
     this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    this.soloNew(layer);
     return layer.id;
   }
   /**
-   * Delete a paint layer (not the last one; masks are not deletable). The
-   * pixels stay in the undo entry.
+   * While any solo is on, a new layer takes over its group's solo, so what
+   * you just made is visible and editable (a new text layer would otherwise
+   * be hidden while typing).
+   * @param layer - Newly inserted layer.
+   */
+  soloNew(layer) {
+    const solo = this.s.solo.current;
+    if (solo.paint === null && solo.mask === null) return;
+    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
+  }
+  /**
+   * Delete a paint layer or mask (not the last of its kind). The pixels stay
+   * in the undo entry. Deleting the current mask makes the top mask current.
    * @param layerId - Layer (default: the active layer).
    * @returns `true` if deleted.
    */
@@ -9523,11 +9756,13 @@ class LayerOps {
     s.runtime.remove(layerId);
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
+    if (s.currentMaskId === layerId) s.currentMaskId = null;
     this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }
   /**
-   * Reorder a paint layer next to another paint layer.
+   * Reorder a layer next to another of the same group (paint among paint,
+   * mask among masks).
    * @param layerId - Dragged layer.
    * @param targetId - Layer it is dropped next to.
    * @param above - Above (true) or below the target in the stack.
@@ -9598,12 +9833,12 @@ class LayerOps {
     if (s.stroke.active) s.cancelStroke();
     return true;
   }
-  insert(layer, index, pixels) {
+  insert(layer, index, pixels, activate = true) {
     const s = this.s;
     const activeBefore = s.doc.activeLayerId;
     s.doc.layers.splice(index, 0, layer);
     installLayerPixels(s, layer.id, pixels);
-    s.doc.activeLayerId = layer.id;
+    if (activate) s.doc.activeLayerId = layer.id;
     this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
   }
   setProps(layerId, props, gesture) {
@@ -9666,7 +9901,7 @@ class EditorMaskOps {
   }
   /** The mask layer Quick Mask edits, if the document has one. */
   get maskLayer() {
-    return findMaskLayer(this.s.doc);
+    return findMaskLayer(this.s.doc, this.s.currentMaskId);
   }
   /**
    * Whether any mask layer is hidden AND has ever held paint (queue-time
@@ -9683,9 +9918,24 @@ class EditorMaskOps {
   setPaintTarget(target) {
     this.paint.setPaintTarget(target);
   }
-  /** Toggle between the paint layer and the mask. */
+  /** Toggle between the paint layer and the current mask. */
   togglePaintTarget() {
     this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+  }
+  /**
+   * Make a mask the current mask (M8) and turn Quick Mask on.
+   * @param layerId - Mask layer id.
+   * @returns `false` if it is not a mask layer.
+   */
+  selectMask(layerId) {
+    const s = this.s;
+    if (s.doc.layers.find((l) => l.id === layerId)?.kind !== "mask") return false;
+    const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId;
+    if (changed && s.stroke.active) s.cancelStroke();
+    s.currentMaskId = layerId;
+    if (s.target !== "mask") this.paint.setPaintTarget("mask");
+    else if (changed) s.events.emit("mask", void 0);
+    return true;
   }
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
@@ -9783,9 +10033,9 @@ class LayerMoveOps {
   editable() {
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
-    const layer = activeEditLayer(s.doc, s.target);
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
     if (!layer) return null;
-    const note = blockedNote(layer);
+    const note = blockedNote(s, layer);
     if (note) {
       s.events.emit("note", note);
       return null;
@@ -9796,16 +10046,16 @@ class LayerMoveOps {
     const s = this.s;
     if (s.loading || s.stroke.active || dx === 0 && dy === 0) return false;
     const layer = s.doc.layers.find((l) => l.id === layerId);
-    if (!layer || blockedNote(layer)) return false;
+    if (!layer || blockedNote(s, layer)) return false;
     const mover = moverFor(layer);
     if (!mover?.move(s, layer, dx, dy, gesture)) return false;
     s.afterEdit();
     return true;
   }
 }
-function blockedNote(layer) {
-  if (layer.locked) return LOCKED_LAYER_NOTE;
-  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+function blockedNote(s, layer) {
+  const note = editBlockNote(s, layer);
+  if (note) return note;
   if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
   return null;
 }
@@ -10213,7 +10463,7 @@ class PixelOps {
     const s = this.s;
     const layers2 = [];
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
+      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       layers2.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
     }
     return {
@@ -10588,8 +10838,9 @@ class TextOps {
     const s = this.s;
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    if (layer.locked || !layer.visible) {
-      s.events.emit("note", layer.locked ? LOCKED_LAYER_NOTE : HIDDEN_LAYER_NOTE);
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
       return false;
     }
     this.layers.setActiveLayer(layerId);
@@ -10809,6 +11060,18 @@ class Editor extends EditorBase {
   maskOverlays() {
     return this.display.maskOverlays();
   }
+  /** Soloed layer ids (view only, `solo.ts`; not saved, not undoable, no effect on outputs). */
+  get solo() {
+    return this.s.solo.current;
+  }
+  /**
+   * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
+   * @param layerId - Layer id (unknown ids are ignored).
+   */
+  toggleSolo(layerId) {
+    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
+  }
   // ── Quick Mask / paint target ───────────────────────────────────────────
   /** What brush/eraser strokes paint into (UI state, not saved). */
   get paintTarget() {
@@ -10825,9 +11088,17 @@ class Editor extends EditorBase {
   setPaintTarget(target) {
     this.maskOps.setPaintTarget(target);
   }
-  /** Toggle between the paint layer and the mask. */
+  /** Toggle between the paint layer and the current mask. */
   togglePaintTarget() {
     this.maskOps.togglePaintTarget();
+  }
+  /**
+   * Make a mask the current mask and turn Quick Mask on (mask row click).
+   * @param layerId - Mask layer id.
+   * @returns `false` if it is not a mask layer.
+   */
+  selectMask(layerId) {
+    return this.maskOps.selectMask(layerId);
   }
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
@@ -10869,6 +11140,7 @@ class Editor extends EditorBase {
     const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
+    copy.s.currentMaskId = this.s.currentMaskId;
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
   }
@@ -11811,9 +12083,12 @@ class MoveLayerTool {
    * @returns alse if nothing was hit (the drag moves nothing).
    */
   autoSelect(editor, at) {
+    if (editor.paintTarget === "mask") {
+      const maskId = editor.layerOps.pickMaskAt(at.x, at.y);
+      return maskId !== null && editor.selectMask(maskId);
+    }
     const id = editor.layerOps.pickAt(at.x, at.y);
     if (!id) return false;
-    if (editor.paintTarget === "mask") editor.setPaintTarget("paint");
     editor.layerOps.setActiveLayer(id);
     return true;
   }
@@ -13422,6 +13697,37 @@ const layersCss = `/*
 
 .cps-layer-row.cps-standby {
   border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);
+}
+
+/* Current mask (M8): thick left bar in the mask's own colour, always; the
+   selected background adds on top while Quick Mask is on. The 2px extra
+   border is taken from the padding so content doesn't shift. */
+.cps-layer-row.cps-current-mask,
+.cps-layer-row.cps-current-mask.cps-selected {
+  border-left: 4px solid var(--cps-mask-color, var(--cps-accent));
+  padding-left: 2px;
+}
+
+/* Solo (view only): small button left of the eye. */
+.cps-layer-button.cps-layer-solo {
+  width: 14px;
+  height: 14px;
+  opacity: 0.4;
+}
+
+.cps-layer-button.cps-layer-solo:hover,
+.cps-layer-button.cps-layer-solo.cps-active {
+  opacity: 1;
+}
+
+.cps-layer-button.cps-layer-solo.cps-active,
+.cps-layer-button.cps-layer-eye.cps-solo-on {
+  color: var(--cps-accent);
+  opacity: 1;
+}
+
+.cps-layer-button.cps-layer-eye.cps-solo-dimmed {
+  opacity: 0.25;
 }
 
 .cps-layer-row.cps-dragging {

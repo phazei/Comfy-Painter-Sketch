@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PICK_ALPHA_THRESHOLD, pickLayer } from "./layerPick";
+import { PICK_ALPHA_THRESHOLD, pickLayer, pickMask } from "./layerPick";
 import type { PickCandidate } from "./layerPick";
 
 function layer(id: string, extra: Partial<PickCandidate> = {}): PickCandidate {
@@ -43,5 +43,33 @@ describe("pickLayer (Move auto-select)", () => {
   it("returns null when nothing is hit or there are no layers", () => {
     expect(pickLayer([layer("a")], () => 0)).toBeNull();
     expect(pickLayer([], () => 255)).toBeNull();
+  });
+});
+
+describe("pickMask (Quick Mask auto-select)", () => {
+  const mask = (id: string, extra: Partial<PickCandidate> = {}): PickCandidate => layer(id, { kind: "mask", ...extra });
+
+  it("picks the topmost mask with coverage above the threshold", () => {
+    const layers = [mask("m1"), mask("m2"), mask("m3")];
+    const cov: Record<string, number> = { m1: 255, m2: 128, m3: PICK_ALPHA_THRESHOLD };
+    expect(pickMask(layers, (id) => cov[id] ?? 0)).toBe("m2");
+  });
+
+  it("skips paint/text, hidden and locked layers without sampling them", () => {
+    const sampled: string[] = [];
+    const layers = [
+      mask("m1"),
+      layer("paint"),
+      layer("text", { kind: "text" }),
+      mask("hidden", { visible: false }),
+      mask("locked", { locked: true }),
+    ];
+    expect(pickMask(layers, (id) => (sampled.push(id), 255))).toBe("m1");
+    expect(sampled).toEqual(["m1"]);
+  });
+
+  it("returns null when no mask has coverage", () => {
+    expect(pickMask([mask("m1"), layer("p")], (id) => (id === "p" ? 255 : 0))).toBeNull();
+    expect(pickMask([], () => 255)).toBeNull();
   });
 });

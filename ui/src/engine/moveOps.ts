@@ -18,7 +18,7 @@
 
 import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE } from "./editorTypes";
+import { editBlockNote } from "./rasterize";
 import type { EditorState } from "./editorState";
 import { moverFor, UNMOVABLE_LAYER_NOTE } from "./layerMovers";
 
@@ -104,9 +104,9 @@ export class LayerMoveOps {
   private editable(): Layer | null {
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
-    const layer = activeEditLayer(s.doc, s.target);
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
     if (!layer) return null;
-    const note = blockedNote(layer);
+    const note = blockedNote(s, layer);
     if (note) {
       s.events.emit("note", note);
       return null;
@@ -119,7 +119,7 @@ export class LayerMoveOps {
     if (s.loading || s.stroke.active || (dx === 0 && dy === 0)) return false;
     // The layer may have changed during the drag (lock, hide, delete).
     const layer = s.doc.layers.find((l) => l.id === layerId);
-    if (!layer || blockedNote(layer)) return false;
+    if (!layer || blockedNote(s, layer)) return false;
     const mover = moverFor(layer);
     if (!mover?.move(s, layer, dx, dy, gesture)) return false;
     s.afterEdit();
@@ -128,9 +128,9 @@ export class LayerMoveOps {
 }
 
 /** Why a layer can't be moved, or `null`. */
-function blockedNote(layer: Layer): string | null {
-  if (layer.locked) return LOCKED_LAYER_NOTE;
-  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+function blockedNote(s: EditorState, layer: Layer): string | null {
+  const note = editBlockNote(s, layer);
+  if (note) return note;
   if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
   return null;
 }

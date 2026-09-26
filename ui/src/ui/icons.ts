@@ -32,6 +32,10 @@ const PATHS: Readonly<Record<string, string>> = {
   lock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
   unlock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 6.8-1.2",
   plus: "M12 5v14M5 12h14",
+  // Solo (view only): a ring with a centre dot ("only this one").
+  solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
+  // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
+  maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
   duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
   trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
   // Half-filled circle outline: "invert".

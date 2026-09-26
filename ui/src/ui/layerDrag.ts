@@ -3,8 +3,9 @@
  * row becomes a drag after a few pixels; only then is the pointer captured
  * (capturing earlier would retarget the row's `click`). While dragging, the
  * row under the pointer shows a drop line above or below it; the list
- * auto-scrolls near its edges. Only paint rows are drop targets, so masks and
- * the Background row never move.
+ * auto-scrolls near its edges. Paint rows drop only onto paint rows and mask
+ * rows only onto mask rows (M8), so masks stay above paint layers and the
+ * Background row never moves.
  */
 
 import { isControl } from "./layerRow";
@@ -28,7 +29,7 @@ export interface DropTarget {
  * Pointer-driven row reordering on a list element.
  */
 export class LayerDrag {
-  private press: { id: string; pointerId: number; startY: number; row: HTMLElement } | null = null;
+  private press: { id: string; pointerId: number; startY: number; row: HTMLElement; group: string } | null = null;
   private dragging = false;
   private drop: DropTarget | null = null;
   private marked: HTMLElement | null = null;
@@ -63,10 +64,11 @@ export class LayerDrag {
 
   private down(event: PointerEvent): void {
     if (event.button !== 0 || isControl(event.target) || !(event.target instanceof Element)) return;
-    const row = event.target.closest<HTMLElement>(".cps-layer-paint");
+    const row = event.target.closest<HTMLElement>(".cps-layer-paint, .cps-layer-mask");
     const id = row?.dataset["layerId"];
     if (!row || !id) return;
-    this.press = { id, pointerId: event.pointerId, startY: event.clientY, row };
+    const group = row.classList.contains("cps-layer-mask") ? ".cps-layer-mask" : ".cps-layer-paint";
+    this.press = { id, pointerId: event.pointerId, startY: event.clientY, row, group };
   }
 
   private move(event: PointerEvent): void {
@@ -85,7 +87,7 @@ export class LayerDrag {
     }
     event.preventDefault();
     this.autoScroll(event.clientY);
-    this.drop = this.findDrop(event.clientY);
+    this.drop = this.findDrop(event.clientY, press.group);
     this.mark(this.drop);
   }
 
@@ -107,9 +109,9 @@ export class LayerDrag {
     this.mark(null);
   }
 
-  /** Paint row under (or nearest to) the pointer, above/below its middle. */
-  private findDrop(clientY: number): DropTarget | null {
-    const rows = [...this.list.querySelectorAll<HTMLElement>(".cps-layer-paint")];
+  /** Row of the dragged row's group under (or nearest to) the pointer, above/below its middle. */
+  private findDrop(clientY: number, group: string): DropTarget | null {
+    const rows = [...this.list.querySelectorAll<HTMLElement>(group)];
     let best: DropTarget | null = null;
     for (const row of rows) {
       const id = row.dataset["layerId"];

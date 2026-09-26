@@ -145,6 +145,7 @@ ui/src/
     dabMask.ts            -- 16-bit stroke coverage: every dab composited over (Photoshop)
     stroke.ts             -- per-stroke buffer + preview, committed at opacity
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
+    solo.ts               -- view-only solo (one layer + one mask); display only, never outputs
   tools/                  -- one file per tool implementing a common Tool interface
     brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
     marquee.ts lasso.ts magicWand.ts ...

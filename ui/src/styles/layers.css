@@ -94,6 +94,37 @@
   border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);
 }
 
+/* Current mask (M8): thick left bar in the mask's own colour, always; the
+   selected background adds on top while Quick Mask is on. The 2px extra
+   border is taken from the padding so content doesn't shift. */
+.cps-layer-row.cps-current-mask,
+.cps-layer-row.cps-current-mask.cps-selected {
+  border-left: 4px solid var(--cps-mask-color, var(--cps-accent));
+  padding-left: 2px;
+}
+
+/* Solo (view only): small button left of the eye. */
+.cps-layer-button.cps-layer-solo {
+  width: 14px;
+  height: 14px;
+  opacity: 0.4;
+}
+
+.cps-layer-button.cps-layer-solo:hover,
+.cps-layer-button.cps-layer-solo.cps-active {
+  opacity: 1;
+}
+
+.cps-layer-button.cps-layer-solo.cps-active,
+.cps-layer-button.cps-layer-eye.cps-solo-on {
+  color: var(--cps-accent);
+  opacity: 1;
+}
+
+.cps-layer-button.cps-layer-eye.cps-solo-dimmed {
+  opacity: 0.25;
+}
+
 .cps-layer-row.cps-dragging {
   opacity: 0.5;
 }

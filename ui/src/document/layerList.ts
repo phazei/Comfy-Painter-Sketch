@@ -4,10 +4,11 @@
  * constraints, and the reversible {@link LayerChange} records the editor's
  * structural undo entries are made of.
  *
- * Constraints (v1 UI, decision 5): mask layers stay above every paint layer,
- * paint layers only reorder among paint layers, the last paint layer cannot
- * be deleted, and mask layers are not added/deleted/duplicated from the
- * panel. Pixels are opaque here (`P`), so everything is unit-testable.
+ * Constraints (decision 5, M8): mask layers stay above every paint layer
+ * (paint reorders among paint, masks among masks), the last paint layer and
+ * the last mask cannot be deleted, at most {@link MAX_MASKS} masks exist, and
+ * masks are not duplicated. Pixels are opaque here (`P`), so everything is
+ * unit-testable.
  */
 
 import type { Layer, PainterDocument } from "./types";
@@ -53,6 +54,62 @@ export function paintLayerCount(layers: readonly Layer[]): number {
   return n;
 }
 
+/** Most mask layers a document may have (M8: main output + 6 M9 regions). */
+export const MAX_MASKS = 7;
+
+/**
+ * Number of mask layers.
+ * @param layers - Layer list.
+ * @returns Count.
+ */
+export function maskLayerCount(layers: readonly Pick<Layer, "kind">[]): number {
+  let n = 0;
+  for (const layer of layers) if (layer.kind === "mask") n++;
+  return n;
+}
+
+/**
+ * Whether another mask may be added (fewer than {@link MAX_MASKS}).
+ * @param layers - Layer list.
+ * @returns `true` if a mask can be added.
+ */
+export function canAddMask(layers: readonly Pick<Layer, "kind">[]): boolean {
+  return maskLayerCount(layers) < MAX_MASKS;
+}
+
+/**
+ * Lowest free "Mask N" name among the mask layers. A bare "Mask" (documents
+ * from before M8) counts as "Mask 1".
+ * @param layers - Layer list.
+ * @returns E.g. `"Mask 2"`.
+ */
+export function nextMaskName(layers: readonly Pick<Layer, "name" | "kind">[]): string {
+  const used = new Set<number>();
+  for (const layer of layers) {
+    if (layer.kind !== "mask") continue;
+    const name = layer.name.trim();
+    if (name === "Mask") used.add(1);
+    const match = /^Mask (\d+)$/.exec(name);
+    if (match) used.add(Number(match[1]));
+  }
+  let n = 1;
+  while (used.has(n)) n++;
+  return `Mask ${n}`;
+}
+
+/**
+ * Index a new mask is inserted at: directly above the current mask, else on
+ * top of the stack (masks always sit above the paint layers).
+ * @param layers - Layer list.
+ * @param currentMaskId - Current mask id, if any.
+ * @returns Index in `layers`.
+ */
+export function maskInsertIndex(layers: readonly Layer[], currentMaskId: string | null | undefined): number {
+  const current = layers.findIndex((l) => l.id === currentMaskId);
+  if (current >= 0 && layers[current]?.kind === "mask") return current + 1;
+  return layers.length;
+}
+
 /**
  * Next free "Layer N" name: one above the highest existing N (Photoshop).
  * @param layers - Layer list.
@@ -65,6 +122,23 @@ export function nextLayerName(layers: readonly Pick<Layer, "name">[]): string {
     if (match) max = Math.max(max, Number(match[1]));
   }
   return `Layer ${max + 1}`;
+}
+
+/**
+ * Name for a duplicate (Photoshop): "Name copy", then "Name copy 2", "Name copy 3", ...
+ * An existing " copy" / " copy N" suffix is stripped first, so names never grow;
+ * the first free name among `layers` is used.
+ * @param source - Name of the layer being duplicated.
+ * @param layers - Existing layers.
+ * @returns Name for the copy.
+ */
+export function copyLayerName(source: string, layers: readonly Pick<Layer, "name">[]): string {
+  const base = source.trim().replace(/ copy(?: \d+)?$/, "");
+  const taken = new Set(layers.map((l) => l.name.trim()));
+  if (!taken.has(`${base} copy`)) return `${base} copy`;
+  let n = 2;
+  while (taken.has(`${base} copy ${n}`)) n++;
+  return `${base} copy ${n}`;
 }
 
 /**
@@ -83,14 +157,16 @@ export function paintInsertIndex(doc: Readonly<Pick<PainterDocument, "layers" | 
 }
 
 /**
- * Whether a layer may be deleted (paint-like and not the last one).
+ * Whether a layer may be deleted: not the last paint-like layer and not the
+ * last mask (clear it instead).
  * @param layers - Layer list.
  * @param id - Layer id.
  * @returns `true` if deletable.
  */
 export function canDeleteLayer(layers: readonly Layer[], id: string): boolean {
   const layer = layers.find((l) => l.id === id);
-  return !!layer && isPaintLike(layer) && paintLayerCount(layers) > 1;
+  if (!layer) return false;
+  return isPaintLike(layer) ? paintLayerCount(layers) > 1 : maskLayerCount(layers) > 1;
 }
 
 /**
@@ -125,8 +201,8 @@ export function activeAfterRemoval(layers: readonly Layer[], removed: number): s
 
 /**
  * Final index for dragging `id` next to `targetId` (display: `above` = higher
- * in the stack = larger index). Only paint-like layers move among paint-like
- * layers, so masks always stay on top.
+ * in the stack = larger index). Paint-like layers move only among paint-like
+ * layers and masks only among masks, so masks always stay on top.
  * @param layers - Layer list.
  * @param id - Dragged layer.
  * @param targetId - Layer it is dropped next to.
@@ -143,7 +219,7 @@ export function resolveMove(
   const target = layers.findIndex((l) => l.id === targetId);
   const src = layers[from];
   const dst = layers[target];
-  if (!src || !dst || !isPaintLike(src) || !isPaintLike(dst)) return null;
+  if (!src || !dst || isPaintLike(src) !== isPaintLike(dst)) return null;
   if (from === target) return null;
   const targetAfterRemoval = target > from ? target - 1 : target;
   const to = above ? targetAfterRemoval + 1 : targetAfterRemoval;

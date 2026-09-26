@@ -31,6 +31,7 @@ import type { DocCompositeInput, SceneSource } from "./docComposite";
 import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { preparePixelEdit } from "./rasterize";
+import { shownOnStage } from "./solo";
 import { floodFill } from "./floodFill";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import { averageColor, blendCoverage, blendCoverageBehind, hexToRgb, rgbToHex } from "./pixelColor";
@@ -234,7 +235,8 @@ export class PixelOps {
     const s = this.s;
     const layers: CompositeLayer[] = [];
     for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
+      // "What the user sees": honours solo (view only), like the stage.
+      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       layers.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
     }
     return {

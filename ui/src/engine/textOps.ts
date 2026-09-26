@@ -21,7 +21,7 @@ import { commitName, nameFromText, sameTextData } from "../document/textData";
 import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import type { Point } from "../geometry/rect";
-import { HIDDEN_LAYER_NOTE, LOCKED_LAYER_NOTE } from "./editorTypes";
+import { editBlockNote } from "./rasterize";
 import type { EditorState } from "./editorState";
 import { emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
 import type { LayerOps } from "./layerOps";
@@ -128,8 +128,9 @@ export class TextOps {
     const s = this.s;
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    if (layer.locked || !layer.visible) {
-      s.events.emit("note", layer.locked ? LOCKED_LAYER_NOTE : HIDDEN_LAYER_NOTE);
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
       return false;
     }
     this.layers.setActiveLayer(layerId);

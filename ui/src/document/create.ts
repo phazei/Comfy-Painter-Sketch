@@ -60,6 +60,9 @@ export const DEFAULT_MASK_COLOR = "#ff0000";
 /** Default mask display opacity (decision 5). */
 export const DEFAULT_MASK_OPACITY = 0.5;
 
+/** Name of a document's first mask layer (M8: "Mask N", lowest free N). */
+export const FIRST_MASK_NAME = "Mask 1";
+
 /** Display style a new mask layer starts with (user settings may override the defaults). */
 export interface MaskStyle {
   /** `#rrggbb`. */
@@ -78,7 +81,7 @@ export const DEFAULT_MASK_STYLE: Readonly<MaskStyle> = { color: DEFAULT_MASK_COL
  * @param style - Colour + overlay opacity (default red, 50 %).
  * @returns Mask layer with `file: null`.
  */
-export function createMaskLayer(name = "Mask", style: Readonly<MaskStyle> = DEFAULT_MASK_STYLE): Layer {
+export function createMaskLayer(name = FIRST_MASK_NAME, style: Readonly<MaskStyle> = DEFAULT_MASK_STYLE): Layer {
   return {
     id: createId(8),
     name,
@@ -95,7 +98,7 @@ export function createMaskLayer(name = "Mask", style: Readonly<MaskStyle> = DEFA
 
 /**
  * A new document with one empty paint layer ("Layer 1", active), one empty
- * mask layer ("Mask") above it, and `bounds = frame`.
+ * mask layer ("Mask 1") above it, and `bounds = frame`.
  *
  * @param frame - Frame size (integer pixels).
  * @param docId - Identity to reuse; a new one is generated when omitted.
@@ -116,6 +119,6 @@ export function createEmptyDocument(
     bounds: frameRect(size),
     regions: [],
     activeLayerId: layer.id,
-    layers: [layer, createMaskLayer("Mask", maskStyle)],
+    layers: [layer, createMaskLayer(FIRST_MASK_NAME, maskStyle)],
   };
 }

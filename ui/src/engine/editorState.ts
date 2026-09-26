@@ -21,6 +21,7 @@ import { DEFAULT_HISTORY_BYTES, HistoryStack } from "./history";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
 import { SelectionState } from "./selectionState";
+import { pruneSolo, SoloState } from "./solo";
 import { StrokeBuffer } from "./stroke";
 import { ViewState } from "./view";
 
@@ -37,6 +38,11 @@ export class EditorState {
   readonly store: LayerStore;
   /** Current selection (session state, not saved); strokes are clipped to it. */
   readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
+  /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
+  readonly solo = new SoloState(() => {
+    this.events.emit("solo", undefined);
+    this.events.emit("render", undefined);
+  });
 
   doc: PainterDocument;
   frameSource: FrameSource;
@@ -51,6 +57,11 @@ export class EditorState {
   pendingBackgroundSize: Size | null = null;
   /** Quick Mask paint target (UI state, not saved). */
   target: PaintTarget = "paint";
+  /**
+   * Current mask (M8): the last selected mask row, what Quick Mask paints
+   * into (UI state, not saved). `null` or a deleted id = the top-most mask.
+   */
+  currentMaskId: string | null = null;
   /** Layer the current stroke paints into. */
   strokeLayerId: string | null = null;
   /** Largest dab diameter of the current stroke, document px. */
@@ -88,6 +99,8 @@ export class EditorState {
     }
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
+    // A solo ends when its layer is deleted (every layer-list change emits `layers`).
+    this.events.on("layers", () => this.solo.set(pruneSolo(this.solo.current, this.doc.layers)));
   }
 
   /** Layer files are being restored. */
@@ -132,12 +145,12 @@ export class EditorState {
   }
 
   /**
-   * The mask layer, adding a default one (not dirty, no history) when the
-   * document has none -- documents saved before M2 get one lazily.
+   * The current mask layer, adding a default one (not dirty, no history)
+   * when the document has none -- documents saved before M2 get one lazily.
    * @returns The mask layer.
    */
   ensureMask(): Layer {
-    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle);
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, this.currentMaskId);
     if (created) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, false);

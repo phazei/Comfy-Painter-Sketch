@@ -4,8 +4,8 @@
  *
  * They style the FIRST mask of a document -- the one a new document is
  * created with, or the one added lazily to a document saved without a mask.
- * Existing masks are never changed. M8 (multiple masks) keeps this as the
- * first colour and adds a palette for further masks.
+ * Existing masks are never changed. Further masks (M8) take the first
+ * {@link MASK_PALETTE} colour no mask uses yet ({@link nextMaskStyle}).
  *
  * Pure (no ComfyUI imports) so the sanitizers are unit-testable; reading the
  * values is `readDefaults.ts`.
@@ -81,4 +81,27 @@ export function normalizeMaskOpacity(raw: unknown): number {
  */
 export function firstMaskStyleFrom(read: (id: string) => unknown): MaskStyle {
   return { color: normalizeMaskColor(read(MASK_COLOR_ID)), opacity: normalizeMaskOpacity(read(MASK_OPACITY_ID)) };
+}
+
+
+// ── Palette (M8) ──────────────────────────────────────────────────────────────
+
+/** Colours of the 2nd..7th mask: blue, green, yellow, magenta, cyan, orange. */
+export const MASK_PALETTE: readonly string[] = ["#0000ff", "#00ff00", "#ffff00", "#ff00ff", "#00ffff", "#ff8000"];
+
+/**
+ * Style of a new mask. With no mask yet it is the first-mask style (the
+ * user's Defaults); otherwise the first palette colour not already used by a
+ * mask (case-insensitive), at the default opacity. If every palette colour
+ * is taken (user recoloured masks), the palette cycles by mask count.
+ * @param usedColors - Colours of the existing masks (`#rrggbb` / `#rgb`, any case).
+ * @param first - First-mask style (settings).
+ * @returns Colour + opacity for the new mask.
+ */
+export function nextMaskStyle(usedColors: readonly (string | undefined)[], first: Readonly<MaskStyle>): MaskStyle {
+  if (usedColors.length === 0) return { ...first };
+  const used = new Set(usedColors.map((c) => normalizeMaskColor(c)));
+  const free = MASK_PALETTE.find((c) => !used.has(c));
+  const color = free ?? MASK_PALETTE[(usedColors.length - 1) % MASK_PALETTE.length] ?? DEFAULT_MASK_STYLE.color;
+  return { color, opacity: first.opacity };
 }

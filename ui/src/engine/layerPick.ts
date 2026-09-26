@@ -41,3 +41,25 @@ export function pickLayer(
   }
   return null;
 }
+
+/**
+ * Quick Mask auto-select (M8): the topmost visible, unlocked mask layer whose
+ * RAW painted coverage (alpha, `invert` ignored) at the pick point exceeds
+ * `threshold` -- you grab the mask by the strokes you can see and drag.
+ * @param layers - Document layers, bottom -> top.
+ * @param alphaAt - Coverage sampler for the pick point (only called for pickable masks).
+ * @param threshold - Coverage that must be exceeded (default {@link PICK_ALPHA_THRESHOLD}).
+ * @returns The picked mask id, or `null` if nothing is hit.
+ */
+export function pickMask(
+  layers: readonly PickCandidate[],
+  alphaAt: AlphaSampler,
+  threshold: number = PICK_ALPHA_THRESHOLD,
+): string | null {
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i];
+    if (!layer || !layer.visible || layer.locked || layer.kind !== "mask") continue;
+    if (alphaAt(layer.id) > threshold) return layer.id;
+  }
+  return null;
+}

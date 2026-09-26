@@ -154,6 +154,8 @@ export interface EditorEvents {
   selection: undefined;
   /** Text edit started, changed (text / style) or ended (`Editor.text`). */
   text: undefined;
+  /** Solo (view only) changed (`Editor.solo`). */
+  solo: undefined;
 }
 
 /** Note shown when painting on a locked layer. */
@@ -164,6 +166,9 @@ export const MASK_STROKE_COLOR = "#ffffff";
 
 /** Note shown when editing a hidden (non-mask) layer is refused. */
 export const HIDDEN_LAYER_NOTE = "The layer is hidden.";
+
+/** Note shown when editing a layer that a solo (on another layer) hides. */
+export const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
 
 /** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
 export const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";

@@ -266,11 +266,14 @@ interface OutputOptions {                           // per region, and doc-level
   lock, opacity, thumbnails
 - Background (input image) row at the bottom, locked, not deletable
 - Mask layers shown with their color swatch
-- Mask row at the top (v1: exactly one; not addable/deletable/movable): eye,
-  color swatch (picker), invert, overlay opacity. Clicking the mask row turns
-  Quick Mask on; clicking a paint row turns it off.
+- Mask rows at the top (M8: 1-7; New mask button, inserted above the current
+  mask; drag only among masks): eye, color swatch (picker), invert, overlay
+  opacity. Clicking a mask row makes it current and turns Quick Mask on;
+  clicking a paint row turns it off. The current mask has a left bar in its colour; each row has a solo button (Alt+click on the eye also solos). Masks found below paint in a loaded document are moved on top (output
+  unchanged: union).
 - New layer goes above the active paint layer, named "Layer N". The last paint
   layer can't be deleted. Painting on a locked layer shows "Layer is locked."
+- Duplicate names follow Photoshop: "Name copy", "Name copy 2", ... (an existing " copy N" suffix is stripped first; first free number).
 - Undoable: add, delete (keeps pixels), duplicate, reorder, rename, opacity, mask
   color/invert/opacity -- one scrub or picker session = one undo step.
   Visibility and lock are not undoable (Photoshop-like).
@@ -319,7 +322,7 @@ interface OutputOptions {                           // per region, and doc-level
 ## Not in v1 (maybe later)
 Non-destructive per-layer transforms (cut: too complex -- use destructive Free
 Transform, M11), feathering/refine edge, blend modes, brush presets beyond a
-couple, layer masks (per-layer), smoothing/stabilizer, symmetry, PSD export,
+couple, layer masks (per-layer, PS-style: a mask linked to a paint layer hides part of it; useful once pasted images exist, M10+; decide then whether M8 masks can be linked or it is a separate per-layer mask), smoothing/stabilizer, symmetry, PSD export,
 per-image paint in a batch, transparent (RGBA) outputs (the `MASK` output
 carries alpha; downstream "Join Image with Alpha" exists), per-region mask
 picking (regions use all masks; could become a dropdown later), text boxes with
@@ -422,11 +425,18 @@ Details per milestone are in the Milestones section.
   - ACCEPTED: an upload that finishes while the node's workflow tab is in the background doesn't update that tab's draft until you return (drafts are only written for the active workflow; the draft store isn't reachable from extensions; returning re-captures)
   - ACCEPTED: paint/mask files in documents saved before the bounds-growth re-upload fix may be offset; they can't be repaired (text layers are). Editor and Python now at least agree (unscaled top-left)
 ### M8 -- Multiple masks
-- [ ] Add / delete / reorder mask layers (mask rows stay above paint layers); each has its own color, overlay opacity, invert, visibility
-- [ ] Default colors are distinct: first mask red, then a fixed palette (e.g. blue, green, yellow, magenta, cyan, orange); user can change any
-- [ ] Quick Mask paints into the selected mask; clicking a mask row selects it (and turns Quick Mask on)
-- [ ] `MASK` = union of visible masks (unchanged rule); hidden-mask note covers any hidden mask with content
-- [ ] Undo for add/delete/reorder like paint layers; masks are not tied to paint layers
+Purpose: switch masked areas on/off independently and tell them apart by colour. Mask order has no effect on output (union); reorder is only for organising.
+- [x] Add / delete / reorder mask layers, **max 7** (one for the main output + 6 for M9 regions); **at least one** always exists (the last can't be deleted -- clear it instead). Mask rows always stay above paint layers (drag can't cross). Each has its own color, overlay opacity, invert, visibility
+- [x] Names "Mask 1", "Mask 2", ... (lowest free number, like "Layer N")
+- [x] Default colors: the first mask uses `DefaultMaskColor` / `DefaultMaskOpacity`; later masks take the first palette colour not already used by a mask: blue, green, yellow, magenta, cyan, orange (opacity = `DefaultMaskOpacity`); user can change any
+- [x] The **current mask** = the last selected mask row; Quick Mask paints into it. Clicking a mask row selects it and turns Quick Mask on; the Quick Mask toggle uses the current mask. The current mask row is marked (see "Current-mask bar")
+- [x] Invert is per mask, applied **before** the union; the node's `invert_mask` input inverts the final union (unchanged)
+- [x] `MASK` = union of visible masks (unchanged rule); hidden-mask note covers any hidden mask with content
+- [x] Undo for add/delete/reorder like paint layers; masks are not tied to paint layers
+- [x] No saved-file contract change (Python `combine_mask_layers` already unions N masks)
+- [x] **Current-mask bar** (replaces the `*`): the current mask row has a thick left bar in the mask's own colour, always (Quick Mask on or off); the normal selected-row highlight adds on top when Quick Mask is on
+- [x] **Solo (view only)**: a small solo button on each paint/text/mask row (not the background) and Alt+click on the eye. Up to one solo paint/text layer AND one solo mask at a time (soloing another row in the same group replaces it; clicking the active solo again ends it). While any solo is set the canvas shows only the background + the soloed layer and/or soloed mask (everything else is hidden, both groups; changed 2026-09-26 after testing). A hidden layer can be soloed (shown while soloed). Eyes are never changed; all other rows get dimmed eyes and the soloed row a highlighted eye/solo button. Not saved, not undoable, no effect on outputs; ends if the layer is deleted. Editing (paint, fill, move, text) a layer the solo hides is refused with "The layer is hidden by solo." (after the eye-hidden note, before locked). Soloing never changes the selection (peek). A layer created while any solo is on (new layer, new mask, duplicate, new text layer) takes over its group's solo
+- [x] **Ctrl+click / Move layer (`V`) auto-select with Quick Mask on** picks the topmost visible mask with coverage under the pointer, makes it the current mask and drags it; with Quick Mask off, unchanged (paint/text only)
 
 ### M9 -- Output regions + output options
 - [ ] Region tool: draw numbered rectangles (max 6) anywhere on the image; move/resize with handles; overlap allowed; exact X/Y/W/H fields
@@ -449,7 +459,7 @@ Details per milestone are in the Milestones section.
 - [ ] Destructive scale/rotate with handles for the active layer, a selection, or a floating paste; Shift keeps proportions (Photoshop); Enter commits, Esc cancels; resample once on commit
 - [ ] Floating pastes/inputs stay unresampled until commit (one resample from the source)
 - [ ] Text rotation stored in `textData` (non-destructive; text re-renders); Free Transform on a text layer rotates/scales via `textData`
-- [ ] No saved-file contract change: pixel layers are resampled on commit, text is rasterized as always
+- [x] No saved-file contract change: pixel layers are resampled on commit, text is rasterized as always
 
 ### M12 -- Extra image inputs
 - [ ] Optional growable inputs `image_2`, `image_3`, ... (V3 `Autogrow`; verify)
@@ -462,11 +472,11 @@ Details per milestone are in the Milestones section.
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
-- M0-M6 and M7a are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
+- M0-M6, M7a and M8 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: M8 (multiple masks), then M9-M12 (agreed 2026-09-24), then M7b release polish. The user will not publicly release until M8-M12 are done.
-- M8 starting points: the first mask's style comes from `readFirstMaskStyle()` (`ui/src/defaults/maskDefaults.ts`, "first mask" naming so the M8 palette continues after it); v1 limits to one mask in `document/layerList.ts` / `document/masks.ts` and the layers panel, while Python (`combine_mask_layers`) and the compositor already handle N masks.
+- Next: split `engine/layerOps.ts` (401 lines) before it grows, then M9 (output regions: present a plan to the user before building), then M10-M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
+- M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
 
 #### Brush engine (2026-09-25/26, after M7a)
@@ -529,6 +539,13 @@ None right now.
 
 ## Decisions Log
 
+- 2026-09-26: M8 fully browser-verified (incl. solo). Duplicate naming changed to Photoshop's "copy N" (no growing names).
+
+- 2026-09-26: Solo + mask bar + mask auto-select code landed (needs browser check). Solo lives in `engine/solo.ts`; the stage and bucket/wand/eyedropper "all" sampling follow it, outputs/uploads don't; ends on delete / Clear / new session. Mask auto-select uses raw painted coverage (ignores invert) and keeps Quick Mask on.
+
+- 2026-09-26: M8 browser-verified. Additions agreed: current-mask colour bar (no `*`), view-only solo (button + Alt+click eye; one layer + one mask; hidden layers can be soloed), Ctrl/V auto-select picks masks while Quick Mask is on. Hidden note now wins over locked.
+
+- 2026-09-26: M8 code landed (needs browser check). Palette after the first mask: blue, green, yellow, magenta, cyan, orange; first mask named "Mask 1" (old "Mask" counts as 1); new mask goes above the current mask; loaded masks below paint are moved on top. Helpers split into `ui/layersPanelParts.ts`.
 - 2026-09-26: Brush engine closed (hardness 0 / 50 / 100 all match PS, browser-verified). M8 decisions: max 7 masks, min 1, names "Mask N", first mask uses the default-mask settings then a palette, current mask = last selected (`*` marker while Quick Mask is off), per-mask invert before the union, masks stay above paint, no contract change. PS-style per-layer masks deferred (post-M10 idea).
 - 2026-09-24: ComfySketch is the skeleton, Comfy Canvas is the source of editor/UI ideas. LiteGraph primary, Nodes 2.0 supported.
 - 2026-09-24: Name `PainterSketch`, extension `phazei.PainterSketch`.

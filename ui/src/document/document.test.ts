@@ -15,7 +15,7 @@ describe("createEmptyDocument", () => {
     expect(doc.layers[0]).toMatchObject({ name: "Layer 1", kind: "paint", file: null, opacity: 1, visible: true });
     expect(doc.layers[1]).toEqual({
       id: expect.any(String),
-      name: "Mask",
+      name: "Mask 1",
       kind: "mask",
       visible: true,
       locked: false,

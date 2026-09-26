@@ -79,8 +79,10 @@ function fakeEditor(hit: string | null, target: "paint" | "mask" = "paint") {
   const editor = {
     paintTarget: target,
     setPaintTarget: (t: string) => log.push(`target:${t}`),
+    selectMask: (id: string) => (log.push(`mask:${id}`), true),
     layerOps: {
       pickAt: (x: number, y: number) => (log.push(`pick:${x},${y}`), hit),
+      pickMaskAt: (x: number, y: number) => (log.push(`pickMask:${x},${y}`), hit),
       setActiveLayer: (id: string) => (log.push(`active:${id}`), true),
     },
     layerMove: {
@@ -101,11 +103,19 @@ describe("Move layer auto-select", () => {
   });
 
   it("Ctrl picks the layer under the pointer, activates it, then moves it", () => {
-    const { editor, log } = fakeEditor("b", "mask");
+    const { editor, log } = fakeEditor("b");
     const tool = createMoveLayerTool();
     tool.onPointerDown(editor, [pointer(true)]);
     tool.onPointerUp(editor, pointer(true));
-    expect(log).toEqual(["pick:5.5,7.2", "target:paint", "active:b", "begin", "commit"]);
+    expect(log).toEqual(["pick:5.5,7.2", "active:b", "begin", "commit"]);
+  });
+
+  it("Quick Mask on: Ctrl picks a mask, makes it current (Quick Mask stays on) and moves it", () => {
+    const { editor, log } = fakeEditor("m2", "mask");
+    const tool = createMoveLayerTool();
+    tool.onPointerDown(editor, [pointer(true)]);
+    tool.onPointerUp(editor, pointer(true));
+    expect(log).toEqual(["pickMask:5.5,7.2", "mask:m2", "begin", "commit"]);
   });
 
   it("the Auto-select option picks without Ctrl", () => {
@@ -122,6 +132,6 @@ describe("Move layer auto-select", () => {
     const tool = createMoveLayerTool();
     tool.onPointerDown(editor, [pointer(true)]);
     tool.onPointerUp(editor, pointer(true));
-    expect(log).toEqual(["pick:5.5,7.2"]);
+    expect(log).toEqual(["pickMask:5.5,7.2"]);
   });
 });

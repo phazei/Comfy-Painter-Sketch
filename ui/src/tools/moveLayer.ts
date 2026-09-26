@@ -14,8 +14,10 @@
  *   (`Tool.ctrlMove`, `ToolRegistry.resolve`) -- or with the "Auto-select"
  *   option on, the drag first picks the topmost visible, unlocked paint/text
  *   layer with a pixel under the pointer (`Editor.layerOps.pickAt`) and makes
- *   it active (Quick Mask off; not an undo step). Nothing hit = nothing
- *   moves, no note.
+ *   it active (not an undo step). With Quick Mask on it picks only visible,
+ *   unlocked masks by raw painted coverage (`pickMaskAt`) and makes the hit
+ *   the current mask (`Editor.selectMask`, Quick Mask stays on). Nothing hit
+ *   = nothing moves, no note.
  */
 
 import type { Editor } from "../engine/editor";
@@ -103,10 +105,13 @@ export class MoveLayerTool implements Tool {
    * @returns alse if nothing was hit (the drag moves nothing).
    */
   private autoSelect(editor: Editor, at: ToolPointer): boolean {
+    if (editor.paintTarget === "mask") {
+      // Quick Mask on: masks only; the pick becomes the current mask (Quick Mask stays on).
+      const maskId = editor.layerOps.pickMaskAt(at.x, at.y);
+      return maskId !== null && editor.selectMask(maskId);
+    }
     const id = editor.layerOps.pickAt(at.x, at.y);
     if (!id) return false;
-    // The pick targets a paint/text layer: leave Quick Mask so it, not the mask, moves.
-    if (editor.paintTarget === "mask") editor.setPaintTarget("paint");
     editor.layerOps.setActiveLayer(id);
     return true;
   }
