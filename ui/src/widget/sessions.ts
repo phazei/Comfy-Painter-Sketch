@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Module-level registry of live editor sessions, keyed by the document's
  * `docId` (stored in the manifest).
  *
@@ -15,6 +15,7 @@
  * canvases + history.
  */
 
+import { readFirstMaskStyle, readPressureDefaults, readSampleDefaults } from "../defaults/readDefaults";
 import type { PainterDocument } from "../document/types";
 import { Editor } from "../engine/editor";
 import type { FrameSource } from "../engine/editor";
@@ -61,12 +62,15 @@ const detachedOrder: string[] = [];
 export function createSession(doc: PainterDocument, source: FrameSource, editor?: Editor): EditorSession {
   releaseSession(doc.docId);
   const ed = editor ?? new Editor(doc, source);
+  // User "Defaults" settings: a lazily added mask reads them when created;
+  // pressure options are the tools' initial values (in-session edits win).
+  ed.setMaskStyleProvider(readFirstMaskStyle);
   const knownFiles = new Set<string>();
   for (const layer of ed.doc.layers) if (layer.file) knownFiles.add(layer.file);
   const session: EditorSession = {
     docId: doc.docId,
     editor: ed,
-    tools: createDefaultTools(ed),
+    tools: createDefaultTools(ed, readPressureDefaults(), readSampleDefaults()),
     uploader: new LayerUploader(ed, knownFiles),
     knownFiles,
     recentSignatures: [fileSignature(ed.doc)],

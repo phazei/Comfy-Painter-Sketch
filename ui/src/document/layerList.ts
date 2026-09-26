@@ -175,6 +175,18 @@ export function propsDiffer(layer: Readonly<Layer>, props: LayerProps): boolean 
 }
 
 /**
+ * Whether two prop sets hold the same keys with the same values, i.e. a
+ * props change from `before` to `after` is a no-op (a merged gesture that
+ * ended where it started: picker Esc, opacity scrub back to the start).
+ * @param before - Values before the change.
+ * @param after - Values after the change.
+ * @returns `true` if the change nets to nothing.
+ */
+export function propsEqual(before: LayerProps, after: LayerProps): boolean {
+  return PROP_KEYS.every((key) => (key in before) === (key in after) && before[key] === after[key]);
+}
+
+/**
  * Write props into a layer (an `undefined` value removes the optional field).
  * @param layer - Layer to mutate.
  * @param props - Values to write.

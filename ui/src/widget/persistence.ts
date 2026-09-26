@@ -8,8 +8,10 @@
  * `subfolder=painter-sketch`, `overwrite=true`: same name == same bytes).
  * Unchanged content maps to the same name and is not re-uploaded. A layer's
  * `file` is only updated after a successful upload, so the manifest never
- * references a missing file; on failure the layer stays dirty and the pixels
- * stay in memory.
+ * references a missing file; on failure the layer stays dirty, the pixels
+ * stay in memory, one error toast is shown per failure streak (de-duplicated
+ * across documents) and the batch is retried automatically with backoff
+ * (15 s doubling to 2 min); the first success after a toasted failure says so.
  *
  * Upload timing (saved-file contract): the owner calls {@link LayerUploader.flush}
  * on disengage / fullscreen exit / Ctrl+S / queue; {@link LayerUploader.schedule}
@@ -28,6 +30,8 @@ import type { Editor } from "../engine/editor";
 import { log } from "../log";
 import { readSetting } from "./comfyApi";
 import { contentHash, layerFileName } from "./contentHash";
+import { classifyError, DecodeError, EncodeError, HttpError, restoreSummary, uploadFailureMessage } from "./failures";
+import type { RestoreProblem } from "./failures";
 import { encodeLayer } from "./layerEncode";
 import { normalizePaintQuality, PAINT_QUALITY_ID } from "./paintQuality";
 import { notify } from "./toast";
@@ -35,6 +39,17 @@ import { parseAnnotatedFilename, viewUrl } from "./viewUrl";
 
 /** Idle fallback: upload this long after the last edit. */
 export const IDLE_UPLOAD_DELAY_MS = 5000;
+
+/** First automatic retry after a failed upload batch; doubles per failure. */
+const RETRY_MIN_MS = 15_000;
+/** Longest automatic retry interval. */
+const RETRY_MAX_MS = 120_000;
+
+/** Toast keys shared by all documents (one outage = one toast). */
+const UPLOAD_FAILED_KEY = "upload-failed";
+const UPLOAD_RECOVERED_KEY = "upload-recovered";
+/** Upload failure / recovery toasts repeat at most this often. */
+const UPLOAD_TOAST_WINDOW_MS = 60_000;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Upload
@@ -46,7 +61,10 @@ export const IDLE_UPLOAD_DELAY_MS = 5000;
 export class LayerUploader {
   private running: Promise<void> | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  /** The current failure streak has been toasted. */
   private failureNotified = false;
+  /** Current automatic retry interval (0 = last batch succeeded). */
+  private retryDelay = 0;
   private disposed = false;
   private readonly settledListeners = new Set<() => void>();
 
@@ -123,7 +141,7 @@ export class LayerUploader {
   }
 
   private async uploadDirty(): Promise<void> {
-    const failures: string[] = [];
+    const failures: unknown[] = [];
     // Read once per flush: a setting change applies to future uploads only.
     const paintQuality = normalizePaintQuality(readSetting(PAINT_QUALITY_ID));
     for (const layer of [...this.editor.doc.layers]) {
@@ -131,34 +149,57 @@ export class LayerUploader {
       if (!rt?.dirty) continue;
       const version = rt.version;
       try {
-        const file = await this.uploadLayer(layer.id, layer.kind, layer.file, paintQuality);
+        const file = await this.uploadLayer(layer, paintQuality);
         if (this.disposed) return;
         if (file) this.knownFiles.add(file);
         this.editor.markUploaded(layer.id, version, file);
       } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
+        failures.push(error);
       }
     }
+    if (this.disposed) return;
     if (failures.length) {
+      const message = uploadFailureMessage(failures[0]);
+      // One toast per failure streak per document, and one per window
+      // across documents (several nodes failing on the same outage).
       if (!this.failureNotified) {
-        notify("error", `Could not save paint layers (kept in memory, will retry): ${failures[0]}`);
+        notify("error", message, { key: UPLOAD_FAILED_KEY, windowMs: UPLOAD_TOAST_WINDOW_MS, details: failures });
         this.failureNotified = true;
+      } else {
+        log.warn("upload retry failed:", ...failures);
       }
-      throw new Error(`PainterSketch upload failed: ${failures[0]}`);
+      this.scheduleRetry();
+      throw new Error(`PainterSketch: ${message}`);
     }
-    this.failureNotified = false;
+    this.retryDelay = 0;
+    if (this.failureNotified) {
+      this.failureNotified = false;
+      notify("info", "Paint layers saved again.", { key: UPLOAD_RECOVERED_KEY, windowMs: UPLOAD_TOAST_WINDOW_MS });
+    }
+  }
+
+  /** After a failed batch: retry with backoff unless an edit already scheduled an upload. */
+  private scheduleRetry(): void {
+    this.retryDelay = Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, this.retryDelay * 2));
+    if (this.timer !== null) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.flushQuietly();
+    }, this.retryDelay);
   }
 
   /** @returns The file reference for the layer's current pixels (null = empty). */
   private async uploadLayer(
-    layerId: string,
-    kind: LayerKind,
-    currentFile: string | null,
+    layer: { id: string; name: string; kind: LayerKind; file: string | null },
     paintQuality: number,
   ): Promise<string | null> {
-    const canvas = this.editor.layerCanvas(layerId);
+    const canvas = this.editor.layerCanvas(layer.id);
     if (isCanvasEmpty(canvas)) return null;
-    const { blob, bytes, ext } = await encodeLayer(canvas, kind, paintQuality);
+    const currentFile = layer.file;
+    const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error: unknown) => {
+      log.warn(`encoding layer "${layer.name}" (${canvas.width}x${canvas.height}) failed:`, error);
+      throw new EncodeError(layer.name);
+    });
     const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
     // Same bytes as the current or an earlier upload of this document (e.g.
@@ -188,8 +229,12 @@ async function uploadImage(blob: Blob, name: string): Promise<string> {
   body.append("subfolder", DOCUMENT_SUBFOLDER);
   body.append("overwrite", "true");
   const response = await api.fetchApi("/upload/image", { method: "POST", body });
-  if (response.status !== 200) throw new Error(`upload returned ${response.status} ${response.statusText}`);
-  const data: unknown = await response.json();
+  if (response.status !== 200) {
+    // ComfyUI answers upload errors with a short plain-text body; skip HTML pages (proxies).
+    const text = (await response.text().catch(() => "")).trim();
+    throw new HttpError(response.status, response.statusText, text && !text.startsWith("<") ? text.slice(0, 200) : undefined);
+  }
+  const data: unknown = await response.json().catch(() => null);
   if (!isUploadResponse(data)) throw new Error("upload response is missing 'name'");
   const subfolder = data.subfolder || DOCUMENT_SUBFOLDER;
   return `${subfolder}/${data.name} [${data.type || "input"}]`;
@@ -206,6 +251,13 @@ function isUploadResponse(value: unknown): value is { name: string; subfolder?: 
 /**
  * Load every layer's file (WebP or PNG) into the editor. Painting is disabled until done.
  *
+ * A layer whose file cannot be loaded (404, server down, corrupt bytes)
+ * stays in the document, empty, and keeps its `file` reference untouched
+ * (not dirty) until the user edits that layer, so nothing is overwritten
+ * silently and a file restored on disk loads again next time. Text layers
+ * are re-rendered from `textData` instead (their source of truth) and
+ * re-uploaded. All problems of one document produce a single toast.
+ *
  * @param editor - Target editor (fresh, layers blank).
  * @param isAlive - Returns `false` once the session was released (stale loads are dropped).
  * @returns Resolves when all loads settled.
@@ -214,37 +266,59 @@ export async function restoreLayers(editor: Editor, isAlive: () => boolean): Pro
   const layers = editor.doc.layers.filter((l) => l.file);
   if (!layers.length) return;
   const bounds = editor.bounds;
+  const problems: RestoreProblem[] = [];
   editor.beginLoading();
   try {
     await Promise.all(
       layers.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
+        const url = viewUrl(item, (route) => api.apiURL(route));
         try {
-          const image = await loadImage(viewUrl(item, (route) => api.apiURL(route)));
+          const image = await fetchImage(url);
           if (!isAlive()) return;
           if (image.naturalWidth !== bounds.width || image.naturalHeight !== bounds.height) {
             log.warn(
-              `Layer "${layer.name}" is ${image.naturalWidth}x${image.naturalHeight}, expected ${bounds.width}x${bounds.height}`,
+              `layer "${layer.name}" file is ${image.naturalWidth}x${image.naturalHeight}, expected ` +
+                `${bounds.width}x${bounds.height}:`,
+              layer.file,
             );
+            if (!(layer.kind === "text" && layer.textData)) problems.push({ name: layer.name, kind: "stale" });
           }
           editor.restoreLayerPixels(layer.id, image);
-        } catch {
-          if (isAlive()) notify("warn", `Missing paint layer file ${layer.file}; layer "${layer.name}" is empty.`);
+        } catch (error) {
+          if (!isAlive()) return;
+          log.warn(`could not restore layer "${layer.name}" from ${layer.file}:`, error);
+          if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
       }),
     );
   } finally {
     if (isAlive()) editor.endLoading();
   }
+  const summary = isAlive() ? restoreSummary(problems) : null;
+  if (summary) notify(summary.severity, summary.message, { key: `restore:${editor.doc.docId}:${summary.message}` });
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`could not load ${url}`));
-    image.src = url;
-  });
+/**
+ * Download and decode an image, keeping the failure kind: HTTP status
+ * ({@link HttpError}), network failure (`TypeError` from `fetch`) or
+ * undecodable bytes ({@link DecodeError}). An `<img>` alone reports all of
+ * these as the same `error` event.
+ */
+async function fetchImage(url: string): Promise<HTMLImageElement> {
+  const response = await fetch(url);
+  if (!response.ok) throw new HttpError(response.status, response.statusText);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await new Promise<HTMLImageElement>((resolve, reject) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new DecodeError(url));
+      image.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }

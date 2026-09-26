@@ -106,9 +106,19 @@ detail against the local frontend/backend source listed under Local References.
   first. This is the maintainer's usual pattern and is fine for our own node
   class. Never patch `LGraphNode.prototype`, `LGraphCanvas.prototype`, or other
   nodes' types.
-- Settings (e.g. default brush, mask color) via `app.ui.settings` / the extension
-  `settings` array, IDs prefixed `PainterSketch.`.
+- Settings are declared in `ui/src/settings.ts` (the extension `settings` array),
+  IDs prefixed `PainterSketch.`, and read through `readSetting` / `ui/src/defaults/`
+  (`app.extensionManager.setting.get`, guarded: missing API or a throw -> code
+  default). `color` settings are stored without the `#`. Default settings apply
+  to new documents / new sessions only, never to live state.
 - Console prefix: `[PainterSketch]`.
+- **User messages** go through `notify` (`ui/src/widget/toast.ts` +
+  `toastLimiter.ts`): each message has a key and is shown at most once per window
+  (10 s default, 60 s for upload problems); the console still logs every
+  occurrence with details. Toast title is "PainterSketch" -- don't repeat the name
+  in the text. Severity: error = user work at risk, warn = degraded, info = rare
+  (recovery, cleanup results). Classify failures in `widget/failures.ts`.
+  Background image load failures stay console-only (upstreams change constantly).
 
 ### Frontend module layout (target)
 

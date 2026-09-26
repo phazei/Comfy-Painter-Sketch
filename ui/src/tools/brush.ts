@@ -2,13 +2,16 @@
  * Brush tool (B): paints the foreground colour.
  */
 
+import { PRESSURE_DEFAULTS } from "../defaults/pressureDefaults";
+import type { PressureDefaults } from "../defaults/pressureDefaults";
 import { PaintTool } from "./paintTool";
 
 /**
  * Create a brush tool with default options.
+ * @param pressure - Initial pressure options (the user's settings; built-in by default).
  * @returns The tool.
  */
-export function createBrushTool(): PaintTool {
+export function createBrushTool(pressure: Readonly<PressureDefaults> = PRESSURE_DEFAULTS): PaintTool {
   return new PaintTool({
     id: "brush",
     label: "Brush",
@@ -22,10 +25,7 @@ export function createBrushTool(): PaintTool {
       opacity: 1,
       flow: 1,
       spacing: 0.1,
-      pressureSize: true,
-      pressureOpacity: false,
-      minSize: 0.1,
-      gamma: 1,
+      ...pressure,
     },
   });
 }

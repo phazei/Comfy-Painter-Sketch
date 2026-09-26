@@ -47,7 +47,21 @@ _lock = asyncio.Lock()
 
 
 async def _handle_cleanup(request: web.Request) -> web.Response:
-    """Handle ``POST /painter-sketch/cleanup`` (see module docstring for the contract)."""
+    """Handle ``POST /painter-sketch/cleanup`` (see module docstring for the contract).
+
+    Every failure answers JSON ``{"error": ...}`` (400 for bad requests, 500
+    for unexpected server errors, logged with traceback) so the settings
+    button can show the reason instead of aiohttp's plain-text 500 page.
+    """
+    try:
+        return await _cleanup(request)
+    except Exception as exc:  # noqa: BLE001 -- route boundary: report, don't crash the request
+        log.exception("cleanup: request failed")
+        return web.json_response({"error": f"cleanup failed on the server: {exc}"}, status=500)
+
+
+async def _cleanup(request: web.Request) -> web.Response:
+    """Parse the request and run the stats / cleanup scan (may raise on I/O errors)."""
     try:
         body = await request.json()
     except ValueError:

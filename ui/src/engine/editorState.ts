@@ -4,6 +4,8 @@
  * all need. Internal to `engine/`: the public surface is `Editor`.
  */
 
+import { DEFAULT_MASK_STYLE } from "../document/create";
+import type { MaskStyle } from "../document/create";
 import { ensureMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
@@ -65,6 +67,11 @@ export class EditorState {
    * the UI installs a `window.confirm` (the engine has no DOM UI). Default: no.
    */
   confirmRasterize: () => boolean = () => false;
+  /**
+   * Style of a mask layer added lazily ({@link ensureMask}); the session
+   * installs one that reads the user's settings. Default: built-in red, 50 %.
+   */
+  maskStyle: () => Readonly<MaskStyle> = () => DEFAULT_MASK_STYLE;
 
   /**
    * @param doc - Document (copied).
@@ -130,7 +137,7 @@ export class EditorState {
    * @returns The mask layer.
    */
   ensureMask(): Layer {
-    const { layer, created } = ensureMaskLayer(this.doc);
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle);
     if (created) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, false);

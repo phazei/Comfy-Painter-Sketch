@@ -14,7 +14,9 @@
 
 import { api } from "@comfy/scripts/api.js";
 
+import { log } from "../log";
 import type { SettingParams } from "../types/comfy";
+import { cleanupFailureReason, HttpError, serverErrorMessage } from "../widget/failures";
 import { notify } from "../widget/toast";
 import type { CleanupResponse, StatsResponse } from "./references";
 import { confirmText, fileCount, formatBytes, isCleanupResponse, isStatsResponse } from "./references";
@@ -84,20 +86,14 @@ function renderCleanupControl(): HTMLElement {
  * @param statsLine - `<span>` element to update.
  */
 async function fetchStats(statsLine: HTMLSpanElement): Promise<void> {
+  // Shown inline in the settings row (no toast: the row renders often).
   try {
-    const response = await api.fetchApi(CLEANUP_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "stats" }),
-    });
-    const data: unknown = await response.json().catch(() => null);
-    if (response.ok && isStatsResponse(data)) {
-      statsLine.textContent = statsText(data);
-    } else {
-      statsLine.textContent = "Could not load file counts.";
-    }
-  } catch {
-    statsLine.textContent = "Could not load file counts.";
+    const data = await postRoute({ mode: "stats" });
+    if (!isStatsResponse(data)) throw new Error("unexpected server response");
+    statsLine.textContent = statsText(data);
+  } catch (error) {
+    log.warn("cleanup stats request failed:", error);
+    statsLine.textContent = `Could not load file counts: ${cleanupFailureReason(error)}.`;
   }
 }
 
@@ -115,18 +111,26 @@ function statsText(stats: StatsResponse): string {
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
 
-/** POST to the cleanup route and narrow the response. */
-async function postCleanup(dryRun: boolean, referenced: string[]): Promise<CleanupResponse> {
+/**
+ * POST a JSON body to the cleanup route.
+ * @returns The parsed JSON body (`null` if not JSON).
+ * @throws {HttpError} For non-2xx answers (with the route's `error` text);
+ *   `TypeError` when the server is unreachable.
+ */
+async function postRoute(body: object): Promise<unknown> {
   const response = await api.fetchApi(CLEANUP_ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dryRun, referenced }),
+    body: JSON.stringify(body),
   });
   const data: unknown = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = typeof data === "object" && data !== null ? (data as { error?: unknown }).error : undefined;
-    throw new Error(typeof message === "string" ? message : `server returned ${response.status}`);
-  }
+  if (!response.ok) throw new HttpError(response.status, response.statusText, serverErrorMessage(data));
+  return data;
+}
+
+/** POST a cleanup (dry) run and narrow the response. */
+async function postCleanup(dryRun: boolean, referenced: string[]): Promise<CleanupResponse> {
+  const data = await postRoute({ dryRun, referenced });
   if (!isCleanupResponse(data)) throw new Error("unexpected server response");
   return data;
 }
@@ -165,7 +169,8 @@ export async function runCleanup(statsLine: HTMLSpanElement): Promise<void> {
     if (errors.length) notify("warn", `${summary} ${errors.length} problem(s), see server log. First: ${errors[0]}`);
     else notify("info", summary);
   } catch (error) {
-    notify("error", `File cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    // Nothing is deleted on failure, so this is degraded, not data at risk.
+    notify("warn", `File cleanup failed: ${cleanupFailureReason(error)}.`, { details: [error] });
   } finally {
     void fetchStats(statsLine);
   }

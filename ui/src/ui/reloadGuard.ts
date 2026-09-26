@@ -22,3 +22,22 @@ export function isReloadKey(event: KeyChord): boolean {
   if (mod && !event.altKey && key === "r") return true;
   return false;
 }
+
+/** How the pre-reload flush ended. */
+export type ReloadFlushOutcome = "saved" | "failed" | "timeout";
+
+/**
+ * Confirm text before reloading after the pre-reload flush, or `null` to
+ * reload straight away. A timeout is treated like a failure: uploads still
+ * in flight would be cut off by the reload.
+ *
+ * @param outcome - Flush result.
+ * @returns Question for `window.confirm`, or `null`.
+ */
+export function reloadConfirmText(outcome: ReloadFlushOutcome): string | null {
+  if (outcome === "saved") return null;
+  if (outcome === "timeout") {
+    return "PainterSketch is still uploading paint (slow or unreachable server). Reload anyway and lose the unsaved paint?";
+  }
+  return "PainterSketch could not upload some paint. Reload anyway and lose the unsaved paint?";
+}

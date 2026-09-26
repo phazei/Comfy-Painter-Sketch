@@ -8,7 +8,8 @@
  *    intercepts F5, Ctrl/Cmd+R, Ctrl/Cmd+Shift+R. If any session has pending
  *    uploads: flush all in parallel (3 s timeout), then `location.reload()`.
  *    If nothing is pending, the event is NOT cancelled so the browser reloads
- *    normally. Upload failure: `confirm()` asks whether to reload anyway.
+ *    normally. Upload failure or timeout: `confirm()` asks whether to reload
+ *    anyway (`reloadConfirmText`).
  *
  * 2. **Earlier flush** -- `document.visibilitychange` -> hidden and `window`
  *    `blur` both flush (fire-and-forget).
@@ -26,7 +27,8 @@
  * Registered once via {@link installPageGuards} called from `main.ts`.
  */
 
-import { isReloadKey } from "../ui/reloadGuard";
+import { isReloadKey, reloadConfirmText } from "../ui/reloadGuard";
+import type { ReloadFlushOutcome } from "../ui/reloadGuard";
 import { flushGraphSync } from "./graphSync";
 import { flushAll, pendingUploads } from "./sessions";
 
@@ -63,12 +65,14 @@ const handleReloadKey = (event: KeyboardEvent): void => {
   event.preventDefault();
   event.stopPropagation();
 
-  const timeout = new Promise<void>((resolve) => setTimeout(resolve, RELOAD_FLUSH_TIMEOUT_MS));
-  void Promise.race([flushAll(), timeout.then(() => [] as Error[])]).then((errors) => {
+  const timeout = new Promise<ReloadFlushOutcome>((resolve) => setTimeout(() => resolve("timeout"), RELOAD_FLUSH_TIMEOUT_MS));
+  const flushed = flushAll().then((errors): ReloadFlushOutcome => (errors.length ? "failed" : "saved"));
+  void Promise.race([flushed, timeout]).then((outcome) => {
     // The upload batches requested a capture; run it now so `graphChanged`
     // is dispatched and the frontend's `pagehide` flush writes the draft.
     flushGraphSync();
-    if (errors.length > 0 && !window.confirm("Some paint couldn't be uploaded. Reload anyway?")) return;
+    const question = reloadConfirmText(outcome);
+    if (question !== null && !window.confirm(question)) return;
     location.reload();
   });
 };

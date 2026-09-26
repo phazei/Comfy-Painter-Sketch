@@ -60,23 +60,35 @@ export const DEFAULT_MASK_COLOR = "#ff0000";
 /** Default mask display opacity (decision 5). */
 export const DEFAULT_MASK_OPACITY = 0.5;
 
+/** Display style a new mask layer starts with (user settings may override the defaults). */
+export interface MaskStyle {
+  /** `#rrggbb`. */
+  color: string;
+  /** Overlay opacity 0..1. */
+  opacity: number;
+}
+
+/** Built-in style of a new mask layer (decision 5: red, 50 %). */
+export const DEFAULT_MASK_STYLE: Readonly<MaskStyle> = { color: DEFAULT_MASK_COLOR, opacity: DEFAULT_MASK_OPACITY };
+
 /**
- * A new, empty, visible mask layer (red, 50%, not inverted).
+ * A new, empty, visible, not inverted mask layer.
  *
  * @param name - Display name.
+ * @param style - Colour + overlay opacity (default red, 50 %).
  * @returns Mask layer with `file: null`.
  */
-export function createMaskLayer(name = "Mask"): Layer {
+export function createMaskLayer(name = "Mask", style: Readonly<MaskStyle> = DEFAULT_MASK_STYLE): Layer {
   return {
     id: createId(8),
     name,
     kind: "mask",
     visible: true,
     locked: false,
-    opacity: DEFAULT_MASK_OPACITY,
+    opacity: style.opacity,
     blendMode: "normal",
     file: null,
-    color: DEFAULT_MASK_COLOR,
+    color: style.color,
     invert: false,
   };
 }
@@ -87,9 +99,14 @@ export function createMaskLayer(name = "Mask"): Layer {
  *
  * @param frame - Frame size (integer pixels).
  * @param docId - Identity to reuse; a new one is generated when omitted.
+ * @param maskStyle - Style of the mask layer (default red, 50 %).
  * @returns The document.
  */
-export function createEmptyDocument(frame: Size, docId: string = createId()): PainterDocument {
+export function createEmptyDocument(
+  frame: Size,
+  docId: string = createId(),
+  maskStyle: Readonly<MaskStyle> = DEFAULT_MASK_STYLE,
+): PainterDocument {
   const layer = createPaintLayer("Layer 1");
   const size = { width: Math.round(frame.width), height: Math.round(frame.height) };
   return {
@@ -99,6 +116,6 @@ export function createEmptyDocument(frame: Size, docId: string = createId()): Pa
     bounds: frameRect(size),
     regions: [],
     activeLayerId: layer.id,
-    layers: [layer, createMaskLayer()],
+    layers: [layer, createMaskLayer("Mask", maskStyle)],
   };
 }

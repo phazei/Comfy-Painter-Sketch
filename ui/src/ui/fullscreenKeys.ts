@@ -5,6 +5,8 @@
  * commands, ...). Pure so it is unit-testable.
  *
  * Passed through (never prevented or stopped):
+ * - bare modifier keys (Control, Shift, Alt, AltGraph, Meta, OS): modifier
+ *   tracking -- ours and the graph's -- is observe-only;
  * - browser keys: F1..F24 (reload, devtools, browser fullscreen, ...),
  *   Ctrl/Cmd + R / W / T / N / L / Tab / PageUp / PageDown (with or without
  *   Shift), Ctrl/Cmd+Shift + I / J / C (devtools), Alt+Left / Alt+Right;
@@ -37,6 +39,9 @@ const BROWSER_MOD_SHIFT_KEYS: ReadonlySet<string> = new Set(["i", "j", "c"]);
 /** Ctrl/Cmd + key ComfyUI commands allowed through (save, queue). */
 const COMFY_MOD_KEYS: ReadonlySet<string> = new Set(["s", "enter"]);
 
+/** Bare modifier `key` values (lowercase); always passed through. */
+const MODIFIER_KEYS: ReadonlySet<string> = new Set(["control", "shift", "alt", "altgraph", "meta", "os"]);
+
 /**
  * Decide whether an unhandled key reaches the page while fullscreen.
  *
@@ -45,6 +50,7 @@ const COMFY_MOD_KEYS: ReadonlySet<string> = new Set(["s", "enter"]);
  */
 export function fullscreenKeyPolicy(event: KeyChord): FullscreenKeyAction {
   const key = event.key.toLowerCase();
+  if (MODIFIER_KEYS.has(key)) return "pass";
   if (/^f([1-9]|1[0-9]|2[0-4])$/.test(key)) return "pass";
   const mod = event.ctrlKey || event.metaKey;
   if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";

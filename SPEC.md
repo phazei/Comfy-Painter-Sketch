@@ -195,7 +195,18 @@ interface OutputOptions {                           // per region, and doc-level
   transform for display (never resampling the stored pixels), so preview and
   output agree.
 - **Unknown `version`** or unreadable manifest: log a warning, output the image
-  unchanged and a zero mask. Missing layer file: warn, treat as empty.
+  unchanged and a zero mask. The editor keeps the raw value as the widget value
+  (never overwrites it with `""`) until the user paints, and toasts once.
+- **Missing / unreadable layer file:** Python warns and treats it as empty. The
+  editor loads the layer empty but keeps its `file` reference until that layer is
+  edited (a restored file loads again next time); text layers re-render from
+  `textData` and re-upload. One toast per document.
+- **Wrong-size layer file** (only documents saved before the bounds re-upload
+  fix): placed unscaled at the top-left, cropped / padded with transparency, in
+  both the editor and Python (no stretching), so output matches the screen.
+- **Upload failures:** paint stays in memory and dirty; automatic retry after
+  15 s, doubling up to 2 min; at most one toast per outage per minute, and one
+  "Paint layers saved again." on recovery.
 
 ## Feature Scope (v1)
 
@@ -274,6 +285,17 @@ interface OutputOptions {                           // per region, and doc-level
 
 ### Settings (ComfyUI settings panel, category "PainterSketch")
 - `PainterSketch.PaintQuality`: paint layer WebP quality, 50-100, default 99 (100 = PNG).
+- Defaults group (apply to new documents / new editor sessions only):
+  - `PainterSketch.DefaultMaskColor` (color, default `ff0000`) and
+    `PainterSketch.DefaultMaskOpacity` (10-100 %, default 50): style of the first
+    mask (M8's palette continues after it).
+  - `PainterSketch.PressureSize` (on), `PainterSketch.PressureOpacity` (off),
+    `PainterSketch.PressureMinSize` (0-100 %, default 10),
+    `PainterSketch.PressureGamma` (0.2-5, default 1): initial brush/eraser
+    pressure options; in-session changes win.
+  - `PainterSketch.BucketSample` / `PainterSketch.WandSample` (combo:
+    `background` / `layer` / `all`, default `background`): initial "Sample"
+    option of the paint bucket / magic wand; in-session changes win.
 - `PainterSketch.Cleanup`: **Clean up files** button. Step 1 (dry run) counts
   deletable files; a confirm explains "N files (X MB) in `input/painter-sketch/`
   are not used by any saved workflow, open workflow or unsaved draft, and are older
@@ -391,14 +413,14 @@ Details per milestone are in the Milestones section.
   - Text tool while Quick Mask is on: switch the target back to paint and create a normal text layer (type-mask is out of scope).
 
 ### M7a -- Code health + warts (do first)
-- [ ] Split `ui/src/widget/controller.ts` (~573 lines) and `ui/src/ui/colorPicker.ts` (~421); `engine/editor.ts` sits at ~399 (extract before adding to it)
-- [ ] Error toasts: audit every failure path (upload, restore/missing files, cleanup route, bad manifest) for a clear, non-spammy toast
-- [ ] Settings: default mask color, default pressure curve (+ existing PaintQuality / Cleanup)
-- [ ] Known warts to fix or accept:
-  - Esc in the mask color picker restores the color but leaves an empty undo step
-  - `fullscreenKeys.ts` calls `preventDefault` on a bare Control keydown (harmless; modifier tracking is meant to be observe-only)
-  - An upload that finishes while the node's workflow tab is in the background doesn't update that tab's draft until you return to it
-  - Paint/mask files in documents saved before the bounds-growth re-upload fix may be offset; they can't be repaired automatically (text layers are)
+- [x] Split `controller.ts` (596 -> 349), `colorPicker.ts` (421 -> 256), `editor.ts` (399 -> 272, via `editorBase.ts`); `keyboard.ts` (390) left as is
+- [x] Error toasts: audit every failure path (upload, restore/missing files, cleanup route, bad manifest) for a clear, non-spammy toast (browser-verified)
+- [x] Settings: default mask color, default pressure curve (+ existing PaintQuality / Cleanup) (browser-verified; + bucket/wand sample defaults)
+- [x] Known warts to fix or accept:
+  - FIXED: Esc in the mask color picker left an empty undo step (any gesture that ends where it started now leaves no step)
+  - FIXED: `fullscreenKeys.ts` no longer blocks bare modifier keydowns (bare Alt keeps preventDefault in `keyboard.ts` to stop the Windows menu bar)
+  - ACCEPTED: an upload that finishes while the node's workflow tab is in the background doesn't update that tab's draft until you return (drafts are only written for the active workflow; the draft store isn't reachable from extensions; returning re-captures)
+  - ACCEPTED: paint/mask files in documents saved before the bounds-growth re-upload fix may be offset; they can't be repaired (text layers are). Editor and Python now at least agree (unscaled top-left)
 ### M8 -- Multiple masks
 - [ ] Add / delete / reorder mask layers (mask rows stay above paint layers); each has its own color, overlay opacity, invert, visibility
 - [ ] Default colors are distinct: first mask red, then a fixed palette (e.g. blue, green, yellow, magenta, cyan, orange); user can change any
@@ -440,10 +462,12 @@ Details per milestone are in the Milestones section.
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
-- M0-M6 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
+- M0-M6 and M7a are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Work style that worked: small, scoped agents with explicit concurrency rules; coordinator builds and runs all tests (`cd ui && npm run typecheck && npm test && npm run build`; Python `-m unittest discover tests` with the ComfyUI venv and `PYTHONPATH` = ComfyUI folder). Long-running agent sessions get large -- start fresh agents per task.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: M7a, then M8-M12 (agreed 2026-09-24), then M7b release polish. The user will not publicly release until M8-M12 are done.
+- Next: M8 (multiple masks), then M9-M12 (agreed 2026-09-24), then M7b release polish. The user will not publicly release until M8-M12 are done.
+- M8 starting points: the first mask's style comes from `readFirstMaskStyle()` (`ui/src/defaults/maskDefaults.ts`, "first mask" naming so the M8 palette continues after it); v1 limits to one mask in `document/layerList.ts` / `document/masks.ts` and the layers panel, while Python (`combine_mask_layers`) and the compositor already handle N masks.
+- Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (349), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
 
 ## Behavior Notes
 
@@ -485,6 +509,8 @@ None right now.
 - 2026-09-24: Per-mask-layer `invert` + node-level `invert_mask`; masks combine additively (max).
 - 2026-09-24: Output regions recorded as a future feature; `regions` reserved in the document.
 - 2026-09-24: Disconnect keeps the document; Clear button with confirm.
+- 2026-09-25: M7a browser-verified (incl. missing-files recovery: renaming `input/painter-sketch/` away and back restores all layers). Added `BucketSample` / `WandSample` default settings.
+- 2026-09-25: M7a code landed: file splits; error-message audit with `notify` + `ToastLimiter` de-dup, upload auto-retry with backoff, unreadable manifests preserved, missing files keep their reference; wrong-size layer files placed unscaled top-left in Python too (was stretched); six "Defaults" settings (mask color/opacity, pressure curve); no-op gestures leave no undo step; bare modifiers pass in fullscreen.
 - 2026-09-24: Post-v1 plan agreed: M8 multiple masks (distinct default colors), M9 output regions (max 6, image px, stable slots never renumbered, user-named output labels, per-output apply-mask None/Fill/Crop+padding, no transparency), M10 floating selections + clipboard, M11 destructive Free Transform (+ text rotation in textData; non-destructive per-layer transforms cut), M12 extra image inputs with "Copy from input N". M7 split into M7a (now) and M7b (release polish, last).
 - 2026-09-24: M6 complete. Late fixes: bounds growth now re-uploads every layer (other layers kept old-size files -> offset after reload, and slightly wrong Python output); restored text layers with mismatched files re-render from `textData`. Reload guard for F5/Ctrl+R (flush then reload; no extra prompt, ComfyUI already asks); flush on tab hidden / window blur. Drafts: we trigger `changeTracker.captureCanvasState()` after uploads/edits so page reload restores the latest paint.
 - 2026-09-24: Ctrl = temporary Move layer with auto-select (Photoshop); thumbnails now follow Move drawing placement.

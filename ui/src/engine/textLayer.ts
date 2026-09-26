@@ -56,6 +56,18 @@ export function textStateOf(layer: Readonly<Layer>): TextLayerState {
 }
 
 /**
+ * Whether two text states are identical (a merged text gesture that ended
+ * where it started). Text data is small and plain, so a JSON compare is exact
+ * enough (both sides are built by the same spreads, same key order).
+ * @param a - One state.
+ * @param b - Other state.
+ * @returns `true` if applying either gives the same layer.
+ */
+export function sameTextState(a: TextLayerState, b: TextLayerState): boolean {
+  return a.kind === b.kind && a.name === b.name && JSON.stringify(a.textData) === JSON.stringify(b.textData);
+}
+
+/**
  * Write a text state into a layer and re-render it when it is text.
  * @param s - Editor state.
  * @param layer - Layer to change.
@@ -91,6 +103,8 @@ export function recordTextChange(
   const merge = gesture ? s.history.mergeTarget() : undefined;
   if (merge?.kind === "text" && merge.gesture === gesture && merge.layerId === layerId) {
     merge.after = after;
+    // Nudged back to the start: nothing changed, drop the entry.
+    if (sameTextState(merge.before, merge.after)) s.history.discardNewest();
     return;
   }
   const entry: TextEntry = { kind: "text", layerId, before, after, bytes: TEXT_ENTRY_BYTES };

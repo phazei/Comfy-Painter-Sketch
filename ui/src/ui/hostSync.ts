@@ -14,7 +14,7 @@
  * lines; no behaviour changed.
  */
 
-import { DEFAULT_MASK_COLOR } from "../document/create";
+import { readFirstMaskStyle } from "../defaults/readDefaults";
 import { maskDisplayColor } from "../document/masks";
 import type { Editor } from "../engine/editor";
 import type { ToolRegistry } from "../tools/registry";
@@ -165,7 +165,8 @@ export class HostSync {
     const editor = this.getSession()?.editor;
     if (!editor) return;
     const mask = editor.maskLayer;
-    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
+    // No mask yet (old document): show the colour the lazily added one will get.
+    const color = mask ? maskDisplayColor(mask) : readFirstMaskStyle().color;
     const targeting = editor.paintTarget === "mask";
     this.rail.setQuickMask(targeting, color);
     this.shell.root.classList.toggle("cps-quickmask", targeting);

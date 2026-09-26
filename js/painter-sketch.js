@@ -13,14 +13,197 @@ const log = {
    */
   error: (...args) => console.error(PREFIX, ...args)
 };
-function notify(severity, detail) {
+class HttpError extends Error {
+  /**
+   * @param status - HTTP status code.
+   * @param statusText - HTTP status text.
+   * @param serverMessage - `error` field of a JSON error body, if any.
+   */
+  constructor(status, statusText, serverMessage) {
+    super(`HTTP ${status}${statusText ? ` ${statusText}` : ""}${serverMessage ? `: ${serverMessage}` : ""}`);
+    this.status = status;
+    this.statusText = statusText;
+    this.serverMessage = serverMessage;
+    this.name = "HttpError";
+  }
+  status;
+  statusText;
+  serverMessage;
+}
+class EncodeError extends Error {
+  /** @param layerName - Layer that failed to encode. */
+  constructor(layerName) {
+    super(`could not encode layer "${layerName}"`);
+    this.layerName = layerName;
+    this.name = "EncodeError";
+  }
+  layerName;
+}
+class DecodeError extends Error {
+  /** @param url - Image URL (console detail). */
+  constructor(url) {
+    super(`could not decode ${url}`);
+    this.name = "DecodeError";
+  }
+}
+function classifyStatus(status) {
+  if (status === 0) return "offline";
+  if (status === 404 || status === 405) return "missing";
+  if (status === 413) return "tooLarge";
+  if (status >= 400 && status < 500) return "rejected";
+  if (status >= 500) return "server";
+  return "unexpected";
+}
+function classifyError(error) {
+  if (error instanceof HttpError) return classifyStatus(error.status);
+  if (error instanceof EncodeError) return "encode";
+  if (error instanceof DecodeError) return "unreadable";
+  if (error instanceof TypeError) return "offline";
+  return "unexpected";
+}
+function serverErrorMessage(data) {
+  if (typeof data !== "object" || data === null) return void 0;
+  const message = data.error;
+  return typeof message === "string" && message.trim() ? message : void 0;
+}
+function errorText(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function uploadFailureMessage(error) {
+  const status = error instanceof HttpError ? error.status : 0;
+  let reason;
+  switch (classifyError(error)) {
+    case "offline":
+      reason = "the ComfyUI server is unreachable";
+      break;
+    case "tooLarge":
+      reason = "the server rejected the file as too large (HTTP 413)";
+      break;
+    case "missing":
+    case "rejected":
+      reason = `the server rejected the upload (${errorText(error)})`;
+      break;
+    case "server":
+      reason = `the server reported an error (HTTP ${status}); check the ComfyUI console (disk full?)`;
+      break;
+    case "encode":
+      reason = `the browser ${errorText(error)} (out of memory? try a smaller canvas)`;
+      break;
+    default:
+      reason = errorText(error);
+  }
+  return `Could not save paint layers: ${reason}. Your paint is kept in the editor and retried automatically; don't reload the page until it is saved.`;
+}
+function cleanupFailureReason(error) {
+  const kind = classifyError(error);
+  if (kind === "offline") return "the ComfyUI server is unreachable";
+  if (kind === "missing") {
+    return "the cleanup route is not available; the PainterSketch Python node probably failed to load (check the ComfyUI console) or ComfyUI needs a restart after an update";
+  }
+  if (error instanceof HttpError) {
+    if (kind === "server") return `server error (HTTP ${error.status}): ${error.serverMessage ?? "see the ComfyUI console"}`;
+    return error.serverMessage ?? error.message;
+  }
+  return errorText(error);
+}
+function invalidDocumentMessage(reason) {
+  const hint = reason.startsWith("unsupported document version") ? " It was probably saved by a newer PainterSketch; update the node." : "";
+  return `Could not read the saved painting (${reason}); showing an empty canvas.${hint} The saved data is kept in the workflow unless you paint on this node.`;
+}
+const MAX_NAMES = 3;
+function nameList(problems) {
+  const names = problems.slice(0, MAX_NAMES).map((p) => `"${p.name}"`);
+  const more = problems.length - names.length;
+  return more > 0 ? `${names.join(", ")} +${more} more` : names.join(", ");
+}
+function layers(n) {
+  return n === 1 ? "1 layer" : `${n} layers`;
+}
+function restoreSummary(problems) {
+  if (!problems.length) return null;
+  const missing = problems.filter((p) => p.kind === "missing");
+  const unreadable = problems.filter((p) => p.kind === "unreadable");
+  const stale = problems.filter((p) => p.kind === "stale");
+  const transient = problems.filter((p) => !["missing", "unreadable", "stale"].includes(p.kind));
+  const parts = [];
+  if (transient.length) {
+    const offline = transient.every((p) => p.kind === "offline");
+    const reason = offline ? "the ComfyUI server is unreachable" : "server error, see the console";
+    parts.push(
+      `${layers(transient.length)} could not be loaded (${reason}): ${nameList(transient)}. Reload the workflow to retry before painting on them.`
+    );
+  }
+  if (missing.length) {
+    parts.push(
+      `${layers(missing.length)} lost ${missing.length === 1 ? "its" : "their"} file (deleted from input/painter-sketch?): ${nameList(missing)}; loaded empty.`
+    );
+  }
+  if (unreadable.length) {
+    parts.push(`${layers(unreadable.length)} could not be decoded (corrupt file?): ${nameList(unreadable)}; loaded empty.`);
+  }
+  if (missing.length || unreadable.length || transient.length) {
+    parts.push("Their saved file references are kept until you edit those layers.");
+  }
+  if (stale.length) {
+    parts.push(
+      `${layers(stale.length)} ${stale.length === 1 ? "was" : "were"} saved at an older canvas size (latest edits probably never uploaded): ${nameList(stale)}; check their position.`
+    );
+  }
+  return { severity: transient.length ? "error" : "warn", message: parts.join(" ") };
+}
+const DEFAULT_TOAST_WINDOW_MS = 1e4;
+const MAX_KEYS = 64;
+class ToastLimiter {
+  /**
+   * @param now - Clock in ms (injectable for tests).
+   */
+  constructor(now = () => Date.now()) {
+    this.now = now;
+  }
+  now;
+  /** Key -> time it was last shown. Insertion order = oldest first. */
+  shownAt = /* @__PURE__ */ new Map();
+  /**
+   * Whether a toast with `key` should be shown now; records it if so.
+   * A suppressed occurrence does not extend the window, so a persistent
+   * problem is re-announced once per window.
+   *
+   * @param key - Message key (same problem = same key).
+   * @param windowMs - Suppression window for this key.
+   * @returns `true` to show the toast.
+   */
+  shouldShow(key, windowMs = DEFAULT_TOAST_WINDOW_MS) {
+    const t = this.now();
+    const last = this.shownAt.get(key);
+    if (last !== void 0 && t - last < windowMs) return false;
+    this.shownAt.delete(key);
+    this.shownAt.set(key, t);
+    while (this.shownAt.size > MAX_KEYS) {
+      const oldest = this.shownAt.keys().next().value;
+      if (oldest === void 0) break;
+      this.shownAt.delete(oldest);
+    }
+    return true;
+  }
+  /**
+   * Forget a key, so its next occurrence shows immediately (e.g. after the
+   * problem was resolved).
+   * @param key - Message key.
+   */
+  reset(key) {
+    this.shownAt.delete(key);
+  }
+}
+const limiter = new ToastLimiter();
+function notify(severity, detail, options = {}) {
+  const details = options.details ?? [];
+  if (severity === "error") log.error(detail, ...details);
+  else if (severity === "warn") log.warn(detail, ...details);
+  if (!limiter.shouldShow(options.key ?? `${severity}:${detail}`, options.windowMs)) return;
   const toast = app.extensionManager?.toast;
   if (toast && typeof toast.add === "function") {
-    toast.add({ severity, summary: "PainterSketch", detail, life: severity === "error" ? 8e3 : 5e3 });
+    toast.add({ severity, summary: "PainterSketch", detail, life: severity === "error" ? 1e4 : 6e3 });
   }
-  if (severity === "info") return;
-  if (severity === "error") log.error(detail);
-  else log.warn(detail);
 }
 const REFERENCE_SOURCE = String.raw`painter-sketch(?:[\\/]|%2f){1,8}(ps-[a-z0-9]+-[0-9a-f]+\.(?:png|webp))`;
 function extractReferences(text, into = /* @__PURE__ */ new Set()) {
@@ -164,19 +347,12 @@ function renderCleanupControl() {
 }
 async function fetchStats(statsLine) {
   try {
-    const response = await api.fetchApi(CLEANUP_ROUTE, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "stats" })
-    });
-    const data = await response.json().catch(() => null);
-    if (response.ok && isStatsResponse(data)) {
-      statsLine.textContent = statsText(data);
-    } else {
-      statsLine.textContent = "Could not load file counts.";
-    }
-  } catch {
-    statsLine.textContent = "Could not load file counts.";
+    const data = await postRoute({ mode: "stats" });
+    if (!isStatsResponse(data)) throw new Error("unexpected server response");
+    statsLine.textContent = statsText(data);
+  } catch (error) {
+    log.warn("cleanup stats request failed:", error);
+    statsLine.textContent = `Could not load file counts: ${cleanupFailureReason(error)}.`;
   }
 }
 function statsText(stats) {
@@ -184,17 +360,18 @@ function statsText(stats) {
   const old = `${stats.old.count} (${formatBytes(stats.old.bytes)})`;
   return `Files: ${all} · Older than 24 h: ${old}`;
 }
-async function postCleanup(dryRun, referenced) {
+async function postRoute(body) {
   const response = await api.fetchApi(CLEANUP_ROUTE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dryRun, referenced })
+    body: JSON.stringify(body)
   });
   const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    const message = typeof data === "object" && data !== null ? data.error : void 0;
-    throw new Error(typeof message === "string" ? message : `server returned ${response.status}`);
-  }
+  if (!response.ok) throw new HttpError(response.status, response.statusText, serverErrorMessage(data));
+  return data;
+}
+async function postCleanup(dryRun, referenced) {
+  const data = await postRoute({ dryRun, referenced });
   if (!isCleanupResponse(data)) throw new Error("unexpected server response");
   return data;
 }
@@ -220,47 +397,11 @@ async function runCleanup(statsLine) {
     if (errors.length) notify("warn", `${summary} ${errors.length} problem(s), see server log. First: ${errors[0]}`);
     else notify("info", summary);
   } catch (error) {
-    notify("error", `File cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    notify("warn", `File cleanup failed: ${cleanupFailureReason(error)}.`, { details: [error] });
   } finally {
     void fetchStats(statsLine);
   }
 }
-const PAINT_QUALITY_ID = "PainterSketch.PaintQuality";
-const PAINT_QUALITY_DEFAULT = 99;
-const MIN = 50;
-const MAX = 100;
-const PAINT_QUALITY_SETTING = {
-  id: PAINT_QUALITY_ID,
-  category: ["PainterSketch", "Storage", "Paint layer quality"],
-  name: "Paint layer quality",
-  tooltip: "Paint layer quality. Below 100 saves lossy WebP (much smaller); 100 saves lossless PNG. Masks are always PNG.",
-  type: "slider",
-  attrs: { min: MIN, max: MAX, step: 1 },
-  defaultValue: PAINT_QUALITY_DEFAULT
-};
-function normalizePaintQuality(raw) {
-  if (typeof raw !== "number" || !Number.isFinite(raw)) return PAINT_QUALITY_DEFAULT;
-  return Math.min(MAX, Math.max(MIN, Math.round(raw)));
-}
-const SETTINGS = [
-  PAINT_QUALITY_SETTING,
-  CLEANUP_SETTING
-];
-const EXTENSION_NAME = "phazei.PainterSketch";
-const NODE_NAME = "PainterSketch";
-const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
-const DOM_WIDGET_TYPE = "paintersketch";
-const INPUT_NAMES = {
-  image: "image",
-  width: "width",
-  height: "height",
-  background: "background"
-};
-const LINK_INPUT = 1;
-const WIDGET_MIN_HEIGHT = 256;
-const WIDGET_MARGIN = 6;
-const DEFAULT_NODE_SIZE = [512, 640];
-const SOURCE_POLL_MS = 500;
 function isEmptyRect(r) {
   return !(r.width > 0 && r.height > 0);
 }
@@ -421,21 +562,22 @@ function createTextLayer(textData) {
 }
 const DEFAULT_MASK_COLOR = "#ff0000";
 const DEFAULT_MASK_OPACITY = 0.5;
-function createMaskLayer(name = "Mask") {
+const DEFAULT_MASK_STYLE = { color: DEFAULT_MASK_COLOR, opacity: DEFAULT_MASK_OPACITY };
+function createMaskLayer(name = "Mask", style = DEFAULT_MASK_STYLE) {
   return {
     id: createId(8),
     name,
     kind: "mask",
     visible: true,
     locked: false,
-    opacity: DEFAULT_MASK_OPACITY,
+    opacity: style.opacity,
     blendMode: "normal",
     file: null,
-    color: DEFAULT_MASK_COLOR,
+    color: style.color,
     invert: false
   };
 }
-function createEmptyDocument(frame, docId = createId()) {
+function createEmptyDocument(frame, docId = createId(), maskStyle = DEFAULT_MASK_STYLE) {
   const layer = createPaintLayer("Layer 1");
   const size = { width: Math.round(frame.width), height: Math.round(frame.height) };
   return {
@@ -445,8 +587,230 @@ function createEmptyDocument(frame, docId = createId()) {
     bounds: frameRect(size),
     regions: [],
     activeLayerId: layer.id,
-    layers: [layer, createMaskLayer()]
+    layers: [layer, createMaskLayer("Mask", maskStyle)]
   };
+}
+const MASK_COLOR_ID = "PainterSketch.DefaultMaskColor";
+const MASK_OPACITY_ID = "PainterSketch.DefaultMaskOpacity";
+const OPACITY_MIN = 10;
+const OPACITY_MAX = 100;
+const MASK_COLOR_SETTING = {
+  id: MASK_COLOR_ID,
+  category: ["PainterSketch", "Defaults", "Mask colour"],
+  name: "Mask colour",
+  tooltip: "Overlay colour of the mask in new documents. Existing masks keep their colour.",
+  type: "color",
+  defaultValue: DEFAULT_MASK_STYLE.color.slice(1)
+};
+const MASK_OPACITY_SETTING = {
+  id: MASK_OPACITY_ID,
+  category: ["PainterSketch", "Defaults", "Mask overlay opacity"],
+  name: "Mask overlay opacity (%)",
+  tooltip: "How strongly the mask overlay is drawn in new documents (display only; the MASK output is unaffected). Existing masks keep theirs.",
+  type: "slider",
+  attrs: { min: OPACITY_MIN, max: OPACITY_MAX, step: 1 },
+  defaultValue: Math.round(DEFAULT_MASK_STYLE.opacity * 100)
+};
+function normalizeMaskColor(raw) {
+  if (typeof raw !== "string") return DEFAULT_MASK_STYLE.color;
+  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(raw.trim());
+  const hex = match?.[1]?.toLowerCase();
+  if (!hex) return DEFAULT_MASK_STYLE.color;
+  if (hex.length === 3) return `#${[...hex].map((c) => c + c).join("")}`;
+  return `#${hex.slice(0, 6)}`;
+}
+function normalizeMaskOpacity(raw) {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_MASK_STYLE.opacity;
+  return Math.min(OPACITY_MAX, Math.max(OPACITY_MIN, Math.round(raw))) / 100;
+}
+function firstMaskStyleFrom(read) {
+  return { color: normalizeMaskColor(read(MASK_COLOR_ID)), opacity: normalizeMaskOpacity(read(MASK_OPACITY_ID)) };
+}
+const PRESSURE_DEFAULTS = {
+  pressureSize: true,
+  pressureOpacity: false,
+  minSize: 0.1,
+  gamma: 1
+};
+const PRESSURE_SIZE_ID = "PainterSketch.PressureSize";
+const PRESSURE_OPACITY_ID = "PainterSketch.PressureOpacity";
+const PRESSURE_MIN_SIZE_ID = "PainterSketch.PressureMinSize";
+const PRESSURE_GAMMA_ID = "PainterSketch.PressureGamma";
+const MIN_SIZE_MAX = 100;
+const GAMMA_MIN = 0.2;
+const GAMMA_MAX = 5;
+const GAMMA_STEP = 0.05;
+const NOTE$1 = " Applies to the brush and eraser of editors opened afterwards; changes in the options bar win.";
+const PRESSURE_SETTINGS = [
+  {
+    id: PRESSURE_SIZE_ID,
+    category: ["PainterSketch", "Defaults", "Pressure size"],
+    name: "Pen pressure controls size",
+    tooltip: "Default of the brush/eraser 'Size' pressure toggle." + NOTE$1,
+    type: "boolean",
+    defaultValue: PRESSURE_DEFAULTS.pressureSize
+  },
+  {
+    id: PRESSURE_OPACITY_ID,
+    category: ["PainterSketch", "Defaults", "Pressure opacity"],
+    name: "Pen pressure controls opacity",
+    tooltip: "Default of the brush/eraser 'Opacity' pressure toggle." + NOTE$1,
+    type: "boolean",
+    defaultValue: PRESSURE_DEFAULTS.pressureOpacity
+  },
+  {
+    id: PRESSURE_MIN_SIZE_ID,
+    category: ["PainterSketch", "Defaults", "Pressure min size"],
+    name: "Pressure min size (%)",
+    tooltip: "Brush size at zero pressure, as a percentage of the size." + NOTE$1,
+    type: "slider",
+    attrs: { min: 0, max: MIN_SIZE_MAX, step: 1 },
+    defaultValue: Math.round(PRESSURE_DEFAULTS.minSize * 100)
+  },
+  {
+    id: PRESSURE_GAMMA_ID,
+    category: ["PainterSketch", "Defaults", "Pressure curve"],
+    name: "Pressure curve (gamma)",
+    tooltip: "1 = linear; above 1 = softer start (needs more pressure)." + NOTE$1,
+    type: "slider",
+    attrs: { min: GAMMA_MIN, max: GAMMA_MAX, step: GAMMA_STEP },
+    defaultValue: PRESSURE_DEFAULTS.gamma
+  }
+];
+function toBool(raw, fallback) {
+  return typeof raw === "boolean" ? raw : fallback;
+}
+function normalizeMinSize(raw) {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return PRESSURE_DEFAULTS.minSize;
+  return Math.min(MIN_SIZE_MAX, Math.max(0, Math.round(raw))) / 100;
+}
+function normalizeGamma(raw) {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return PRESSURE_DEFAULTS.gamma;
+  const snapped = Math.round(raw / GAMMA_STEP) * GAMMA_STEP;
+  return Number(Math.min(GAMMA_MAX, Math.max(GAMMA_MIN, snapped)).toFixed(2));
+}
+function pressureDefaultsFrom(read) {
+  return {
+    pressureSize: toBool(read(PRESSURE_SIZE_ID), PRESSURE_DEFAULTS.pressureSize),
+    pressureOpacity: toBool(read(PRESSURE_OPACITY_ID), PRESSURE_DEFAULTS.pressureOpacity),
+    minSize: normalizeMinSize(read(PRESSURE_MIN_SIZE_ID)),
+    gamma: normalizeGamma(read(PRESSURE_GAMMA_ID))
+  };
+}
+const SAMPLE_DEFAULTS = {
+  bucket: "background",
+  wand: "background"
+};
+const BUCKET_SAMPLE_ID = "PainterSketch.BucketSample";
+const WAND_SAMPLE_ID = "PainterSketch.WandSample";
+const CHOICES = [
+  { text: "Background (input image only)", value: "background" },
+  { text: "Current layer", value: "layer" },
+  { text: "All layers (what you see)", value: "all" }
+];
+const NOTE = " Applies to editors opened afterwards; the options-bar 'Sample' choice wins.";
+const SAMPLE_SETTINGS = [
+  {
+    id: BUCKET_SAMPLE_ID,
+    category: ["PainterSketch", "Defaults", "Bucket sample"],
+    name: "Paint bucket samples",
+    tooltip: "Which pixels the paint bucket looks at to find the area to fill." + NOTE,
+    type: "combo",
+    options: CHOICES,
+    defaultValue: SAMPLE_DEFAULTS.bucket
+  },
+  {
+    id: WAND_SAMPLE_ID,
+    category: ["PainterSketch", "Defaults", "Wand sample"],
+    name: "Magic wand samples",
+    tooltip: "Which pixels the magic wand looks at to find the area to select." + NOTE,
+    type: "combo",
+    options: CHOICES,
+    defaultValue: SAMPLE_DEFAULTS.wand
+  }
+];
+function normalizeSample(raw, fallback) {
+  return raw === "background" || raw === "layer" || raw === "all" ? raw : fallback;
+}
+function sampleDefaultsFrom(read) {
+  return {
+    bucket: normalizeSample(read(BUCKET_SAMPLE_ID), SAMPLE_DEFAULTS.bucket),
+    wand: normalizeSample(read(WAND_SAMPLE_ID), SAMPLE_DEFAULTS.wand)
+  };
+}
+const PAINT_QUALITY_ID = "PainterSketch.PaintQuality";
+const PAINT_QUALITY_DEFAULT = 99;
+const MIN = 50;
+const MAX = 100;
+const PAINT_QUALITY_SETTING = {
+  id: PAINT_QUALITY_ID,
+  category: ["PainterSketch", "Storage", "Paint layer quality"],
+  name: "Paint layer quality",
+  tooltip: "Paint layer quality. Below 100 saves lossy WebP (much smaller); 100 saves lossless PNG. Masks are always PNG.",
+  type: "slider",
+  attrs: { min: MIN, max: MAX, step: 1 },
+  defaultValue: PAINT_QUALITY_DEFAULT
+};
+function normalizePaintQuality(raw) {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return PAINT_QUALITY_DEFAULT;
+  return Math.min(MAX, Math.max(MIN, Math.round(raw)));
+}
+const SETTINGS = [
+  PAINT_QUALITY_SETTING,
+  CLEANUP_SETTING,
+  MASK_COLOR_SETTING,
+  MASK_OPACITY_SETTING,
+  ...PRESSURE_SETTINGS,
+  ...SAMPLE_SETTINGS
+];
+const EXTENSION_NAME = "phazei.PainterSketch";
+const NODE_NAME = "PainterSketch";
+const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
+const DOM_WIDGET_TYPE = "paintersketch";
+const INPUT_NAMES = {
+  image: "image",
+  width: "width",
+  height: "height",
+  background: "background"
+};
+const LINK_INPUT = 1;
+const WIDGET_MIN_HEIGHT = 256;
+const WIDGET_MARGIN = 6;
+const DEFAULT_NODE_SIZE = [512, 640];
+const SOURCE_POLL_MS = 500;
+const SAVE_WORKFLOW_COMMAND = "Comfy.SaveWorkflow";
+const settingFailures = /* @__PURE__ */ new Set();
+function readSetting(id) {
+  try {
+    const setting = app.extensionManager?.setting;
+    if (typeof setting?.get === "function") return setting.get(id);
+    return app.ui?.settings?.getSettingValue?.(id);
+  } catch (error) {
+    if (!settingFailures.has(id)) log.warn(`could not read setting ${id}; using its default:`, error);
+    settingFailures.add(id);
+    return void 0;
+  }
+}
+async function executeCommand(id) {
+  const command = app.extensionManager?.command;
+  if (typeof command?.execute !== "function") throw new Error("command API unavailable");
+  await command.execute(id);
+}
+function safeRead(id) {
+  try {
+    return readSetting(id);
+  } catch {
+    return void 0;
+  }
+}
+function readFirstMaskStyle() {
+  return firstMaskStyleFrom(safeRead);
+}
+function readPressureDefaults() {
+  return pressureDefaultsFrom(safeRead);
+}
+function readSampleDefaults() {
+  return sampleDefaultsFrom(safeRead);
 }
 const PLACEMENT_MIN_SCALE = 0.05;
 const PLACEMENT_MAX_SCALE = 20;
@@ -512,22 +876,22 @@ function validate(data) {
   }
   const rawLayers = data["layers"];
   if (!Array.isArray(rawLayers)) return { status: "invalid", reason: "layers is not an array" };
-  const layers = [];
+  const layers2 = [];
   const seen = /* @__PURE__ */ new Set();
   for (const entry of rawLayers) {
     const layer = readLayer(entry);
     if (!layer) return { status: "invalid", reason: "invalid layer entry" };
     if (seen.has(layer.id)) return { status: "invalid", reason: `duplicate layer id ${layer.id}` };
     seen.add(layer.id);
-    layers.push(layer);
+    layers2.push(layer);
   }
-  if (!layers.some((l) => l.kind === "paint")) {
-    layers.unshift(createPaintLayer("Layer 1"));
+  if (!layers2.some((l) => l.kind === "paint")) {
+    layers2.unshift(createPaintLayer("Layer 1"));
     repaired = true;
   }
   let activeLayerId = typeof data["activeLayerId"] === "string" ? data["activeLayerId"] : "";
   if (!seen.has(activeLayerId)) {
-    activeLayerId = (layers.find((l) => l.kind === "paint") ?? layers[0])?.id ?? "";
+    activeLayerId = (layers2.find((l) => l.kind === "paint") ?? layers2[0])?.id ?? "";
     repaired = true;
   }
   let docId = data["docId"];
@@ -550,7 +914,7 @@ function validate(data) {
       regions: regions ?? [],
       ...placed.placement ? { placement: placed.placement } : {},
       activeLayerId,
-      layers
+      layers: layers2
     }
   };
 }
@@ -672,6 +1036,173 @@ function cloneDocument(doc) {
     layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
   };
 }
+function hexToRgb$1(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  const digits = m?.[1];
+  if (!digits) return null;
+  const full = digits.length === 3 ? [...digits].map((c) => c + c).join("") : digits;
+  return {
+    r: parseInt(full.slice(0, 2), 16),
+    g: parseInt(full.slice(2, 4), 16),
+    b: parseInt(full.slice(4, 6), 16)
+  };
+}
+function rgbToHex$1(rgb) {
+  const r = clampByte(rgb.r);
+  const g = clampByte(rgb.g);
+  const b = clampByte(rgb.b);
+  return `#${byteHex(r)}${byteHex(g)}${byteHex(b)}`;
+}
+function rgbToHsv(rgb) {
+  const r = clampByte(rgb.r) / 255;
+  const g = clampByte(rgb.g) / 255;
+  const b = clampByte(rgb.b) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const delta = max - min;
+  const v = max;
+  const s = max === 0 ? 0 : delta / max;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === r) h = (g - b) / delta % 6;
+    else if (max === g) h = (b - r) / delta + 2;
+    else h = (r - g) / delta + 4;
+    h = h * 60;
+    if (h < 0) h += 360;
+  }
+  return { h, s, v };
+}
+function hsvToRgb(hsv) {
+  const h = (hsv.h % 360 + 360) % 360;
+  const s = clamp01(hsv.s);
+  const v = clamp01(hsv.v);
+  const c = v * s;
+  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
+  const m = v - c;
+  let r1 = 0;
+  let g1 = 0;
+  let b1 = 0;
+  if (h < 60) {
+    r1 = c;
+    g1 = x;
+  } else if (h < 120) {
+    r1 = x;
+    g1 = c;
+  } else if (h < 180) {
+    g1 = c;
+    b1 = x;
+  } else if (h < 240) {
+    g1 = x;
+    b1 = c;
+  } else if (h < 300) {
+    r1 = x;
+    b1 = c;
+  } else {
+    r1 = c;
+    b1 = x;
+  }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+function hexToHsv(hex) {
+  const rgb = hexToRgb$1(hex);
+  return rgb ? rgbToHsv(rgb) : null;
+}
+function hsvToHex(hsv) {
+  return rgbToHex$1(hsvToRgb(hsv));
+}
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+function clampByte(v) {
+  return Math.max(0, Math.min(255, Math.round(v)));
+}
+function byteHex(byte) {
+  return byte.toString(16).padStart(2, "0");
+}
+function bindCaptureDrag(target, update) {
+  target.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    target.setPointerCapture(event.pointerId);
+    update(event);
+  });
+  target.addEventListener("pointermove", (event) => {
+    if (!target.hasPointerCapture(event.pointerId)) return;
+    update(event);
+  });
+  target.addEventListener("wheel", (e) => e.stopPropagation());
+}
+function createSvSquare(getHsv, onChange) {
+  const element = document.createElement("div");
+  element.className = "cps-picker-sv";
+  const canvas = document.createElement("canvas");
+  canvas.className = "cps-picker-sv-canvas";
+  const thumb = document.createElement("div");
+  thumb.className = "cps-picker-sv-thumb";
+  element.append(canvas, thumb);
+  bindCaptureDrag(element, (event) => {
+    const rect = canvas.getBoundingClientRect();
+    const s = clamp01((event.clientX - rect.left) / rect.width);
+    const v = clamp01(1 - (event.clientY - rect.top) / rect.height);
+    onChange({ h: getHsv().h, s, v });
+  });
+  return {
+    element,
+    draw: () => {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const w = canvas.width;
+      const h = canvas.height;
+      const satGrad = ctx.createLinearGradient(0, 0, w, 0);
+      satGrad.addColorStop(0, "#ffffff");
+      satGrad.addColorStop(1, hsvToHex({ h: getHsv().h, s: 1, v: 1 }));
+      ctx.fillStyle = satGrad;
+      ctx.fillRect(0, 0, w, h);
+      const valGrad = ctx.createLinearGradient(0, 0, 0, h);
+      valGrad.addColorStop(0, "rgba(0,0,0,0)");
+      valGrad.addColorStop(1, "#000000");
+      ctx.fillStyle = valGrad;
+      ctx.fillRect(0, 0, w, h);
+    },
+    position: () => {
+      const hsv = getHsv();
+      thumb.style.left = `${clamp01(hsv.s) * 100}%`;
+      thumb.style.top = `${(1 - clamp01(hsv.v)) * 100}%`;
+    },
+    resize: () => {
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(1, Math.round(rect.width));
+      const h = Math.max(1, Math.round(rect.height));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    }
+  };
+}
+function createHueSlider(getHsv, onChange) {
+  const element = document.createElement("div");
+  element.className = "cps-picker-hue";
+  const thumb = document.createElement("div");
+  thumb.className = "cps-picker-hue-thumb";
+  element.appendChild(thumb);
+  bindCaptureDrag(element, (event) => {
+    const rect = element.getBoundingClientRect();
+    const h = clamp01((event.clientX - rect.left) / rect.width) * 360;
+    const hsv = getHsv();
+    onChange({ h, s: hsv.s, v: hsv.v });
+  });
+  return {
+    element,
+    position: () => {
+      thumb.style.left = `${getHsv().h / 360 * 100}%`;
+    }
+  };
+}
 class Emitter {
   listeners = /* @__PURE__ */ new Map();
   /**
@@ -760,4434 +1291,44 @@ class ColorState {
     this.events.emit("change", { ...this.pair });
   }
 }
-const GENERIC_FAMILIES = /* @__PURE__ */ new Set([
-  "serif",
-  "sans-serif",
-  "monospace",
-  "cursive",
-  "fantasy",
-  "system-ui",
-  "ui-serif",
-  "ui-sans-serif",
-  "ui-monospace",
-  "ui-rounded",
-  "math",
-  "emoji"
-]);
-const INK_PAD = 2;
-function isGenericFamily(font) {
-  return GENERIC_FAMILIES.has(font.trim().toLowerCase());
-}
-function cssFontFamily(font) {
-  const name = font.trim();
-  if (!name) return "sans-serif";
-  if (isGenericFamily(name)) return name.toLowerCase();
-  return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}", sans-serif`;
-}
-function fontString(td) {
-  const style = td.italic ? "italic " : "";
-  const weight = td.bold ? "bold " : "";
-  return `${style}${weight}${roundPx(td.size)}px ${cssFontFamily(td.font)}`;
-}
-function lineHeightPx(td) {
-  return td.size * (td.lineHeight ?? DEFAULT_LINE_HEIGHT);
-}
-function isFontAvailable(font) {
-  if (!font.trim() || isGenericFamily(font)) return true;
-  const fonts = typeof document !== "undefined" ? document.fonts : void 0;
-  if (!fonts || typeof fonts.check !== "function") return true;
-  try {
-    return fonts.check(`12px ${cssFontFamily(font).replace(/, sans-serif$/, "")}`);
-  } catch {
-    return true;
-  }
-}
-function layoutText(td, measure) {
-  const lineHeight = lineHeightPx(td);
-  const texts = td.text.split("\n");
-  const metrics = texts.map((t) => measure(t));
-  const first = metrics[0] ?? measure("");
-  const fontAscent = first.fontAscent;
-  const halfLeading = (lineHeight - (fontAscent + first.fontDescent)) / 2;
-  const maxWidth = Math.max(0, ...metrics.map((m) => m.width));
-  const lines = [];
-  let ink = null;
-  for (let i = 0; i < texts.length; i++) {
-    const text = texts[i] ?? "";
-    const m = metrics[i] ?? first;
-    const baseline = td.y + i * lineHeight;
-    const x = alignedX(td, m.width);
-    lines.push({ text, x, baseline, width: m.width });
-    if (!text) continue;
-    const left = Math.min(x, x - m.left);
-    const right = Math.max(x + m.width, x + m.right);
-    const top = baseline - Math.max(m.ascent, m.fontAscent);
-    const bottom = baseline + Math.max(m.descent, m.fontDescent);
-    const r = { x: left, y: top, width: right - left, height: bottom - top };
-    ink = ink ? unionRect(ink, r) : r;
-  }
-  const box = {
-    x: alignedX(td, maxWidth),
-    y: td.y - halfLeading - fontAscent,
-    width: maxWidth,
-    height: lineHeight * texts.length
-  };
-  const inkRect = ink ?? { x: box.x, y: box.y, width: 0, height: 0 };
-  const bbox = inkRect.width > 0 && inkRect.height > 0 ? roundOutRect({
-    x: inkRect.x - INK_PAD,
-    y: inkRect.y - INK_PAD,
-    width: inkRect.width + INK_PAD * 2,
-    height: inkRect.height + INK_PAD * 2
-  }) : { x: Math.floor(box.x), y: Math.floor(box.y), width: 0, height: 0 };
-  return { lines, lineHeight, box, bbox };
-}
-function alignedX(td, width) {
-  if (td.align === "center") return td.x - width / 2;
-  if (td.align === "right") return td.x - width;
-  return td.x;
-}
-let scratch = null;
-function measureContext() {
-  if (!scratch && typeof document !== "undefined") scratch = document.createElement("canvas").getContext("2d");
-  return scratch;
-}
-function canvasMeasure(td) {
-  const ctx = measureContext();
-  const size = td.size;
-  if (!ctx) {
-    return (line) => {
-      const width = line.length * size * 0.55;
-      return { width, left: 0, right: width, ascent: size * 0.8, descent: size * 0.2, fontAscent: size * 0.9, fontDescent: size * 0.25 };
-    };
-  }
-  const font = fontString(td);
-  return (line) => {
-    ctx.font = font;
-    const m = ctx.measureText(line);
-    const probe = line ? m : ctx.measureText("Hg");
-    return {
-      width: m.width,
-      left: m.actualBoundingBoxLeft ?? 0,
-      right: m.actualBoundingBoxRight ?? m.width,
-      ascent: m.actualBoundingBoxAscent ?? size * 0.8,
-      descent: m.actualBoundingBoxDescent ?? size * 0.2,
-      fontAscent: probe.fontBoundingBoxAscent ?? size * 0.9,
-      fontDescent: probe.fontBoundingBoxDescent ?? size * 0.25
-    };
-  };
-}
-const layoutCache = /* @__PURE__ */ new WeakMap();
-function textLayout(td) {
-  let layout = layoutCache.get(td);
-  if (!layout) {
-    layout = layoutText(td, canvasMeasure(td));
-    layoutCache.set(td, layout);
-  }
-  return layout;
-}
-function drawText(ctx, td, origin) {
-  const layout = textLayout(td);
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.font = fontString(td);
-  ctx.fillStyle = td.color;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  for (const line of layout.lines) {
-    if (line.text) ctx.fillText(line.text, line.x - origin.x, line.baseline - origin.y);
-  }
-  ctx.restore();
-  return layout.bbox;
-}
-function roundPx(size) {
-  return Math.round(size * 100) / 100;
-}
-const TEXT_ENTRY_BYTES = 256;
-const HIT_MARGIN = 0.15;
-function renderTextLayer(s, layer) {
-  const td = layer.kind === "text" ? layer.textData : void 0;
-  if (!td) return;
-  const bbox = textLayout(td).bbox;
-  if (bbox.width > 0 && bbox.height > 0) s.ensureBounds(bbox, true);
-  const surface = s.store.ensure(layer.id);
-  surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
-  const bounds = s.store.bounds;
-  drawText(surface.ctx, td, { x: bounds.x, y: bounds.y });
-}
-function textStateOf(layer) {
-  return layer.kind === "text" && layer.textData ? { kind: "text", name: layer.name, textData: layer.textData } : { kind: layer.kind, name: layer.name };
-}
-function applyTextState(s, layer, state) {
-  layer.kind = state.kind;
-  layer.name = state.name;
-  if (state.kind === "text" && state.textData) {
-    layer.textData = state.textData;
-    renderTextLayer(s, layer);
-  } else {
-    delete layer.textData;
-  }
-}
-function recordTextChange(s, layerId, before, after, gesture) {
-  const merge = gesture ? s.history.mergeTarget() : void 0;
-  if (merge?.kind === "text" && merge.gesture === gesture && merge.layerId === layerId) {
-    merge.after = after;
-    return;
-  }
-  const entry = { kind: "text", layerId, before, after, bytes: TEXT_ENTRY_BYTES };
-  if (gesture) entry.gesture = gesture;
-  s.history.push(entry);
-}
-function applyTextEntry(s, entry, forward) {
-  const layer = s.doc.layers.find((l) => l.id === entry.layerId);
-  if (!layer) return;
-  applyTextState(s, layer, forward ? entry.after : entry.before);
-  s.runtime.touch(layer.id);
-  s.events.emit("layers", void 0);
-}
-function moveTextLayer(s, layer, dx, dy, gesture) {
-  const td = layer.kind === "text" ? layer.textData : void 0;
-  if (!td || dx === 0 && dy === 0) return false;
-  const before = textStateOf(layer);
-  layer.textData = { ...td, x: td.x + dx, y: td.y + dy };
-  renderTextLayer(s, layer);
-  recordTextChange(s, layer.id, before, textStateOf(layer), gesture);
-  s.runtime.touch(layer.id);
-  return true;
-}
-function hitTestText(layers, point, boxOf) {
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const layer = layers[i];
-    if (!layer || layer.kind !== "text" || !layer.visible || !layer.textData) continue;
-    const box = boxOf(layer.textData);
-    const m = layer.textData.size * HIT_MARGIN;
-    if (point.x >= box.x - m && point.x <= box.x + box.width + m && point.y >= box.y - m && point.y <= box.y + box.height + m) {
-      return layer.id;
-    }
-  }
-  return null;
-}
-class DocIO {
-  /**
-   * @param s - Shared editor state.
-   * @param applyBackgroundSize - Re-run a background size change deferred while loading.
-   */
-  constructor(s, applyBackgroundSize) {
-    this.s = s;
-    this.applyBackgroundSize = applyBackgroundSize;
-  }
-  s;
-  applyBackgroundSize;
-  /** Mark the start of an async layer restore (disables painting). */
-  beginLoading() {
-    this.s.loadingCount++;
-  }
-  /** Mark the end of an async layer restore; applies a deferred frame change. */
-  endLoading() {
-    const s = this.s;
-    s.loadingCount = Math.max(0, s.loadingCount - 1);
-    s.events.emit("render", void 0);
-    if (!s.loading && s.pendingBackgroundSize) {
-      const size = s.pendingBackgroundSize;
-      s.pendingBackgroundSize = null;
-      this.applyBackgroundSize(size);
-    }
-  }
-  /**
-   * Draw a restored layer image (WebP or PNG) into a layer (not an undo
-   * step, not dirty).
-   *
-   * A file whose size differs from `bounds` was saved before a bounds
-   * growth, so its origin is unknown. A text layer is then re-rendered from
-   * its `textData` (the source of truth; otherwise its first move would
-   * jump by the growth) and marked dirty so a matching file is uploaded.
-   * @param layerId - Layer id.
-   * @param image - Decoded image (sized to `bounds`).
-   */
-  restoreLayerPixels(layerId, image) {
-    const s = this.s;
-    const layer = s.doc.layers.find((l) => l.id === layerId);
-    const bounds = s.store.bounds;
-    const size = imageSize(image);
-    if (layer?.kind === "text" && layer.textData && (size.width !== bounds.width || size.height !== bounds.height)) {
-      renderTextLayer(s, layer);
-      s.runtime.touch(layerId);
-      s.events.emit("render", void 0);
-      return;
-    }
-    const surface = s.store.ensure(layerId);
-    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
-    surface.ctx.drawImage(image, 0, 0);
-    s.runtime.bump(layerId);
-    s.events.emit("render", void 0);
-  }
-  /**
-   * Record a finished upload.
-   * @param layerId - Layer id.
-   * @param version - Layer version that was uploaded.
-   * @param file - Stored file reference (`null` for an empty layer).
-   */
-  markUploaded(layerId, version, file) {
-    const layer = this.s.doc.layers.find((l) => l.id === layerId);
-    const rt = this.s.runtime.get(layerId);
-    if (!layer || !rt) return;
-    layer.file = file;
-    if (rt.version === version) rt.dirty = false;
-    this.s.events.emit("change", void 0);
-  }
-}
-function imageSize(image) {
-  if (typeof HTMLImageElement !== "undefined" && image instanceof HTMLImageElement) {
-    return { width: image.naturalWidth, height: image.naturalHeight };
-  }
-  const sized = image;
-  return {
-    width: typeof sized.width === "number" ? sized.width : 0,
-    height: typeof sized.height === "number" ? sized.height : 0
-  };
-}
-function findMaskLayer(doc) {
-  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  if (active?.kind === "mask") return active;
-  return doc.layers.find((l) => l.kind === "mask");
-}
-function findPaintLayer(doc) {
-  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  if (active && active.kind !== "mask") return active;
-  for (let i = doc.layers.length - 1; i >= 0; i--) {
-    const layer = doc.layers[i];
-    if (layer?.kind === "paint") return layer;
-  }
-  return void 0;
-}
-function targetLayer(doc, target) {
-  return target === "mask" ? findMaskLayer(doc) : findPaintLayer(doc);
-}
-function activeEditLayer(doc, target) {
-  if (target === "mask") return findMaskLayer(doc);
-  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
-  return active && active.kind !== "mask" ? active : findPaintLayer(doc);
-}
-function ensureMaskLayer(doc) {
-  const existing = findMaskLayer(doc);
-  if (existing) return { layer: existing, created: false };
-  const layer = createMaskLayer();
-  doc.layers.push(layer);
-  return { layer, created: true };
-}
-function maskDisplayColor(layer) {
-  const color = layer.color;
-  return typeof color === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_MASK_COLOR;
-}
-const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
-  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
-}
-function groupEntries(older, newer) {
-  const entries = older.kind === "group" ? [...older.entries, newer] : [older, newer];
-  return { kind: "group", entries, bytes: older.bytes + newer.bytes };
-}
-const LOCKED_LAYER_NOTE = "Layer is locked.";
-const MASK_STROKE_COLOR = "#ffffff";
-const HIDDEN_LAYER_NOTE = "The layer is hidden.";
-const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
-const DEFAULT_HISTORY_BYTES = 256 * 1024 * 1024;
-class HistoryStack {
-  /**
-   * @param maxBytes - Memory budget across both stacks.
-   * @param combine - Builds one entry from two (older first) for {@link joinNext}.
-   */
-  constructor(maxBytes = DEFAULT_HISTORY_BYTES, combine) {
-    this.maxBytes = maxBytes;
-    this.combine = combine;
-  }
-  maxBytes;
-  combine;
-  undoStack = [];
-  redoStack = [];
-  total = 0;
-  /** Pending {@link joinNext}: which next entry joins the newest one. */
-  joining = null;
-  /** Whether there is something to undo. */
-  get canUndo() {
-    return this.undoStack.length > 0;
-  }
-  /** Whether there is something to redo. */
-  get canRedo() {
-    return this.redoStack.length > 0;
-  }
-  /** Estimated bytes held. */
-  get totalBytes() {
-    return this.total;
-  }
-  /** Number of undo entries. */
-  get undoDepth() {
-    return this.undoStack.length;
-  }
-  /** Number of redo entries. */
-  get redoDepth() {
-    return this.redoStack.length;
-  }
-  /**
-   * The newest undo entry, only while nothing is redoable (the entry a
-   * continuing gesture may merge into).
-   * @returns The entry, or `undefined`.
-   */
-  mergeTarget() {
-    return this.redoStack.length ? void 0 : this.undoStack[this.undoStack.length - 1];
-  }
-  /**
-   * Record a new operation. Clears the redo stack, then enforces the cap.
-   *
-   * @param entry - The applied operation.
-   * @returns Entries evicted to stay within budget (oldest first).
-   */
-  push(entry) {
-    for (const dropped of this.redoStack) this.total -= dropped.bytes;
-    this.redoStack.length = 0;
-    const accept = this.joining;
-    this.joining = null;
-    const older = accept && this.combine && accept(entry) ? this.undoStack.pop() : void 0;
-    if (older && this.combine) {
-      this.total -= older.bytes;
-      entry = this.combine(older, entry);
-    }
-    this.undoStack.push(entry);
-    this.total += entry.bytes;
-    return this.enforceCap();
-  }
-  /**
-   * Make the next pushed entry part of the newest one (one undo step), if
-   * `accept` approves it; any other push, undo, redo or clear drops the
-   * request. Used when an edit needs a preparatory step (rasterizing a text
-   * layer before painting on it).
-   * @param accept - Which next entry may join (default: any).
-   */
-  joinNext(accept = () => true) {
-    this.joining = this.undoStack.length > 0 && this.redoStack.length === 0 ? accept : null;
-  }
-  /**
-   * Drop the newest undo entry without making it redoable (an operation that
-   * turned out to be a no-op, e.g. a text layer committed empty).
-   * @returns The dropped entry, or `null`.
-   */
-  discardNewest() {
-    this.joining = null;
-    const entry = this.undoStack.pop();
-    if (!entry) return null;
-    this.total -= entry.bytes;
-    return entry;
-  }
-  /**
-   * Move the newest entry to the redo stack.
-   *
-   * @returns The entry to revert, or `null` when there is nothing to undo.
-   */
-  undo() {
-    this.joining = null;
-    const entry = this.undoStack.pop();
-    if (!entry) return null;
-    this.redoStack.push(entry);
-    return entry;
-  }
-  /**
-   * Move the newest redo entry back to the undo stack.
-   *
-   * @returns The entry to re-apply, or `null` when there is nothing to redo.
-   */
-  redo() {
-    this.joining = null;
-    const entry = this.redoStack.pop();
-    if (!entry) return null;
-    this.undoStack.push(entry);
-    return entry;
-  }
-  /**
-   * Whether any entry (undo or redo side) matches.
-   * @param predicate - Test.
-   * @returns `true` if one matches.
-   */
-  some(predicate) {
-    return this.undoStack.some(predicate) || this.redoStack.some(predicate);
-  }
-  /** Drop everything. */
-  clear() {
-    this.joining = null;
-    this.undoStack.length = 0;
-    this.redoStack.length = 0;
-    this.total = 0;
-  }
-  enforceCap() {
-    const evicted = [];
-    while (this.total > this.maxBytes && this.undoStack.length > 1) {
-      const oldest = this.undoStack.shift();
-      if (!oldest) break;
-      this.total -= oldest.bytes;
-      evicted.push(oldest);
-    }
-    return evicted;
-  }
-}
-class LayerRuntimeTable {
-  entries = /* @__PURE__ */ new Map();
-  revisions = /* @__PURE__ */ new Map();
-  /** Last version of removed layers (see {@link LayerRuntimeTable.reinstate}). */
-  removedVersions = /* @__PURE__ */ new Map();
-  revisionCounter = 0;
-  /**
-   * (Re)initialise a layer's bookkeeping: clean, version 0.
-   * @param layerId - Layer id.
-   * @param hasContent - Whether the layer holds (saved) paint.
-   */
-  reset(layerId, hasContent) {
-    this.entries.set(layerId, { dirty: false, version: 0, hasContent });
-  }
-  /**
-   * Forget a deleted layer (so it no longer counts as dirty/painted). Its
-   * revision is kept so a re-inserted layer never reuses a stale cache key.
-   * @param layerId - Layer id.
-   */
-  remove(layerId) {
-    const rt = this.entries.get(layerId);
-    if (rt) this.removedVersions.set(layerId, rt.version);
-    this.entries.delete(layerId);
-  }
-  /**
-   * (Re)install a layer that is (again) part of the document (new layer,
-   * undo of a delete). The version continues past any earlier life of the
-   * id, so an upload started before the delete can never mark the restored
-   * pixels clean.
-   * @param layerId - Layer id.
-   * @param hasPixels - The layer holds pixels (dirty until uploaded).
-   */
-  reinstate(layerId, hasPixels) {
-    const version = (this.removedVersions.get(layerId) ?? 0) + 1;
-    this.entries.set(layerId, { dirty: hasPixels, version, hasContent: hasPixels });
-    this.bump(layerId);
-  }
-  /**
-   * Bookkeeping of a layer.
-   * @param layerId - Layer id.
-   * @returns The entry or `undefined`.
-   */
-  get(layerId) {
-    return this.entries.get(layerId);
-  }
-  /**
-   * Pixels of a layer were edited: new revision, dirty, next version.
-   * @param layerId - Layer id.
-   */
-  touch(layerId) {
-    this.bump(layerId);
-    const rt = this.entries.get(layerId);
-    if (!rt) return;
-    rt.dirty = true;
-    rt.version++;
-    rt.hasContent = true;
-  }
-  /**
-   * The paint bounds changed size: a layer with content keeps its pixels at
-   * the same document positions, but its saved file (sized to the old
-   * bounds) no longer matches the manifest's `bounds`, so it must upload
-   * again. Dirty + next version (an in-flight upload of the old size can't
-   * mark it clean); the pixel revision is unchanged.
-   * @param layerId - Layer id.
-   */
-  resized(layerId) {
-    const rt = this.entries.get(layerId);
-    if (!rt?.hasContent) return;
-    rt.dirty = true;
-    rt.version++;
-  }
-  /**
-   * Committed pixels of a layer changed without an edit (restore, cancel):
-   * only invalidates caches keyed by the revision.
-   * @param layerId - Layer id.
-   */
-  bump(layerId) {
-    this.revisions.set(layerId, ++this.revisionCounter);
-  }
-  /**
-   * Current pixel revision of a layer.
-   * @param layerId - Layer id.
-   * @returns Revision (0 = never bumped).
-   */
-  revision(layerId) {
-    return this.revisions.get(layerId) ?? 0;
-  }
-  /** Whether any layer has ever held paint. */
-  get hasPaint() {
-    for (const r of this.entries.values()) if (r.hasContent) return true;
-    return false;
-  }
-  /** Whether any layer needs uploading. */
-  get dirty() {
-    for (const r of this.entries.values()) if (r.dirty) return true;
-    return false;
-  }
-  /**
-   * Copy every entry of `other` (fork); revisions are not copied.
-   * @param other - Source table.
-   */
-  copyFrom(other) {
-    for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
-  }
-}
-function createSurface(width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
-  return { canvas, ctx };
-}
-function releaseSurface(surface) {
-  surface.canvas.width = 0;
-  surface.canvas.height = 0;
-}
-function rebaseSurface(source, from, to) {
-  const next = createSurface(to.width, to.height);
-  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
-  return next;
-}
-class LayerStore {
-  surfaces = /* @__PURE__ */ new Map();
-  currentBounds;
-  /**
-   * @param bounds - Initial paint area (document coords, integers).
-   */
-  constructor(bounds) {
-    this.currentBounds = { ...bounds };
-  }
-  /** Current paint area. */
-  get bounds() {
-    return { ...this.currentBounds };
-  }
-  /**
-   * Surface for a layer, created (transparent) on first use.
-   * @param layerId - Layer id.
-   * @returns Its surface.
-   */
-  ensure(layerId) {
-    let surface = this.surfaces.get(layerId);
-    if (!surface) {
-      surface = createSurface(this.currentBounds.width, this.currentBounds.height);
-      this.surfaces.set(layerId, surface);
-    }
-    return surface;
-  }
-  /**
-   * Existing surface for a layer.
-   * @param layerId - Layer id.
-   * @returns Surface or `undefined`.
-   */
-  get(layerId) {
-    return this.surfaces.get(layerId);
-  }
-  /**
-   * Drop layers not in `keep`.
-   * @param keep - Layer ids to keep.
-   */
-  retain(keep) {
-    for (const [id, surface] of this.surfaces) {
-      if (keep.has(id)) continue;
-      releaseSurface(surface);
-      this.surfaces.delete(id);
-    }
-  }
-  /**
-   * Change the paint area, keeping every pixel at its document position
-   * (pixels outside the new bounds are dropped).
-   * @param bounds - New bounds.
-   */
-  rebase(bounds) {
-    if (rectEquals(bounds, this.currentBounds)) return;
-    for (const [id, surface] of this.surfaces) {
-      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds));
-      releaseSurface(surface);
-    }
-    this.currentBounds = { ...bounds };
-  }
-  /**
-   * Replace bounds and clear every layer (no pixel preservation).
-   * @param bounds - New bounds.
-   */
-  reset(bounds) {
-    for (const surface of this.surfaces.values()) releaseSurface(surface);
-    this.surfaces.clear();
-    this.currentBounds = { ...bounds };
-  }
-  /**
-   * Read pixels of a document rect (clipped to bounds).
-   * @param layerId - Layer id.
-   * @param rect - Integer document rect.
-   * @returns Pixels and the clipped rect, or `null` if nothing overlaps.
-   */
-  read(layerId, rect) {
-    const clipped = intersectRect(rect, this.currentBounds);
-    if (isEmptyRect(clipped)) return null;
-    const { ctx } = this.ensure(layerId);
-    const data = ctx.getImageData(
-      clipped.x - this.currentBounds.x,
-      clipped.y - this.currentBounds.y,
-      clipped.width,
-      clipped.height
-    );
-    return { rect: clipped, data };
-  }
-  /**
-   * Write pixels at a document position (replaces, no blending).
-   * @param layerId - Layer id.
-   * @param x - Document x of the data's top-left.
-   * @param y - Document y of the data's top-left.
-   * @param data - Pixels.
-   */
-  write(layerId, x, y, data) {
-    const { ctx } = this.ensure(layerId);
-    ctx.putImageData(data, x - this.currentBounds.x, y - this.currentBounds.y);
-  }
-  /**
-   * Whole-layer snapshot.
-   * @param layerId - Layer id.
-   * @returns Pixels covering `bounds`.
-   */
-  snapshot(layerId) {
-    const { ctx, canvas } = this.ensure(layerId);
-    return ctx.getImageData(0, 0, canvas.width, canvas.height);
-  }
-  /**
-   * Deep copy (pixels duplicated).
-   * @returns Independent store.
-   */
-  clone() {
-    const copy = new LayerStore(this.currentBounds);
-    for (const [id, surface] of this.surfaces) {
-      copy.ensure(id).ctx.drawImage(surface.canvas, 0, 0);
-    }
-    return copy;
-  }
-  /** Estimated bytes held by layer canvases. */
-  get bytes() {
-    return this.surfaces.size * this.currentBounds.width * this.currentBounds.height * 4;
-  }
-  /** Release every canvas. */
-  dispose() {
-    for (const surface of this.surfaces.values()) releaseSurface(surface);
-    this.surfaces.clear();
-  }
-}
-const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
-function selectionMode(shift, alt) {
-  if (shift && alt) return "intersect";
-  if (shift) return "add";
-  if (alt) return "subtract";
-  return "replace";
-}
-function snapRect(box) {
-  const x0 = Math.round(box.x);
-  const y0 = Math.round(box.y);
-  const x1 = Math.round(box.x + box.width);
-  const y1 = Math.round(box.y + box.height);
-  return { x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.abs(x1 - x0), height: Math.abs(y1 - y0) };
-}
-function rectSelection(box) {
-  const rect = snapRect(box);
-  if (isEmptyRect(rect)) return null;
-  return { rect, data: new Uint8Array(rect.width * rect.height).fill(255), outside: 0 };
-}
-function selectionFromCoverage(coverage, area, bbox) {
-  if (coverage.length < area.width * area.height) return null;
-  const inner = bbox ? intersectRect(bbox, { x: 0, y: 0, width: area.width, height: area.height }) : null;
-  if (inner && isEmptyRect(inner)) return null;
-  const crop = inner ?? { x: 0, y: 0, width: area.width, height: area.height };
-  const data = copyRegion(coverage, area.width, crop);
-  return trimSelection({ rect: { x: area.x + crop.x, y: area.y + crop.y, width: crop.width, height: crop.height }, data, outside: 0 });
-}
-function coverageFor(sel, area) {
-  const out = new Uint8Array(Math.max(0, area.width * area.height));
-  if (sel.outside) out.fill(sel.outside);
-  const overlap = intersectRect(sel.rect, area);
-  if (isEmptyRect(overlap)) return out;
-  const sw = sel.rect.width;
-  for (let y = overlap.y; y < overlap.y + overlap.height; y++) {
-    const src = (y - sel.rect.y) * sw + (overlap.x - sel.rect.x);
-    out.set(sel.data.subarray(src, src + overlap.width), (y - area.y) * area.width + (overlap.x - area.x));
-  }
-  return out;
-}
-function selectionExtent(sel, area) {
-  return intersectRect(sel.outside ? area : sel.rect, area);
-}
-function selectionsEqual(a, b) {
-  if (a === b) return true;
-  if (!a || !b || a.outside !== b.outside) return false;
-  const r = a.rect;
-  const q = b.rect;
-  if (r.x !== q.x || r.y !== q.y || r.width !== q.width || r.height !== q.height) return false;
-  for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) return false;
-  return true;
-}
-function selectionBytes(sel) {
-  return (sel?.data.byteLength ?? 0) + 64;
-}
-const OPS = {
-  add: (a, b) => a > b ? a : b,
-  subtract: (a, b) => Math.min(a, 255 - b),
-  intersect: (a, b) => a < b ? a : b
-};
-function combineSelection(current, next, mode) {
-  if (mode === "replace") return next ? trimSelection(next) : null;
-  if (!current) return mode === "add" && next ? trimSelection(next) : null;
-  if (!next) return mode === "intersect" ? null : current;
-  const op = OPS[mode];
-  const outside = op(current.outside, next.outside) >= 128 ? 255 : 0;
-  const rect = unionRect(current.rect, next.rect);
-  const a = coverageFor(current, rect);
-  const b = coverageFor(next, rect);
-  const data = new Uint8Array(a.length);
-  for (let i = 0; i < data.length; i++) data[i] = op(a[i], b[i]);
-  return trimSelection({ rect, data, outside });
-}
-function invertSelection(sel) {
-  if (!sel) return null;
-  const data = new Uint8Array(sel.data.length);
-  for (let i = 0; i < data.length; i++) data[i] = 255 - sel.data[i];
-  return trimSelection({ rect: { ...sel.rect }, data, outside: sel.outside ? 0 : 255 });
-}
-function clipSelection(sel, limit) {
-  if (!sel) return null;
-  const rect = sel.outside ? { ...limit } : intersectRect(sel.rect, limit);
-  if (isEmptyRect(rect)) return null;
-  return trimSelection({ rect, data: coverageFor(sel, rect), outside: 0 });
-}
-function trimSelection(sel) {
-  const { rect, data, outside } = sel;
-  let minX = rect.width;
-  let minY = rect.height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < rect.height; y++) {
-    const row = y * rect.width;
-    for (let x = 0; x < rect.width; x++) {
-      if (data[row + x] === outside) continue;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (maxX < 0) return outside ? { rect: { ...EMPTY$1, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
-  if (minX === 0 && minY === 0 && maxX === rect.width - 1 && maxY === rect.height - 1) return sel;
-  const crop = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-  return {
-    rect: { x: rect.x + crop.x, y: rect.y + crop.y, width: crop.width, height: crop.height },
-    data: copyRegion(data, rect.width, crop),
-    outside
-  };
-}
-function eraseCoverage(dst, rect, coverage, coverageWidth) {
-  for (let y = 0; y < rect.height; y++) {
-    const row = (rect.y + y) * coverageWidth + rect.x;
-    for (let x = 0; x < rect.width; x++) {
-      const c = coverage[row + x];
-      if (c === 0) continue;
-      const p = (y * rect.width + x) * 4 + 3;
-      dst[p] = dst[p] * (255 - c) / 255;
-    }
-  }
-}
-function copyRegion(src, stride, crop) {
-  const out = new Uint8Array(crop.width * crop.height);
-  for (let y = 0; y < crop.height; y++) {
-    const from = (crop.y + y) * stride + crop.x;
-    out.set(src.subarray(from, from + crop.width), y * crop.width);
-  }
-  return out;
-}
-const OUTLINE_THRESHOLD = 128;
-const E = 1;
-const S = 2;
-const W = 4;
-const N = 8;
-function outlineContours(sel, area) {
-  const { rect, data } = sel;
-  const outsideIn = sel.outside >= OUTLINE_THRESHOLD;
-  const bounded = outsideIn && area !== void 0 && !isEmptyRect(area);
-  const dom = bounded ? unionRect(rect, area) : rect;
-  const beyond = outsideIn && !bounded;
-  const w = dom.width;
-  const h = dom.height;
-  if (w <= 0 || h <= 0) return [];
-  if (!bounded && isUniform(data)) {
-    if (data[0] >= OUTLINE_THRESHOLD === beyond) return [];
-    return [rectContour(dom)];
-  }
-  const gw = w + 2;
-  const grid = new Uint8Array(gw * (h + 2));
-  if (beyond) grid.fill(1);
-  const ox = rect.x - dom.x;
-  const oy = rect.y - dom.y;
-  if (bounded) {
-    for (let y = 0; y < h; y++) grid.fill(1, (y + 1) * gw + 1, (y + 1) * gw + 1 + w);
-  }
-  for (let y = 0; y < rect.height; y++) {
-    const src = y * rect.width;
-    const dst = (y + oy + 1) * gw + ox + 1;
-    for (let x = 0; x < rect.width; x++) grid[dst + x] = data[src + x] >= OUTLINE_THRESHOLD ? 1 : 0;
-  }
-  const vw = w + 1;
-  const out = new Uint8Array(vw * (h + 1));
-  for (let vy = 0; vy <= h; vy++) {
-    const above = vy * gw + 1;
-    const below = above + gw;
-    const v = vy * vw;
-    for (let px = 0; px < w; px++) {
-      const a = grid[above + px];
-      const b = grid[below + px];
-      if (a === b) continue;
-      if (b) addBit(out, v + px, E);
-      else addBit(out, v + px + 1, W);
-    }
-  }
-  for (let py = 0; py < h; py++) {
-    const row = (py + 1) * gw;
-    for (let vx = 0; vx <= w; vx++) {
-      const l = grid[row + vx];
-      const r = grid[row + vx + 1];
-      if (l === r) continue;
-      if (r) addBit(out, (py + 1) * vw + vx, N);
-      else addBit(out, py * vw + vx, S);
-    }
-  }
-  const contours = [];
-  const pts = [];
-  for (let start = 0; start < out.length; start++) {
-    if (out[start] === 0) continue;
-    pts.length = 0;
-    let v = start;
-    let dir = 0;
-    for (; ; ) {
-      const bits = out[v];
-      if (bits === 0) break;
-      const next = dir === 0 ? lowestBit(bits) : pick(bits, dir);
-      out[v] = bits & ~next;
-      if (next !== dir) pts.push(dom.x + v % vw, dom.y + (v / vw | 0));
-      dir = next;
-      v += dir === E ? 1 : dir === W ? -1 : dir === S ? vw : -vw;
-    }
-    if (pts.length >= 8) contours.push(Float64Array.from(pts));
-  }
-  return contours;
-}
-function pick(bits, dir) {
-  const right = dir === N ? E : dir << 1;
-  if (bits & right) return right;
-  if (bits & dir) return dir;
-  const left = dir === E ? N : dir >> 1;
-  if (bits & left) return left;
-  return lowestBit(bits);
-}
-function addBit(out, i, bit) {
-  out[i] = out[i] | bit;
-}
-function lowestBit(bits) {
-  return bits & -bits;
-}
-function rectContour(r) {
-  const x1 = r.x + r.width;
-  const y1 = r.y + r.height;
-  return Float64Array.from([r.x, r.y, x1, r.y, x1, y1, r.x, y1]);
-}
-function isUniform(data) {
-  const first = data[0];
-  for (let i = 1; i < data.length; i++) if (data[i] !== first) return false;
-  return true;
-}
-class SelectionState {
-  /**
-   * @param onChange - Called after every change (emits the editor `selection` event).
-   */
-  constructor(onChange) {
-    this.onChange = onChange;
-  }
-  onChange;
-  sel = null;
-  rev = 0;
-  outlineCache = null;
-  clip = null;
-  /** Current selection (`null` = none: everything editable). */
-  get current() {
-    return this.sel;
-  }
-  /** Bumped on every change (cache key for the UI). */
-  get revision() {
-    return this.rev;
-  }
-  /**
-   * Replace the selection (no history; `selectionOps.ts` records it).
-   * @param sel - New selection or `null`.
-   */
-  set(sel) {
-    if (sel === this.sel) return;
-    this.sel = sel;
-    this.rev++;
-    this.onChange();
-  }
-  /**
-   * Cached outline contours of the current selection.
-   * @param frame - Image frame rect (bounds an inverted selection's outline).
-   * @returns Closed contours in document coords, or `null` without a selection.
-   */
-  outline(frame) {
-    if (!this.sel) return null;
-    const cached = this.outlineCache;
-    if (cached && cached.rev === this.rev && rectEquals(cached.frame, frame)) return cached.contours;
-    const contours = outlineContours(this.sel, frame);
-    this.outlineCache = { rev: this.rev, frame: { ...frame }, contours };
-    return contours;
-  }
-  /**
-   * Clip mask for strokes: a canvas sized to `bounds` whose alpha is the
-   * selection coverage (used with `destination-in`).
-   * @param bounds - Current paint bounds.
-   * @returns The canvas, or `null` without a selection.
-   */
-  clipCanvas(bounds) {
-    const sel = this.sel;
-    if (!sel) return null;
-    const cached = this.clip;
-    if (cached && cached.rev === this.rev && rectEquals(cached.bounds, bounds)) return cached.surface.canvas;
-    this.releaseClip();
-    const surface = createSurface(bounds.width, bounds.height);
-    const coverage = coverageFor(sel, bounds);
-    const image = surface.ctx.createImageData(surface.canvas.width, surface.canvas.height);
-    const px = image.data;
-    for (let i = 0; i < coverage.length; i++) px[i * 4 + 3] = coverage[i];
-    surface.ctx.putImageData(image, 0, 0);
-    this.clip = { rev: this.rev, bounds: { ...bounds }, surface };
-    return surface.canvas;
-  }
-  /**
-   * Selection coverage over `area` for the bucket fill's `clip` seam.
-   * @param area - Integer document rect (the bounds).
-   * @returns Coverage bytes, or `undefined` without a selection.
-   */
-  coverage(area) {
-    return this.sel ? coverageFor(this.sel, area) : void 0;
-  }
-  /** Estimated bytes held (selection + clip canvas). */
-  get bytes() {
-    const clip = this.clip?.surface.canvas;
-    return (this.sel?.data.byteLength ?? 0) + (clip ? clip.width * clip.height * 4 : 0);
-  }
-  /** Release caches (keeps the selection). */
-  dispose() {
-    this.releaseClip();
-    this.outlineCache = null;
-  }
-  releaseClip() {
-    if (this.clip) releaseSurface(this.clip.surface);
-    this.clip = null;
-  }
-}
-const MIN_STEP = 0.5;
-const MIN_SIZE = 0.5;
-function normalizePressure(pointerType, pressure) {
-  if (pointerType !== "pen") return 1;
-  if (!Number.isFinite(pressure)) return 1;
-  return Math.min(1, Math.max(0, pressure));
-}
-function curvePressure(pressure, gamma) {
-  const g = gamma > 0 && Number.isFinite(gamma) ? gamma : 1;
-  return Math.pow(Math.min(1, Math.max(0, pressure)), g);
-}
-function pressureSizeFactor(pressure, minSizeRatio, gamma) {
-  const min = Number.isFinite(minSizeRatio) ? Math.min(1, Math.max(0, minSizeRatio)) : 0;
-  return min + (1 - min) * curvePressure(pressure, gamma);
-}
-function dabSize(pressure, dyn) {
-  if (!dyn.pressureSize) return Math.max(MIN_SIZE, dyn.size);
-  return Math.max(MIN_SIZE, dyn.size * pressureSizeFactor(pressure, dyn.minSizeRatio, dyn.gamma));
-}
-function dabAlpha(pressure, dyn) {
-  const flow = Math.min(1, Math.max(0, dyn.flow));
-  return dyn.pressureOpacity ? flow * curvePressure(pressure, dyn.gamma) : flow;
-}
-function createSpacer() {
-  return { last: null, residual: 0 };
-}
-function placeDabs(state, next, dyn) {
-  const prev = state.last;
-  state.last = next;
-  if (!prev) {
-    state.residual = 0;
-    return [makeDab(next.x, next.y, next.pressure, dyn)];
-  }
-  const dx = next.x - prev.x;
-  const dy = next.y - prev.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) return [];
-  const dabs = [];
-  const spacing = Math.max(0.01, dyn.spacing);
-  let travelled = 0;
-  for (; ; ) {
-    const t = travelled / length;
-    const pressure = prev.pressure + (next.pressure - prev.pressure) * t;
-    const step = Math.max(MIN_STEP, spacing * dabSize(pressure, dyn));
-    const needed = step - state.residual;
-    if (travelled + needed > length) {
-      state.residual += length - travelled;
-      break;
-    }
-    travelled += needed;
-    state.residual = 0;
-    const u = travelled / length;
-    dabs.push(
-      makeDab(prev.x + dx * u, prev.y + dy * u, prev.pressure + (next.pressure - prev.pressure) * u, dyn)
-    );
-  }
-  return dabs;
-}
-function makeDab(x, y, pressure, dyn) {
-  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(pressure, dyn) };
-}
-function dabBounds(dab) {
-  const r = dab.size / 2 + 1;
-  return { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 };
-}
-function stampStops(hardness, radiusPx) {
-  const h = Math.min(1, Math.max(0, hardness));
-  const aaEdge = radiusPx > 1 ? 1 - 1 / radiusPx : 0;
-  const inner = Math.min(h, aaEdge);
-  if (inner <= 0) return [[0, 1], [1, 0]];
-  return [[0, 1], [inner, 1], [1, 0]];
-}
-const EMPTY = { x: 0, y: 0, width: 0, height: 0 };
-class StrokeBuffer {
-  buffer = null;
-  preview = null;
-  bounds = EMPTY;
-  style = null;
-  strokeRect = EMPTY;
-  pendingPreview = EMPTY;
-  refreshed = EMPTY;
-  /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
-  clipSource = () => null;
-  /** Buffer x clip, composited instead of the buffer while a selection exists. */
-  clipped = null;
-  /**
-   * Clip every composite (live preview and commit) to a selection: the
-   * buffer is multiplied by the clip's alpha right before compositing, so
-   * soft coverage never compounds over overlapping dabs.
-   * @param source - Returns the clip canvas for the current bounds, or `null`.
-   */
-  setClip(source) {
-    this.clipSource = source;
-  }
-  /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
-  get lastRefreshed() {
-    return { ...this.refreshed };
-  }
-  /** Whether a stroke is in progress. */
-  get active() {
-    return this.style !== null;
-  }
-  /** Document rect touched by the current stroke (integer). */
-  get touched() {
-    return intersectRect(roundOutRect(this.strokeRect), this.bounds);
-  }
-  /**
-   * Start a stroke over `layer`.
-   * @param layer - Target layer surface (sized to `bounds`).
-   * @param bounds - Current document bounds.
-   * @param style - Stroke appearance.
-   */
-  begin(layer, bounds, style) {
-    this.ensureSize(bounds);
-    this.style = style;
-    this.strokeRect = EMPTY;
-    this.pendingPreview = EMPTY;
-    this.refreshed = EMPTY;
-    const preview = this.surfaces().preview;
-    preview.ctx.clearRect(0, 0, preview.canvas.width, preview.canvas.height);
-    preview.ctx.drawImage(layer.canvas, 0, 0);
-  }
-  /**
-   * Follow a bounds change mid-stroke (pixels keep document positions).
-   * @param bounds - New bounds.
-   */
-  rebase(bounds) {
-    if (!this.buffer || !this.preview) {
-      this.bounds = { ...bounds };
-      return;
-    }
-    const nextBuffer = rebaseSurface(this.buffer, this.bounds, bounds);
-    const nextPreview = rebaseSurface(this.preview, this.bounds, bounds);
-    releaseSurface(this.buffer);
-    releaseSurface(this.preview);
-    this.releaseClipped();
-    this.buffer = nextBuffer;
-    this.preview = nextPreview;
-    this.bounds = { ...bounds };
-  }
-  /**
-   * Draw dabs into the buffer.
-   * @param dabs - Dabs in document coords.
-   * @param stamps - Stamp cache.
-   * @param maxDiameter - Largest diameter in this stroke (stamp resolution).
-   */
-  addDabs(dabs, stamps, maxDiameter) {
-    if (!this.style || dabs.length === 0) return;
-    const { ctx } = this.surfaces().buffer;
-    const color = this.style.mode === "erase" ? "#000000" : this.style.color;
-    const stamp = stamps.get(maxDiameter, this.style.hardness, color);
-    for (const dab of dabs) {
-      ctx.globalAlpha = dab.alpha;
-      const r = dab.size / 2;
-      ctx.drawImage(stamp.canvas, dab.x - r - this.bounds.x, dab.y - r - this.bounds.y, dab.size, dab.size);
-      const rect = dabBounds(dab);
-      this.strokeRect = unionRect(this.strokeRect, rect);
-      this.pendingPreview = unionRect(this.pendingPreview, rect);
-    }
-    ctx.globalAlpha = 1;
-  }
-  /**
-   * Replace the buffer content with one shape (shape tools redraw the whole
-   * shape on every move): clears what the previous shape drew, draws the
-   * new one, and marks both areas for the preview. {@link touched} becomes
-   * the new shape's rect.
-   * @param rect - Document rect the new shape can touch (empty = nothing).
-   * @param draw - Draws into the buffer context; `origin` is the document point at its (0, 0).
-   */
-  replaceContent(rect, draw) {
-    if (!this.style) return;
-    const { ctx } = this.surfaces().buffer;
-    const old = this.touched;
-    if (!isEmptyRect(old)) ctx.clearRect(old.x - this.bounds.x, old.y - this.bounds.y, old.width, old.height);
-    this.pendingPreview = unionRect(unionRect(this.pendingPreview, old), rect);
-    this.strokeRect = isEmptyRect(rect) ? EMPTY : { ...rect };
-    if (!isEmptyRect(rect)) draw(ctx, { x: this.bounds.x, y: this.bounds.y });
-  }
-  /**
-   * Refresh the preview inside the region dirtied since the last call.
-   * The refreshed document rect is available as {@link lastRefreshed}.
-   * @param layer - Target layer surface.
-   * @returns Preview surface to draw instead of the layer.
-   */
-  updatePreview(layer) {
-    const { buffer, preview } = this.surfaces();
-    const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
-    this.pendingPreview = EMPTY;
-    this.refreshed = r;
-    if (this.style && !isEmptyRect(r)) {
-      const x = r.x - this.bounds.x;
-      const y = r.y - this.bounds.y;
-      const { ctx } = preview;
-      ctx.clearRect(x, y, r.width, r.height);
-      ctx.drawImage(layer.canvas, x, y, r.width, r.height, x, y, r.width, r.height);
-      this.compositeBuffer(ctx, buffer, x, y, r.width, r.height);
-    }
-    return preview;
-  }
-  /**
-   * Composite the buffer onto the layer inside the touched rect and end the
-   * stroke. The caller snapshots `touched` before/after for history.
-   * @param layer - Target layer surface.
-   */
-  commit(layer) {
-    const r = this.touched;
-    if (this.style && !isEmptyRect(r)) {
-      const x = r.x - this.bounds.x;
-      const y = r.y - this.bounds.y;
-      this.compositeBuffer(layer.ctx, this.surfaces().buffer, x, y, r.width, r.height);
-    }
-    this.end();
-  }
-  /** Abort the stroke without touching the layer. */
-  cancel() {
-    this.end();
-  }
-  /** Release buffers. */
-  dispose() {
-    if (this.buffer) releaseSurface(this.buffer);
-    if (this.preview) releaseSurface(this.preview);
-    this.releaseClipped();
-    this.buffer = null;
-    this.preview = null;
-    this.style = null;
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  compositeBuffer(ctx, buffer, x, y, width, height) {
-    if (!this.style) return;
-    const source = this.clipBuffer(buffer, x, y, width, height);
-    ctx.save();
-    ctx.globalAlpha = this.style.opacity;
-    ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
-    ctx.drawImage(source, x, y, width, height, x, y, width, height);
-    ctx.restore();
-  }
-  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
-  clipBuffer(buffer, x, y, width, height) {
-    const clip = this.clipSource();
-    if (!clip) return buffer.canvas;
-    this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
-    const { ctx } = this.clipped;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(x, y, width, height);
-    ctx.clip();
-    ctx.clearRect(x, y, width, height);
-    ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
-    ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
-    ctx.restore();
-    return this.clipped.canvas;
-  }
-  releaseClipped() {
-    if (this.clipped) releaseSurface(this.clipped);
-    this.clipped = null;
-  }
-  end() {
-    const r = this.touched;
-    if (this.buffer && !isEmptyRect(r)) {
-      this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
-    }
-    this.style = null;
-    this.strokeRect = EMPTY;
-    this.pendingPreview = EMPTY;
-    this.refreshed = EMPTY;
-  }
-  ensureSize(bounds) {
-    const same = this.buffer && this.bounds.width === bounds.width && this.bounds.height === bounds.height && this.bounds.x === bounds.x && this.bounds.y === bounds.y;
-    if (same) return;
-    this.dispose();
-    this.buffer = createSurface(bounds.width, bounds.height);
-    this.preview = createSurface(bounds.width, bounds.height);
-    this.bounds = { ...bounds };
-  }
-  surfaces() {
-    if (!this.buffer || !this.preview) throw new Error("StrokeBuffer used before begin()");
-    return { buffer: this.buffer, preview: this.preview };
-  }
-}
-const MIN_ZOOM = 0.02;
-const MAX_ZOOM = 64;
-function fitContain(content, viewport, padding = 0) {
-  const vw = finitePositive(viewport.width);
-  const vh = finitePositive(viewport.height);
-  const pad = Math.max(0, Math.min(finitePositive(padding), vw / 2, vh / 2));
-  const availW = vw - pad * 2;
-  const availH = vh - pad * 2;
-  const cw = finitePositive(content.width);
-  const ch = finitePositive(content.height);
-  if (cw === 0 || ch === 0 || availW === 0 || availH === 0) {
-    return { x: vw / 2, y: vh / 2, width: 0, height: 0, scale: 0 };
-  }
-  const scale = Math.min(availW / cw, availH / ch);
-  const width = cw * scale;
-  const height = ch * scale;
-  return { x: (vw - width) / 2, y: (vh - height) / 2, width, height, scale };
-}
-function fitView(frame, stage, padding = 8) {
-  const fit = fitContain(frame, stage, padding);
-  if (fit.scale <= 0) return { scale: 1, offsetX: 0, offsetY: 0 };
-  const scale = clampZoom(fit.scale);
-  return {
-    scale,
-    offsetX: (stage.width - frame.width * scale) / 2,
-    offsetY: (stage.height - frame.height * scale) / 2
-  };
-}
-function clampZoom(scale) {
-  if (!Number.isFinite(scale) || scale <= 0) return 1;
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
-}
-function zoomAt(view, newScale, anchor) {
-  const scale = clampZoom(newScale);
-  const ratio = scale / view.scale;
-  return {
-    scale,
-    offsetX: anchor.x - (anchor.x - view.offsetX) * ratio,
-    offsetY: anchor.y - (anchor.y - view.offsetY) * ratio
-  };
-}
-function wheelZoomFactor(deltaPx) {
-  const clamped = Math.max(-300, Math.min(300, deltaPx));
-  return Math.exp(-clamped * 15e-4);
-}
-function panBy(view, dx, dy) {
-  return { scale: view.scale, offsetX: view.offsetX + dx, offsetY: view.offsetY + dy };
-}
-function clampOffset(view, frame, stage) {
-  const sw = finitePositive(stage.width);
-  const sh = finitePositive(stage.height);
-  const fw = finitePositive(frame.width) * view.scale;
-  const fh = finitePositive(frame.height) * view.scale;
-  if (sw === 0 || sh === 0 || fw === 0 || fh === 0) return view;
-  const gripX = Math.min(64, fw);
-  const gripY = Math.min(64, fh);
-  const minOffsetX = gripX - fw;
-  const maxOffsetX = sw - gripX;
-  const minOffsetY = gripY - fh;
-  const maxOffsetY = sh - gripY;
-  return {
-    scale: view.scale,
-    offsetX: Math.min(maxOffsetX, Math.max(minOffsetX, view.offsetX)),
-    offsetY: Math.min(maxOffsetY, Math.max(minOffsetY, view.offsetY))
-  };
-}
-function stageToDoc(view, p) {
-  return { x: (p.x - view.offsetX) / view.scale, y: (p.y - view.offsetY) / view.scale };
-}
-function docRectToStage(view, r) {
-  return {
-    x: r.x * view.scale + view.offsetX,
-    y: r.y * view.scale + view.offsetY,
-    width: r.width * view.scale,
-    height: r.height * view.scale
-  };
-}
-function backingStoreSize(cssSize, devicePixelRatio, displayScale = 1, maxSide = 4096) {
-  const cw = finitePositive(cssSize.width);
-  const ch = finitePositive(cssSize.height);
-  const dpr = finitePositive(devicePixelRatio) || 1;
-  const zoom = finitePositive(displayScale) || 1;
-  let ratio = dpr * zoom;
-  const largest = Math.max(cw, ch) * ratio;
-  if (largest > maxSide) ratio *= maxSide / largest;
-  return {
-    width: Math.max(1, Math.round(cw * ratio)),
-    height: Math.max(1, Math.round(ch * ratio)),
-    ratio
-  };
-}
-function finitePositive(value) {
-  return Number.isFinite(value) && value > 0 ? value : 0;
-}
-class ViewState {
-  /**
-   * @param onChange - Called after every user view command (fit, 100%, zoom,
-   *   pan) so the owner can repaint; never called from {@link setStage} /
-   *   {@link setFrame}, which run inside a render.
-   */
-  constructor(onChange = () => {
-  }) {
-    this.onChange = onChange;
-  }
-  onChange;
-  transform = { scale: 1, offsetX: 0, offsetY: 0 };
-  fitting = true;
-  stage = { width: 0, height: 0 };
-  frame = { width: 1, height: 1 };
-  /** On-screen px per stage CSS px (graph zoom). */
-  displayScale = 1;
-  /** Current transform. */
-  get current() {
-    return this.transform;
-  }
-  /** Whether the view follows "fit to stage". */
-  get isFitting() {
-    return this.fitting;
-  }
-  /**
-   * Update stage size / graph zoom. In fit mode the view re-fits. In non-fit
-   * mode the image point that was at the previous stage centre stays at the
-   * new stage centre (resize keeps the canvas centred), then the offset is
-   * clamped so the image stays on-screen.
-   *
-   * @param stage - Stage CSS size.
-   * @param displayScale - Ancestor scale (graph zoom).
-   * @returns `true` if the transform changed.
-   */
-  setStage(stage, displayScale) {
-    const prev = this.stage;
-    this.stage = { ...stage };
-    this.displayScale = displayScale > 0 ? displayScale : 1;
-    if (this.fitting) return this.refit();
-    if (prev.width > 0 && prev.height > 0 && stage.width > 0 && stage.height > 0) {
-      const dx = (stage.width - prev.width) / 2;
-      const dy = (stage.height - prev.height) / 2;
-      this.transform = clampOffset(panBy(this.transform, dx, dy), this.frame, this.stage);
-      return true;
-    }
-    return false;
-  }
-  /**
-   * Update the frame size. In fit mode the view re-fits; in non-fit mode the
-   * offset is clamped so the image stays on-screen.
-   *
-   * @param frame - Document frame size.
-   * @returns `true` if the transform changed.
-   */
-  setFrame(frame) {
-    this.frame = { ...frame };
-    if (this.fitting) return this.refit();
-    const clamped = clampOffset(this.transform, this.frame, this.stage);
-    const changed = clamped.offsetX !== this.transform.offsetX || clamped.offsetY !== this.transform.offsetY;
-    this.transform = clamped;
-    return changed;
-  }
-  /** Enter fit mode and re-fit (Ctrl+0 / Fit button). */
-  fit() {
-    this.fitting = true;
-    this.refit();
-    this.onChange();
-  }
-  /**
-   * 100% (Ctrl+1): one document pixel per on-screen pixel, centred on the
-   * stage centre's document point.
-   */
-  actualPixels() {
-    const centre = { x: this.stage.width / 2, y: this.stage.height / 2 };
-    this.setTransform(zoomAt(this.transform, 1 / this.displayScale, centre));
-  }
-  /**
-   * Zoom by a wheel delta around a stage point.
-   * @param deltaPx - Wheel delta in px (positive = out).
-   * @param anchor - Stage point under the cursor.
-   */
-  wheelZoom(deltaPx, anchor) {
-    this.setTransform(zoomAt(this.transform, this.transform.scale * wheelZoomFactor(deltaPx), anchor));
-  }
-  /**
-   * Zoom by a factor around the stage centre (Ctrl +/-).
-   * @param factor - Multiplier.
-   */
-  zoomBy(factor) {
-    const centre = { x: this.stage.width / 2, y: this.stage.height / 2 };
-    this.setTransform(zoomAt(this.transform, clampZoom(this.transform.scale * factor), centre));
-  }
-  /**
-   * Pan by stage px.
-   * @param dx - Stage px.
-   * @param dy - Stage px.
-   */
-  pan(dx, dy) {
-    this.setTransform(panBy(this.transform, dx, dy));
-  }
-  setTransform(next) {
-    this.fitting = false;
-    this.transform = clampOffset(next, this.frame, this.stage);
-    this.onChange();
-  }
-  refit() {
-    if (this.stage.width <= 0 || this.stage.height <= 0) return false;
-    const next = fitView(this.frame, this.stage);
-    const changed = next.scale !== this.transform.scale || next.offsetX !== this.transform.offsetX || next.offsetY !== this.transform.offsetY;
-    this.transform = next;
-    return changed;
-  }
-}
-class EditorState {
-  events = new Emitter();
-  /** View commands (Fit, Ctrl+0/1, zoom, pan) emit `render` themselves, whoever calls them. */
-  view = new ViewState(() => this.events.emit("render", void 0));
-  history = new HistoryStack(DEFAULT_HISTORY_BYTES, groupEntries);
-  stroke = new StrokeBuffer();
-  runtime = new LayerRuntimeTable();
-  store;
-  /** Current selection (session state, not saved); strokes are clipped to it. */
-  selection = new SelectionState(() => this.events.emit("selection", void 0));
-  doc;
-  frameSource;
-  background = { kind: "fill", color: "#ffffff" };
-  /**
-   * Size of the current image: the background image's natural size, or the
-   * `width` x `height` widgets under a fill. `null` = unknown (use `doc.frame`).
-   */
-  backgroundSize = null;
-  loadingCount = 0;
-  /** Background size that arrived while loading (applied afterwards). */
-  pendingBackgroundSize = null;
-  /** Quick Mask paint target (UI state, not saved). */
-  target = "paint";
-  /** Layer the current stroke paints into. */
-  strokeLayerId = null;
-  /** Largest dab diameter of the current stroke, document px. */
-  strokeDiameter = 1;
-  /** Where the previous stroke ended, document coords. */
-  lastStrokeEnd = null;
-  /**
-   * Move-tool drag in progress: the layer is drawn offset by (dx, dy)
-   * document px; pixels move only on commit (`moveOps.ts`).
-   */
-  movePreview = null;
-  /**
-   * Asks the user whether a text layer may be rasterized (`rasterize.ts`);
-   * the UI installs a `window.confirm` (the engine has no DOM UI). Default: no.
-   */
-  confirmRasterize = () => false;
-  /**
-   * @param doc - Document (copied).
-   * @param source - Origin of its frame size.
-   * @param store - Existing pixels (for clones); a blank store is created otherwise.
-   */
-  constructor(doc, source, store) {
-    this.doc = cloneDocument(doc);
-    this.frameSource = source;
-    this.store = store ?? new LayerStore(doc.bounds);
-    for (const layer of doc.layers) {
-      this.store.ensure(layer.id);
-      this.runtime.reset(layer.id, layer.file !== null);
-    }
-    this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
-    this.syncViewFrame();
-  }
-  /** Layer files are being restored. */
-  get loading() {
-    return this.loadingCount > 0;
-  }
-  /** Size the view shows: the current image (image or widget-sized fill), else `doc.frame`. */
-  get imageSize() {
-    const size = this.backgroundSize;
-    return size ? { ...size } : { ...this.doc.frame };
-  }
-  /** No paint ever and nothing in history that depends on the frame (selection steps don't count). */
-  get isEmpty() {
-    return !this.runtime.hasPaint && !this.history.some((entry) => entry.kind !== "selection");
-  }
-  /** The view fits the image, not the document frame. */
-  syncViewFrame() {
-    this.view.setFrame(this.imageSize);
-  }
-  /**
-   * Grow bounds to cover `need`. Chunked + capped for strokes; exact and
-   * uncapped when re-applying history. Every layer with content is marked
-   * for re-upload: layer files are sized to `bounds`, and a file saved at
-   * the old bounds would be restored at the wrong origin.
-   * @param need - Document rect that must be covered.
-   * @param chunked - Stroke growth (256 px chunks, capped).
-   */
-  ensureBounds(need, chunked) {
-    const current = this.store.bounds;
-    if (containsRect(current, need)) return;
-    const next = chunked ? growBounds(current, need, this.doc.frame) : unionRect(current, need);
-    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
-      this.store.rebase(next);
-      this.stroke.rebase(next);
-      this.doc.bounds = { ...next };
-      for (const layer of this.doc.layers) this.runtime.resized(layer.id);
-    }
-  }
-  /**
-   * The mask layer, adding a default one (not dirty, no history) when the
-   * document has none -- documents saved before M2 get one lazily.
-   * @returns The mask layer.
-   */
-  ensureMask() {
-    const { layer, created } = ensureMaskLayer(this.doc);
-    if (created) {
-      this.store.ensure(layer.id);
-      this.runtime.reset(layer.id, false);
-      this.events.emit("change", void 0);
-      this.events.emit("mask", void 0);
-    }
-    return layer;
-  }
-  /** Abort the current stroke (its preview may be cached in a mask tint). */
-  cancelStroke() {
-    this.stroke.cancel();
-    if (this.strokeLayerId) this.runtime.bump(this.strokeLayerId);
-    this.strokeLayerId = null;
-    this.events.emit("history", void 0);
-    this.events.emit("render", void 0);
-  }
-  /** Notify history, content and render listeners after an edit. */
-  afterEdit() {
-    this.events.emit("history", void 0);
-    this.events.emit("change", void 0);
-    this.events.emit("render", void 0);
-  }
-}
-const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
-function frameMap(frame, image, placement) {
-  const { width: fw, height: fh } = frame;
-  const { width: W2, height: H } = image;
-  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
-  const s = Math.min(W2 / fw, H / fh);
-  const offsetX = (W2 - fw * s) / 2;
-  const offsetY = (H - fh * s) / 2;
-  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
-  const k = placement.scale;
-  return {
-    scale: s * k,
-    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
-    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
-  };
-}
-function documentMap(doc, image) {
-  return frameMap(doc.frame, image, doc.placement);
-}
-function docToImage(map, p) {
-  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
-}
-function imageToDoc(map, p) {
-  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
-}
-function docRectToImage(map, r) {
-  return {
-    x: map.offsetX + r.x * map.scale,
-    y: map.offsetY + r.y * map.scale,
-    width: r.width * map.scale,
-    height: r.height * map.scale
-  };
-}
-function imageRectToDoc(map, r) {
-  return {
-    x: (r.x - map.offsetX) / map.scale,
-    y: (r.y - map.offsetY) / map.scale,
-    width: r.width / map.scale,
-    height: r.height / map.scale
-  };
-}
-function imageLengthToDoc(map, imageLength) {
-  return imageLength / map.scale;
-}
-function roundHalfEven(value) {
-  const floor = Math.floor(value);
-  const diff = value - floor;
-  if (diff > 0.5) return floor + 1;
-  if (diff < 0.5) return floor;
-  return floor % 2 === 0 ? floor : floor + 1;
-}
-function layerPlacement(map, bounds) {
-  return {
-    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
-    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
-    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
-    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
-  };
-}
-class FrameOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  /**
-   * Set what is drawn under the paint; the view re-fits (in fit mode).
-   * @param background - Image or fill.
-   * @param imageSize - Size of the current image: the natural size of an
-   *   image background, or the `width` x `height` widgets for a fill (no
-   *   image connected). `null` = show `doc.frame`.
-   */
-  setBackground(background, imageSize2) {
-    this.s.background = background;
-    this.s.backgroundSize = imageSize2 ? { ...imageSize2 } : null;
-    this.s.syncViewFrame();
-    this.s.events.emit("render", void 0);
-  }
-  /**
-   * A new current-image size arrived (upstream image, or the widgets while
-   * disconnected; call after {@link setBackground}): an empty document
-   * adopts it, otherwise it is only a display mapping (decision 4).
-   * Deferred while layer files are loading.
-   * @param size - Current image size.
-   */
-  handleBackgroundSize(size) {
-    const s = this.s;
-    if (s.loading) {
-      s.pendingBackgroundSize = { ...size };
-      return;
-    }
-    const source = s.background.kind === "image" ? "image" : "widgets";
-    const frame = s.doc.frame;
-    if (size.width === frame.width && size.height === frame.height) {
-      s.frameSource = source;
-      return;
-    }
-    if (s.isEmpty) this.adoptFrame(size, source);
-  }
-  /**
-   * Replace the frame of an empty document (no history).
-   * @param size - New frame.
-   * @param source - Origin of the size.
-   */
-  adoptFrame(size, source) {
-    const s = this.s;
-    if (s.stroke.active) s.cancelStroke();
-    const frame = { width: Math.round(size.width), height: Math.round(size.height) };
-    s.doc.frame = frame;
-    s.doc.bounds = frameRect(frame);
-    delete s.doc.placement;
-    s.frameSource = source;
-    s.store.reset(s.doc.bounds);
-    for (const layer of s.doc.layers) {
-      s.store.ensure(layer.id);
-      layer.file = null;
-      s.runtime.reset(layer.id, false);
-      s.runtime.bump(layer.id);
-    }
-    s.history.clear();
-    s.selection.set(null);
-    s.lastStrokeEnd = null;
-    s.syncViewFrame();
-    s.events.emit("placement", void 0);
-    s.afterEdit();
-  }
-  /**
-   * Clear all paint and reset the frame to the current image size and the
-   * placement to identity, as one undoable step.
-   */
-  clear() {
-    const s = this.s;
-    if (s.loading) return;
-    if (s.stroke.active) s.cancelStroke();
-    const size = s.imageSize;
-    const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
-    const source = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
-    const before = this.captureSnapshot();
-    const after = { frame, bounds: frameRect(frame), source, pixels: null };
-    this.applySnapshot(after);
-    s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
-    s.lastStrokeEnd = null;
-    s.afterEdit();
-  }
-  /**
-   * Restore a full document snapshot (Clear undo/redo).
-   * @param state - Snapshot to apply.
-   */
-  applySnapshot(state) {
-    const s = this.s;
-    s.doc.frame = { ...state.frame };
-    s.doc.bounds = { ...state.bounds };
-    if (state.placement) s.doc.placement = { ...state.placement };
-    else delete s.doc.placement;
-    s.frameSource = state.source;
-    s.store.reset(state.bounds);
-    for (const layer of s.doc.layers) {
-      const data = state.pixels?.get(layer.id);
-      if (data) s.store.write(layer.id, state.bounds.x, state.bounds.y, data);
-      else s.store.ensure(layer.id);
-      const textData = state.text?.get(layer.id);
-      if (textData) {
-        layer.kind = "text";
-        layer.textData = textData;
-      } else if (layer.kind === "text") {
-        layer.kind = "paint";
-        delete layer.textData;
-      }
-      s.runtime.touch(layer.id);
-    }
-    s.syncViewFrame();
-    s.events.emit("placement", void 0);
-    s.events.emit("layers", void 0);
-  }
-  captureSnapshot() {
-    const s = this.s;
-    const pixels = /* @__PURE__ */ new Map();
-    const text = /* @__PURE__ */ new Map();
-    for (const layer of s.doc.layers) {
-      pixels.set(layer.id, s.store.snapshot(layer.id));
-      if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
-    }
-    const placement = s.doc.placement ? { ...s.doc.placement } : void 0;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...placement ? { placement } : {}, pixels, text };
-  }
-}
-function snapshotBytes(state) {
-  let bytes = 0;
-  if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
-  return bytes;
-}
-class MaskTint {
-  surface = null;
-  key = null;
-  /**
-   * Bring the tint up to date and return it.
-   * @param source - Coverage canvas (layer or stroke preview), sized to `key.bounds`.
-   * @param key - Current inputs.
-   * @param dirty - Document rect changed in `source` since the last call while
-   *   the key is unchanged (live stroke preview); `null` = nothing extra.
-   * @returns Tinted canvas sized to `key.bounds`.
-   */
-  update(source, key, dirty) {
-    const surface = this.ensureSurface(key.bounds);
-    if (!this.key || !sameKey(this.key, key)) {
-      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key);
-    } else if (dirty) {
-      const local = intersectRect(
-        { x: dirty.x - key.bounds.x, y: dirty.y - key.bounds.y, width: dirty.width, height: dirty.height },
-        { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }
-      );
-      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key);
-    }
-    this.key = { ...key, bounds: { ...key.bounds } };
-    return surface.canvas;
-  }
-  /** Release the cached canvas. */
-  dispose() {
-    if (this.surface) releaseSurface(this.surface);
-    this.surface = null;
-    this.key = null;
-  }
-  ensureSurface(bounds) {
-    const s = this.surface;
-    if (s && s.canvas.width === bounds.width && s.canvas.height === bounds.height) return s;
-    if (s) releaseSurface(s);
-    this.key = null;
-    this.surface = createSurface(bounds.width, bounds.height);
-    return this.surface;
-  }
-}
-function sameKey(a, b) {
-  return a.revision === b.revision && a.color === b.color && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
-}
-function paint(ctx, source, r, key) {
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(r.x, r.y, r.width, r.height);
-  ctx.clip();
-  ctx.globalAlpha = 1;
-  ctx.clearRect(r.x, r.y, r.width, r.height);
-  ctx.fillStyle = key.color;
-  if (key.invert) {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-  } else {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-    ctx.globalCompositeOperation = "source-in";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-  }
-  ctx.restore();
-}
-class LayerDisplay {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  tints = /* @__PURE__ */ new Map();
-  /**
-   * Visible paint layers to composite.
-   * @returns Bottom -> top layers.
-   */
-  compositeLayers() {
-    const s = this.s;
-    const out = [];
-    for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
-      const surface = s.store.ensure(layer.id);
-      const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
-      const offset = this.moveOffset(layer.id);
-      out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
-    }
-    return out;
-  }
-  /** Move-tool drag offset of a layer (document px), or `undefined`. */
-  moveOffset(layerId) {
-    const p = this.s.movePreview;
-    return p && p.layerId === layerId && (p.dx !== 0 || p.dy !== 0) ? { x: p.dx, y: p.dy } : void 0;
-  }
-  /**
-   * Visible mask layers as tinted overlays (drawn above all paint).
-   * @returns Bottom -> top overlays.
-   */
-  maskOverlays() {
-    const s = this.s;
-    const out = [];
-    const bounds = s.store.bounds;
-    for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind !== "mask") continue;
-      const surface = s.store.ensure(layer.id);
-      const stroking = s.strokeLayerId === layer.id && s.stroke.active;
-      const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
-      let tint = this.tints.get(layer.id);
-      if (!tint) {
-        tint = new MaskTint();
-        this.tints.set(layer.id, tint);
-      }
-      const color = maskDisplayColor(layer);
-      const invert = layer.invert === true;
-      const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
-      const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
-      const offset = this.moveOffset(layer.id);
-      out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...offset ? { offset } : {} });
-    }
-    return out;
-  }
-  /** Release the tint caches. */
-  dispose() {
-    for (const tint of this.tints.values()) tint.dispose();
-    this.tints.clear();
-  }
-}
-const PROP_KEYS = ["name", "opacity", "color", "invert"];
-function isPaintLike(layer) {
-  return layer.kind !== "mask";
-}
-function paintLayerCount(layers) {
-  let n = 0;
-  for (const layer of layers) if (isPaintLike(layer)) n++;
-  return n;
-}
-function nextLayerName(layers) {
-  let max = 0;
-  for (const layer of layers) {
-    const match = /^Layer (\d+)$/.exec(layer.name.trim());
-    if (match) max = Math.max(max, Number(match[1]));
-  }
-  return `Layer ${max + 1}`;
-}
-function paintInsertIndex(doc) {
-  const layers = doc.layers;
-  const active = layers.findIndex((l) => l.id === doc.activeLayerId);
-  if (active >= 0 && isPaintLike(layers[active])) return active + 1;
-  for (let i = layers.length - 1; i >= 0; i--) if (isPaintLike(layers[i])) return i + 1;
-  const firstMask = layers.findIndex((l) => l.kind === "mask");
-  return firstMask >= 0 ? firstMask : layers.length;
-}
-function canDeleteLayer(layers, id) {
-  const layer = layers.find((l) => l.id === id);
-  return !!layer && isPaintLike(layer) && paintLayerCount(layers) > 1;
-}
-function canDuplicateLayer(layers, id) {
-  const layer = layers.find((l) => l.id === id);
-  return !!layer && isPaintLike(layer);
-}
-function activeAfterRemoval(layers, removed) {
-  for (let i = Math.min(removed - 1, layers.length - 1); i >= 0; i--) {
-    const layer = layers[i];
-    if (layer && isPaintLike(layer)) return layer.id;
-  }
-  for (let i = Math.max(0, removed); i < layers.length; i++) {
-    const layer = layers[i];
-    if (layer && isPaintLike(layer)) return layer.id;
-  }
-  return void 0;
-}
-function resolveMove(layers, id, targetId, above) {
-  const from = layers.findIndex((l) => l.id === id);
-  const target = layers.findIndex((l) => l.id === targetId);
-  const src = layers[from];
-  const dst = layers[target];
-  if (!src || !dst || !isPaintLike(src) || !isPaintLike(dst)) return null;
-  if (from === target) return null;
-  const targetAfterRemoval = target > from ? target - 1 : target;
-  const to = above ? targetAfterRemoval + 1 : targetAfterRemoval;
-  return to === from ? null : { from, to };
-}
-function readProps(layer, props) {
-  const out = {};
-  for (const key of PROP_KEYS) if (key in props) Object.assign(out, { [key]: layer[key] });
-  return out;
-}
-function propsDiffer(layer, props) {
-  return PROP_KEYS.some((key) => key in props && props[key] !== layer[key]);
-}
-function writeProps(layer, props) {
-  for (const key of PROP_KEYS) {
-    if (!(key in props)) continue;
-    const value = props[key];
-    if (value === void 0) {
-      if (key === "color" || key === "invert") delete layer[key];
-    } else {
-      Object.assign(layer, { [key]: value });
-    }
-  }
-}
-function applyLayerChange(layers, change, forward) {
-  switch (change.op) {
-    case "insert":
-    case "remove": {
-      const inserting = change.op === "insert" === forward;
-      if (inserting) {
-        if (layers.some((l) => l.id === change.layer.id)) return false;
-        layers.splice(Math.min(change.index, layers.length), 0, { ...change.layer });
-        return true;
-      }
-      const index = layers.findIndex((l) => l.id === change.layer.id);
-      const live = layers[index];
-      if (!live) return false;
-      change.layer = { ...live };
-      layers.splice(index, 1);
-      return true;
-    }
-    case "move": {
-      const from = forward ? change.from : change.to;
-      const to = forward ? change.to : change.from;
-      if (layers[from]?.id !== change.id) return false;
-      const [moved] = layers.splice(from, 1);
-      if (!moved) return false;
-      layers.splice(Math.min(to, layers.length), 0, moved);
-      return true;
-    }
-    case "props": {
-      const layer = layers.find((l) => l.id === change.id);
-      if (!layer) return false;
-      writeProps(layer, forward ? change.after : change.before);
-      return true;
-    }
-  }
-}
-const LAYERS_ENTRY_BASE_BYTES = 256;
-function changesBytes(changes) {
-  let bytes = LAYERS_ENTRY_BASE_BYTES;
-  for (const change of changes) {
-    if ((change.op === "insert" || change.op === "remove") && change.pixels) bytes += change.pixels.data.data.byteLength;
-  }
-  return bytes;
-}
-function captureLayerPixels(s, layerId) {
-  if (!s.runtime.get(layerId)?.hasContent) return null;
-  const bounds = s.store.bounds;
-  return { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
-}
-function installLayerPixels(s, layerId, pixels) {
-  const surface = s.store.ensure(layerId);
-  surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
-  if (pixels) {
-    s.ensureBounds({ x: pixels.x, y: pixels.y, width: pixels.data.width, height: pixels.data.height }, false);
-    s.store.write(layerId, pixels.x, pixels.y, pixels.data);
-  }
-  s.runtime.reinstate(layerId, pixels !== null);
-}
-function releaseRemovedLayers(s) {
-  const keep = new Set(s.doc.layers.map((l) => l.id));
-  s.store.retain(keep);
-}
-function applyLayersEntry(s, entry, forward) {
-  if (s.stroke.active) s.cancelStroke();
-  const changes = forward ? entry.changes : [...entry.changes].reverse();
-  for (const change of changes) {
-    if (!applyLayerChange(s.doc.layers, change, forward)) continue;
-    if (change.op !== "insert" && change.op !== "remove") continue;
-    const appeared = change.op === "insert" === forward;
-    if (appeared) {
-      installLayerPixels(s, change.layer.id, change.pixels);
-      const layer = s.doc.layers.find((l) => l.id === change.layer.id);
-      if (!change.pixels && layer?.kind === "text") {
-        renderTextLayer(s, layer);
-        s.runtime.touch(layer.id);
-      }
-    } else {
-      s.runtime.remove(change.layer.id);
-    }
-  }
-  const active = forward ? entry.activeAfter : entry.activeBefore;
-  if (s.doc.layers.some((l) => l.id === active && isPaintLike(l))) s.doc.activeLayerId = active;
-  releaseRemovedLayers(s);
-  emitLayerEvents(s);
-}
-function emitLayerEvents(s) {
-  s.events.emit("layers", void 0);
-  s.events.emit("mask", void 0);
-}
-const PICK_ALPHA_THRESHOLD = 10;
-function pickLayer(layers, alphaAt, threshold = PICK_ALPHA_THRESHOLD) {
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const layer = layers[i];
-    if (!layer || !layer.visible || layer.locked) continue;
-    if (layer.kind !== "paint" && layer.kind !== "text") continue;
-    if (alphaAt(layer.id) > threshold) return layer.id;
-  }
-  return null;
-}
-class LayerOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  // ── Queries ─────────────────────────────────────────────────────────────
-  /**
-   * Pixel revision of a layer: changes whenever its committed pixels change
-   * (thumbnail cache key; not bumped during a stroke preview).
-   * @param layerId - Layer id.
-   * @returns Revision number.
-   */
-  revision(layerId) {
-    return this.s.runtime.revision(layerId);
-  }
-  /**
-   * Whether the layer can be deleted (paint-like, not the last one).
-   * @param layerId - Layer id.
-   * @returns `true` if deletable.
-   */
-  canDelete(layerId) {
-    return canDeleteLayer(this.s.doc.layers, layerId);
-  }
-  /**
-   * Whether the layer can be duplicated (paint-like).
-   * @param layerId - Layer id.
-   * @returns `true` if duplicable.
-   */
-  canDuplicate(layerId) {
-    return canDuplicateLayer(this.s.doc.layers, layerId);
-  }
-  /**
-   * Move-tool auto-select: the topmost visible, unlocked paint/text layer
-   * with a visible pixel at a document point ({@link pickLayer}; reads one
-   * pixel per candidate layer).
-   * @param x - Document x.
-   * @param y - Document y.
-   * @returns Layer id, or `null` if nothing is hit.
-   */
-  pickAt(x, y) {
-    const s = this.s;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
-    return pickLayer(s.doc.layers, (id) => s.store.get(id) ? s.store.read(id, rect)?.data.data[3] ?? 0 : 0);
-  }
-  // ── Not undoable ────────────────────────────────────────────────────────
-  /**
-   * Make a paint layer the active one (the layer strokes go to outside
-   * Quick Mask). Mask layers are selected via the paint target instead.
-   * @param layerId - Paint layer id.
-   * @returns `true` if the active layer changed.
-   */
-  setActiveLayer(layerId) {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
-    if (s.stroke.active) s.cancelStroke();
-    s.doc.activeLayerId = layerId;
-    s.events.emit("layers", void 0);
-    s.events.emit("change", void 0);
-    return true;
-  }
-  /**
-   * Show or hide a layer (hidden layers are skipped in `IMAGE`/`MASK`).
-   * @param layerId - Layer id.
-   * @param visible - Visibility.
-   */
-  setVisible(layerId, visible) {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || layer.visible === visible) return;
-    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
-    layer.visible = visible;
-    this.afterMeta();
-  }
-  /**
-   * Lock or unlock a layer (painting on a locked layer is refused).
-   * @param layerId - Layer id.
-   * @param locked - Lock state.
-   */
-  setLocked(layerId, locked) {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || layer.locked === locked) return;
-    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
-    layer.locked = locked;
-    this.afterMeta();
-  }
-  // ── Structural (undoable) ───────────────────────────────────────────────
-  /**
-   * Add an empty "Layer N" above the active paint layer and make it active.
-   * @returns New layer id, or `null` while loading.
-   */
-  add() {
-    return this.addLayer(createPaintLayer(nextLayerName(this.s.doc.layers)));
-  }
-  /**
-   * Insert a prepared, empty layer (e.g. a new text layer) above the active
-   * paint layer and make it active, as one undoable add.
-   * @param layer - New layer (fresh id, not yet in the document).
-   * @returns Its id, or `null` while loading.
-   */
-  addLayer(layer) {
-    if (!this.ready()) return null;
-    this.insert(layer, paintInsertIndex(this.s.doc), null);
-    return layer.id;
-  }
-  /**
-   * Duplicate a paint layer (pixels included) directly above it; the copy
-   * becomes active.
-   * @param layerId - Source layer (default: the active layer).
-   * @returns New layer id, or `null` if not possible.
-   */
-  duplicate(layerId = this.s.doc.activeLayerId) {
-    const s = this.s;
-    if (!this.ready() || !this.canDuplicate(layerId)) return null;
-    const index = s.doc.layers.findIndex((l) => l.id === layerId);
-    const source = s.doc.layers[index];
-    if (!source) return null;
-    const layer = { ...source, id: createId(8), name: `${source.name} copy` };
-    this.insert(layer, index + 1, captureLayerPixels(s, source.id));
-    return layer.id;
-  }
-  /**
-   * Delete a paint layer (not the last one; masks are not deletable). The
-   * pixels stay in the undo entry.
-   * @param layerId - Layer (default: the active layer).
-   * @returns `true` if deleted.
-   */
-  remove(layerId = this.s.doc.activeLayerId) {
-    const s = this.s;
-    if (!this.ready() || !this.canDelete(layerId)) return false;
-    const index = s.doc.layers.findIndex((l) => l.id === layerId);
-    const layer = s.doc.layers[index];
-    if (!layer) return false;
-    const activeBefore = s.doc.activeLayerId;
-    const pixels = captureLayerPixels(s, layerId);
-    s.doc.layers.splice(index, 1);
-    s.runtime.remove(layerId);
-    releaseRemovedLayers(s);
-    if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
-    this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
-    return true;
-  }
-  /**
-   * Reorder a paint layer next to another paint layer.
-   * @param layerId - Dragged layer.
-   * @param targetId - Layer it is dropped next to.
-   * @param above - Above (true) or below the target in the stack.
-   * @returns `true` if the order changed.
-   */
-  move(layerId, targetId, above) {
-    const s = this.s;
-    if (!this.ready()) return false;
-    const move = resolveMove(s.doc.layers, layerId, targetId, above);
-    if (!move) return false;
-    const [layer] = s.doc.layers.splice(move.from, 1);
-    if (!layer) return false;
-    s.doc.layers.splice(move.to, 0, layer);
-    this.record([{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
-    return true;
-  }
-  /**
-   * Rename a layer (trimmed; empty names are ignored).
-   * @param layerId - Layer id.
-   * @param name - New name.
-   * @returns `true` if renamed.
-   */
-  rename(layerId, name) {
-    const trimmed = name.trim().slice(0, 100);
-    if (!trimmed) return false;
-    return this.setProps(layerId, { name: trimmed });
-  }
-  /**
-   * Layer opacity (paint: composite opacity; mask: overlay display only).
-   * @param layerId - Layer id.
-   * @param opacity - 0..1 (clamped).
-   * @param gesture - Edits with the same key merge into one undo entry (a scrub/slider drag).
-   * @returns `true` if changed.
-   */
-  setOpacity(layerId, opacity, gesture) {
-    if (!Number.isFinite(opacity)) return false;
-    return this.setProps(layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
-  }
-  /**
-   * Mask display colour.
-   * @param layerId - Mask layer id.
-   * @param color - `#rrggbb`.
-   * @param gesture - Edits with the same key merge into one undo entry (picker drag).
-   * @returns `true` if changed.
-   */
-  setMaskColor(layerId, color, gesture) {
-    if (this.find(layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
-    return this.setProps(layerId, { color: color.toLowerCase() }, gesture);
-  }
-  /**
-   * Per-mask invert (applied before the union, decision 5).
-   * @param layerId - Mask layer id.
-   * @param invert - Invert state.
-   * @returns `true` if changed.
-   */
-  setMaskInvert(layerId, invert) {
-    if (this.find(layerId)?.kind !== "mask") return false;
-    return this.setProps(layerId, { invert });
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  find(layerId) {
-    return this.s.doc.layers.find((l) => l.id === layerId);
-  }
-  /** Structural edits wait for restores and cancel a running stroke. */
-  ready() {
-    const s = this.s;
-    if (s.loading) return false;
-    if (s.stroke.active) s.cancelStroke();
-    return true;
-  }
-  insert(layer, index, pixels) {
-    const s = this.s;
-    const activeBefore = s.doc.activeLayerId;
-    s.doc.layers.splice(index, 0, layer);
-    installLayerPixels(s, layer.id, pixels);
-    s.doc.activeLayerId = layer.id;
-    this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
-  }
-  setProps(layerId, props, gesture) {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || s.loading || !propsDiffer(layer, props)) return false;
-    const merge = gesture ? s.history.mergeTarget() : void 0;
-    const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
-    if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
-      Object.assign(change.after, props);
-      writeProps(layer, props);
-      this.afterMeta(true);
-      return true;
-    }
-    const before = readProps(layer, props);
-    writeProps(layer, props);
-    this.record([{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
-    return true;
-  }
-  record(changes, activeBefore, gesture) {
-    const s = this.s;
-    s.history.push({
-      kind: "layers",
-      changes,
-      activeBefore,
-      activeAfter: s.doc.activeLayerId,
-      bytes: changesBytes(changes),
-      ...gesture ? { gesture } : {}
-    });
-    this.afterMeta(true);
-  }
-  /** Events after a metadata change (`history` too when it was recorded). */
-  afterMeta(history = false) {
-    const s = this.s;
-    if (history) s.events.emit("history", void 0);
-    emitLayerEvents(s);
-    s.events.emit("change", void 0);
-    s.events.emit("render", void 0);
-  }
-}
-function sameKeys(a, b) {
-  const ka = Object.keys(a).sort().join();
-  return ka === Object.keys(b).sort().join();
-}
-class EditorMaskOps {
-  /**
-   * @param s - Shared editor state.
-   * @param paint - Paint operations (owns `setPaintTarget` / `setMaskVisible`).
-   */
-  constructor(s, paint2) {
-    this.s = s;
-    this.paint = paint2;
-  }
-  s;
-  paint;
-  /** What brush/eraser strokes paint into (UI state, not saved). */
-  get paintTarget() {
-    return this.s.target;
-  }
-  /** The mask layer Quick Mask edits, if the document has one. */
-  get maskLayer() {
-    return findMaskLayer(this.s.doc);
-  }
-  /**
-   * Whether any mask layer is hidden AND has ever held paint (queue-time
-   * warning: it will not be in the MASK output).
-   * @returns `true` if a hidden-but-painted mask exists.
-   */
-  hiddenMaskHasContent() {
-    return this.s.doc.layers.some((l) => l.kind === "mask" && !l.visible && this.s.runtime.get(l.id)?.hasContent === true);
-  }
-  /**
-   * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
-   * @param target - New target.
-   */
-  setPaintTarget(target) {
-    this.paint.setPaintTarget(target);
-  }
-  /** Toggle between the paint layer and the mask. */
-  togglePaintTarget() {
-    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
-  }
-  /**
-   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
-   * also excluded from the `MASK` output (saved-file contract).
-   * @param visible - Visibility.
-   */
-  setMaskVisible(visible) {
-    this.paint.setMaskVisible(visible);
-  }
-}
-function clean$1(n) {
-  return n === 0 ? 0 : n;
-}
-function dragDelta(start, current) {
-  return { x: clean$1(Math.round(current.x - start.x)), y: clean$1(Math.round(current.y - start.y)) };
-}
-function nudgeStep(imagePx, mapScale) {
-  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
-  return Math.max(1, Math.round(imagePx / mapScale));
-}
-function alphaBounds(data, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width * 4;
-    let first = -1;
-    for (let x = 0; x < width; x++) {
-      if (data[row + x * 4 + 3]) {
-        first = x;
-        break;
-      }
-    }
-    if (first < 0) continue;
-    let last = first;
-    for (let x = width - 1; x > first; x--) {
-      if (data[row + x * 4 + 3]) {
-        last = x;
-        break;
-      }
-    }
-    if (first < minX) minX = first;
-    if (last > maxX) maxX = last;
-    if (minY === height) minY = y;
-    maxY = y;
-  }
-  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function offsetRect(r, dx, dy) {
-  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
-}
-function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
-  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
-  const target = offsetRect(content, dx, dy);
-  const grown = growBounds(bounds, target, frame, limits);
-  const kind = containsRect(grown, target) ? "translate" : "patch";
-  return { kind, bounds: grown, target, region: unionRect(content, target) };
-}
-function translateStep(entry, forward) {
-  const moved = offsetRect(entry.content, entry.dx, entry.dy);
-  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean$1(-entry.dx), dy: clean$1(-entry.dy) };
-}
-function mergeTranslate(entry, dx, dy) {
-  entry.dx = clean$1(entry.dx + dx);
-  entry.dy = clean$1(entry.dy + dy);
-}
-const TRANSLATE_ENTRY_BYTES = 128;
-const contentCache = /* @__PURE__ */ new WeakMap();
-function cacheOf(s) {
-  let cache2 = contentCache.get(s);
-  if (!cache2) {
-    cache2 = /* @__PURE__ */ new Map();
-    contentCache.set(s, cache2);
-  }
-  return cache2;
-}
-function layerContentRect(s, layerId) {
-  const cache2 = cacheOf(s);
-  const revision = s.runtime.revision(layerId);
-  const hit = cache2.get(layerId);
-  if (hit && hit.revision === revision) return { ...hit.rect };
-  let rect = { x: 0, y: 0, width: 0, height: 0 };
-  if (s.runtime.get(layerId)?.hasContent) {
-    const bounds = s.store.bounds;
-    const data = s.store.snapshot(layerId);
-    const local = alphaBounds(data.data, data.width, data.height);
-    if (!isEmptyRect(local)) rect = offsetRect(local, bounds.x, bounds.y);
-  }
-  cache2.set(layerId, { revision, rect });
-  return { ...rect };
-}
-function shiftRegion(s, layerId, from, dx, dy) {
-  const bounds = s.store.bounds;
-  const src = intersectRect(from, bounds);
-  if (isEmptyRect(src)) return;
-  const surface = s.store.ensure(layerId);
-  const lx = src.x - bounds.x;
-  const ly = src.y - bounds.y;
-  const tmp = createSurface(src.width, src.height);
-  tmp.ctx.drawImage(surface.canvas, lx, ly, src.width, src.height, 0, 0, src.width, src.height);
-  const ctx = surface.ctx;
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(lx, ly, src.width, src.height);
-  ctx.drawImage(tmp.canvas, lx + dx, ly + dy);
-  ctx.restore();
-  releaseSurface(tmp);
-}
-function translateLayerPixels(s, layerId, dx, dy, gesture) {
-  const content = layerContentRect(s, layerId);
-  const plan = planTranslate(s.store.bounds, content, dx, dy, s.doc.frame);
-  if (plan.kind === "none") return false;
-  s.ensureBounds(plan.target, true);
-  const cache2 = cacheOf(s);
-  if (plan.kind === "translate") {
-    shiftRegion(s, layerId, content, dx, dy);
-    const merge = gesture ? s.history.mergeTarget() : void 0;
-    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
-      mergeTranslate(merge, dx, dy);
-    } else {
-      const entry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
-      if (gesture) entry.gesture = gesture;
-      s.history.push(entry);
-    }
-    s.runtime.touch(layerId);
-    cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
-    return true;
-  }
-  const region = intersectRect(plan.region, s.store.bounds);
-  const before = s.store.read(layerId, region);
-  if (!before) return false;
-  shiftRegion(s, layerId, content, dx, dy);
-  const after = s.store.read(layerId, before.rect);
-  if (after) {
-    const bytes = before.data.data.byteLength + after.data.data.byteLength;
-    s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
-  }
-  s.runtime.touch(layerId);
-  cache2.delete(layerId);
-  return true;
-}
-function applyTranslateEntry(s, entry, forward) {
-  if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
-  const step = translateStep(entry, forward);
-  s.ensureBounds(step.to, false);
-  shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
-  s.runtime.touch(entry.layerId);
-  cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
-}
-const pixelMover = {
-  move: (s, layer, dx, dy, gesture) => translateLayerPixels(s, layer.id, dx, dy, gesture)
-};
-const textMover = {
-  move: (s, layer, dx, dy, gesture) => moveTextLayer(s, layer, dx, dy, gesture)
-};
-const MOVERS = {
-  paint: pixelMover,
-  mask: pixelMover,
-  text: textMover
-};
-const UNMOVABLE_LAYER_NOTE = "This layer can't be moved.";
-function moverFor(layer) {
-  return MOVERS[layer.kind];
-}
-const NUDGE_GESTURE = "move-nudge";
-class LayerMoveOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  /** A drag preview is in progress. */
-  get dragging() {
-    return this.s.movePreview !== null;
-  }
-  /**
-   * Start a drag of the active layer (notes when locked / hidden / unmovable).
-   * @returns `false` if the layer can't be moved now.
-   */
-  begin() {
-    const s = this.s;
-    if (s.movePreview) return true;
-    const layer = this.editable();
-    if (!layer) return false;
-    s.movePreview = { layerId: layer.id, dx: 0, dy: 0 };
-    return true;
-  }
-  /**
-   * Update the drag offset (cheap: redraw only).
-   * @param dx - Offset from the drag start, whole document px.
-   * @param dy - Offset from the drag start, whole document px.
-   */
-  preview(dx, dy) {
-    const p = this.s.movePreview;
-    if (!p || p.dx === dx && p.dy === dy) return;
-    p.dx = dx;
-    p.dy = dy;
-    this.s.events.emit("render", void 0);
-  }
-  /**
-   * End the drag: move the layer by the preview offset as one undo entry.
-   * @returns `true` if the layer moved.
-   */
-  commit() {
-    const s = this.s;
-    const p = s.movePreview;
-    if (!p) return false;
-    s.movePreview = null;
-    const moved = this.apply(p.layerId, p.dx, p.dy, void 0);
-    if (!moved) s.events.emit("render", void 0);
-    return moved;
-  }
-  /** Abort the drag (Esc, pointer cancel, tool switch); nothing changes. */
-  cancel() {
-    if (!this.s.movePreview) return;
-    this.s.movePreview = null;
-    this.s.events.emit("render", void 0);
-  }
-  /**
-   * Arrow nudge of the active layer (merges with the previous nudge).
-   * @param dx - X shift, whole document px.
-   * @param dy - Y shift, whole document px.
-   * @returns `true` if the layer moved.
-   */
-  nudge(dx, dy) {
-    if (this.s.movePreview) return false;
-    const layer = this.editable();
-    return layer ? this.apply(layer.id, dx, dy, NUDGE_GESTURE) : false;
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  /** The layer to move, if it can be moved now (emits the reason otherwise). */
-  editable() {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return null;
-    const layer = activeEditLayer(s.doc, s.target);
-    if (!layer) return null;
-    const note = blockedNote(layer);
-    if (note) {
-      s.events.emit("note", note);
-      return null;
-    }
-    return layer;
-  }
-  apply(layerId, dx, dy, gesture) {
-    const s = this.s;
-    if (s.loading || s.stroke.active || dx === 0 && dy === 0) return false;
-    const layer = s.doc.layers.find((l) => l.id === layerId);
-    if (!layer || blockedNote(layer)) return false;
-    const mover = moverFor(layer);
-    if (!mover?.move(s, layer, dx, dy, gesture)) return false;
-    s.afterEdit();
-    return true;
-  }
-}
-function blockedNote(layer) {
-  if (layer.locked) return LOCKED_LAYER_NOTE;
-  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
-  if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
-  return null;
-}
-const AA_PAD = 1;
-const HEAD_HALF_WIDTH = 0.4;
-const HEAD_MAX_SHARE = 0.9;
-function snapAngle(from, to, stepDeg = 15) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  const length = Math.hypot(dx, dy);
-  if (length === 0) return { ...to };
-  const step = stepDeg * Math.PI / 180;
-  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-  return { x: from.x + clean(Math.cos(angle)) * length, y: from.y + clean(Math.sin(angle)) * length };
-}
-function boxFromDrag(start, current, square, fromCenter) {
-  let dx = current.x - start.x;
-  let dy = current.y - start.y;
-  if (square) {
-    const side = Math.max(Math.abs(dx), Math.abs(dy));
-    dx = (dx < 0 ? -1 : 1) * side;
-    dy = (dy < 0 ? -1 : 1) * side;
-  }
-  if (fromCenter) {
-    const w = Math.abs(dx);
-    const h = Math.abs(dy);
-    return { x: start.x - w, y: start.y - h, width: w * 2, height: h * 2 };
-  }
-  return { x: Math.min(start.x, start.x + dx), y: Math.min(start.y, start.y + dy), width: Math.abs(dx), height: Math.abs(dy) };
-}
-function crispRect(rect, strokeWidth) {
-  const x = Math.round(rect.x);
-  const y = Math.round(rect.y);
-  const r = { x, y, width: Math.round(rect.x + rect.width) - x, height: Math.round(rect.y + rect.height) - y };
-  const odd = strokeWidth > 0 && Math.round(strokeWidth) % 2 === 1;
-  return odd ? { ...r, x: r.x + 0.5, y: r.y + 0.5 } : r;
-}
-function headLength(width, ratio, lineLength, count) {
-  if (count <= 0) return 0;
-  const wanted = Math.max(0, width * ratio);
-  return Math.min(wanted, lineLength * HEAD_MAX_SHARE / count);
-}
-function arrowHeadPolygon(tip, from, length) {
-  const dx = tip.x - from.x;
-  const dy = tip.y - from.y;
-  const d = Math.hypot(dx, dy);
-  if (d === 0 || length <= 0) return [];
-  const ux = dx / d;
-  const uy = dy / d;
-  const bx = tip.x - ux * length;
-  const by = tip.y - uy * length;
-  const half = length * HEAD_HALF_WIDTH;
-  return [
-    { ...tip },
-    { x: bx - uy * half, y: by + ux * half },
-    { x: bx + uy * half, y: by - ux * half }
-  ];
-}
-function lineGeometry(line) {
-  const { from, to } = line;
-  const length = Math.hypot(to.x - from.x, to.y - from.y);
-  if (length === 0 || line.width <= 0) return null;
-  const count = line.heads === "both" ? 2 : line.heads === "end" ? 1 : 0;
-  const head = headLength(line.width, line.headRatio, length, count);
-  const ux = (to.x - from.x) / length;
-  const uy = (to.y - from.y) / length;
-  const heads = [];
-  let a = from;
-  let b = to;
-  if (count > 0 && head > 0) {
-    heads.push(arrowHeadPolygon(to, from, head));
-    b = { x: to.x - ux * head, y: to.y - uy * head };
-    if (count === 2) {
-      heads.push(arrowHeadPolygon(from, to, head));
-      a = { x: from.x + ux * head, y: from.y + uy * head };
-    }
-  }
-  const shaftLength = Math.hypot(b.x - a.x, b.y - a.y);
-  return { shaft: shaftLength > 0 ? [a, b] : null, heads };
-}
-function isDrawableShape(shape) {
-  if (shape.kind === "line") return lineGeometry(shape) !== null;
-  const hasPaint = shape.paint !== "stroke" || shape.strokeWidth > 0;
-  return hasPaint && shape.rect.width > 0 && shape.rect.height > 0;
-}
-function shapeBounds(shape) {
-  const empty = { x: 0, y: 0, width: 0, height: 0 };
-  if (!isDrawableShape(shape)) return empty;
-  if (shape.kind === "line") {
-    const geo = lineGeometry(shape);
-    if (!geo) return empty;
-    let r = empty;
-    if (geo.shaft) r = unionRect(r, padRect(pointsRect(geo.shaft), shape.width / 2));
-    for (const head of geo.heads) r = unionRect(r, pointsRect(head));
-    return padRect(r, AA_PAD);
-  }
-  const stroke = shape.paint === "fill" ? 0 : shape.strokeWidth;
-  const path = shape.kind === "rect" ? crispRect(shape.rect, stroke) : shape.rect;
-  return padRect(path, stroke / 2 + AA_PAD);
-}
-function pointsRect(points) {
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const p of points) {
-    minX = Math.min(minX, p.x);
-    minY = Math.min(minY, p.y);
-    maxX = Math.max(maxX, p.x);
-    maxY = Math.max(maxY, p.y);
-  }
-  if (minX > maxX) return { x: 0, y: 0, width: 0, height: 0 };
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
-function padRect(r, pad) {
-  return { x: r.x - pad, y: r.y - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
-}
-function clean(v) {
-  return Math.abs(v) < 1e-12 ? 0 : v;
-}
-function renderShape(ctx, shape, origin, colorOverride) {
-  if (!isDrawableShape(shape)) return;
-  ctx.save();
-  ctx.translate(-origin.x, -origin.y);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  if (shape.kind === "line") drawLine(ctx, shape, colorOverride);
-  else drawBox(ctx, shape, colorOverride);
-  ctx.restore();
-}
-function drawLine(ctx, line, colorOverride) {
-  const geo = lineGeometry(line);
-  if (!geo) return;
-  const color = colorOverride ?? line.color;
-  if (geo.shaft) {
-    const [a, b] = geo.shaft;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.lineWidth = line.width;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = color;
-    ctx.stroke();
-  }
-  ctx.fillStyle = color;
-  for (const head of geo.heads) {
-    const [first, ...rest] = head;
-    if (!first) continue;
-    ctx.beginPath();
-    ctx.moveTo(first.x, first.y);
-    for (const p of rest) ctx.lineTo(p.x, p.y);
-    ctx.closePath();
-    ctx.fill();
-  }
-}
-function drawBox(ctx, box, colorOverride) {
-  const stroke = box.paint !== "fill" && box.strokeWidth > 0;
-  const fill = box.paint !== "stroke";
-  const path = (strokeWidth) => {
-    ctx.beginPath();
-    if (box.kind === "rect") {
-      const r = crispRect(box.rect, strokeWidth);
-      ctx.rect(r.x, r.y, r.width, r.height);
-    } else {
-      const { x, y, width, height } = box.rect;
-      ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
-    }
-  };
-  if (fill) {
-    path(stroke ? box.strokeWidth : 0);
-    ctx.fillStyle = colorOverride ?? box.fillColor;
-    ctx.fill();
-  }
-  if (stroke) {
-    path(box.strokeWidth);
-    ctx.lineWidth = box.strokeWidth;
-    ctx.lineJoin = "miter";
-    ctx.strokeStyle = colorOverride ?? box.strokeColor;
-    ctx.stroke();
-  }
-}
-const RASTERIZE_PROMPT = "Rasterize text layer? It will no longer be editable as text.";
-function rasterizeDecision(layer, confirm) {
-  if (layer.kind !== "text") return "edit";
-  return confirm() ? "rasterize" : "cancel";
-}
-function preparePixelEdit(s, layer) {
-  if (layer.locked) {
-    s.events.emit("note", LOCKED_LAYER_NOTE);
-    return "blocked";
-  }
-  if (!layer.visible) {
-    s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE);
-    return "blocked";
-  }
-  const decision = rasterizeDecision(layer, () => s.confirmRasterize());
-  if (decision === "cancel") return "blocked";
-  if (decision === "edit") return "proceed";
-  rasterizeLayer(s, layer);
-  return "rasterized";
-}
-function rasterizeLayer(s, layer) {
-  const before = textStateOf(layer);
-  layer.kind = "paint";
-  delete layer.textData;
-  recordTextChange(s, layer.id, before, textStateOf(layer));
-  s.history.joinNext((entry) => entryLayerId(entry) === layer.id);
-  s.events.emit("layers", void 0);
-  s.events.emit("change", void 0);
-  s.events.emit("history", void 0);
-}
-function entryLayerId(entry) {
-  return entry.kind === "patch" || entry.kind === "translate" || entry.kind === "text" ? entry.layerId : null;
-}
-class PaintOps {
-  /**
-   * @param s - Shared editor state.
-   * @param frames - Frame operations (Clear snapshots for undo).
-   * @param stamps - Dab stamp cache.
-   */
-  constructor(s, frames, stamps) {
-    this.s = s;
-    this.frames = frames;
-    this.stamps = stamps;
-  }
-  s;
-  frames;
-  stamps;
-  // ── Quick Mask / paint target ───────────────────────────────────────────
-  /**
-   * Switch the paint target. Targeting the mask adds a default mask layer to
-   * documents that have none.
-   * @param target - New target.
-   */
-  setPaintTarget(target) {
-    const s = this.s;
-    if (target === s.target) return;
-    if (s.stroke.active) s.cancelStroke();
-    if (target === "mask") s.ensureMask();
-    s.target = target;
-    s.events.emit("mask", void 0);
-  }
-  /**
-   * Show or hide the mask layer (adds one if missing).
-   * @param visible - Visibility.
-   */
-  setMaskVisible(visible) {
-    const s = this.s;
-    const layer = s.ensureMask();
-    if (layer.visible === visible) return;
-    if (s.stroke.active && s.strokeLayerId === layer.id) s.cancelStroke();
-    layer.visible = visible;
-    s.events.emit("mask", void 0);
-    s.events.emit("change", void 0);
-    s.events.emit("render", void 0);
-  }
-  // ── Strokes ─────────────────────────────────────────────────────────────
-  /**
-   * Start a stroke on the paint target (mask strokes paint white coverage).
-   * @param style - Stroke appearance.
-   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
-   * @returns `false` if painting is not possible (loading, locked, hidden).
-   */
-  beginStroke(style, maxDiameter) {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return false;
-    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
-    if (!layer) return false;
-    if (preparePixelEdit(s, layer) !== "proceed") return false;
-    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
-    s.strokeLayerId = layer.id;
-    s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle);
-    s.events.emit("history", void 0);
-    return true;
-  }
-  /**
-   * Add dabs to the current stroke, growing bounds when they go off-frame.
-   * @param dabs - Dabs in document coords.
-   */
-  addDabs(dabs) {
-    const s = this.s;
-    if (!s.stroke.active || dabs.length === 0) return;
-    let need = { x: 0, y: 0, width: 0, height: 0 };
-    for (const dab of dabs) {
-      const r = dab.size / 2 + 1;
-      need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
-    }
-    s.ensureBounds(need, true);
-    s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
-    s.events.emit("render", void 0);
-  }
-  /**
-   * Replace the current stroke's content with one shape (live preview;
-   * shape tools call this on every move). Grows bounds like dabs do; on a
-   * mask target every part paints white coverage.
-   * @param shape - Shape in document coords.
-   */
-  drawShape(shape) {
-    const s = this.s;
-    const layerId = s.strokeLayerId;
-    if (!s.stroke.active || !layerId) return;
-    const need = shapeBounds(shape);
-    if (!isEmptyRect(need)) s.ensureBounds(need, true);
-    const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
-    const rect = intersectRect(roundOutRect(need), s.store.bounds);
-    s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
-    s.events.emit("render", void 0);
-  }
-  /**
-   * Commit the stroke to its layer as one undo step.
-   * @param end - Where the stroke ended, document coords.
-   */
-  endStroke(end) {
-    const s = this.s;
-    const layerId = s.strokeLayerId;
-    if (!s.stroke.active || !layerId) return;
-    const rect = s.stroke.touched;
-    const surface = s.store.ensure(layerId);
-    if (isEmptyRect(rect)) {
-      s.stroke.cancel();
-    } else {
-      const before = s.store.read(layerId, rect);
-      s.stroke.commit(surface);
-      const after = s.store.read(layerId, rect);
-      if (before && after) {
-        const bytes = before.data.data.byteLength + after.data.data.byteLength;
-        s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
-        s.runtime.touch(layerId);
-      }
-    }
-    s.strokeLayerId = null;
-    if (end) s.lastStrokeEnd = { ...end };
-    s.afterEdit();
-  }
-  // ── Undo / redo ─────────────────────────────────────────────────────────
-  /** Undo the last operation (no-op while stroking; cancels a Move drag preview). */
-  undo() {
-    const s = this.s;
-    if (!s.history.canUndo || s.stroke.active) return;
-    s.movePreview = null;
-    const entry = s.history.undo();
-    if (entry) this.applyEntry(entry, "before");
-    s.afterEdit();
-  }
-  /** Redo the last undone operation (no-op while stroking; cancels a Move drag preview). */
-  redo() {
-    const s = this.s;
-    if (!s.history.canRedo || s.stroke.active) return;
-    s.movePreview = null;
-    const entry = s.history.redo();
-    if (entry) this.applyEntry(entry, "after");
-    s.afterEdit();
-  }
-  applyEntry(entry, side) {
-    const s = this.s;
-    if (entry.kind === "clear") {
-      this.frames.applySnapshot(side === "before" ? entry.before : entry.after);
-      s.lastStrokeEnd = null;
-      return;
-    }
-    if (entry.kind === "layers") {
-      applyLayersEntry(s, entry, side === "after");
-      return;
-    }
-    if (entry.kind === "selection") {
-      s.selection.set(side === "before" ? entry.before : entry.after);
-      return;
-    }
-    if (entry.kind === "translate") {
-      applyTranslateEntry(s, entry, side === "after");
-      return;
-    }
-    if (entry.kind === "text") {
-      applyTextEntry(s, entry, side === "after");
-      return;
-    }
-    if (entry.kind === "group") {
-      const parts = side === "after" ? entry.entries : [...entry.entries].reverse();
-      for (const part of parts) this.applyEntry(part, side);
-      return;
-    }
-    if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
-    const data = side === "before" ? entry.before : entry.after;
-    s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
-    s.store.write(entry.layerId, entry.x, entry.y, data);
-    s.runtime.touch(entry.layerId);
-  }
-}
-function sceneFor(input, source) {
-  return source === "background" ? { ...input, layers: [] } : input;
-}
-function drawDocRegion(ctx, input, rect) {
-  const { map, imageSize: imageSize2, bounds } = input;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(0, 0, rect.width, rect.height);
-  const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize2.width, height: imageSize2.height });
-  const bx = image.x - rect.x;
-  const by = image.y - rect.y;
-  if (input.background.kind === "image") {
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(input.background.image, bx, by, image.width, image.height);
-  } else {
-    ctx.fillStyle = input.background.color;
-    ctx.fillRect(bx, by, image.width, image.height);
-  }
-  for (const layer of input.layers) {
-    if (layer.opacity <= 0) continue;
-    ctx.globalAlpha = layer.opacity;
-    ctx.drawImage(layer.source, bounds.x - rect.x, bounds.y - rect.y);
-  }
-  ctx.globalAlpha = 1;
-}
-function readDocRegion(input, rect, scratch2) {
-  const canvas = scratch2 ?? document.createElement("canvas");
-  if (canvas.width !== rect.width) canvas.width = rect.width;
-  if (canvas.height !== rect.height) canvas.height = rect.height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  drawDocRegion(ctx, input, rect);
-  const data = ctx.getImageData(0, 0, rect.width, rect.height);
-  if (!scratch2) canvas.width = canvas.height = 0;
-  return data;
-}
-const EMPTY_RECT = { x: 0, y: 0, width: 0, height: 0 };
-const MATCH = 1;
-const FILLED = 255;
-function floodFill(data, width, height, options) {
-  const coverage = new Uint8Array(width * height);
-  const sx = Math.floor(options.x);
-  const sy = Math.floor(options.y);
-  if (!(sx >= 0 && sy >= 0 && sx < width && sy < height) || data.length < width * height * 4) {
-    return { coverage, bbox: { ...EMPTY_RECT } };
-  }
-  const seed = sy * width + sx;
-  const clip = options.clip && options.clip.length === coverage.length ? options.clip : void 0;
-  markMatches(data, coverage, seed, clampTolerance(options.tolerance), clip);
-  if (coverage[seed] !== MATCH) return { coverage: new Uint8Array(width * height), bbox: { ...EMPTY_RECT } };
-  let bbox = options.contiguous ? fillContiguous(coverage, width, height, seed) : keepAllMatches(coverage, width, height);
-  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip);
-  if (clip) applyClip(coverage, width, bbox, clip);
-  return { coverage, bbox };
-}
-function clampTolerance(tolerance) {
-  return Number.isFinite(tolerance) ? Math.min(255, Math.max(0, Math.round(tolerance))) : 0;
-}
-function markMatches(data, coverage, seed, tol, clip) {
-  const p0 = seed * 4;
-  const r = data[p0] ?? 0;
-  const g = data[p0 + 1] ?? 0;
-  const b = data[p0 + 2] ?? 0;
-  const a = data[p0 + 3] ?? 0;
-  const n = coverage.length;
-  for (let i = 0, p = 0; i < n; i++, p += 4) {
-    if (clip && clip[i] === 0) continue;
-    const pa = data[p + 3];
-    if (pa === 0 && a === 0) {
-      coverage[i] = MATCH;
-      continue;
-    }
-    const dr = data[p] - r;
-    const dg = data[p + 1] - g;
-    const db = data[p + 2] - b;
-    const da = pa - a;
-    if (dr <= tol && dr >= -tol && dg <= tol && dg >= -tol && db <= tol && db >= -tol && da <= tol && da >= -tol) {
-      coverage[i] = MATCH;
-    }
-  }
-}
-function fillContiguous(coverage, width, height, seed) {
-  let stack = new Int32Array(1024);
-  let sp = 0;
-  const push = (i) => {
-    if (sp === stack.length) {
-      const grown = new Int32Array(stack.length * 2);
-      grown.set(stack);
-      stack = grown;
-    }
-    stack[sp++] = i;
-  };
-  const scanRow = (from, to) => {
-    let inRun = false;
-    for (let i = from; i <= to; i++) {
-      if (coverage[i] === MATCH) {
-        if (!inRun) push(i);
-        inRun = true;
-      } else {
-        inRun = false;
-      }
-    }
-  };
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  push(seed);
-  while (sp > 0) {
-    const idx = stack[--sp];
-    if (coverage[idx] !== MATCH) continue;
-    const y = idx / width | 0;
-    const rowStart = y * width;
-    const rowEnd = rowStart + width - 1;
-    let l = idx;
-    let r = idx;
-    while (l > rowStart && coverage[l - 1] === MATCH) l--;
-    while (r < rowEnd && coverage[r + 1] === MATCH) r++;
-    coverage.fill(FILLED, l, r + 1);
-    const xl = l - rowStart;
-    const xr = r - rowStart;
-    if (xl < minX) minX = xl;
-    if (xr > maxX) maxX = xr;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-    if (y > 0) scanRow(l - width, r - width);
-    if (y < height - 1) scanRow(l + width, r + width);
-  }
-  for (let i = 0; i < coverage.length; i++) if (coverage[i] === MATCH) coverage[i] = 0;
-  return maxX < 0 ? { ...EMPTY_RECT } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function keepAllMatches(coverage, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    let rowMin = -1;
-    let rowMax = -1;
-    for (let x = 0; x < width; x++) {
-      if (coverage[row + x] !== MATCH) continue;
-      coverage[row + x] = FILLED;
-      if (rowMin < 0) rowMin = x;
-      rowMax = x;
-    }
-    if (rowMin < 0) continue;
-    if (rowMin < minX) minX = rowMin;
-    if (rowMax > maxX) maxX = rowMax;
-    if (y < minY) minY = y;
-    maxY = y;
-  }
-  return maxX < 0 ? { ...EMPTY_RECT } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function addFringe(coverage, width, height, bbox, clip) {
-  if (bbox.width <= 0) return bbox;
-  const x0 = Math.max(0, bbox.x - 1);
-  const y0 = Math.max(0, bbox.y - 1);
-  const x1 = Math.min(width - 1, bbox.x + bbox.width);
-  const y1 = Math.min(height - 1, bbox.y + bbox.height);
-  let minX = bbox.x;
-  let minY = bbox.y;
-  let maxX = bbox.x + bbox.width - 1;
-  let maxY = bbox.y + bbox.height - 1;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const i = y * width + x;
-      if (coverage[i] !== 0 || clip && clip[i] === 0) continue;
-      let n = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= height) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          if (xx >= 0 && xx < width && coverage[yy * width + xx] === FILLED) n++;
-        }
-      }
-      if (n === 0) continue;
-      coverage[i] = Math.round(n * 255 / 9);
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function applyClip(coverage, width, bbox, clip) {
-  for (let y = bbox.y; y < bbox.y + bbox.height; y++) {
-    for (let x = bbox.x; x < bbox.x + bbox.width; x++) {
-      const i = y * width + x;
-      const c = clip[i];
-      if (c < 255) coverage[i] = Math.round(coverage[i] * c / 255);
-    }
-  }
-}
-function hexToRgb$1(hex) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  const body = m?.[1];
-  if (!body) return { r: 0, g: 0, b: 0 };
-  const full = body.length === 3 ? [...body].map((c) => c + c).join("") : body;
-  const n = parseInt(full, 16);
-  return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
-}
-function rgbToHex$1(rgb) {
-  const part = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, "0");
-  return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
-}
-function averageColor(data) {
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  let a = 0;
-  for (let p = 0; p + 3 < data.length; p += 4) {
-    const w = data[p + 3];
-    if (w === 0) continue;
-    r += data[p] * w;
-    g += data[p + 1] * w;
-    b += data[p + 2] * w;
-    a += w;
-  }
-  if (a === 0) return null;
-  return { r: Math.round(r / a), g: Math.round(g / a), b: Math.round(b / a) };
-}
-function blendCoverage(dst, rect, coverage, coverageWidth, color, opacity) {
-  const k = Math.min(1, Math.max(0, opacity)) / 255;
-  if (k <= 0) return;
-  for (let y = 0; y < rect.height; y++) {
-    const row = (rect.y + y) * coverageWidth + rect.x;
-    for (let x = 0; x < rect.width; x++) {
-      const c = coverage[row + x];
-      if (c === 0) continue;
-      const p = (y * rect.width + x) * 4;
-      const sa = c * k;
-      const da = dst[p + 3] / 255;
-      const keep = da * (1 - sa);
-      const oa = sa + keep;
-      if (oa <= 0) continue;
-      dst[p] = (color.r * sa + dst[p] * keep) / oa;
-      dst[p + 1] = (color.g * sa + dst[p + 1] * keep) / oa;
-      dst[p + 2] = (color.b * sa + dst[p + 2] * keep) / oa;
-      dst[p + 3] = oa * 255;
-    }
-  }
-}
-function wandSelection(pixels, area, point, options) {
-  const { coverage, bbox } = floodFill(pixels, area.width, area.height, {
-    x: Math.floor(point.x) - area.x,
-    y: Math.floor(point.y) - area.y,
-    tolerance: options.tolerance,
-    contiguous: options.contiguous,
-    antiAlias: options.antiAlias
-  });
-  return selectionFromCoverage(coverage, area, bbox);
-}
-function sampleTarget(sample, layer) {
-  if (sample === "layer") return layer ? { kind: "layer", layer } : { kind: "scene", source: "all" };
-  return { kind: "scene", source: sample };
-}
-class PixelOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  /** Small reusable canvas for eyedropper reads. */
-  scratch = null;
-  // ── Fill ────────────────────────────────────────────────────────────────
-  /**
-   * Flood fill the paint target from a point, as one undo step.
-   * @param req - Fill parameters.
-   * @returns `true` if pixels changed.
-   */
-  fill(req) {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return false;
-    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
-    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
-    const px = Math.floor(req.point.x);
-    const py = Math.floor(req.point.y);
-    const image = this.imageRectInDoc();
-    if (!inside(image, px, py) && !inside(s.store.bounds, px, py)) return false;
-    s.ensureBounds(image, true);
-    const bounds = s.store.bounds;
-    if (!inside(bounds, px, py)) return false;
-    const source = this.sampleArea(bounds, sampleTarget(req.sample, layer));
-    if (!source) return false;
-    const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
-      x: px - bounds.x,
-      y: py - bounds.y,
-      tolerance: req.tolerance,
-      contiguous: req.contiguous,
-      antiAlias: req.antiAlias,
-      // M5: confined to (and scaled by) the selection.
-      clip: s.selection.coverage(bounds)
-    });
-    if (isEmptyRect(bbox)) return false;
-    const docRect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
-    const before = s.store.read(layer.id, docRect);
-    if (!before) return false;
-    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
-    const color = hexToRgb$1(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
-    blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
-    s.store.write(layer.id, docRect.x, docRect.y, next);
-    const after = s.store.read(layer.id, docRect);
-    if (after) {
-      const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
-    }
-    s.runtime.touch(layer.id);
-    s.afterEdit();
-    return true;
-  }
-  // ── Magic wand ──────────────────────────────────────────────────────────
-  /**
-   * Magic-wand coverage at a point (not applied: the tool combines it with
-   * the current selection via `Editor.selection.apply`). Samples like the
-   * bucket, over the paint bounds united with the image rect, without growing
-   * the bounds (the wand edits no pixels). "Current layer" is the active paint
-   * layer (colours, also in Quick Mask; like the eyedropper).
-   * @param req - Click position, matching options and sample source.
-   * @returns Selection in document coords, or `null` (nothing matched / loading / outside).
-   */
-  wandSelection(req) {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return null;
-    const area = unionRect(this.imageRectInDoc(), s.store.bounds);
-    if (!inside(area, Math.floor(req.point.x), Math.floor(req.point.y))) return null;
-    const source = this.sampleArea(area, sampleTarget(req.sample, targetLayer(s.doc, "paint")));
-    return source ? wandSelection(source, area, req.point, req) : null;
-  }
-  // ── Sampling ────────────────────────────────────────────────────────────
-  /**
-   * Colour under a point (eyedropper).
-   * @param point - Document coords.
-   * @param source - Active paint layer, the visible composite, or the background only.
-   * @param size - Sample window side: 1 (point), 3 or 5 (average).
-   * @returns `#rrggbb`, or `null` if the window is fully transparent / off the layer.
-   */
-  sampleColor(point, source, size) {
-    const r = Math.max(0, Math.floor((size - 1) / 2));
-    const rect = { x: Math.floor(point.x) - r, y: Math.floor(point.y) - r, width: r * 2 + 1, height: r * 2 + 1 };
-    const layer = targetLayer(this.s.doc, "paint");
-    if (source === "layer" && !layer) return null;
-    this.scratch ??= document.createElement("canvas");
-    const data = this.sampleArea(rect, sampleTarget(source, layer), this.scratch);
-    const rgb = data ? averageColor(data) : null;
-    return rgb ? rgbToHex$1(rgb) : null;
-  }
-  /** Release the scratch canvas. */
-  dispose() {
-    if (this.scratch) this.scratch.width = this.scratch.height = 0;
-    this.scratch = null;
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  /**
-   * RGBA of a document area as the bucket / wand / eyedropper see it: the
-   * visible composite, the background only, or one layer (transparent
-   * outside the bounds). The one sampling path of all three tools.
-   * @param scratch - Reusable canvas for scene reads (eyedropper drags).
-   */
-  sampleArea(area, target, scratch2) {
-    if (target.kind === "scene") return readDocRegion(sceneFor(this.compositeInput(), target.source), area, scratch2)?.data ?? null;
-    const read = this.s.store.read(target.layer.id, area);
-    if (read && rectEquals(read.rect, area)) return read.data.data;
-    const out = new Uint8ClampedArray(area.width * area.height * 4);
-    if (!read) return out;
-    const { rect, data } = read;
-    for (let y = 0; y < rect.height; y++) {
-      const src = y * rect.width * 4;
-      out.set(data.data.subarray(src, src + rect.width * 4), ((rect.y - area.y + y) * area.width + (rect.x - area.x)) * 4);
-    }
-    return out;
-  }
-  /** The current image's rect in document coords (rounded out). */
-  imageRectInDoc() {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
-  }
-  compositeInput() {
-    const s = this.s;
-    const layers = [];
-    for (const layer of s.doc.layers) {
-      if (!layer.visible || layer.kind === "mask") continue;
-      layers.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
-    }
-    return {
-      background: s.background,
-      imageSize: s.imageSize,
-      map: documentMap(s.doc, s.imageSize),
-      bounds: s.store.bounds,
-      layers
-    };
-  }
-}
-function inside(r, x, y) {
-  return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
-}
-const WHEEL_SCALE_STEP = 1.05;
-const MAX_WHEEL_DELTA = 300;
-function fitScale(frame, image) {
-  return frameMap(frame, image).scale;
-}
-function translatePlacement(p, frame, image, dx, dy) {
-  const s = fitScale(frame, image);
-  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
-}
-function scalePlacementAt(p, frame, image, factor, anchor) {
-  const base = frameMap(frame, image);
-  const now = frameMap(frame, image, p);
-  const k = clampPlacementScale(p.scale * factor);
-  const docX = (anchor.x - now.offsetX) / now.scale;
-  const docY = (anchor.y - now.offsetY) / now.scale;
-  const s = base.scale;
-  return {
-    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
-    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
-    scale: k
-  };
-}
-function wheelScaleFactor(deltaPx) {
-  if (!Number.isFinite(deltaPx)) return 1;
-  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
-  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
-}
-function placementImageOffset(p, frame, image) {
-  const s = fitScale(frame, image);
-  return { x: p.x * s, y: p.y * s };
-}
-function imageOffsetToPlacement(imagePx, frame, image) {
-  return imagePx / fitScale(frame, image);
-}
-class PlacementOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  /** Current placement (a copy; identity when unset). */
-  get current() {
-    return { ...this.s.doc.placement ?? IDENTITY_PLACEMENT };
-  }
-  /** Whether the drawing is moved or scaled. */
-  get isMoved() {
-    return !isIdentityPlacement(this.s.doc.placement);
-  }
-  /** Current offset in image px (options bar X / Y). */
-  get imageOffset() {
-    const s = this.s;
-    return placementImageOffset(this.current, s.doc.frame, s.imageSize);
-  }
-  /**
-   * Replace the placement (normalized: finite, scale clamped).
-   * @param next - New placement.
-   * @param commit - `true` (default): also update the widget value
-   *   (`change`); `false` for live drag frames (redraw only).
-   */
-  set(next, commit = true) {
-    const s = this.s;
-    const p = normalizePlacement(next);
-    const before = s.doc.placement;
-    const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
-    if (!same) {
-      if (isIdentityPlacement(p)) delete s.doc.placement;
-      else s.doc.placement = p;
-      s.events.emit("placement", void 0);
-      s.events.emit("render", void 0);
-    }
-    if (commit) this.commit();
-  }
-  /** Publish the current placement to the widget value (end of a drag). */
-  commit() {
-    this.s.events.emit("change", void 0);
-  }
-  /**
-   * Move by an image-px delta (arrow nudges).
-   * @param dx - Image px.
-   * @param dy - Image px.
-   * @param commit - See {@link set}.
-   */
-  translateImage(dx, dy, commit = true) {
-    const s = this.s;
-    this.set(translatePlacement(this.current, s.doc.frame, s.imageSize, dx, dy), commit);
-  }
-  /**
-   * Multiply the scale around an image point (kept fixed).
-   * @param factor - Scale multiplier.
-   * @param anchor - Image point.
-   * @param commit - See {@link set}.
-   */
-  scaleAt(factor, anchor, commit = true) {
-    const s = this.s;
-    this.set(scalePlacementAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
-  }
-  /** Back to identity ("Reset position"). */
-  reset() {
-    this.set(IDENTITY_PLACEMENT);
-  }
-}
-const NO_SELECTION_NOTE = "Nothing is selected.";
-class SelectionOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  // ── Read access ─────────────────────────────────────────────────────────
-  /** Current selection (`null` = none: painting is not clipped). */
-  get current() {
-    return this.s.selection.current;
-  }
-  /** Whether a selection exists. */
-  get active() {
-    return this.s.selection.current !== null;
-  }
-  /** Bumped on every selection change (UI cache key). */
-  get revision() {
-    return this.s.selection.revision;
-  }
-  /**
-   * Cached marching-ants outline: closed contours (flat corner lists), in
-   * document coords. An inverted selection also outlines the current image
-   * area in document coords (Photoshop's ants along the canvas edge), so the
-   * ants follow the image boundary rather than `doc.frame` when the image
-   * has a different aspect ratio or a Move-tool placement.
-   * @returns Contours, or `null` without a selection.
-   */
-  outline() {
-    return this.s.selection.outline(this.imageRectInDoc());
-  }
-  /**
-   * Largest document area a selection may cover (the bounds growth cap plus
-   * the current bounds); tools need not clip, {@link apply} does.
-   */
-  get limit() {
-    return unionRect(boundsCap(this.s.doc.frame), this.s.store.bounds);
-  }
-  // ── Selection changes (one history entry each) ──────────────────────────
-  /**
-   * Combine new coverage with the current selection, as one undo step.
-   * @param next - Tool coverage in document coords (`null` = selects nothing).
-   * @param mode - Photoshop mode from the modifiers at drag start.
-   * @returns `true` if the selection changed.
-   */
-  apply(next, mode) {
-    return this.change(combineSelection(this.current, clipSelection(next, this.limit), mode));
-  }
-  /**
-   * Ctrl+A: select the current image area (the background as shown -- the
-   * upstream image rect, or the `width x height` fill when no image is
-   * connected). The image rect `{0,0,W,H}` is converted to document coords
-   * via {@link imageRectToDoc} so the result is correct regardless of the
-   * frame size, Move-tool placement, or upstream image changes. Bounds are
-   * grown to cover the image rect first (like the bucket fill) so the whole
-   * image area is paintable after selecting it.
-   * @returns `true` if the selection changed.
-   */
-  selectAll() {
-    const imageRect = this.imageRectInDoc();
-    this.s.ensureBounds(imageRect, true);
-    const sel = rectSelection(intersectRect(imageRect, this.limit));
-    return this.change(sel);
-  }
-  /**
-   * Ctrl+D: drop the selection.
-   * @returns `true` if there was one.
-   */
-  deselect() {
-    return this.change(null);
-  }
-  /**
-   * Shift+F7 / options-bar "Invert": invert (no-op without a selection).
-   * @returns `true` if the selection changed.
-   */
-  invert() {
-    return this.change(invertSelection(this.current));
-  }
-  // ── Pixel commands (one undo patch each) ────────────────────────────────
-  /**
-   * Delete/Backspace: clear the selected pixels of the paint target (on the
-   * mask target this removes mask coverage).
-   * @returns `true` if pixels changed.
-   */
-  clearSelected() {
-    const layer = this.editableTarget();
-    return layer ? this.editPixels(layer, (px, rect, cov, stride) => eraseCoverage(px, rect, cov, stride)) : false;
-  }
-  /**
-   * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
-   * target (on the mask target: add coverage, colour ignored).
-   * @param color - CSS hex colour.
-   * @returns `true` if pixels changed.
-   */
-  fillSelected(color) {
-    const layer = this.editableTarget();
-    if (!layer) return false;
-    const rgb = hexToRgb$1(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
-  }
-  /**
-   * "Selection to mask": add the selection coverage to the mask layer
-   * (whatever the paint target is; a mask layer is added if missing).
-   * @returns `true` if pixels changed.
-   */
-  toMask() {
-    const s = this.s;
-    if (!this.ready()) return false;
-    const layer = s.ensureMask();
-    if (!this.canEdit(layer)) return false;
-    const white = hexToRgb$1(MASK_STROKE_COLOR);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1));
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  change(next) {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return false;
-    const before = s.selection.current;
-    if (selectionsEqual(before, next)) return false;
-    s.history.push({ kind: "selection", before, after: next, bytes: selectionBytes(before) + selectionBytes(next) });
-    s.selection.set(next);
-    s.events.emit("history", void 0);
-    return true;
-  }
-  /** Not loading/stroking and a selection exists (notes otherwise). */
-  ready() {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return false;
-    if (!s.selection.current) {
-      s.events.emit("note", NO_SELECTION_NOTE);
-      return false;
-    }
-    return true;
-  }
-  editableTarget() {
-    const s = this.s;
-    if (!this.ready()) return null;
-    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
-    return layer && this.canEdit(layer) ? layer : null;
-  }
-  /**
-   * The shared pixel-edit gate (`rasterize.ts`): lock/visibility notes, and a
-   * text layer is rasterized first (the edit joins that undo step).
-   */
-  canEdit(layer) {
-    return preparePixelEdit(this.s, layer) !== "blocked";
-  }
-  /**
-   * Run a coverage pixel op over the selection extent of a layer and record
-   * one patch. Bounds first grow (chunked, capped) to cover a normal
-   * selection; an inverted one covers the whole bounds.
-   */
-  editPixels(layer, op) {
-    const s = this.s;
-    const sel = s.selection.current;
-    if (!sel) return false;
-    if (!sel.outside) s.ensureBounds(sel.rect, true);
-    const area = selectionExtent(sel, s.store.bounds);
-    if (isEmptyRect(area)) return false;
-    const before = s.store.read(layer.id, area);
-    if (!before) return false;
-    const rect = intersectRect(before.rect, area);
-    const coverage = coverageFor(sel, rect);
-    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
-    op(next.data, { x: 0, y: 0, width: rect.width, height: rect.height }, coverage, rect.width);
-    s.store.write(layer.id, rect.x, rect.y, next);
-    const after = s.store.read(layer.id, rect);
-    if (after) {
-      const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
-    }
-    s.runtime.touch(layer.id);
-    s.afterEdit();
-    return true;
-  }
-  /**
-   * The current image rect `{0,0,W,H}` converted to document coords (rounded
-   * out to integer pixels). Mirrors `pixelOps.imageRectInDoc` -- the single
-   * authoritative way to find "where the image is" in doc coords. Uses
-   * {@link documentMap} so it includes the Move-tool placement.
-   */
-  imageRectInDoc() {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, frameRect(size)));
-  }
-}
-const MAX_STAMPS = 32;
-class StampCache {
-  stamps = /* @__PURE__ */ new Map();
-  /**
-   * Get (or render) a stamp.
-   *
-   * @param diameter - Largest diameter it will be drawn at, px.
-   * @param hardness - 0..1.
-   * @param color - CSS colour.
-   * @returns Square surface with the disc centred.
-   */
-  get(diameter, hardness, color) {
-    const size = Math.max(2, Math.ceil(diameter));
-    const key = `${size}|${hardness.toFixed(2)}|${color}`;
-    const hit = this.stamps.get(key);
-    if (hit) {
-      this.stamps.delete(key);
-      this.stamps.set(key, hit);
-      return hit;
-    }
-    const stamp = renderStamp(size, hardness, color);
-    this.stamps.set(key, stamp);
-    if (this.stamps.size > MAX_STAMPS) {
-      const oldest = this.stamps.keys().next().value;
-      if (oldest !== void 0) this.stamps.delete(oldest);
-    }
-    return stamp;
-  }
-  /** Drop all stamps. */
-  clear() {
-    this.stamps.clear();
-  }
-}
-function renderStamp(size, hardness, color) {
-  const surface = createSurface(size, size);
-  const { ctx } = surface;
-  const r = size / 2;
-  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
-  const rgb = colorToRgb(ctx, color);
-  for (const [offset, alpha] of stampStops(hardness, r)) {
-    gradient.addColorStop(offset, `rgba(${rgb}, ${alpha})`);
-  }
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(r, r, r, 0, Math.PI * 2);
-  ctx.fill();
-  return surface;
-}
-function colorToRgb(ctx, color) {
-  ctx.fillStyle = "#000000";
-  ctx.fillStyle = color;
-  const parsed = String(ctx.fillStyle);
-  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
-  if (hex) {
-    const n = parseInt(hex, 16);
-    return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
-  }
-  const rgba = /^rgba?\(([^)]+)\)$/i.exec(parsed)?.[1];
-  if (rgba) return rgba.split(",").slice(0, 3).join(",");
-  return "0, 0, 0";
-}
-function missingFontNote(font) {
-  return `Font '${font}' isn't installed; editing will use a fallback.`;
-}
-class TextOps {
-  /**
-   * @param s - Shared editor state.
-   * @param layers - Layer commands (undoable add / delete / active layer).
-   */
-  constructor(s, layers) {
-    this.s = s;
-    this.layers = layers;
-  }
-  s;
-  layers;
-  session = null;
-  /** The open edit, or `null`. */
-  get editing() {
-    const e = this.session;
-    const layer = e ? this.find(e.layerId) : void 0;
-    return e && layer?.kind === "text" && layer.textData ? { layerId: e.layerId, textData: layer.textData } : null;
-  }
-  /**
-   * Install the rasterize prompt (the engine has no DOM UI; `rasterize.ts`).
-   * @param confirm - Returns `true` when the user agrees.
-   */
-  setConfirmRasterize(confirm) {
-    this.s.confirmRasterize = confirm;
-  }
-  /**
-   * Top-most visible text layer under a point.
-   * @param point - Document coords.
-   * @returns Layer id, or `null`.
-   */
-  hitTest(point) {
-    return hitTestText(this.s.doc.layers, point, (td) => textLayout(td).box);
-  }
-  /**
-   * Create an empty text layer above the active paint layer (undoable add)
-   * and open it for editing. Commits any open edit first.
-   * @param at - Anchor (first baseline), document coords.
-   * @param style - Font, size (document px), colour, bold/italic, alignment.
-   * @returns New layer id, or `null` while loading / stroking.
-   */
-  create(at, style) {
-    this.commit();
-    const s = this.s;
-    if (s.loading || s.stroke.active) return null;
-    const textData = { ...style, text: "", x: at.x, y: at.y };
-    const layer = createTextLayer(textData);
-    if (!this.layers.addLayer(layer)) return null;
-    this.session = { layerId: layer.id, created: true, before: textData, beforeName: layer.name };
-    s.events.emit("text", void 0);
-    this.noteMissingFont(textData.font);
-    return layer.id;
-  }
-  /**
-   * Open an existing text layer for editing (makes it active). Commits any
-   * other open edit first; locked / hidden layers show a note.
-   * @param layerId - Text layer id.
-   * @returns `true` if the edit is open.
-   */
-  edit(layerId) {
-    if (this.session?.layerId === layerId) return true;
-    this.commit();
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    if (layer.locked || !layer.visible) {
-      s.events.emit("note", layer.locked ? LOCKED_LAYER_NOTE : HIDDEN_LAYER_NOTE);
-      return false;
-    }
-    this.layers.setActiveLayer(layerId);
-    this.session = { layerId, created: false, before: layer.textData, beforeName: layer.name };
-    s.events.emit("text", void 0);
-    this.noteMissingFont(layer.textData.font);
-    return true;
-  }
-  /**
-   * Live change of the open edit (text or style); re-renders, no history.
-   * @param patch - Fields to change.
-   */
-  update(patch) {
-    const e = this.session;
-    const layer = e ? this.find(e.layerId) : void 0;
-    const td = layer?.kind === "text" ? layer.textData : void 0;
-    if (!layer || !td) return;
-    const next = { ...td, ...patch };
-    if (sameTextData(next, td)) return;
-    layer.textData = next;
-    renderTextLayer(this.s, layer);
-    this.s.runtime.bump(layer.id);
-    this.s.events.emit("text", void 0);
-    this.s.events.emit("render", void 0);
-    if (next.font !== td.font) this.noteMissingFont(next.font);
-  }
-  /**
-   * Close the open edit: record it as one undo step (or remove an empty
-   * layer). No-op without an edit.
-   * @returns `true` if the history gained / changed an undo step.
-   */
-  commit() {
-    const e = this.session;
-    if (!e) return false;
-    this.session = null;
-    const layer = this.find(e.layerId);
-    let recorded = false;
-    if (layer?.kind === "text" && layer.textData) {
-      recorded = layer.textData.text.trim() ? this.record(layer, layer.textData, e) : this.removeEmpty(layer, e);
-    }
-    this.s.events.emit("text", void 0);
-    return recorded;
-  }
-  // ── Internals ───────────────────────────────────────────────────────────
-  /** Note when the edited font is not installed (the canvas falls back). */
-  noteMissingFont(font) {
-    if (!isFontAvailable(font)) this.s.events.emit("note", missingFontNote(font));
-  }
-  find(layerId) {
-    return this.s.doc.layers.find((l) => l.id === layerId);
-  }
-  /** The newest history entry if it is this session's own "add layer". */
-  ownAddEntry(layerId) {
-    const top = this.s.history.mergeTarget();
-    const change = top?.kind === "layers" && top.changes.length === 1 ? top.changes[0] : void 0;
-    return top?.kind === "layers" && change?.op === "insert" && change.layer.id === layerId ? { entry: top, change } : null;
-  }
-  record(layer, td, e) {
-    const s = this.s;
-    const name = e.created ? nameFromText(td.text) : commitName(layer.name, e.before.text, td.text);
-    const own = e.created ? this.ownAddEntry(layer.id) : null;
-    if (own) {
-      layer.name = name;
-      own.change.layer = { ...layer };
-    } else {
-      if (sameTextData(td, e.before) && name === layer.name) return false;
-      const before = { kind: "text", name: e.beforeName, textData: e.before };
-      layer.name = name;
-      recordTextChange(s, layer.id, before, textStateOf(layer));
-    }
-    s.runtime.touch(layer.id);
-    s.afterEdit();
-    emitLayerEvents(s);
-    return true;
-  }
-  removeEmpty(layer, e) {
-    const s = this.s;
-    const own = e.created ? this.ownAddEntry(layer.id) : null;
-    if (own) {
-      s.history.discardNewest();
-      s.doc.layers.splice(s.doc.layers.indexOf(layer), 1);
-      s.runtime.remove(layer.id);
-      releaseRemovedLayers(s);
-      if (s.doc.layers.some((l) => l.id === own.entry.activeBefore)) s.doc.activeLayerId = own.entry.activeBefore;
-      emitLayerEvents(s);
-      s.afterEdit();
-      return false;
-    }
-    layer.textData = e.before;
-    renderTextLayer(s, layer);
-    s.runtime.bump(layer.id);
-    if (this.layers.remove(layer.id)) return true;
-    s.events.emit("render", void 0);
-    return false;
-  }
-}
-class Editor {
-  events;
-  view;
-  stamps = new StampCache();
-  /** FG/BG colours (session-scoped, not saved). */
-  colors;
-  /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
-  layerOps;
-  /** Paint-bucket fill and eyedropper sampling. */
-  pixelOps;
-  /** Move-tool placement of the whole drawing (not undoable). */
-  placement;
-  /** Layer Move tool (V): move the active layer's content (undoable). */
-  layerMove;
-  /** Selection (session state, undoable) and its pixel commands. */
-  selection;
-  /** Text tool: create / edit / commit text layers (M6b). */
-  text;
-  s;
-  frames;
-  paint;
-  io;
-  display;
-  maskOps;
-  /**
-   * @param doc - Document (copied).
-   * @param source - Origin of its frame size.
-   * @param store - Existing pixels (for clones); a blank store is created otherwise.
-   * @param colors - Colour state to start from (forks copy their source's).
-   */
-  constructor(doc, source, store, colors) {
-    this.s = new EditorState(doc, source, store);
-    this.events = this.s.events;
-    this.view = this.s.view;
-    this.colors = new ColorState(colors?.current);
-    this.frames = new FrameOps(this.s);
-    this.paint = new PaintOps(this.s, this.frames, this.stamps);
-    this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
-    this.display = new LayerDisplay(this.s);
-    this.layerOps = new LayerOps(this.s);
-    this.pixelOps = new PixelOps(this.s);
-    this.placement = new PlacementOps(this.s);
-    this.layerMove = new LayerMoveOps(this.s);
-    this.selection = new SelectionOps(this.s);
-    this.maskOps = new EditorMaskOps(this.s, this.paint);
-    this.text = new TextOps(this.s, this.layerOps);
-  }
-  // ── Read access ─────────────────────────────────────────────────────────
-  /** Current document (treat as read-only). */
-  get doc() {
-    return this.s.doc;
-  }
-  /** Where the frame size came from. */
-  get frameSource() {
-    return this.s.frameSource;
-  }
-  /** Undo available. */
-  get canUndo() {
-    return this.s.history.canUndo && !this.s.stroke.active;
-  }
-  /** Redo available. */
-  get canRedo() {
-    return this.s.history.canRedo && !this.s.stroke.active;
-  }
-  /** Layer files are being restored; painting is disabled. */
-  get loading() {
-    return this.s.loading;
-  }
-  /** Whether any layer has ever held paint. */
-  get hasPaint() {
-    return this.s.runtime.hasPaint;
-  }
-  /** Whether any layer needs uploading. */
-  get dirty() {
-    return this.s.runtime.dirty;
-  }
-  /**
-   * Whether any mask layer is hidden AND has ever held paint (queue-time
-   * warning: it will not be in the MASK output).
-   * @returns `true` if a hidden-but-painted mask exists.
-   */
-  hiddenMaskHasContent() {
-    return this.maskOps.hiddenMaskHasContent();
-  }
-  /** Background drawn under the paint. */
-  get background() {
-    return this.s.background;
-  }
-  /** Size of what the view shows: the current image (or widget-sized fill), else `doc.frame`. */
-  get imageSize() {
-    return this.s.imageSize;
-  }
-  /**
-   * Document -> image transform: frame fit + Move-tool placement, same as
-   * Python's `_layout` (see `frameMap.ts` {@link documentMap}).
-   */
-  get frameMap() {
-    return documentMap(this.s.doc, this.s.imageSize);
-  }
-  /**
-   * Runtime state of a layer.
-   * @param layerId - Layer id.
-   * @returns Bookkeeping or `undefined`.
-   */
-  layerRuntime(layerId) {
-    return this.s.runtime.get(layerId);
-  }
-  /**
-   * Canvas of a layer (for export/upload).
-   * @param layerId - Layer id.
-   * @returns The canvas.
-   */
-  layerCanvas(layerId) {
-    return this.s.store.ensure(layerId).canvas;
-  }
-  /** Current paint bounds (document coords). */
-  get bounds() {
-    return this.s.store.bounds;
-  }
-  /** Where the previous stroke ended, document coords (Shift+click line start). */
-  get lastStrokeEnd() {
-    return this.s.lastStrokeEnd;
-  }
-  set lastStrokeEnd(point) {
-    this.s.lastStrokeEnd = point ? { ...point } : null;
-  }
-  /**
-   * Visible layers to composite (live stroke preview for the painted layer).
-   * @returns Bottom -> top layers.
-   */
-  compositeLayers() {
-    return this.display.compositeLayers();
-  }
-  /**
-   * Visible mask layers as tinted overlays (drawn above all paint).
-   * @returns Bottom -> top overlays.
-   */
-  maskOverlays() {
-    return this.display.maskOverlays();
-  }
-  // ── Quick Mask / paint target ───────────────────────────────────────────
-  /** What brush/eraser strokes paint into (UI state, not saved). */
-  get paintTarget() {
-    return this.maskOps.paintTarget;
-  }
-  /** The mask layer Quick Mask edits, if the document has one. */
-  get maskLayer() {
-    return this.maskOps.maskLayer;
-  }
-  /**
-   * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
-   * @param target - New target.
-   */
-  setPaintTarget(target) {
-    this.maskOps.setPaintTarget(target);
-  }
-  /** Toggle between the paint layer and the mask. */
-  togglePaintTarget() {
-    this.maskOps.togglePaintTarget();
-  }
-  /**
-   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
-   * also excluded from the `MASK` output (saved-file contract).
-   * @param visible - Visibility.
-   */
-  setMaskVisible(visible) {
-    this.maskOps.setMaskVisible(visible);
-  }
-  // ── Background / frame ──────────────────────────────────────────────────
-  /**
-   * Set what is drawn under the paint; layer pixels are untouched.
-   * @param background - Image or fill.
-   * @param imageSize - Current image size: the image's natural size, or the
-   *   `width` x `height` widgets for a fill; `null` = show `doc.frame`.
-   */
-  setBackground(background, imageSize2) {
-    this.frames.setBackground(background, imageSize2);
-  }
-  /**
-   * A new current-image size arrived (an empty document adopts it; a painted
-   * one is only displayed through the frame map). Call after `setBackground`.
-   * @param size - Current image size.
-   */
-  handleBackgroundSize(size) {
-    this.frames.handleBackgroundSize(size);
-  }
-  /**
-   * Replace the frame of an empty document (no history).
-   * @param size - New frame.
-   * @param source - Origin of the size.
-   */
-  adoptFrame(size, source) {
-    this.frames.adoptFrame(size, source);
-  }
-  /** Clear all paint (masks included) and reset the frame; one undo step. */
-  clear() {
-    this.frames.clear();
-  }
-  // ── Restore bookkeeping (persistence) ───────────────────────────────────
-  /** Mark the start of an async layer restore (disables painting). */
-  beginLoading() {
-    this.io.beginLoading();
-  }
-  /** Mark the end of an async layer restore; applies a deferred frame change. */
-  endLoading() {
-    this.io.endLoading();
-  }
-  /**
-   * Draw a restored PNG into a layer (not an undo step, not dirty).
-   * @param layerId - Layer id.
-   * @param image - Decoded PNG (sized to `bounds`).
-   */
-  restoreLayerPixels(layerId, image) {
-    this.io.restoreLayerPixels(layerId, image);
-  }
-  /**
-   * Record a finished upload.
-   * @param layerId - Layer id.
-   * @param version - Layer version that was uploaded.
-   * @param file - Stored file reference (`null` for an empty layer).
-   */
-  markUploaded(layerId, version, file) {
-    this.io.markUploaded(layerId, version, file);
-  }
-  // ── Strokes ─────────────────────────────────────────────────────────────
-  /**
-   * Start a stroke on the paint target.
-   * @param style - Stroke appearance.
-   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
-   * @returns `false` if painting is not possible (loading, locked, hidden).
-   */
-  beginStroke(style, maxDiameter) {
-    return this.paint.beginStroke(style, maxDiameter);
-  }
-  /**
-   * Add dabs to the current stroke.
-   * @param dabs - Dabs in document coords.
-   */
-  addDabs(dabs) {
-    this.paint.addDabs(dabs);
-  }
-  /**
-   * Replace the current stroke's content with one shape (shape tools: live
-   * preview on every move, rasterized into the layer by {@link endStroke}).
-   * @param shape - Shape in document coords.
-   */
-  drawShape(shape) {
-    this.paint.drawShape(shape);
-  }
-  /**
-   * Commit the stroke to its layer as one undo step.
-   * @param end - Where the stroke ended, document coords (for Shift+click lines).
-   */
-  endStroke(end) {
-    this.paint.endStroke(end);
-  }
-  /** Abort the current stroke. */
-  cancelStroke() {
-    this.s.cancelStroke();
-  }
-  // ── Undo / redo ─────────────────────────────────────────────────────────
-  /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
-  undo() {
-    if (!this.text.editing || this.text.commit()) this.paint.undo();
-  }
-  /** Redo the last undone operation (an open text edit is committed first). */
-  redo() {
-    this.text.commit();
-    this.paint.redo();
-  }
-  // ── Cloning / teardown ──────────────────────────────────────────────────
-  /**
-   * Independent copy with a new document id (node duplicated while its source
-   * is still live). History is not copied.
-   * @param docId - New id.
-   * @returns New editor.
-   */
-  fork(docId) {
-    const doc = cloneDocument(this.s.doc);
-    doc.docId = docId;
-    const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
-    copy.s.runtime.copyFrom(this.s.runtime);
-    copy.setBackground(this.s.background, this.s.backgroundSize);
-    return copy;
-  }
-  /** Estimated memory held (pixels + history; mask tint caches excluded). */
-  get bytes() {
-    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes;
-  }
-  /** Release everything. */
-  dispose() {
-    this.s.stroke.dispose();
-    this.s.store.dispose();
-    this.display.dispose();
-    this.pixelOps.dispose();
-    this.s.selection.dispose();
-    this.s.history.clear();
-    this.stamps.clear();
-    this.events.clear();
-    this.colors.events.clear();
-  }
-}
-function hexToRgb(hex) {
-  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  const digits = m?.[1];
-  if (!digits) return null;
-  const full = digits.length === 3 ? [...digits].map((c) => c + c).join("") : digits;
-  return {
-    r: parseInt(full.slice(0, 2), 16),
-    g: parseInt(full.slice(2, 4), 16),
-    b: parseInt(full.slice(4, 6), 16)
-  };
-}
-function rgbToHex(rgb) {
-  const r = clampByte(rgb.r);
-  const g = clampByte(rgb.g);
-  const b = clampByte(rgb.b);
-  return `#${byteHex(r)}${byteHex(g)}${byteHex(b)}`;
-}
-function rgbToHsv(rgb) {
-  const r = clampByte(rgb.r) / 255;
-  const g = clampByte(rgb.g) / 255;
-  const b = clampByte(rgb.b) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const delta = max - min;
-  const v = max;
-  const s = max === 0 ? 0 : delta / max;
-  let h = 0;
-  if (delta !== 0) {
-    if (max === r) h = (g - b) / delta % 6;
-    else if (max === g) h = (b - r) / delta + 2;
-    else h = (r - g) / delta + 4;
-    h = h * 60;
-    if (h < 0) h += 360;
-  }
-  return { h, s, v };
-}
-function hsvToRgb(hsv) {
-  const h = (hsv.h % 360 + 360) % 360;
-  const s = clamp01(hsv.s);
-  const v = clamp01(hsv.v);
-  const c = v * s;
-  const x = c * (1 - Math.abs(h / 60 % 2 - 1));
-  const m = v - c;
-  let r1 = 0;
-  let g1 = 0;
-  let b1 = 0;
-  if (h < 60) {
-    r1 = c;
-    g1 = x;
-  } else if (h < 120) {
-    r1 = x;
-    g1 = c;
-  } else if (h < 180) {
-    g1 = c;
-    b1 = x;
-  } else if (h < 240) {
-    g1 = x;
-    b1 = c;
-  } else if (h < 300) {
-    r1 = x;
-    b1 = c;
-  } else {
-    r1 = c;
-    b1 = x;
-  }
-  return {
-    r: Math.round((r1 + m) * 255),
-    g: Math.round((g1 + m) * 255),
-    b: Math.round((b1 + m) * 255)
-  };
-}
-function hexToHsv(hex) {
-  const rgb = hexToRgb(hex);
-  return rgb ? rgbToHsv(rgb) : null;
-}
-function hsvToHex(hsv) {
-  return rgbToHex(hsvToRgb(hsv));
-}
-function clamp01(v) {
-  return Math.max(0, Math.min(1, v));
-}
-function clampByte(v) {
-  return Math.max(0, Math.min(255, Math.round(v)));
-}
-function byteHex(byte) {
-  return byte.toString(16).padStart(2, "0");
-}
 const RECENT_KEY = "PainterSketch.recentColors";
 const MAX_RECENTS = 10;
+function getRecentColors() {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((v) => typeof v === "string" && normalizeHex(v) !== null);
+  } catch {
+    return [];
+  }
+}
+function saveRecentColor(hex) {
+  const normalized = normalizeHex(hex);
+  if (!normalized) return;
+  const existing = getRecentColors().filter((c) => c !== normalized);
+  const updated = [normalized, ...existing].slice(0, MAX_RECENTS);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
+  } catch {
+  }
+}
+function renderRecentColors(container, onPick) {
+  container.textContent = "";
+  const recents = getRecentColors();
+  for (const hex of recents) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "cps-picker-recent";
+    btn.style.backgroundColor = hex;
+    btn.title = hex.toUpperCase();
+    btn.setAttribute("aria-label", `Use recent colour ${hex.toUpperCase()}`);
+    btn.addEventListener("click", () => onPick(hex));
+    container.appendChild(btn);
+  }
+  container.hidden = recents.length === 0;
+}
 function openColorPicker(host, anchor, opts) {
   const initial = normalizeHex(opts.initial) ?? "#000000";
   let hsv = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
@@ -5202,18 +1343,8 @@ function openColorPicker(host, anchor, opts) {
     title.textContent = opts.title;
     root.appendChild(title);
   }
-  const svWrap = document.createElement("div");
-  svWrap.className = "cps-picker-sv";
-  const svCanvas = document.createElement("canvas");
-  svCanvas.className = "cps-picker-sv-canvas";
-  const svThumb = document.createElement("div");
-  svThumb.className = "cps-picker-sv-thumb";
-  svWrap.append(svCanvas, svThumb);
-  const hueWrap = document.createElement("div");
-  hueWrap.className = "cps-picker-hue";
-  const hueThumb = document.createElement("div");
-  hueThumb.className = "cps-picker-hue-thumb";
-  hueWrap.appendChild(hueThumb);
+  const sv = createSvSquare(() => hsv, (next) => applyHsv(next));
+  const hue = createHueSlider(() => hsv, (next) => applyHsv(next));
   const hexRow = document.createElement("div");
   hexRow.className = "cps-picker-hex-row";
   const hexLabel = document.createElement("span");
@@ -5236,13 +1367,13 @@ function openColorPicker(host, anchor, opts) {
   preview.append(previewOld, previewNew);
   const recentsEl = document.createElement("div");
   recentsEl.className = "cps-picker-recents";
-  root.append(svWrap, hueWrap, hexRow, preview, recentsEl);
+  root.append(sv.element, hue.element, hexRow, preview, recentsEl);
   const applyHsv = (newHsv, skipHexField = false) => {
     hsv = newHsv;
     current = hsvToHex(hsv);
-    drawSv();
-    positionSvThumb();
-    positionHueThumb();
+    sv.draw();
+    sv.position();
+    hue.position();
     if (!skipHexField) syncHexField();
     previewNew.style.backgroundColor = current;
     opts.onInput(current);
@@ -5254,66 +1385,6 @@ function openColorPicker(host, anchor, opts) {
     if (!newHsv) return;
     applyHsv(newHsv);
   };
-  const drawSv = () => {
-    const ctx = svCanvas.getContext("2d");
-    if (!ctx) return;
-    const w = svCanvas.width;
-    const h = svCanvas.height;
-    const satGrad = ctx.createLinearGradient(0, 0, w, 0);
-    satGrad.addColorStop(0, "#ffffff");
-    satGrad.addColorStop(1, hsvToHex({ h: hsv.h, s: 1, v: 1 }));
-    ctx.fillStyle = satGrad;
-    ctx.fillRect(0, 0, w, h);
-    const valGrad = ctx.createLinearGradient(0, 0, 0, h);
-    valGrad.addColorStop(0, "rgba(0,0,0,0)");
-    valGrad.addColorStop(1, "#000000");
-    ctx.fillStyle = valGrad;
-    ctx.fillRect(0, 0, w, h);
-  };
-  const positionSvThumb = () => {
-    svThumb.style.left = `${clamp01(hsv.s) * 100}%`;
-    svThumb.style.top = `${(1 - clamp01(hsv.v)) * 100}%`;
-  };
-  const svPointerDown = (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    svWrap.setPointerCapture(event.pointerId);
-    updateSvFromEvent(event);
-  };
-  const svPointerMove = (event) => {
-    if (!svWrap.hasPointerCapture(event.pointerId)) return;
-    updateSvFromEvent(event);
-  };
-  const updateSvFromEvent = (event) => {
-    const rect = svCanvas.getBoundingClientRect();
-    const s = clamp01((event.clientX - rect.left) / rect.width);
-    const v = clamp01(1 - (event.clientY - rect.top) / rect.height);
-    applyHsv({ h: hsv.h, s, v });
-  };
-  svWrap.addEventListener("pointerdown", svPointerDown);
-  svWrap.addEventListener("pointermove", svPointerMove);
-  svWrap.addEventListener("wheel", (e) => e.stopPropagation());
-  const positionHueThumb = () => {
-    hueThumb.style.left = `${hsv.h / 360 * 100}%`;
-  };
-  const huePointerDown = (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    hueWrap.setPointerCapture(event.pointerId);
-    updateHueFromEvent(event);
-  };
-  const huePointerMove = (event) => {
-    if (!hueWrap.hasPointerCapture(event.pointerId)) return;
-    updateHueFromEvent(event);
-  };
-  const updateHueFromEvent = (event) => {
-    const rect = hueWrap.getBoundingClientRect();
-    const h = clamp01((event.clientX - rect.left) / rect.width) * 360;
-    applyHsv({ h, s: hsv.s, v: hsv.v });
-  };
-  hueWrap.addEventListener("pointerdown", huePointerDown);
-  hueWrap.addEventListener("pointermove", huePointerMove);
-  hueWrap.addEventListener("wheel", (e) => e.stopPropagation());
   const syncHexField = () => {
     hexInput.value = current.slice(1).toUpperCase();
     hexInput.classList.remove("cps-invalid");
@@ -5355,60 +1426,15 @@ function openColorPicker(host, anchor, opts) {
   previewOld.addEventListener("click", () => {
     applyHex(initial);
   });
-  const loadRecents = () => {
-    try {
-      const raw = localStorage.getItem(RECENT_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      return parsed.filter((v) => typeof v === "string" && normalizeHex(v) !== null);
-    } catch {
-      return [];
-    }
-  };
-  const saveRecent = (hex) => {
-    const normalized = normalizeHex(hex);
-    if (!normalized) return;
-    const existing = loadRecents().filter((c) => c !== normalized);
-    const updated = [normalized, ...existing].slice(0, MAX_RECENTS);
-    try {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(updated));
-    } catch {
-    }
-  };
-  const renderRecents = () => {
-    recentsEl.textContent = "";
-    const recents = loadRecents();
-    for (const hex of recents) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "cps-picker-recent";
-      btn.style.backgroundColor = hex;
-      btn.title = hex.toUpperCase();
-      btn.setAttribute("aria-label", `Use recent colour ${hex.toUpperCase()}`);
-      btn.addEventListener("click", () => applyHex(hex));
-      recentsEl.appendChild(btn);
-    }
-    recentsEl.hidden = recents.length === 0;
-  };
-  const resizeSvCanvas = () => {
-    const rect = svCanvas.getBoundingClientRect();
-    const w = Math.max(1, Math.round(rect.width));
-    const h = Math.max(1, Math.round(rect.height));
-    if (svCanvas.width !== w || svCanvas.height !== h) {
-      svCanvas.width = w;
-      svCanvas.height = h;
-    }
-  };
   requestAnimationFrame(() => {
-    resizeSvCanvas();
-    drawSv();
-    positionSvThumb();
-    positionHueThumb();
+    sv.resize();
+    sv.draw();
+    sv.position();
+    hue.position();
     syncHexField();
     previewOld.style.backgroundColor = initial;
     previewNew.style.backgroundColor = current;
-    renderRecents();
+    renderRecentColors(recentsEl, applyHex);
   });
   const handle = host.open(root, {
     anchor,
@@ -5417,7 +1443,7 @@ function openColorPicker(host, anchor, opts) {
       if (!escaped && !committed) {
         committed = true;
         if (current !== initial) {
-          saveRecent(current);
+          saveRecentColor(current);
           opts.onCommit?.(current);
         }
       } else if (escaped) {
@@ -5625,6 +1651,209 @@ function buildOverlay(exit) {
   overlay.addEventListener("dragover", noDrop);
   overlay.addEventListener("drop", noDrop);
   return overlay;
+}
+function findMaskLayer(doc) {
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  if (active?.kind === "mask") return active;
+  return doc.layers.find((l) => l.kind === "mask");
+}
+function findPaintLayer(doc) {
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  if (active && active.kind !== "mask") return active;
+  for (let i = doc.layers.length - 1; i >= 0; i--) {
+    const layer = doc.layers[i];
+    if (layer?.kind === "paint") return layer;
+  }
+  return void 0;
+}
+function targetLayer(doc, target) {
+  return target === "mask" ? findMaskLayer(doc) : findPaintLayer(doc);
+}
+function activeEditLayer(doc, target) {
+  if (target === "mask") return findMaskLayer(doc);
+  const active = doc.layers.find((l) => l.id === doc.activeLayerId);
+  return active && active.kind !== "mask" ? active : findPaintLayer(doc);
+}
+function ensureMaskLayer(doc, style = () => DEFAULT_MASK_STYLE) {
+  const existing = findMaskLayer(doc);
+  if (existing) return { layer: existing, created: false };
+  const layer = createMaskLayer("Mask", style());
+  doc.layers.push(layer);
+  return { layer, created: true };
+}
+function maskDisplayColor(layer) {
+  const color = layer.color;
+  return typeof color === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_MASK_COLOR;
+}
+const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
+function frameMap(frame, image, placement) {
+  const { width: fw, height: fh } = frame;
+  const { width: W2, height: H } = image;
+  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
+  const s = Math.min(W2 / fw, H / fh);
+  const offsetX = (W2 - fw * s) / 2;
+  const offsetY = (H - fh * s) / 2;
+  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
+  const k = placement.scale;
+  return {
+    scale: s * k,
+    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
+    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
+  };
+}
+function documentMap(doc, image) {
+  return frameMap(doc.frame, image, doc.placement);
+}
+function docToImage(map, p) {
+  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
+}
+function imageToDoc(map, p) {
+  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
+}
+function docRectToImage(map, r) {
+  return {
+    x: map.offsetX + r.x * map.scale,
+    y: map.offsetY + r.y * map.scale,
+    width: r.width * map.scale,
+    height: r.height * map.scale
+  };
+}
+function imageRectToDoc(map, r) {
+  return {
+    x: (r.x - map.offsetX) / map.scale,
+    y: (r.y - map.offsetY) / map.scale,
+    width: r.width / map.scale,
+    height: r.height / map.scale
+  };
+}
+function imageLengthToDoc(map, imageLength) {
+  return imageLength / map.scale;
+}
+function roundHalfEven(value) {
+  const floor = Math.floor(value);
+  const diff = value - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+function layerPlacement(map, bounds) {
+  return {
+    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
+    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
+    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
+    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
+  };
+}
+const PROP_KEYS = ["name", "opacity", "color", "invert"];
+function isPaintLike(layer) {
+  return layer.kind !== "mask";
+}
+function paintLayerCount(layers2) {
+  let n = 0;
+  for (const layer of layers2) if (isPaintLike(layer)) n++;
+  return n;
+}
+function nextLayerName(layers2) {
+  let max = 0;
+  for (const layer of layers2) {
+    const match = /^Layer (\d+)$/.exec(layer.name.trim());
+    if (match) max = Math.max(max, Number(match[1]));
+  }
+  return `Layer ${max + 1}`;
+}
+function paintInsertIndex(doc) {
+  const layers2 = doc.layers;
+  const active = layers2.findIndex((l) => l.id === doc.activeLayerId);
+  if (active >= 0 && isPaintLike(layers2[active])) return active + 1;
+  for (let i = layers2.length - 1; i >= 0; i--) if (isPaintLike(layers2[i])) return i + 1;
+  const firstMask = layers2.findIndex((l) => l.kind === "mask");
+  return firstMask >= 0 ? firstMask : layers2.length;
+}
+function canDeleteLayer(layers2, id) {
+  const layer = layers2.find((l) => l.id === id);
+  return !!layer && isPaintLike(layer) && paintLayerCount(layers2) > 1;
+}
+function canDuplicateLayer(layers2, id) {
+  const layer = layers2.find((l) => l.id === id);
+  return !!layer && isPaintLike(layer);
+}
+function activeAfterRemoval(layers2, removed) {
+  for (let i = Math.min(removed - 1, layers2.length - 1); i >= 0; i--) {
+    const layer = layers2[i];
+    if (layer && isPaintLike(layer)) return layer.id;
+  }
+  for (let i = Math.max(0, removed); i < layers2.length; i++) {
+    const layer = layers2[i];
+    if (layer && isPaintLike(layer)) return layer.id;
+  }
+  return void 0;
+}
+function resolveMove(layers2, id, targetId, above) {
+  const from = layers2.findIndex((l) => l.id === id);
+  const target = layers2.findIndex((l) => l.id === targetId);
+  const src = layers2[from];
+  const dst = layers2[target];
+  if (!src || !dst || !isPaintLike(src) || !isPaintLike(dst)) return null;
+  if (from === target) return null;
+  const targetAfterRemoval = target > from ? target - 1 : target;
+  const to = above ? targetAfterRemoval + 1 : targetAfterRemoval;
+  return to === from ? null : { from, to };
+}
+function readProps(layer, props) {
+  const out = {};
+  for (const key of PROP_KEYS) if (key in props) Object.assign(out, { [key]: layer[key] });
+  return out;
+}
+function propsDiffer(layer, props) {
+  return PROP_KEYS.some((key) => key in props && props[key] !== layer[key]);
+}
+function propsEqual(before, after) {
+  return PROP_KEYS.every((key) => key in before === key in after && before[key] === after[key]);
+}
+function writeProps(layer, props) {
+  for (const key of PROP_KEYS) {
+    if (!(key in props)) continue;
+    const value = props[key];
+    if (value === void 0) {
+      if (key === "color" || key === "invert") delete layer[key];
+    } else {
+      Object.assign(layer, { [key]: value });
+    }
+  }
+}
+function applyLayerChange(layers2, change, forward) {
+  switch (change.op) {
+    case "insert":
+    case "remove": {
+      const inserting = change.op === "insert" === forward;
+      if (inserting) {
+        if (layers2.some((l) => l.id === change.layer.id)) return false;
+        layers2.splice(Math.min(change.index, layers2.length), 0, { ...change.layer });
+        return true;
+      }
+      const index = layers2.findIndex((l) => l.id === change.layer.id);
+      const live = layers2[index];
+      if (!live) return false;
+      change.layer = { ...live };
+      layers2.splice(index, 1);
+      return true;
+    }
+    case "move": {
+      const from = forward ? change.from : change.to;
+      const to = forward ? change.to : change.from;
+      if (layers2[from]?.id !== change.id) return false;
+      const [moved] = layers2.splice(from, 1);
+      if (!moved) return false;
+      layers2.splice(Math.min(to, layers2.length), 0, moved);
+      return true;
+    }
+    case "props": {
+      const layer = layers2.find((l) => l.id === change.id);
+      if (!layer) return false;
+      writeProps(layer, forward ? change.after : change.before);
+      return true;
+    }
+  }
 }
 const THUMB_BOX = 36;
 const THUMB_MIN_INTERVAL_MS = 150;
@@ -6146,6 +2375,150 @@ function scrubPixelsPerStep(desc) {
 function scrubValue(desc, startDisplay, dx, fast) {
   const steps = Math.trunc(dx / scrubPixelsPerStep(desc)) * (fast ? SCRUB_FAST_FACTOR : 1);
   return clampDisplay(desc, startDisplay + steps * desc.step);
+}
+const GENERIC_FAMILIES = /* @__PURE__ */ new Set([
+  "serif",
+  "sans-serif",
+  "monospace",
+  "cursive",
+  "fantasy",
+  "system-ui",
+  "ui-serif",
+  "ui-sans-serif",
+  "ui-monospace",
+  "ui-rounded",
+  "math",
+  "emoji"
+]);
+const INK_PAD = 2;
+function isGenericFamily(font) {
+  return GENERIC_FAMILIES.has(font.trim().toLowerCase());
+}
+function cssFontFamily(font) {
+  const name = font.trim();
+  if (!name) return "sans-serif";
+  if (isGenericFamily(name)) return name.toLowerCase();
+  return `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}", sans-serif`;
+}
+function fontString(td) {
+  const style = td.italic ? "italic " : "";
+  const weight = td.bold ? "bold " : "";
+  return `${style}${weight}${roundPx(td.size)}px ${cssFontFamily(td.font)}`;
+}
+function lineHeightPx(td) {
+  return td.size * (td.lineHeight ?? DEFAULT_LINE_HEIGHT);
+}
+function isFontAvailable(font) {
+  if (!font.trim() || isGenericFamily(font)) return true;
+  const fonts = typeof document !== "undefined" ? document.fonts : void 0;
+  if (!fonts || typeof fonts.check !== "function") return true;
+  try {
+    return fonts.check(`12px ${cssFontFamily(font).replace(/, sans-serif$/, "")}`);
+  } catch {
+    return true;
+  }
+}
+function layoutText(td, measure) {
+  const lineHeight = lineHeightPx(td);
+  const texts = td.text.split("\n");
+  const metrics = texts.map((t) => measure(t));
+  const first = metrics[0] ?? measure("");
+  const fontAscent = first.fontAscent;
+  const halfLeading = (lineHeight - (fontAscent + first.fontDescent)) / 2;
+  const maxWidth = Math.max(0, ...metrics.map((m) => m.width));
+  const lines = [];
+  let ink = null;
+  for (let i = 0; i < texts.length; i++) {
+    const text = texts[i] ?? "";
+    const m = metrics[i] ?? first;
+    const baseline = td.y + i * lineHeight;
+    const x = alignedX(td, m.width);
+    lines.push({ text, x, baseline, width: m.width });
+    if (!text) continue;
+    const left = Math.min(x, x - m.left);
+    const right = Math.max(x + m.width, x + m.right);
+    const top = baseline - Math.max(m.ascent, m.fontAscent);
+    const bottom = baseline + Math.max(m.descent, m.fontDescent);
+    const r = { x: left, y: top, width: right - left, height: bottom - top };
+    ink = ink ? unionRect(ink, r) : r;
+  }
+  const box = {
+    x: alignedX(td, maxWidth),
+    y: td.y - halfLeading - fontAscent,
+    width: maxWidth,
+    height: lineHeight * texts.length
+  };
+  const inkRect = ink ?? { x: box.x, y: box.y, width: 0, height: 0 };
+  const bbox = inkRect.width > 0 && inkRect.height > 0 ? roundOutRect({
+    x: inkRect.x - INK_PAD,
+    y: inkRect.y - INK_PAD,
+    width: inkRect.width + INK_PAD * 2,
+    height: inkRect.height + INK_PAD * 2
+  }) : { x: Math.floor(box.x), y: Math.floor(box.y), width: 0, height: 0 };
+  return { lines, lineHeight, box, bbox };
+}
+function alignedX(td, width) {
+  if (td.align === "center") return td.x - width / 2;
+  if (td.align === "right") return td.x - width;
+  return td.x;
+}
+let scratch = null;
+function measureContext() {
+  if (!scratch && typeof document !== "undefined") scratch = document.createElement("canvas").getContext("2d");
+  return scratch;
+}
+function canvasMeasure(td) {
+  const ctx = measureContext();
+  const size = td.size;
+  if (!ctx) {
+    return (line) => {
+      const width = line.length * size * 0.55;
+      return { width, left: 0, right: width, ascent: size * 0.8, descent: size * 0.2, fontAscent: size * 0.9, fontDescent: size * 0.25 };
+    };
+  }
+  const font = fontString(td);
+  return (line) => {
+    ctx.font = font;
+    const m = ctx.measureText(line);
+    const probe = line ? m : ctx.measureText("Hg");
+    return {
+      width: m.width,
+      left: m.actualBoundingBoxLeft ?? 0,
+      right: m.actualBoundingBoxRight ?? m.width,
+      ascent: m.actualBoundingBoxAscent ?? size * 0.8,
+      descent: m.actualBoundingBoxDescent ?? size * 0.2,
+      fontAscent: probe.fontBoundingBoxAscent ?? size * 0.9,
+      fontDescent: probe.fontBoundingBoxDescent ?? size * 0.25
+    };
+  };
+}
+const layoutCache = /* @__PURE__ */ new WeakMap();
+function textLayout(td) {
+  let layout = layoutCache.get(td);
+  if (!layout) {
+    layout = layoutText(td, canvasMeasure(td));
+    layoutCache.set(td, layout);
+  }
+  return layout;
+}
+function drawText(ctx, td, origin) {
+  const layout = textLayout(td);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.font = fontString(td);
+  ctx.fillStyle = td.color;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  for (const line of layout.lines) {
+    if (line.text) ctx.fillText(line.text, line.x - origin.x, line.baseline - origin.y);
+  }
+  ctx.restore();
+  return layout.bbox;
+}
+function roundPx(size) {
+  return Math.round(size * 100) / 100;
 }
 const CUSTOM = "\0custom";
 function textControl(desc, ctx) {
@@ -7336,7 +3709,7 @@ class HostSync {
     const editor = this.getSession()?.editor;
     if (!editor) return;
     const mask = editor.maskLayer;
-    const color = mask ? maskDisplayColor(mask) : DEFAULT_MASK_COLOR;
+    const color = mask ? maskDisplayColor(mask) : readFirstMaskStyle().color;
     const targeting = editor.paintTarget === "mask";
     this.rail.setQuickMask(targeting, color);
     this.shell.root.classList.toggle("cps-quickmask", targeting);
@@ -7406,8 +3779,10 @@ function describeElement(element) {
 const BROWSER_MOD_KEYS = /* @__PURE__ */ new Set(["r", "w", "t", "n", "l", "tab", "pageup", "pagedown"]);
 const BROWSER_MOD_SHIFT_KEYS = /* @__PURE__ */ new Set(["i", "j", "c"]);
 const COMFY_MOD_KEYS = /* @__PURE__ */ new Set(["s", "enter"]);
+const MODIFIER_KEYS$1 = /* @__PURE__ */ new Set(["control", "shift", "alt", "altgraph", "meta", "os"]);
 function fullscreenKeyPolicy(event) {
   const key = event.key.toLowerCase();
+  if (MODIFIER_KEYS$1.has(key)) return "pass";
   if (/^f([1-9]|1[0-9]|2[0-4])$/.test(key)) return "pass";
   const mod = event.ctrlKey || event.metaKey;
   if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";
@@ -8256,6 +4631,172 @@ function stepHardness(hardness, up) {
   const next = Math.round((hardness + (up ? 0.25 : -0.25)) * 4) / 4;
   return Math.min(1, Math.max(0, next));
 }
+const MIN_STEP = 0.5;
+const MIN_SIZE = 0.5;
+function normalizePressure(pointerType, pressure) {
+  if (pointerType !== "pen") return 1;
+  if (!Number.isFinite(pressure)) return 1;
+  return Math.min(1, Math.max(0, pressure));
+}
+function curvePressure(pressure, gamma) {
+  const g = gamma > 0 && Number.isFinite(gamma) ? gamma : 1;
+  return Math.pow(Math.min(1, Math.max(0, pressure)), g);
+}
+function pressureSizeFactor(pressure, minSizeRatio, gamma) {
+  const min = Number.isFinite(minSizeRatio) ? Math.min(1, Math.max(0, minSizeRatio)) : 0;
+  return min + (1 - min) * curvePressure(pressure, gamma);
+}
+function dabSize(pressure, dyn) {
+  if (!dyn.pressureSize) return Math.max(MIN_SIZE, dyn.size);
+  return Math.max(MIN_SIZE, dyn.size * pressureSizeFactor(pressure, dyn.minSizeRatio, dyn.gamma));
+}
+function dabAlpha(pressure, dyn) {
+  const flow = Math.min(1, Math.max(0, dyn.flow));
+  return dyn.pressureOpacity ? flow * curvePressure(pressure, dyn.gamma) : flow;
+}
+function createSpacer() {
+  return { last: null, residual: 0 };
+}
+function placeDabs(state, next, dyn) {
+  const prev = state.last;
+  state.last = next;
+  if (!prev) {
+    state.residual = 0;
+    return [makeDab(next.x, next.y, next.pressure, dyn)];
+  }
+  const dx = next.x - prev.x;
+  const dy = next.y - prev.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return [];
+  const dabs = [];
+  const spacing = Math.max(0.01, dyn.spacing);
+  let travelled = 0;
+  for (; ; ) {
+    const t = travelled / length;
+    const pressure = prev.pressure + (next.pressure - prev.pressure) * t;
+    const step = Math.max(MIN_STEP, spacing * dabSize(pressure, dyn));
+    const needed = step - state.residual;
+    if (travelled + needed > length) {
+      state.residual += length - travelled;
+      break;
+    }
+    travelled += needed;
+    state.residual = 0;
+    const u = travelled / length;
+    dabs.push(
+      makeDab(prev.x + dx * u, prev.y + dy * u, prev.pressure + (next.pressure - prev.pressure) * u, dyn)
+    );
+  }
+  return dabs;
+}
+function makeDab(x, y, pressure, dyn) {
+  return { x, y, size: dabSize(pressure, dyn), alpha: dabAlpha(pressure, dyn) };
+}
+function dabBounds(dab) {
+  const r = dab.size / 2 + 1;
+  return { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 };
+}
+function stampStops(hardness, radiusPx) {
+  const h = Math.min(1, Math.max(0, hardness));
+  const aaEdge = radiusPx > 1 ? 1 - 1 / radiusPx : 0;
+  const inner = Math.min(h, aaEdge);
+  if (inner <= 0) return [[0, 1], [1, 0]];
+  return [[0, 1], [inner, 1], [1, 0]];
+}
+const MIN_ZOOM = 0.02;
+const MAX_ZOOM = 64;
+function fitContain(content, viewport, padding = 0) {
+  const vw = finitePositive(viewport.width);
+  const vh = finitePositive(viewport.height);
+  const pad = Math.max(0, Math.min(finitePositive(padding), vw / 2, vh / 2));
+  const availW = vw - pad * 2;
+  const availH = vh - pad * 2;
+  const cw = finitePositive(content.width);
+  const ch = finitePositive(content.height);
+  if (cw === 0 || ch === 0 || availW === 0 || availH === 0) {
+    return { x: vw / 2, y: vh / 2, width: 0, height: 0, scale: 0 };
+  }
+  const scale = Math.min(availW / cw, availH / ch);
+  const width = cw * scale;
+  const height = ch * scale;
+  return { x: (vw - width) / 2, y: (vh - height) / 2, width, height, scale };
+}
+function fitView(frame, stage, padding = 8) {
+  const fit = fitContain(frame, stage, padding);
+  if (fit.scale <= 0) return { scale: 1, offsetX: 0, offsetY: 0 };
+  const scale = clampZoom(fit.scale);
+  return {
+    scale,
+    offsetX: (stage.width - frame.width * scale) / 2,
+    offsetY: (stage.height - frame.height * scale) / 2
+  };
+}
+function clampZoom(scale) {
+  if (!Number.isFinite(scale) || scale <= 0) return 1;
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
+}
+function zoomAt(view, newScale, anchor) {
+  const scale = clampZoom(newScale);
+  const ratio = scale / view.scale;
+  return {
+    scale,
+    offsetX: anchor.x - (anchor.x - view.offsetX) * ratio,
+    offsetY: anchor.y - (anchor.y - view.offsetY) * ratio
+  };
+}
+function wheelZoomFactor(deltaPx) {
+  const clamped = Math.max(-300, Math.min(300, deltaPx));
+  return Math.exp(-clamped * 15e-4);
+}
+function panBy(view, dx, dy) {
+  return { scale: view.scale, offsetX: view.offsetX + dx, offsetY: view.offsetY + dy };
+}
+function clampOffset(view, frame, stage) {
+  const sw = finitePositive(stage.width);
+  const sh = finitePositive(stage.height);
+  const fw = finitePositive(frame.width) * view.scale;
+  const fh = finitePositive(frame.height) * view.scale;
+  if (sw === 0 || sh === 0 || fw === 0 || fh === 0) return view;
+  const gripX = Math.min(64, fw);
+  const gripY = Math.min(64, fh);
+  const minOffsetX = gripX - fw;
+  const maxOffsetX = sw - gripX;
+  const minOffsetY = gripY - fh;
+  const maxOffsetY = sh - gripY;
+  return {
+    scale: view.scale,
+    offsetX: Math.min(maxOffsetX, Math.max(minOffsetX, view.offsetX)),
+    offsetY: Math.min(maxOffsetY, Math.max(minOffsetY, view.offsetY))
+  };
+}
+function stageToDoc(view, p) {
+  return { x: (p.x - view.offsetX) / view.scale, y: (p.y - view.offsetY) / view.scale };
+}
+function docRectToStage(view, r) {
+  return {
+    x: r.x * view.scale + view.offsetX,
+    y: r.y * view.scale + view.offsetY,
+    width: r.width * view.scale,
+    height: r.height * view.scale
+  };
+}
+function backingStoreSize(cssSize, devicePixelRatio, displayScale = 1, maxSide = 4096) {
+  const cw = finitePositive(cssSize.width);
+  const ch = finitePositive(cssSize.height);
+  const dpr = finitePositive(devicePixelRatio) || 1;
+  const zoom = finitePositive(displayScale) || 1;
+  let ratio = dpr * zoom;
+  const largest = Math.max(cw, ch) * ratio;
+  if (largest > maxSide) ratio *= maxSide / largest;
+  return {
+    width: Math.max(1, Math.round(cw * ratio)),
+    height: Math.max(1, Math.round(ch * ratio)),
+    ratio
+  };
+}
+function finitePositive(value) {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
 const MODIFIER_KEYS = /* @__PURE__ */ new Set(["Shift", "Alt", "Control", "Meta"]);
 class DragModifierWatch {
   /**
@@ -8665,6 +5206,134 @@ function checkerPattern(ctx) {
   const pattern = ctx.createPattern(tile, "repeat");
   if (pattern) checkerPatterns.set(ctx, pattern);
   return pattern;
+}
+const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
+function selectionMode(shift, alt) {
+  if (shift && alt) return "intersect";
+  if (shift) return "add";
+  if (alt) return "subtract";
+  return "replace";
+}
+function snapRect(box) {
+  const x0 = Math.round(box.x);
+  const y0 = Math.round(box.y);
+  const x1 = Math.round(box.x + box.width);
+  const y1 = Math.round(box.y + box.height);
+  return { x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.abs(x1 - x0), height: Math.abs(y1 - y0) };
+}
+function rectSelection(box) {
+  const rect = snapRect(box);
+  if (isEmptyRect(rect)) return null;
+  return { rect, data: new Uint8Array(rect.width * rect.height).fill(255), outside: 0 };
+}
+function selectionFromCoverage(coverage, area, bbox) {
+  if (coverage.length < area.width * area.height) return null;
+  const inner = bbox ? intersectRect(bbox, { x: 0, y: 0, width: area.width, height: area.height }) : null;
+  if (inner && isEmptyRect(inner)) return null;
+  const crop = inner ?? { x: 0, y: 0, width: area.width, height: area.height };
+  const data = copyRegion(coverage, area.width, crop);
+  return trimSelection({ rect: { x: area.x + crop.x, y: area.y + crop.y, width: crop.width, height: crop.height }, data, outside: 0 });
+}
+function coverageFor(sel, area) {
+  const out = new Uint8Array(Math.max(0, area.width * area.height));
+  if (sel.outside) out.fill(sel.outside);
+  const overlap = intersectRect(sel.rect, area);
+  if (isEmptyRect(overlap)) return out;
+  const sw = sel.rect.width;
+  for (let y = overlap.y; y < overlap.y + overlap.height; y++) {
+    const src = (y - sel.rect.y) * sw + (overlap.x - sel.rect.x);
+    out.set(sel.data.subarray(src, src + overlap.width), (y - area.y) * area.width + (overlap.x - area.x));
+  }
+  return out;
+}
+function selectionExtent(sel, area) {
+  return intersectRect(sel.outside ? area : sel.rect, area);
+}
+function selectionsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.outside !== b.outside) return false;
+  const r = a.rect;
+  const q = b.rect;
+  if (r.x !== q.x || r.y !== q.y || r.width !== q.width || r.height !== q.height) return false;
+  for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) return false;
+  return true;
+}
+function selectionBytes(sel) {
+  return (sel?.data.byteLength ?? 0) + 64;
+}
+const OPS = {
+  add: (a, b) => a > b ? a : b,
+  subtract: (a, b) => Math.min(a, 255 - b),
+  intersect: (a, b) => a < b ? a : b
+};
+function combineSelection(current, next, mode) {
+  if (mode === "replace") return next ? trimSelection(next) : null;
+  if (!current) return mode === "add" && next ? trimSelection(next) : null;
+  if (!next) return mode === "intersect" ? null : current;
+  const op = OPS[mode];
+  const outside = op(current.outside, next.outside) >= 128 ? 255 : 0;
+  const rect = unionRect(current.rect, next.rect);
+  const a = coverageFor(current, rect);
+  const b = coverageFor(next, rect);
+  const data = new Uint8Array(a.length);
+  for (let i = 0; i < data.length; i++) data[i] = op(a[i], b[i]);
+  return trimSelection({ rect, data, outside });
+}
+function invertSelection(sel) {
+  if (!sel) return null;
+  const data = new Uint8Array(sel.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = 255 - sel.data[i];
+  return trimSelection({ rect: { ...sel.rect }, data, outside: sel.outside ? 0 : 255 });
+}
+function clipSelection(sel, limit) {
+  if (!sel) return null;
+  const rect = sel.outside ? { ...limit } : intersectRect(sel.rect, limit);
+  if (isEmptyRect(rect)) return null;
+  return trimSelection({ rect, data: coverageFor(sel, rect), outside: 0 });
+}
+function trimSelection(sel) {
+  const { rect, data, outside } = sel;
+  let minX = rect.width;
+  let minY = rect.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < rect.height; y++) {
+    const row = y * rect.width;
+    for (let x = 0; x < rect.width; x++) {
+      if (data[row + x] === outside) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return outside ? { rect: { ...EMPTY$1, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
+  if (minX === 0 && minY === 0 && maxX === rect.width - 1 && maxY === rect.height - 1) return sel;
+  const crop = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  return {
+    rect: { x: rect.x + crop.x, y: rect.y + crop.y, width: crop.width, height: crop.height },
+    data: copyRegion(data, rect.width, crop),
+    outside
+  };
+}
+function eraseCoverage(dst, rect, coverage, coverageWidth) {
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4 + 3;
+      dst[p] = dst[p] * (255 - c) / 255;
+    }
+  }
+}
+function copyRegion(src, stride, crop) {
+  const out = new Uint8Array(crop.width * crop.height);
+  for (let y = 0; y < crop.height; y++) {
+    const from = (crop.y + y) * stride + crop.x;
+    out.set(src.subarray(from, from + crop.width), y * crop.width);
+  }
+  return out;
 }
 const ICON_SIZE = 24;
 const OUTLINE_WIDTH = 4;
@@ -9077,6 +5746,115 @@ class StageView {
     ctx.stroke();
   }
 }
+function groupEntries(older, newer) {
+  const entries = older.kind === "group" ? [...older.entries, newer] : [older, newer];
+  return { kind: "group", entries, bytes: older.bytes + newer.bytes };
+}
+const LOCKED_LAYER_NOTE = "Layer is locked.";
+const MASK_STROKE_COLOR = "#ffffff";
+const HIDDEN_LAYER_NOTE = "The layer is hidden.";
+const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
+const TEXT_ENTRY_BYTES = 256;
+const HIT_MARGIN = 0.15;
+function renderTextLayer(s, layer) {
+  const td = layer.kind === "text" ? layer.textData : void 0;
+  if (!td) return;
+  const bbox = textLayout(td).bbox;
+  if (bbox.width > 0 && bbox.height > 0) s.ensureBounds(bbox, true);
+  const surface = s.store.ensure(layer.id);
+  surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+  const bounds = s.store.bounds;
+  drawText(surface.ctx, td, { x: bounds.x, y: bounds.y });
+}
+function textStateOf(layer) {
+  return layer.kind === "text" && layer.textData ? { kind: "text", name: layer.name, textData: layer.textData } : { kind: layer.kind, name: layer.name };
+}
+function sameTextState(a, b) {
+  return a.kind === b.kind && a.name === b.name && JSON.stringify(a.textData) === JSON.stringify(b.textData);
+}
+function applyTextState(s, layer, state) {
+  layer.kind = state.kind;
+  layer.name = state.name;
+  if (state.kind === "text" && state.textData) {
+    layer.textData = state.textData;
+    renderTextLayer(s, layer);
+  } else {
+    delete layer.textData;
+  }
+}
+function recordTextChange(s, layerId, before, after, gesture) {
+  const merge = gesture ? s.history.mergeTarget() : void 0;
+  if (merge?.kind === "text" && merge.gesture === gesture && merge.layerId === layerId) {
+    merge.after = after;
+    if (sameTextState(merge.before, merge.after)) s.history.discardNewest();
+    return;
+  }
+  const entry = { kind: "text", layerId, before, after, bytes: TEXT_ENTRY_BYTES };
+  if (gesture) entry.gesture = gesture;
+  s.history.push(entry);
+}
+function applyTextEntry(s, entry, forward) {
+  const layer = s.doc.layers.find((l) => l.id === entry.layerId);
+  if (!layer) return;
+  applyTextState(s, layer, forward ? entry.after : entry.before);
+  s.runtime.touch(layer.id);
+  s.events.emit("layers", void 0);
+}
+function moveTextLayer(s, layer, dx, dy, gesture) {
+  const td = layer.kind === "text" ? layer.textData : void 0;
+  if (!td || dx === 0 && dy === 0) return false;
+  const before = textStateOf(layer);
+  layer.textData = { ...td, x: td.x + dx, y: td.y + dy };
+  renderTextLayer(s, layer);
+  recordTextChange(s, layer.id, before, textStateOf(layer), gesture);
+  s.runtime.touch(layer.id);
+  return true;
+}
+function hitTestText(layers2, point, boxOf) {
+  for (let i = layers2.length - 1; i >= 0; i--) {
+    const layer = layers2[i];
+    if (!layer || layer.kind !== "text" || !layer.visible || !layer.textData) continue;
+    const box = boxOf(layer.textData);
+    const m = layer.textData.size * HIT_MARGIN;
+    if (point.x >= box.x - m && point.x <= box.x + box.width + m && point.y >= box.y - m && point.y <= box.y + box.height + m) {
+      return layer.id;
+    }
+  }
+  return null;
+}
+const RASTERIZE_PROMPT = "Rasterize text layer? It will no longer be editable as text.";
+function rasterizeDecision(layer, confirm) {
+  if (layer.kind !== "text") return "edit";
+  return confirm() ? "rasterize" : "cancel";
+}
+function preparePixelEdit(s, layer) {
+  if (layer.locked) {
+    s.events.emit("note", LOCKED_LAYER_NOTE);
+    return "blocked";
+  }
+  if (!layer.visible) {
+    s.events.emit("note", layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE);
+    return "blocked";
+  }
+  const decision = rasterizeDecision(layer, () => s.confirmRasterize());
+  if (decision === "cancel") return "blocked";
+  if (decision === "edit") return "proceed";
+  rasterizeLayer(s, layer);
+  return "rasterized";
+}
+function rasterizeLayer(s, layer) {
+  const before = textStateOf(layer);
+  layer.kind = "paint";
+  delete layer.textData;
+  recordTextChange(s, layer.id, before, textStateOf(layer));
+  s.history.joinNext((entry) => entryLayerId(entry) === layer.id);
+  s.events.emit("layers", void 0);
+  s.events.emit("change", void 0);
+  s.events.emit("history", void 0);
+}
+function entryLayerId(entry) {
+  return entry.kind === "patch" || entry.kind === "translate" || entry.kind === "text" ? entry.layerId : null;
+}
 const CARET_PAD = 0.1;
 class TextOverlay {
   /**
@@ -9481,16 +6259,260 @@ function chooseForEmpty(status, facts) {
   if (facts.handoff) return "adopt";
   return facts.hasPaint ? "reset" : "keep";
 }
-const SAVE_WORKFLOW_COMMAND = "Comfy.SaveWorkflow";
-function readSetting(id) {
-  const setting = app.extensionManager?.setting;
-  if (typeof setting?.get === "function") return setting.get(id);
-  return app.ui?.settings?.getSettingValue?.(id);
+const FOLDER_TYPES = /* @__PURE__ */ new Set(["input", "output", "temp"]);
+function parseAnnotatedFilename(value, defaultType = "input") {
+  if (typeof value !== "string") return null;
+  let path = value.trim();
+  if (!path) return null;
+  let type = defaultType;
+  const annotation = /\s*\[([a-z]+)\]$/i.exec(path);
+  if (annotation?.[1] && FOLDER_TYPES.has(annotation[1].toLowerCase())) {
+    type = annotation[1].toLowerCase();
+    path = path.slice(0, annotation.index).trim();
+  }
+  const normalized = path.replace(/\\/g, "/");
+  const slash = normalized.lastIndexOf("/");
+  const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  if (!filename) return null;
+  const subfolder = slash >= 0 ? normalized.slice(0, slash) : "";
+  return { filename, subfolder, type };
 }
-async function executeCommand(id) {
-  const command = app.extensionManager?.command;
-  if (typeof command?.execute !== "function") throw new Error("command API unavailable");
-  await command.execute(id);
+function firstOutputImage(output) {
+  const images = output?.images;
+  if (!Array.isArray(images)) return null;
+  for (const image of images) {
+    if (image && typeof image.filename === "string" && image.filename) return image;
+  }
+  return null;
+}
+function viewQuery(item) {
+  const params = new URLSearchParams();
+  params.set("filename", item.filename ?? "");
+  params.set("subfolder", item.subfolder ?? "");
+  params.set("type", item.type ?? "output");
+  return params.toString();
+}
+function viewUrl(item, apiURL, cacheBust = "") {
+  return apiURL(`/view?${viewQuery(item)}${cacheBust}`);
+}
+const FILE_WIDGET_NODES = {
+  LoadImage: { widget: "image", type: "input" },
+  LoadImageOutput: { widget: "image", type: "output" }
+};
+const MAX_VIRTUAL_HOPS = 16;
+function nodeLocatorId(node) {
+  const graph = node.graph;
+  if (!graph) return null;
+  return graph.isRootGraph === false ? `${graph.id}:${String(node.id)}` : String(node.id);
+}
+function inputSlotIndex(node, name) {
+  return (node.inputs ?? []).findIndex((input) => input.name === name);
+}
+function isInputConnected(node, name) {
+  const slot = inputSlotIndex(node, name);
+  return slot >= 0 && node.inputs[slot]?.link != null;
+}
+function findUpstreamNode(node, slot) {
+  let current = node;
+  let currentSlot = slot;
+  for (let hop = 0; hop <= MAX_VIRTUAL_HOPS; hop++) {
+    if (!current.graph || currentSlot < 0 || currentSlot >= (current.inputs ?? []).length) return null;
+    if (current.inputs[currentSlot]?.link == null) return null;
+    const upstream = current.getInputNode(currentSlot);
+    if (!upstream) return null;
+    if (!upstream.isVirtualNode) return upstream;
+    current = upstream;
+    currentSlot = 0;
+  }
+  return null;
+}
+function sourceFromNode(upstream) {
+  const fileWidget = FILE_WIDGET_NODES[upstream.comfyClass ?? upstream.type ?? ""];
+  if (fileWidget) {
+    const widget = upstream.widgets?.find((w) => w.name === fileWidget.widget);
+    const item = parseAnnotatedFilename(widget?.value, fileWidget.type);
+    if (item) return resultItemSource(item, "upstream");
+  }
+  const locator = nodeLocatorId(upstream);
+  if (locator) {
+    const preview = app.nodePreviewImages[locator]?.[0];
+    if (typeof preview === "string" && preview) return { key: preview, url: preview, origin: "upstream" };
+    const item = firstOutputImage(app.nodeOutputs[locator]);
+    if (item) return resultItemSource(item, "upstream");
+  }
+  const legacy = upstream.imgs?.[0]?.src;
+  if (legacy) return { key: legacy, url: legacy, origin: "upstream" };
+  return null;
+}
+function sourceFromExecuted(node, lastExecuted) {
+  const fromSession = firstOutputImage(lastExecuted);
+  if (fromSession) return resultItemSource(fromSession, "executed");
+  const locator = nodeLocatorId(node);
+  const stored = locator ? firstOutputImage(app.nodeOutputs[locator]) : null;
+  return stored ? resultItemSource(stored, "executed") : null;
+}
+function resultItemSource(item, origin) {
+  return {
+    key: viewQuery(item),
+    url: viewUrl(item, (route) => api.apiURL(route), app.getRandParam()),
+    origin
+  };
+}
+class BackgroundLoader {
+  /**
+   * @param node - The node whose `image` input is resolved.
+   * @param onSettled - Called when a load finishes (success, empty or error).
+   */
+  constructor(node, onSettled) {
+    this.node = node;
+    this.onSettled = onSettled;
+  }
+  node;
+  onSettled;
+  /** Last loaded background image; shown only while `image` is connected. */
+  loaded = null;
+  /** Key of the most recent source we started loading (success or not). */
+  requestedKey = null;
+  /** A background load is in flight. */
+  loadPending = false;
+  loadSeq = 0;
+  executed = null;
+  disposed = false;
+  /** @returns The last loaded background, if any. */
+  get background() {
+    return this.loaded;
+  }
+  /** @returns Our node's last executed output (input-image preview). */
+  get lastExecuted() {
+    return this.executed;
+  }
+  /**
+   * @returns `true` while this instance's first load has not settled (a load
+   *   is in flight, or nothing was requested yet).
+   */
+  get awaitingImage() {
+    return this.loadPending || this.requestedKey === null;
+  }
+  /**
+   * Record our node's executed output (a source for {@link refresh}).
+   * @param output - Execution output.
+   */
+  setExecuted(output) {
+    this.executed = output;
+  }
+  /**
+   * Take over a predecessor's state (graph undo/redo hand-off).
+   * @param background - Its loaded background, if any.
+   * @param lastExecuted - Its last executed output (kept only if we have none).
+   */
+  adopt(background, lastExecuted) {
+    this.executed ??= lastExecuted;
+    if (background) {
+      this.loaded = background;
+      this.requestedKey = background.key;
+    }
+  }
+  /**
+   * Re-resolve the source and reload only if it changed. While `image` is
+   * disconnected no source is used and in-flight loads are dropped.
+   * @param connected - Whether the `image` input has a link.
+   */
+  refresh(connected) {
+    if (connected) {
+      const source = this.resolveSource();
+      if (source && source.key !== this.requestedKey) this.load(source);
+    } else if (this.requestedKey !== (this.loaded?.key ?? null)) {
+      this.loadSeq++;
+      this.loadPending = false;
+      this.requestedKey = this.loaded?.key ?? null;
+    }
+  }
+  /** Ignore all in-flight and future load results. */
+  dispose() {
+    this.disposed = true;
+    this.loadSeq++;
+  }
+  /** Live upstream source first, else our own last executed preview. */
+  resolveSource() {
+    const slot = inputSlotIndex(this.node, INPUT_NAMES.image);
+    const upstream = slot >= 0 ? findUpstreamNode(this.node, slot) : null;
+    return (upstream ? sourceFromNode(upstream) : null) ?? sourceFromExecuted(this.node, this.executed);
+  }
+  /** Load `source`; results of superseded loads are ignored. */
+  load(source) {
+    this.requestedKey = source.key;
+    this.loadPending = true;
+    const seq = ++this.loadSeq;
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => {
+      if (seq !== this.loadSeq || this.disposed) return;
+      this.loadPending = false;
+      if (!image.naturalWidth || !image.naturalHeight) {
+        this.onSettled();
+        return;
+      }
+      this.loaded = {
+        key: source.key,
+        image,
+        size: { width: image.naturalWidth, height: image.naturalHeight }
+      };
+      this.onSettled();
+    };
+    image.onerror = () => {
+      if (seq !== this.loadSeq || this.disposed) return;
+      this.loadPending = false;
+      this.onSettled();
+      log.warn(`Could not load background image from ${source.origin} node:`, source.url);
+    };
+    image.src = source.url;
+  }
+}
+class SourceWatcher {
+  /**
+   * @param refresh - Re-resolve the source (API event, deferred start).
+   * @param tick - Poll callback (cheap; should skip while hidden).
+   */
+  constructor(refresh, tick) {
+    this.refresh = refresh;
+    this.tick = tick;
+  }
+  refresh;
+  tick;
+  listening = false;
+  pollTimer = null;
+  startTimer = null;
+  handleApiExecuted = () => this.refresh();
+  /** @returns `true` once {@link start} ran (until {@link stop}). */
+  get active() {
+    return this.listening;
+  }
+  /**
+   * @returns `true` until the deferred first refresh ran (upstream nodes may
+   *   not be configured yet).
+   */
+  get starting() {
+    return this.startTimer !== null;
+  }
+  /** Start listening, polling, and schedule the deferred first refresh. */
+  start() {
+    this.listening = true;
+    api.addEventListener("executed", this.handleApiExecuted);
+    this.pollTimer = setInterval(() => this.tick(), SOURCE_POLL_MS);
+    this.startTimer = setTimeout(() => {
+      this.startTimer = null;
+      this.refresh();
+    }, 0);
+  }
+  /** Remove the listener and timers. Idempotent. */
+  stop() {
+    if (this.listening) api.removeEventListener("executed", this.handleApiExecuted);
+    this.listening = false;
+    if (this.pollTimer !== null) clearInterval(this.pollTimer);
+    if (this.startTimer !== null) clearTimeout(this.startTimer);
+    this.pollTimer = null;
+    this.startTimer = null;
+  }
 }
 const ROOT_STOPPED = [
   "pointerdown",
@@ -9613,6 +6635,131 @@ function widgetDimension(side) {
   const snapped = Math.round(side / FRAME_SIDE_STEP) * FRAME_SIDE_STEP;
   return Math.min(MAX_FRAME_SIDE, Math.max(MIN_FRAME_SIDE, snapped));
 }
+class FrameSync {
+  /**
+   * @param node - The node whose widgets define the fallback frame.
+   * @param loader - Background loader of the same node.
+   */
+  constructor(node, loader) {
+    this.node = node;
+    this.loader = loader;
+  }
+  node;
+  loader;
+  contentKey = "";
+  /** Forget the last pushed content so the next {@link apply} pushes again. */
+  reset() {
+    this.contentKey = "";
+  }
+  /**
+   * Chain our own frame widgets' callbacks so fallback frame edits apply
+   * immediately (the poll catches programmatic changes).
+   * @param onChange - Called after the original callback.
+   */
+  chainWidgetCallbacks(onChange) {
+    for (const name of [INPUT_NAMES.width, INPUT_NAMES.height, INPUT_NAMES.background]) {
+      const widget = this.findWidget(name);
+      if (!widget) continue;
+      const original = widget.callback;
+      widget.callback = (...args) => {
+        const [value, ...rest] = args;
+        original?.call(widget, value, ...rest);
+        onChange();
+      };
+    }
+  }
+  /**
+   * Push background + frame decisions to the editor when anything relevant
+   * changed. The current image is the loaded upstream image while connected,
+   * else `width` x `height` filled with `background`; either way an empty
+   * editor adopts its size and a painted one only maps onto it.
+   * @param session - Attached session.
+   * @param connected - Whether the `image` input has a link.
+   */
+  apply(session, connected) {
+    const { editor } = session;
+    const bg = connected ? this.loader.background : null;
+    if (bg) {
+      const key2 = `${session.docId}|image|${bg.key}`;
+      if (key2 === this.contentKey) return;
+      this.contentKey = key2;
+      editor.setBackground({ kind: "image", image: bg.image }, bg.size);
+      editor.handleBackgroundSize(bg.size);
+      return;
+    }
+    const awaitingImage = connected && this.loader.awaitingImage;
+    if (awaitingImage && editor.background.kind === "image") return;
+    const frame = this.fallbackFrame();
+    const key = `${session.docId}|fill|${frame.color}|${frame.size.width}x${frame.size.height}`;
+    if (key === this.contentKey) return;
+    this.contentKey = key;
+    editor.setBackground({ kind: "fill", color: frame.color }, frame.size);
+    editor.handleBackgroundSize(frame.size);
+  }
+  /**
+   * The current image while disconnected: `width` x `height` filled with
+   * `background`. Like any upstream image, an empty document adopts it and a
+   * painted one is shown through the frame map (decision 4).
+   * @returns Sanitized fallback frame.
+   */
+  fallbackFrame() {
+    return resolveFallbackFrame(
+      this.findWidget(INPUT_NAMES.width)?.value,
+      this.findWidget(INPUT_NAMES.height)?.value,
+      this.findWidget(INPUT_NAMES.background)?.value
+    );
+  }
+  /**
+   * A link on the node changed. If `image` lost its link (a user edit, not a
+   * load), see {@link adoptSizeOnDisconnect}.
+   * @param type - Slot type (`LINK_INPUT` for inputs).
+   * @param slot - Slot index.
+   * @param isConnected - `false` when a link was removed.
+   * @param session - Attached session, if any.
+   * @param stillWanted - Checked in the deferred microtask.
+   */
+  handleLinkChange(type, slot, isConnected, session, stillWanted) {
+    const imageSlot = inputSlotIndex(this.node, INPUT_NAMES.image);
+    if (type === LINK_INPUT && slot === imageSlot && !isConnected && session && this.node.graph) {
+      this.adoptSizeOnDisconnect(session.editor.imageSize, stillWanted);
+    }
+  }
+  /**
+   * `image` lost its link (a user edit, not a load): the widgets take over the
+   * last image size so the canvas keeps its size and the node shows it.
+   * Deferred a microtask so a link replaced by another (disconnect, then
+   * connect in one call) leaves the widgets alone.
+   * @param size - Image size shown when the link was removed.
+   * @param stillWanted - Checked in the microtask (not disposed, still
+   *   disconnected).
+   */
+  adoptSizeOnDisconnect(size, stillWanted) {
+    queueMicrotask(() => {
+      if (!stillWanted()) return;
+      const width = this.setWidgetValue(INPUT_NAMES.width, widgetDimension(size.width));
+      const height = this.setWidgetValue(INPUT_NAMES.height, widgetDimension(size.height));
+      if (!width && !height) return;
+      this.node.graph?.incrementVersion?.();
+      app.canvas?.setDirty?.(true, true);
+    });
+  }
+  /**
+   * Set a widget's value like a user edit: the value setter (backed by the
+   * widget value store, so both renderers update) plus its callback (ours
+   * re-applies the frame; see {@link chainWidgetCallbacks}).
+   * @returns `true` if the value changed.
+   */
+  setWidgetValue(name, value) {
+    const widget = this.findWidget(name);
+    if (!widget || widget.value === value) return false;
+    widget.value = value;
+    widget.callback?.(widget.value);
+    return true;
+  }
+  findWidget(name) {
+    return this.node.widgets?.find((widget) => widget.name === name);
+  }
+}
 const offers = /* @__PURE__ */ new Map();
 function handoffKey(node) {
   const graph = node.graph;
@@ -9695,13 +6842,20 @@ function isInRootGraph(graph, root) {
 const EDIT_SYNC_DELAY_MS = 1e3;
 const UPLOAD_SYNC_DELAY_MS = 0;
 const requested = /* @__PURE__ */ new Set();
+let captureFailureLogged = false;
 const task = new CoalescedTask(() => {
   const nodes = [...requested];
   requested.clear();
   const root = app.graph;
   if (!nodes.some((node) => isInRootGraph(node.graph, root))) return;
   const tracker = app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
-  if (tracker) captureTrackerState(tracker);
+  if (!tracker) return;
+  try {
+    captureTrackerState(tracker);
+  } catch (error) {
+    if (!captureFailureLogged) log.warn("workflow draft update failed (ChangeTracker capture threw):", error);
+    captureFailureLogged = true;
+  }
 });
 function requestGraphSync(node, delayMs) {
   requested.add(node);
@@ -9710,104 +6864,3654 @@ function requestGraphSync(node, delayMs) {
 function flushGraphSync() {
   task.flush();
 }
-const FOLDER_TYPES = /* @__PURE__ */ new Set(["input", "output", "temp"]);
-function parseAnnotatedFilename(value, defaultType = "input") {
-  if (typeof value !== "string") return null;
-  let path = value.trim();
-  if (!path) return null;
-  let type = defaultType;
-  const annotation = /\s*\[([a-z]+)\]$/i.exec(path);
-  if (annotation?.[1] && FOLDER_TYPES.has(annotation[1].toLowerCase())) {
-    type = annotation[1].toLowerCase();
-    path = path.slice(0, annotation.index).trim();
+class DocIO {
+  /**
+   * @param s - Shared editor state.
+   * @param applyBackgroundSize - Re-run a background size change deferred while loading.
+   */
+  constructor(s, applyBackgroundSize) {
+    this.s = s;
+    this.applyBackgroundSize = applyBackgroundSize;
   }
-  const normalized = path.replace(/\\/g, "/");
-  const slash = normalized.lastIndexOf("/");
-  const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
-  if (!filename) return null;
-  const subfolder = slash >= 0 ? normalized.slice(0, slash) : "";
-  return { filename, subfolder, type };
-}
-function firstOutputImage(output) {
-  const images = output?.images;
-  if (!Array.isArray(images)) return null;
-  for (const image of images) {
-    if (image && typeof image.filename === "string" && image.filename) return image;
+  s;
+  applyBackgroundSize;
+  /** Mark the start of an async layer restore (disables painting). */
+  beginLoading() {
+    this.s.loadingCount++;
   }
-  return null;
-}
-function viewQuery(item) {
-  const params = new URLSearchParams();
-  params.set("filename", item.filename ?? "");
-  params.set("subfolder", item.subfolder ?? "");
-  params.set("type", item.type ?? "output");
-  return params.toString();
-}
-function viewUrl(item, apiURL, cacheBust = "") {
-  return apiURL(`/view?${viewQuery(item)}${cacheBust}`);
-}
-const FILE_WIDGET_NODES = {
-  LoadImage: { widget: "image", type: "input" },
-  LoadImageOutput: { widget: "image", type: "output" }
-};
-const MAX_VIRTUAL_HOPS = 16;
-function nodeLocatorId(node) {
-  const graph = node.graph;
-  if (!graph) return null;
-  return graph.isRootGraph === false ? `${graph.id}:${String(node.id)}` : String(node.id);
-}
-function inputSlotIndex(node, name) {
-  return (node.inputs ?? []).findIndex((input) => input.name === name);
-}
-function isInputConnected(node, name) {
-  const slot = inputSlotIndex(node, name);
-  return slot >= 0 && node.inputs[slot]?.link != null;
-}
-function findUpstreamNode(node, slot) {
-  let current = node;
-  let currentSlot = slot;
-  for (let hop = 0; hop <= MAX_VIRTUAL_HOPS; hop++) {
-    if (!current.graph || currentSlot < 0 || currentSlot >= (current.inputs ?? []).length) return null;
-    if (current.inputs[currentSlot]?.link == null) return null;
-    const upstream = current.getInputNode(currentSlot);
-    if (!upstream) return null;
-    if (!upstream.isVirtualNode) return upstream;
-    current = upstream;
-    currentSlot = 0;
+  /** Mark the end of an async layer restore; applies a deferred frame change. */
+  endLoading() {
+    const s = this.s;
+    s.loadingCount = Math.max(0, s.loadingCount - 1);
+    s.events.emit("render", void 0);
+    if (!s.loading && s.pendingBackgroundSize) {
+      const size = s.pendingBackgroundSize;
+      s.pendingBackgroundSize = null;
+      this.applyBackgroundSize(size);
+    }
   }
-  return null;
-}
-function sourceFromNode(upstream) {
-  const fileWidget = FILE_WIDGET_NODES[upstream.comfyClass ?? upstream.type ?? ""];
-  if (fileWidget) {
-    const widget = upstream.widgets?.find((w) => w.name === fileWidget.widget);
-    const item = parseAnnotatedFilename(widget?.value, fileWidget.type);
-    if (item) return resultItemSource(item, "upstream");
+  /**
+   * Draw a restored layer image (WebP or PNG) into a layer (not an undo
+   * step, not dirty).
+   *
+   * A file whose size differs from `bounds` was saved before a bounds
+   * growth, so its origin is unknown. A text layer is then re-rendered from
+   * its `textData` (the source of truth; otherwise its first move would
+   * jump by the growth) and marked dirty so a matching file is uploaded.
+   * @param layerId - Layer id.
+   * @param image - Decoded image (sized to `bounds`).
+   */
+  restoreLayerPixels(layerId, image) {
+    const s = this.s;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    const bounds = s.store.bounds;
+    const size = imageSize(image);
+    if (layer?.kind === "text" && layer.textData && (size.width !== bounds.width || size.height !== bounds.height)) {
+      renderTextLayer(s, layer);
+      s.runtime.touch(layerId);
+      s.events.emit("render", void 0);
+      return;
+    }
+    const surface = s.store.ensure(layerId);
+    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+    surface.ctx.drawImage(image, 0, 0);
+    s.runtime.bump(layerId);
+    s.events.emit("render", void 0);
   }
-  const locator = nodeLocatorId(upstream);
-  if (locator) {
-    const preview = app.nodePreviewImages[locator]?.[0];
-    if (typeof preview === "string" && preview) return { key: preview, url: preview, origin: "upstream" };
-    const item = firstOutputImage(app.nodeOutputs[locator]);
-    if (item) return resultItemSource(item, "upstream");
+  /**
+   * A layer's file could not be restored. A text layer is re-rendered from
+   * its `textData` (the source of truth) and marked dirty so a new file is
+   * uploaded; any other layer stays empty with its `file` reference intact.
+   * @param layerId - Layer id.
+   * @returns `true` if the layer was recovered (text layer).
+   */
+  recoverMissingLayer(layerId) {
+    const s = this.s;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    if (layer?.kind !== "text" || !layer.textData) return false;
+    renderTextLayer(s, layer);
+    s.runtime.touch(layerId);
+    s.events.emit("render", void 0);
+    return true;
   }
-  const legacy = upstream.imgs?.[0]?.src;
-  if (legacy) return { key: legacy, url: legacy, origin: "upstream" };
-  return null;
+  /**
+   * Record a finished upload.
+   * @param layerId - Layer id.
+   * @param version - Layer version that was uploaded.
+   * @param file - Stored file reference (`null` for an empty layer).
+   */
+  markUploaded(layerId, version, file) {
+    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    const rt = this.s.runtime.get(layerId);
+    if (!layer || !rt) return;
+    layer.file = file;
+    if (rt.version === version) rt.dirty = false;
+    this.s.events.emit("change", void 0);
+  }
 }
-function sourceFromExecuted(node, lastExecuted) {
-  const fromSession = firstOutputImage(lastExecuted);
-  if (fromSession) return resultItemSource(fromSession, "executed");
-  const locator = nodeLocatorId(node);
-  const stored = locator ? firstOutputImage(app.nodeOutputs[locator]) : null;
-  return stored ? resultItemSource(stored, "executed") : null;
-}
-function resultItemSource(item, origin) {
+function imageSize(image) {
+  if (typeof HTMLImageElement !== "undefined" && image instanceof HTMLImageElement) {
+    return { width: image.naturalWidth, height: image.naturalHeight };
+  }
+  const sized = image;
   return {
-    key: viewQuery(item),
-    url: viewUrl(item, (route) => api.apiURL(route), app.getRandParam()),
-    origin
+    width: typeof sized.width === "number" ? sized.width : 0,
+    height: typeof sized.height === "number" ? sized.height : 0
   };
+}
+const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
+  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
+  return {
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
+  };
+}
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
+  const cap = boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
+  };
+  return unionRect(intersectRect(grown, cap), bounds);
+}
+const DEFAULT_HISTORY_BYTES = 256 * 1024 * 1024;
+class HistoryStack {
+  /**
+   * @param maxBytes - Memory budget across both stacks.
+   * @param combine - Builds one entry from two (older first) for {@link joinNext}.
+   */
+  constructor(maxBytes = DEFAULT_HISTORY_BYTES, combine) {
+    this.maxBytes = maxBytes;
+    this.combine = combine;
+  }
+  maxBytes;
+  combine;
+  undoStack = [];
+  redoStack = [];
+  total = 0;
+  /** Pending {@link joinNext}: which next entry joins the newest one. */
+  joining = null;
+  /** Whether there is something to undo. */
+  get canUndo() {
+    return this.undoStack.length > 0;
+  }
+  /** Whether there is something to redo. */
+  get canRedo() {
+    return this.redoStack.length > 0;
+  }
+  /** Estimated bytes held. */
+  get totalBytes() {
+    return this.total;
+  }
+  /** Number of undo entries. */
+  get undoDepth() {
+    return this.undoStack.length;
+  }
+  /** Number of redo entries. */
+  get redoDepth() {
+    return this.redoStack.length;
+  }
+  /**
+   * The newest undo entry, only while nothing is redoable (the entry a
+   * continuing gesture may merge into).
+   * @returns The entry, or `undefined`.
+   */
+  mergeTarget() {
+    return this.redoStack.length ? void 0 : this.undoStack[this.undoStack.length - 1];
+  }
+  /**
+   * Record a new operation. Clears the redo stack, then enforces the cap.
+   *
+   * @param entry - The applied operation.
+   * @returns Entries evicted to stay within budget (oldest first).
+   */
+  push(entry) {
+    for (const dropped of this.redoStack) this.total -= dropped.bytes;
+    this.redoStack.length = 0;
+    const accept = this.joining;
+    this.joining = null;
+    const older = accept && this.combine && accept(entry) ? this.undoStack.pop() : void 0;
+    if (older && this.combine) {
+      this.total -= older.bytes;
+      entry = this.combine(older, entry);
+    }
+    this.undoStack.push(entry);
+    this.total += entry.bytes;
+    return this.enforceCap();
+  }
+  /**
+   * Make the next pushed entry part of the newest one (one undo step), if
+   * `accept` approves it; any other push, undo, redo or clear drops the
+   * request. Used when an edit needs a preparatory step (rasterizing a text
+   * layer before painting on it).
+   * @param accept - Which next entry may join (default: any).
+   */
+  joinNext(accept = () => true) {
+    this.joining = this.undoStack.length > 0 && this.redoStack.length === 0 ? accept : null;
+  }
+  /**
+   * Drop the newest undo entry without making it redoable (an operation that
+   * turned out to be a no-op, e.g. a text layer committed empty).
+   * @returns The dropped entry, or `null`.
+   */
+  discardNewest() {
+    this.joining = null;
+    const entry = this.undoStack.pop();
+    if (!entry) return null;
+    this.total -= entry.bytes;
+    return entry;
+  }
+  /**
+   * Move the newest entry to the redo stack.
+   *
+   * @returns The entry to revert, or `null` when there is nothing to undo.
+   */
+  undo() {
+    this.joining = null;
+    const entry = this.undoStack.pop();
+    if (!entry) return null;
+    this.redoStack.push(entry);
+    return entry;
+  }
+  /**
+   * Move the newest redo entry back to the undo stack.
+   *
+   * @returns The entry to re-apply, or `null` when there is nothing to redo.
+   */
+  redo() {
+    this.joining = null;
+    const entry = this.redoStack.pop();
+    if (!entry) return null;
+    this.undoStack.push(entry);
+    return entry;
+  }
+  /**
+   * Whether any entry (undo or redo side) matches.
+   * @param predicate - Test.
+   * @returns `true` if one matches.
+   */
+  some(predicate) {
+    return this.undoStack.some(predicate) || this.redoStack.some(predicate);
+  }
+  /** Drop everything. */
+  clear() {
+    this.joining = null;
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+    this.total = 0;
+  }
+  enforceCap() {
+    const evicted = [];
+    while (this.total > this.maxBytes && this.undoStack.length > 1) {
+      const oldest = this.undoStack.shift();
+      if (!oldest) break;
+      this.total -= oldest.bytes;
+      evicted.push(oldest);
+    }
+    return evicted;
+  }
+}
+class LayerRuntimeTable {
+  entries = /* @__PURE__ */ new Map();
+  revisions = /* @__PURE__ */ new Map();
+  /** Last version of removed layers (see {@link LayerRuntimeTable.reinstate}). */
+  removedVersions = /* @__PURE__ */ new Map();
+  revisionCounter = 0;
+  /**
+   * (Re)initialise a layer's bookkeeping: clean, version 0.
+   * @param layerId - Layer id.
+   * @param hasContent - Whether the layer holds (saved) paint.
+   */
+  reset(layerId, hasContent) {
+    this.entries.set(layerId, { dirty: false, version: 0, hasContent });
+  }
+  /**
+   * Forget a deleted layer (so it no longer counts as dirty/painted). Its
+   * revision is kept so a re-inserted layer never reuses a stale cache key.
+   * @param layerId - Layer id.
+   */
+  remove(layerId) {
+    const rt = this.entries.get(layerId);
+    if (rt) this.removedVersions.set(layerId, rt.version);
+    this.entries.delete(layerId);
+  }
+  /**
+   * (Re)install a layer that is (again) part of the document (new layer,
+   * undo of a delete). The version continues past any earlier life of the
+   * id, so an upload started before the delete can never mark the restored
+   * pixels clean.
+   * @param layerId - Layer id.
+   * @param hasPixels - The layer holds pixels (dirty until uploaded).
+   */
+  reinstate(layerId, hasPixels) {
+    const version = (this.removedVersions.get(layerId) ?? 0) + 1;
+    this.entries.set(layerId, { dirty: hasPixels, version, hasContent: hasPixels });
+    this.bump(layerId);
+  }
+  /**
+   * Bookkeeping of a layer.
+   * @param layerId - Layer id.
+   * @returns The entry or `undefined`.
+   */
+  get(layerId) {
+    return this.entries.get(layerId);
+  }
+  /**
+   * Pixels of a layer were edited: new revision, dirty, next version.
+   * @param layerId - Layer id.
+   */
+  touch(layerId) {
+    this.bump(layerId);
+    const rt = this.entries.get(layerId);
+    if (!rt) return;
+    rt.dirty = true;
+    rt.version++;
+    rt.hasContent = true;
+  }
+  /**
+   * The paint bounds changed size: a layer with content keeps its pixels at
+   * the same document positions, but its saved file (sized to the old
+   * bounds) no longer matches the manifest's `bounds`, so it must upload
+   * again. Dirty + next version (an in-flight upload of the old size can't
+   * mark it clean); the pixel revision is unchanged.
+   * @param layerId - Layer id.
+   */
+  resized(layerId) {
+    const rt = this.entries.get(layerId);
+    if (!rt?.hasContent) return;
+    rt.dirty = true;
+    rt.version++;
+  }
+  /**
+   * Committed pixels of a layer changed without an edit (restore, cancel):
+   * only invalidates caches keyed by the revision.
+   * @param layerId - Layer id.
+   */
+  bump(layerId) {
+    this.revisions.set(layerId, ++this.revisionCounter);
+  }
+  /**
+   * Current pixel revision of a layer.
+   * @param layerId - Layer id.
+   * @returns Revision (0 = never bumped).
+   */
+  revision(layerId) {
+    return this.revisions.get(layerId) ?? 0;
+  }
+  /** Whether any layer has ever held paint. */
+  get hasPaint() {
+    for (const r of this.entries.values()) if (r.hasContent) return true;
+    return false;
+  }
+  /** Whether any layer needs uploading. */
+  get dirty() {
+    for (const r of this.entries.values()) if (r.dirty) return true;
+    return false;
+  }
+  /**
+   * Copy every entry of `other` (fork); revisions are not copied.
+   * @param other - Source table.
+   */
+  copyFrom(other) {
+    for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
+  }
+}
+function createSurface(width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
+  return { canvas, ctx };
+}
+function releaseSurface(surface) {
+  surface.canvas.width = 0;
+  surface.canvas.height = 0;
+}
+function rebaseSurface(source, from, to) {
+  const next = createSurface(to.width, to.height);
+  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
+  return next;
+}
+class LayerStore {
+  surfaces = /* @__PURE__ */ new Map();
+  currentBounds;
+  /**
+   * @param bounds - Initial paint area (document coords, integers).
+   */
+  constructor(bounds) {
+    this.currentBounds = { ...bounds };
+  }
+  /** Current paint area. */
+  get bounds() {
+    return { ...this.currentBounds };
+  }
+  /**
+   * Surface for a layer, created (transparent) on first use.
+   * @param layerId - Layer id.
+   * @returns Its surface.
+   */
+  ensure(layerId) {
+    let surface = this.surfaces.get(layerId);
+    if (!surface) {
+      surface = createSurface(this.currentBounds.width, this.currentBounds.height);
+      this.surfaces.set(layerId, surface);
+    }
+    return surface;
+  }
+  /**
+   * Existing surface for a layer.
+   * @param layerId - Layer id.
+   * @returns Surface or `undefined`.
+   */
+  get(layerId) {
+    return this.surfaces.get(layerId);
+  }
+  /**
+   * Drop layers not in `keep`.
+   * @param keep - Layer ids to keep.
+   */
+  retain(keep) {
+    for (const [id, surface] of this.surfaces) {
+      if (keep.has(id)) continue;
+      releaseSurface(surface);
+      this.surfaces.delete(id);
+    }
+  }
+  /**
+   * Change the paint area, keeping every pixel at its document position
+   * (pixels outside the new bounds are dropped).
+   * @param bounds - New bounds.
+   */
+  rebase(bounds) {
+    if (rectEquals(bounds, this.currentBounds)) return;
+    for (const [id, surface] of this.surfaces) {
+      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds));
+      releaseSurface(surface);
+    }
+    this.currentBounds = { ...bounds };
+  }
+  /**
+   * Replace bounds and clear every layer (no pixel preservation).
+   * @param bounds - New bounds.
+   */
+  reset(bounds) {
+    for (const surface of this.surfaces.values()) releaseSurface(surface);
+    this.surfaces.clear();
+    this.currentBounds = { ...bounds };
+  }
+  /**
+   * Read pixels of a document rect (clipped to bounds).
+   * @param layerId - Layer id.
+   * @param rect - Integer document rect.
+   * @returns Pixels and the clipped rect, or `null` if nothing overlaps.
+   */
+  read(layerId, rect) {
+    const clipped = intersectRect(rect, this.currentBounds);
+    if (isEmptyRect(clipped)) return null;
+    const { ctx } = this.ensure(layerId);
+    const data = ctx.getImageData(
+      clipped.x - this.currentBounds.x,
+      clipped.y - this.currentBounds.y,
+      clipped.width,
+      clipped.height
+    );
+    return { rect: clipped, data };
+  }
+  /**
+   * Write pixels at a document position (replaces, no blending).
+   * @param layerId - Layer id.
+   * @param x - Document x of the data's top-left.
+   * @param y - Document y of the data's top-left.
+   * @param data - Pixels.
+   */
+  write(layerId, x, y, data) {
+    const { ctx } = this.ensure(layerId);
+    ctx.putImageData(data, x - this.currentBounds.x, y - this.currentBounds.y);
+  }
+  /**
+   * Whole-layer snapshot.
+   * @param layerId - Layer id.
+   * @returns Pixels covering `bounds`.
+   */
+  snapshot(layerId) {
+    const { ctx, canvas } = this.ensure(layerId);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+  /**
+   * Deep copy (pixels duplicated).
+   * @returns Independent store.
+   */
+  clone() {
+    const copy = new LayerStore(this.currentBounds);
+    for (const [id, surface] of this.surfaces) {
+      copy.ensure(id).ctx.drawImage(surface.canvas, 0, 0);
+    }
+    return copy;
+  }
+  /** Estimated bytes held by layer canvases. */
+  get bytes() {
+    return this.surfaces.size * this.currentBounds.width * this.currentBounds.height * 4;
+  }
+  /** Release every canvas. */
+  dispose() {
+    for (const surface of this.surfaces.values()) releaseSurface(surface);
+    this.surfaces.clear();
+  }
+}
+const OUTLINE_THRESHOLD = 128;
+const E = 1;
+const S = 2;
+const W = 4;
+const N = 8;
+function outlineContours(sel, area) {
+  const { rect, data } = sel;
+  const outsideIn = sel.outside >= OUTLINE_THRESHOLD;
+  const bounded = outsideIn && area !== void 0 && !isEmptyRect(area);
+  const dom = bounded ? unionRect(rect, area) : rect;
+  const beyond = outsideIn && !bounded;
+  const w = dom.width;
+  const h = dom.height;
+  if (w <= 0 || h <= 0) return [];
+  if (!bounded && isUniform(data)) {
+    if (data[0] >= OUTLINE_THRESHOLD === beyond) return [];
+    return [rectContour(dom)];
+  }
+  const gw = w + 2;
+  const grid = new Uint8Array(gw * (h + 2));
+  if (beyond) grid.fill(1);
+  const ox = rect.x - dom.x;
+  const oy = rect.y - dom.y;
+  if (bounded) {
+    for (let y = 0; y < h; y++) grid.fill(1, (y + 1) * gw + 1, (y + 1) * gw + 1 + w);
+  }
+  for (let y = 0; y < rect.height; y++) {
+    const src = y * rect.width;
+    const dst = (y + oy + 1) * gw + ox + 1;
+    for (let x = 0; x < rect.width; x++) grid[dst + x] = data[src + x] >= OUTLINE_THRESHOLD ? 1 : 0;
+  }
+  const vw = w + 1;
+  const out = new Uint8Array(vw * (h + 1));
+  for (let vy = 0; vy <= h; vy++) {
+    const above = vy * gw + 1;
+    const below = above + gw;
+    const v = vy * vw;
+    for (let px = 0; px < w; px++) {
+      const a = grid[above + px];
+      const b = grid[below + px];
+      if (a === b) continue;
+      if (b) addBit(out, v + px, E);
+      else addBit(out, v + px + 1, W);
+    }
+  }
+  for (let py = 0; py < h; py++) {
+    const row = (py + 1) * gw;
+    for (let vx = 0; vx <= w; vx++) {
+      const l = grid[row + vx];
+      const r = grid[row + vx + 1];
+      if (l === r) continue;
+      if (r) addBit(out, (py + 1) * vw + vx, N);
+      else addBit(out, py * vw + vx, S);
+    }
+  }
+  const contours = [];
+  const pts = [];
+  for (let start = 0; start < out.length; start++) {
+    if (out[start] === 0) continue;
+    pts.length = 0;
+    let v = start;
+    let dir = 0;
+    for (; ; ) {
+      const bits = out[v];
+      if (bits === 0) break;
+      const next = dir === 0 ? lowestBit(bits) : pick(bits, dir);
+      out[v] = bits & ~next;
+      if (next !== dir) pts.push(dom.x + v % vw, dom.y + (v / vw | 0));
+      dir = next;
+      v += dir === E ? 1 : dir === W ? -1 : dir === S ? vw : -vw;
+    }
+    if (pts.length >= 8) contours.push(Float64Array.from(pts));
+  }
+  return contours;
+}
+function pick(bits, dir) {
+  const right = dir === N ? E : dir << 1;
+  if (bits & right) return right;
+  if (bits & dir) return dir;
+  const left = dir === E ? N : dir >> 1;
+  if (bits & left) return left;
+  return lowestBit(bits);
+}
+function addBit(out, i, bit) {
+  out[i] = out[i] | bit;
+}
+function lowestBit(bits) {
+  return bits & -bits;
+}
+function rectContour(r) {
+  const x1 = r.x + r.width;
+  const y1 = r.y + r.height;
+  return Float64Array.from([r.x, r.y, x1, r.y, x1, y1, r.x, y1]);
+}
+function isUniform(data) {
+  const first = data[0];
+  for (let i = 1; i < data.length; i++) if (data[i] !== first) return false;
+  return true;
+}
+class SelectionState {
+  /**
+   * @param onChange - Called after every change (emits the editor `selection` event).
+   */
+  constructor(onChange) {
+    this.onChange = onChange;
+  }
+  onChange;
+  sel = null;
+  rev = 0;
+  outlineCache = null;
+  clip = null;
+  /** Current selection (`null` = none: everything editable). */
+  get current() {
+    return this.sel;
+  }
+  /** Bumped on every change (cache key for the UI). */
+  get revision() {
+    return this.rev;
+  }
+  /**
+   * Replace the selection (no history; `selectionOps.ts` records it).
+   * @param sel - New selection or `null`.
+   */
+  set(sel) {
+    if (sel === this.sel) return;
+    this.sel = sel;
+    this.rev++;
+    this.onChange();
+  }
+  /**
+   * Cached outline contours of the current selection.
+   * @param frame - Image frame rect (bounds an inverted selection's outline).
+   * @returns Closed contours in document coords, or `null` without a selection.
+   */
+  outline(frame) {
+    if (!this.sel) return null;
+    const cached = this.outlineCache;
+    if (cached && cached.rev === this.rev && rectEquals(cached.frame, frame)) return cached.contours;
+    const contours = outlineContours(this.sel, frame);
+    this.outlineCache = { rev: this.rev, frame: { ...frame }, contours };
+    return contours;
+  }
+  /**
+   * Clip mask for strokes: a canvas sized to `bounds` whose alpha is the
+   * selection coverage (used with `destination-in`).
+   * @param bounds - Current paint bounds.
+   * @returns The canvas, or `null` without a selection.
+   */
+  clipCanvas(bounds) {
+    const sel = this.sel;
+    if (!sel) return null;
+    const cached = this.clip;
+    if (cached && cached.rev === this.rev && rectEquals(cached.bounds, bounds)) return cached.surface.canvas;
+    this.releaseClip();
+    const surface = createSurface(bounds.width, bounds.height);
+    const coverage = coverageFor(sel, bounds);
+    const image = surface.ctx.createImageData(surface.canvas.width, surface.canvas.height);
+    const px = image.data;
+    for (let i = 0; i < coverage.length; i++) px[i * 4 + 3] = coverage[i];
+    surface.ctx.putImageData(image, 0, 0);
+    this.clip = { rev: this.rev, bounds: { ...bounds }, surface };
+    return surface.canvas;
+  }
+  /**
+   * Selection coverage over `area` for the bucket fill's `clip` seam.
+   * @param area - Integer document rect (the bounds).
+   * @returns Coverage bytes, or `undefined` without a selection.
+   */
+  coverage(area) {
+    return this.sel ? coverageFor(this.sel, area) : void 0;
+  }
+  /** Estimated bytes held (selection + clip canvas). */
+  get bytes() {
+    const clip = this.clip?.surface.canvas;
+    return (this.sel?.data.byteLength ?? 0) + (clip ? clip.width * clip.height * 4 : 0);
+  }
+  /** Release caches (keeps the selection). */
+  dispose() {
+    this.releaseClip();
+    this.outlineCache = null;
+  }
+  releaseClip() {
+    if (this.clip) releaseSurface(this.clip.surface);
+    this.clip = null;
+  }
+}
+const EMPTY = { x: 0, y: 0, width: 0, height: 0 };
+class StrokeBuffer {
+  buffer = null;
+  preview = null;
+  bounds = EMPTY;
+  style = null;
+  strokeRect = EMPTY;
+  pendingPreview = EMPTY;
+  refreshed = EMPTY;
+  /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
+  clipSource = () => null;
+  /** Buffer x clip, composited instead of the buffer while a selection exists. */
+  clipped = null;
+  /**
+   * Clip every composite (live preview and commit) to a selection: the
+   * buffer is multiplied by the clip's alpha right before compositing, so
+   * soft coverage never compounds over overlapping dabs.
+   * @param source - Returns the clip canvas for the current bounds, or `null`.
+   */
+  setClip(source) {
+    this.clipSource = source;
+  }
+  /** Document rect refreshed by the last {@link updatePreview} call (may be empty). */
+  get lastRefreshed() {
+    return { ...this.refreshed };
+  }
+  /** Whether a stroke is in progress. */
+  get active() {
+    return this.style !== null;
+  }
+  /** Document rect touched by the current stroke (integer). */
+  get touched() {
+    return intersectRect(roundOutRect(this.strokeRect), this.bounds);
+  }
+  /**
+   * Start a stroke over `layer`.
+   * @param layer - Target layer surface (sized to `bounds`).
+   * @param bounds - Current document bounds.
+   * @param style - Stroke appearance.
+   */
+  begin(layer, bounds, style) {
+    this.ensureSize(bounds);
+    this.style = style;
+    this.strokeRect = EMPTY;
+    this.pendingPreview = EMPTY;
+    this.refreshed = EMPTY;
+    const preview = this.surfaces().preview;
+    preview.ctx.clearRect(0, 0, preview.canvas.width, preview.canvas.height);
+    preview.ctx.drawImage(layer.canvas, 0, 0);
+  }
+  /**
+   * Follow a bounds change mid-stroke (pixels keep document positions).
+   * @param bounds - New bounds.
+   */
+  rebase(bounds) {
+    if (!this.buffer || !this.preview) {
+      this.bounds = { ...bounds };
+      return;
+    }
+    const nextBuffer = rebaseSurface(this.buffer, this.bounds, bounds);
+    const nextPreview = rebaseSurface(this.preview, this.bounds, bounds);
+    releaseSurface(this.buffer);
+    releaseSurface(this.preview);
+    this.releaseClipped();
+    this.buffer = nextBuffer;
+    this.preview = nextPreview;
+    this.bounds = { ...bounds };
+  }
+  /**
+   * Draw dabs into the buffer.
+   * @param dabs - Dabs in document coords.
+   * @param stamps - Stamp cache.
+   * @param maxDiameter - Largest diameter in this stroke (stamp resolution).
+   */
+  addDabs(dabs, stamps, maxDiameter) {
+    if (!this.style || dabs.length === 0) return;
+    const { ctx } = this.surfaces().buffer;
+    const color = this.style.mode === "erase" ? "#000000" : this.style.color;
+    const stamp = stamps.get(maxDiameter, this.style.hardness, color);
+    for (const dab of dabs) {
+      ctx.globalAlpha = dab.alpha;
+      const r = dab.size / 2;
+      ctx.drawImage(stamp.canvas, dab.x - r - this.bounds.x, dab.y - r - this.bounds.y, dab.size, dab.size);
+      const rect = dabBounds(dab);
+      this.strokeRect = unionRect(this.strokeRect, rect);
+      this.pendingPreview = unionRect(this.pendingPreview, rect);
+    }
+    ctx.globalAlpha = 1;
+  }
+  /**
+   * Replace the buffer content with one shape (shape tools redraw the whole
+   * shape on every move): clears what the previous shape drew, draws the
+   * new one, and marks both areas for the preview. {@link touched} becomes
+   * the new shape's rect.
+   * @param rect - Document rect the new shape can touch (empty = nothing).
+   * @param draw - Draws into the buffer context; `origin` is the document point at its (0, 0).
+   */
+  replaceContent(rect, draw) {
+    if (!this.style) return;
+    const { ctx } = this.surfaces().buffer;
+    const old = this.touched;
+    if (!isEmptyRect(old)) ctx.clearRect(old.x - this.bounds.x, old.y - this.bounds.y, old.width, old.height);
+    this.pendingPreview = unionRect(unionRect(this.pendingPreview, old), rect);
+    this.strokeRect = isEmptyRect(rect) ? EMPTY : { ...rect };
+    if (!isEmptyRect(rect)) draw(ctx, { x: this.bounds.x, y: this.bounds.y });
+  }
+  /**
+   * Refresh the preview inside the region dirtied since the last call.
+   * The refreshed document rect is available as {@link lastRefreshed}.
+   * @param layer - Target layer surface.
+   * @returns Preview surface to draw instead of the layer.
+   */
+  updatePreview(layer) {
+    const { buffer, preview } = this.surfaces();
+    const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
+    this.pendingPreview = EMPTY;
+    this.refreshed = r;
+    if (this.style && !isEmptyRect(r)) {
+      const x = r.x - this.bounds.x;
+      const y = r.y - this.bounds.y;
+      const { ctx } = preview;
+      ctx.clearRect(x, y, r.width, r.height);
+      ctx.drawImage(layer.canvas, x, y, r.width, r.height, x, y, r.width, r.height);
+      this.compositeBuffer(ctx, buffer, x, y, r.width, r.height);
+    }
+    return preview;
+  }
+  /**
+   * Composite the buffer onto the layer inside the touched rect and end the
+   * stroke. The caller snapshots `touched` before/after for history.
+   * @param layer - Target layer surface.
+   */
+  commit(layer) {
+    const r = this.touched;
+    if (this.style && !isEmptyRect(r)) {
+      const x = r.x - this.bounds.x;
+      const y = r.y - this.bounds.y;
+      this.compositeBuffer(layer.ctx, this.surfaces().buffer, x, y, r.width, r.height);
+    }
+    this.end();
+  }
+  /** Abort the stroke without touching the layer. */
+  cancel() {
+    this.end();
+  }
+  /** Release buffers. */
+  dispose() {
+    if (this.buffer) releaseSurface(this.buffer);
+    if (this.preview) releaseSurface(this.preview);
+    this.releaseClipped();
+    this.buffer = null;
+    this.preview = null;
+    this.style = null;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  compositeBuffer(ctx, buffer, x, y, width, height) {
+    if (!this.style) return;
+    const source = this.clipBuffer(buffer, x, y, width, height);
+    ctx.save();
+    ctx.globalAlpha = this.style.opacity;
+    ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
+    ctx.drawImage(source, x, y, width, height, x, y, width, height);
+    ctx.restore();
+  }
+  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
+  clipBuffer(buffer, x, y, width, height) {
+    const clip = this.clipSource();
+    if (!clip) return buffer.canvas;
+    this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
+    const { ctx } = this.clipped;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    ctx.clip();
+    ctx.clearRect(x, y, width, height);
+    ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    ctx.restore();
+    return this.clipped.canvas;
+  }
+  releaseClipped() {
+    if (this.clipped) releaseSurface(this.clipped);
+    this.clipped = null;
+  }
+  end() {
+    const r = this.touched;
+    if (this.buffer && !isEmptyRect(r)) {
+      this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
+    }
+    this.style = null;
+    this.strokeRect = EMPTY;
+    this.pendingPreview = EMPTY;
+    this.refreshed = EMPTY;
+  }
+  ensureSize(bounds) {
+    const same = this.buffer && this.bounds.width === bounds.width && this.bounds.height === bounds.height && this.bounds.x === bounds.x && this.bounds.y === bounds.y;
+    if (same) return;
+    this.dispose();
+    this.buffer = createSurface(bounds.width, bounds.height);
+    this.preview = createSurface(bounds.width, bounds.height);
+    this.bounds = { ...bounds };
+  }
+  surfaces() {
+    if (!this.buffer || !this.preview) throw new Error("StrokeBuffer used before begin()");
+    return { buffer: this.buffer, preview: this.preview };
+  }
+}
+class ViewState {
+  /**
+   * @param onChange - Called after every user view command (fit, 100%, zoom,
+   *   pan) so the owner can repaint; never called from {@link setStage} /
+   *   {@link setFrame}, which run inside a render.
+   */
+  constructor(onChange = () => {
+  }) {
+    this.onChange = onChange;
+  }
+  onChange;
+  transform = { scale: 1, offsetX: 0, offsetY: 0 };
+  fitting = true;
+  stage = { width: 0, height: 0 };
+  frame = { width: 1, height: 1 };
+  /** On-screen px per stage CSS px (graph zoom). */
+  displayScale = 1;
+  /** Current transform. */
+  get current() {
+    return this.transform;
+  }
+  /** Whether the view follows "fit to stage". */
+  get isFitting() {
+    return this.fitting;
+  }
+  /**
+   * Update stage size / graph zoom. In fit mode the view re-fits. In non-fit
+   * mode the image point that was at the previous stage centre stays at the
+   * new stage centre (resize keeps the canvas centred), then the offset is
+   * clamped so the image stays on-screen.
+   *
+   * @param stage - Stage CSS size.
+   * @param displayScale - Ancestor scale (graph zoom).
+   * @returns `true` if the transform changed.
+   */
+  setStage(stage, displayScale) {
+    const prev = this.stage;
+    this.stage = { ...stage };
+    this.displayScale = displayScale > 0 ? displayScale : 1;
+    if (this.fitting) return this.refit();
+    if (prev.width > 0 && prev.height > 0 && stage.width > 0 && stage.height > 0) {
+      const dx = (stage.width - prev.width) / 2;
+      const dy = (stage.height - prev.height) / 2;
+      this.transform = clampOffset(panBy(this.transform, dx, dy), this.frame, this.stage);
+      return true;
+    }
+    return false;
+  }
+  /**
+   * Update the frame size. In fit mode the view re-fits; in non-fit mode the
+   * offset is clamped so the image stays on-screen.
+   *
+   * @param frame - Document frame size.
+   * @returns `true` if the transform changed.
+   */
+  setFrame(frame) {
+    this.frame = { ...frame };
+    if (this.fitting) return this.refit();
+    const clamped = clampOffset(this.transform, this.frame, this.stage);
+    const changed = clamped.offsetX !== this.transform.offsetX || clamped.offsetY !== this.transform.offsetY;
+    this.transform = clamped;
+    return changed;
+  }
+  /** Enter fit mode and re-fit (Ctrl+0 / Fit button). */
+  fit() {
+    this.fitting = true;
+    this.refit();
+    this.onChange();
+  }
+  /**
+   * 100% (Ctrl+1): one document pixel per on-screen pixel, centred on the
+   * stage centre's document point.
+   */
+  actualPixels() {
+    const centre = { x: this.stage.width / 2, y: this.stage.height / 2 };
+    this.setTransform(zoomAt(this.transform, 1 / this.displayScale, centre));
+  }
+  /**
+   * Zoom by a wheel delta around a stage point.
+   * @param deltaPx - Wheel delta in px (positive = out).
+   * @param anchor - Stage point under the cursor.
+   */
+  wheelZoom(deltaPx, anchor) {
+    this.setTransform(zoomAt(this.transform, this.transform.scale * wheelZoomFactor(deltaPx), anchor));
+  }
+  /**
+   * Zoom by a factor around the stage centre (Ctrl +/-).
+   * @param factor - Multiplier.
+   */
+  zoomBy(factor) {
+    const centre = { x: this.stage.width / 2, y: this.stage.height / 2 };
+    this.setTransform(zoomAt(this.transform, clampZoom(this.transform.scale * factor), centre));
+  }
+  /**
+   * Pan by stage px.
+   * @param dx - Stage px.
+   * @param dy - Stage px.
+   */
+  pan(dx, dy) {
+    this.setTransform(panBy(this.transform, dx, dy));
+  }
+  setTransform(next) {
+    this.fitting = false;
+    this.transform = clampOffset(next, this.frame, this.stage);
+    this.onChange();
+  }
+  refit() {
+    if (this.stage.width <= 0 || this.stage.height <= 0) return false;
+    const next = fitView(this.frame, this.stage);
+    const changed = next.scale !== this.transform.scale || next.offsetX !== this.transform.offsetX || next.offsetY !== this.transform.offsetY;
+    this.transform = next;
+    return changed;
+  }
+}
+class EditorState {
+  events = new Emitter();
+  /** View commands (Fit, Ctrl+0/1, zoom, pan) emit `render` themselves, whoever calls them. */
+  view = new ViewState(() => this.events.emit("render", void 0));
+  history = new HistoryStack(DEFAULT_HISTORY_BYTES, groupEntries);
+  stroke = new StrokeBuffer();
+  runtime = new LayerRuntimeTable();
+  store;
+  /** Current selection (session state, not saved); strokes are clipped to it. */
+  selection = new SelectionState(() => this.events.emit("selection", void 0));
+  doc;
+  frameSource;
+  background = { kind: "fill", color: "#ffffff" };
+  /**
+   * Size of the current image: the background image's natural size, or the
+   * `width` x `height` widgets under a fill. `null` = unknown (use `doc.frame`).
+   */
+  backgroundSize = null;
+  loadingCount = 0;
+  /** Background size that arrived while loading (applied afterwards). */
+  pendingBackgroundSize = null;
+  /** Quick Mask paint target (UI state, not saved). */
+  target = "paint";
+  /** Layer the current stroke paints into. */
+  strokeLayerId = null;
+  /** Largest dab diameter of the current stroke, document px. */
+  strokeDiameter = 1;
+  /** Where the previous stroke ended, document coords. */
+  lastStrokeEnd = null;
+  /**
+   * Move-tool drag in progress: the layer is drawn offset by (dx, dy)
+   * document px; pixels move only on commit (`moveOps.ts`).
+   */
+  movePreview = null;
+  /**
+   * Asks the user whether a text layer may be rasterized (`rasterize.ts`);
+   * the UI installs a `window.confirm` (the engine has no DOM UI). Default: no.
+   */
+  confirmRasterize = () => false;
+  /**
+   * Style of a mask layer added lazily ({@link ensureMask}); the session
+   * installs one that reads the user's settings. Default: built-in red, 50 %.
+   */
+  maskStyle = () => DEFAULT_MASK_STYLE;
+  /**
+   * @param doc - Document (copied).
+   * @param source - Origin of its frame size.
+   * @param store - Existing pixels (for clones); a blank store is created otherwise.
+   */
+  constructor(doc, source, store) {
+    this.doc = cloneDocument(doc);
+    this.frameSource = source;
+    this.store = store ?? new LayerStore(doc.bounds);
+    for (const layer of doc.layers) {
+      this.store.ensure(layer.id);
+      this.runtime.reset(layer.id, layer.file !== null);
+    }
+    this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
+    this.syncViewFrame();
+  }
+  /** Layer files are being restored. */
+  get loading() {
+    return this.loadingCount > 0;
+  }
+  /** Size the view shows: the current image (image or widget-sized fill), else `doc.frame`. */
+  get imageSize() {
+    const size = this.backgroundSize;
+    return size ? { ...size } : { ...this.doc.frame };
+  }
+  /** No paint ever and nothing in history that depends on the frame (selection steps don't count). */
+  get isEmpty() {
+    return !this.runtime.hasPaint && !this.history.some((entry) => entry.kind !== "selection");
+  }
+  /** The view fits the image, not the document frame. */
+  syncViewFrame() {
+    this.view.setFrame(this.imageSize);
+  }
+  /**
+   * Grow bounds to cover `need`. Chunked + capped for strokes; exact and
+   * uncapped when re-applying history. Every layer with content is marked
+   * for re-upload: layer files are sized to `bounds`, and a file saved at
+   * the old bounds would be restored at the wrong origin.
+   * @param need - Document rect that must be covered.
+   * @param chunked - Stroke growth (256 px chunks, capped).
+   */
+  ensureBounds(need, chunked) {
+    const current = this.store.bounds;
+    if (containsRect(current, need)) return;
+    const next = chunked ? growBounds(current, need, this.doc.frame) : unionRect(current, need);
+    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
+      this.store.rebase(next);
+      this.stroke.rebase(next);
+      this.doc.bounds = { ...next };
+      for (const layer of this.doc.layers) this.runtime.resized(layer.id);
+    }
+  }
+  /**
+   * The mask layer, adding a default one (not dirty, no history) when the
+   * document has none -- documents saved before M2 get one lazily.
+   * @returns The mask layer.
+   */
+  ensureMask() {
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle);
+    if (created) {
+      this.store.ensure(layer.id);
+      this.runtime.reset(layer.id, false);
+      this.events.emit("change", void 0);
+      this.events.emit("mask", void 0);
+    }
+    return layer;
+  }
+  /** Abort the current stroke (its preview may be cached in a mask tint). */
+  cancelStroke() {
+    this.stroke.cancel();
+    if (this.strokeLayerId) this.runtime.bump(this.strokeLayerId);
+    this.strokeLayerId = null;
+    this.events.emit("history", void 0);
+    this.events.emit("render", void 0);
+  }
+  /** Notify history, content and render listeners after an edit. */
+  afterEdit() {
+    this.events.emit("history", void 0);
+    this.events.emit("change", void 0);
+    this.events.emit("render", void 0);
+  }
+}
+class FrameOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /**
+   * Set what is drawn under the paint; the view re-fits (in fit mode).
+   * @param background - Image or fill.
+   * @param imageSize - Size of the current image: the natural size of an
+   *   image background, or the `width` x `height` widgets for a fill (no
+   *   image connected). `null` = show `doc.frame`.
+   */
+  setBackground(background, imageSize2) {
+    this.s.background = background;
+    this.s.backgroundSize = imageSize2 ? { ...imageSize2 } : null;
+    this.s.syncViewFrame();
+    this.s.events.emit("render", void 0);
+  }
+  /**
+   * A new current-image size arrived (upstream image, or the widgets while
+   * disconnected; call after {@link setBackground}): an empty document
+   * adopts it, otherwise it is only a display mapping (decision 4).
+   * Deferred while layer files are loading.
+   * @param size - Current image size.
+   */
+  handleBackgroundSize(size) {
+    const s = this.s;
+    if (s.loading) {
+      s.pendingBackgroundSize = { ...size };
+      return;
+    }
+    const source = s.background.kind === "image" ? "image" : "widgets";
+    const frame = s.doc.frame;
+    if (size.width === frame.width && size.height === frame.height) {
+      s.frameSource = source;
+      return;
+    }
+    if (s.isEmpty) this.adoptFrame(size, source);
+  }
+  /**
+   * Replace the frame of an empty document (no history).
+   * @param size - New frame.
+   * @param source - Origin of the size.
+   */
+  adoptFrame(size, source) {
+    const s = this.s;
+    if (s.stroke.active) s.cancelStroke();
+    const frame = { width: Math.round(size.width), height: Math.round(size.height) };
+    s.doc.frame = frame;
+    s.doc.bounds = frameRect(frame);
+    delete s.doc.placement;
+    s.frameSource = source;
+    s.store.reset(s.doc.bounds);
+    for (const layer of s.doc.layers) {
+      s.store.ensure(layer.id);
+      layer.file = null;
+      s.runtime.reset(layer.id, false);
+      s.runtime.bump(layer.id);
+    }
+    s.history.clear();
+    s.selection.set(null);
+    s.lastStrokeEnd = null;
+    s.syncViewFrame();
+    s.events.emit("placement", void 0);
+    s.afterEdit();
+  }
+  /**
+   * Clear all paint and reset the frame to the current image size and the
+   * placement to identity, as one undoable step.
+   */
+  clear() {
+    const s = this.s;
+    if (s.loading) return;
+    if (s.stroke.active) s.cancelStroke();
+    const size = s.imageSize;
+    const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
+    const source = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
+    const before = this.captureSnapshot();
+    const after = { frame, bounds: frameRect(frame), source, pixels: null };
+    this.applySnapshot(after);
+    s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
+    s.lastStrokeEnd = null;
+    s.afterEdit();
+  }
+  /**
+   * Restore a full document snapshot (Clear undo/redo).
+   * @param state - Snapshot to apply.
+   */
+  applySnapshot(state) {
+    const s = this.s;
+    s.doc.frame = { ...state.frame };
+    s.doc.bounds = { ...state.bounds };
+    if (state.placement) s.doc.placement = { ...state.placement };
+    else delete s.doc.placement;
+    s.frameSource = state.source;
+    s.store.reset(state.bounds);
+    for (const layer of s.doc.layers) {
+      const data = state.pixels?.get(layer.id);
+      if (data) s.store.write(layer.id, state.bounds.x, state.bounds.y, data);
+      else s.store.ensure(layer.id);
+      const textData = state.text?.get(layer.id);
+      if (textData) {
+        layer.kind = "text";
+        layer.textData = textData;
+      } else if (layer.kind === "text") {
+        layer.kind = "paint";
+        delete layer.textData;
+      }
+      s.runtime.touch(layer.id);
+    }
+    s.syncViewFrame();
+    s.events.emit("placement", void 0);
+    s.events.emit("layers", void 0);
+  }
+  captureSnapshot() {
+    const s = this.s;
+    const pixels = /* @__PURE__ */ new Map();
+    const text = /* @__PURE__ */ new Map();
+    for (const layer of s.doc.layers) {
+      pixels.set(layer.id, s.store.snapshot(layer.id));
+      if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
+    }
+    const placement = s.doc.placement ? { ...s.doc.placement } : void 0;
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...placement ? { placement } : {}, pixels, text };
+  }
+}
+function snapshotBytes(state) {
+  let bytes = 0;
+  if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
+  return bytes;
+}
+class MaskTint {
+  surface = null;
+  key = null;
+  /**
+   * Bring the tint up to date and return it.
+   * @param source - Coverage canvas (layer or stroke preview), sized to `key.bounds`.
+   * @param key - Current inputs.
+   * @param dirty - Document rect changed in `source` since the last call while
+   *   the key is unchanged (live stroke preview); `null` = nothing extra.
+   * @returns Tinted canvas sized to `key.bounds`.
+   */
+  update(source, key, dirty) {
+    const surface = this.ensureSurface(key.bounds);
+    if (!this.key || !sameKey(this.key, key)) {
+      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key);
+    } else if (dirty) {
+      const local = intersectRect(
+        { x: dirty.x - key.bounds.x, y: dirty.y - key.bounds.y, width: dirty.width, height: dirty.height },
+        { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }
+      );
+      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key);
+    }
+    this.key = { ...key, bounds: { ...key.bounds } };
+    return surface.canvas;
+  }
+  /** Release the cached canvas. */
+  dispose() {
+    if (this.surface) releaseSurface(this.surface);
+    this.surface = null;
+    this.key = null;
+  }
+  ensureSurface(bounds) {
+    const s = this.surface;
+    if (s && s.canvas.width === bounds.width && s.canvas.height === bounds.height) return s;
+    if (s) releaseSurface(s);
+    this.key = null;
+    this.surface = createSurface(bounds.width, bounds.height);
+    return this.surface;
+  }
+}
+function sameKey(a, b) {
+  return a.revision === b.revision && a.color === b.color && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
+}
+function paint(ctx, source, r, key) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(r.x, r.y, r.width, r.height);
+  ctx.clip();
+  ctx.globalAlpha = 1;
+  ctx.clearRect(r.x, r.y, r.width, r.height);
+  ctx.fillStyle = key.color;
+  if (key.invert) {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillRect(r.x, r.y, r.width, r.height);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+  } else {
+    ctx.globalCompositeOperation = "source-over";
+    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+    ctx.globalCompositeOperation = "source-in";
+    ctx.fillRect(r.x, r.y, r.width, r.height);
+  }
+  ctx.restore();
+}
+class LayerDisplay {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  tints = /* @__PURE__ */ new Map();
+  /**
+   * Visible paint layers to composite.
+   * @returns Bottom -> top layers.
+   */
+  compositeLayers() {
+    const s = this.s;
+    const out = [];
+    for (const layer of s.doc.layers) {
+      if (!layer.visible || layer.kind === "mask") continue;
+      const surface = s.store.ensure(layer.id);
+      const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      const offset = this.moveOffset(layer.id);
+      out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
+    }
+    return out;
+  }
+  /** Move-tool drag offset of a layer (document px), or `undefined`. */
+  moveOffset(layerId) {
+    const p = this.s.movePreview;
+    return p && p.layerId === layerId && (p.dx !== 0 || p.dy !== 0) ? { x: p.dx, y: p.dy } : void 0;
+  }
+  /**
+   * Visible mask layers as tinted overlays (drawn above all paint).
+   * @returns Bottom -> top overlays.
+   */
+  maskOverlays() {
+    const s = this.s;
+    const out = [];
+    const bounds = s.store.bounds;
+    for (const layer of s.doc.layers) {
+      if (!layer.visible || layer.kind !== "mask") continue;
+      const surface = s.store.ensure(layer.id);
+      const stroking = s.strokeLayerId === layer.id && s.stroke.active;
+      const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      let tint = this.tints.get(layer.id);
+      if (!tint) {
+        tint = new MaskTint();
+        this.tints.set(layer.id, tint);
+      }
+      const color = maskDisplayColor(layer);
+      const invert = layer.invert === true;
+      const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
+      const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
+      const offset = this.moveOffset(layer.id);
+      out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...offset ? { offset } : {} });
+    }
+    return out;
+  }
+  /** Release the tint caches. */
+  dispose() {
+    for (const tint of this.tints.values()) tint.dispose();
+    this.tints.clear();
+  }
+}
+const AA_PAD = 1;
+const HEAD_HALF_WIDTH = 0.4;
+const HEAD_MAX_SHARE = 0.9;
+function snapAngle(from, to, stepDeg = 15) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return { ...to };
+  const step = stepDeg * Math.PI / 180;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  return { x: from.x + clean$1(Math.cos(angle)) * length, y: from.y + clean$1(Math.sin(angle)) * length };
+}
+function boxFromDrag(start, current, square, fromCenter) {
+  let dx = current.x - start.x;
+  let dy = current.y - start.y;
+  if (square) {
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    dx = (dx < 0 ? -1 : 1) * side;
+    dy = (dy < 0 ? -1 : 1) * side;
+  }
+  if (fromCenter) {
+    const w = Math.abs(dx);
+    const h = Math.abs(dy);
+    return { x: start.x - w, y: start.y - h, width: w * 2, height: h * 2 };
+  }
+  return { x: Math.min(start.x, start.x + dx), y: Math.min(start.y, start.y + dy), width: Math.abs(dx), height: Math.abs(dy) };
+}
+function crispRect(rect, strokeWidth) {
+  const x = Math.round(rect.x);
+  const y = Math.round(rect.y);
+  const r = { x, y, width: Math.round(rect.x + rect.width) - x, height: Math.round(rect.y + rect.height) - y };
+  const odd = strokeWidth > 0 && Math.round(strokeWidth) % 2 === 1;
+  return odd ? { ...r, x: r.x + 0.5, y: r.y + 0.5 } : r;
+}
+function headLength(width, ratio, lineLength, count) {
+  if (count <= 0) return 0;
+  const wanted = Math.max(0, width * ratio);
+  return Math.min(wanted, lineLength * HEAD_MAX_SHARE / count);
+}
+function arrowHeadPolygon(tip, from, length) {
+  const dx = tip.x - from.x;
+  const dy = tip.y - from.y;
+  const d = Math.hypot(dx, dy);
+  if (d === 0 || length <= 0) return [];
+  const ux = dx / d;
+  const uy = dy / d;
+  const bx = tip.x - ux * length;
+  const by = tip.y - uy * length;
+  const half = length * HEAD_HALF_WIDTH;
+  return [
+    { ...tip },
+    { x: bx - uy * half, y: by + ux * half },
+    { x: bx + uy * half, y: by - ux * half }
+  ];
+}
+function lineGeometry(line) {
+  const { from, to } = line;
+  const length = Math.hypot(to.x - from.x, to.y - from.y);
+  if (length === 0 || line.width <= 0) return null;
+  const count = line.heads === "both" ? 2 : line.heads === "end" ? 1 : 0;
+  const head = headLength(line.width, line.headRatio, length, count);
+  const ux = (to.x - from.x) / length;
+  const uy = (to.y - from.y) / length;
+  const heads = [];
+  let a = from;
+  let b = to;
+  if (count > 0 && head > 0) {
+    heads.push(arrowHeadPolygon(to, from, head));
+    b = { x: to.x - ux * head, y: to.y - uy * head };
+    if (count === 2) {
+      heads.push(arrowHeadPolygon(from, to, head));
+      a = { x: from.x + ux * head, y: from.y + uy * head };
+    }
+  }
+  const shaftLength = Math.hypot(b.x - a.x, b.y - a.y);
+  return { shaft: shaftLength > 0 ? [a, b] : null, heads };
+}
+function isDrawableShape(shape) {
+  if (shape.kind === "line") return lineGeometry(shape) !== null;
+  const hasPaint = shape.paint !== "stroke" || shape.strokeWidth > 0;
+  return hasPaint && shape.rect.width > 0 && shape.rect.height > 0;
+}
+function shapeBounds(shape) {
+  const empty = { x: 0, y: 0, width: 0, height: 0 };
+  if (!isDrawableShape(shape)) return empty;
+  if (shape.kind === "line") {
+    const geo = lineGeometry(shape);
+    if (!geo) return empty;
+    let r = empty;
+    if (geo.shaft) r = unionRect(r, padRect(pointsRect(geo.shaft), shape.width / 2));
+    for (const head of geo.heads) r = unionRect(r, pointsRect(head));
+    return padRect(r, AA_PAD);
+  }
+  const stroke = shape.paint === "fill" ? 0 : shape.strokeWidth;
+  const path = shape.kind === "rect" ? crispRect(shape.rect, stroke) : shape.rect;
+  return padRect(path, stroke / 2 + AA_PAD);
+}
+function pointsRect(points) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  if (minX > maxX) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+function padRect(r, pad) {
+  return { x: r.x - pad, y: r.y - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
+}
+function clean$1(v) {
+  return Math.abs(v) < 1e-12 ? 0 : v;
+}
+function renderShape(ctx, shape, origin, colorOverride) {
+  if (!isDrawableShape(shape)) return;
+  ctx.save();
+  ctx.translate(-origin.x, -origin.y);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  if (shape.kind === "line") drawLine(ctx, shape, colorOverride);
+  else drawBox(ctx, shape, colorOverride);
+  ctx.restore();
+}
+function drawLine(ctx, line, colorOverride) {
+  const geo = lineGeometry(line);
+  if (!geo) return;
+  const color = colorOverride ?? line.color;
+  if (geo.shaft) {
+    const [a, b] = geo.shaft;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.lineWidth = line.width;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = color;
+    ctx.stroke();
+  }
+  ctx.fillStyle = color;
+  for (const head of geo.heads) {
+    const [first, ...rest] = head;
+    if (!first) continue;
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (const p of rest) ctx.lineTo(p.x, p.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+function drawBox(ctx, box, colorOverride) {
+  const stroke = box.paint !== "fill" && box.strokeWidth > 0;
+  const fill = box.paint !== "stroke";
+  const path = (strokeWidth) => {
+    ctx.beginPath();
+    if (box.kind === "rect") {
+      const r = crispRect(box.rect, strokeWidth);
+      ctx.rect(r.x, r.y, r.width, r.height);
+    } else {
+      const { x, y, width, height } = box.rect;
+      ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+    }
+  };
+  if (fill) {
+    path(stroke ? box.strokeWidth : 0);
+    ctx.fillStyle = colorOverride ?? box.fillColor;
+    ctx.fill();
+  }
+  if (stroke) {
+    path(box.strokeWidth);
+    ctx.lineWidth = box.strokeWidth;
+    ctx.lineJoin = "miter";
+    ctx.strokeStyle = colorOverride ?? box.strokeColor;
+    ctx.stroke();
+  }
+}
+const LAYERS_ENTRY_BASE_BYTES = 256;
+function changesBytes(changes) {
+  let bytes = LAYERS_ENTRY_BASE_BYTES;
+  for (const change of changes) {
+    if ((change.op === "insert" || change.op === "remove") && change.pixels) bytes += change.pixels.data.data.byteLength;
+  }
+  return bytes;
+}
+function captureLayerPixels(s, layerId) {
+  if (!s.runtime.get(layerId)?.hasContent) return null;
+  const bounds = s.store.bounds;
+  return { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
+}
+function installLayerPixels(s, layerId, pixels) {
+  const surface = s.store.ensure(layerId);
+  surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+  if (pixels) {
+    s.ensureBounds({ x: pixels.x, y: pixels.y, width: pixels.data.width, height: pixels.data.height }, false);
+    s.store.write(layerId, pixels.x, pixels.y, pixels.data);
+  }
+  s.runtime.reinstate(layerId, pixels !== null);
+}
+function releaseRemovedLayers(s) {
+  const keep = new Set(s.doc.layers.map((l) => l.id));
+  s.store.retain(keep);
+}
+function applyLayersEntry(s, entry, forward) {
+  if (s.stroke.active) s.cancelStroke();
+  const changes = forward ? entry.changes : [...entry.changes].reverse();
+  for (const change of changes) {
+    if (!applyLayerChange(s.doc.layers, change, forward)) continue;
+    if (change.op !== "insert" && change.op !== "remove") continue;
+    const appeared = change.op === "insert" === forward;
+    if (appeared) {
+      installLayerPixels(s, change.layer.id, change.pixels);
+      const layer = s.doc.layers.find((l) => l.id === change.layer.id);
+      if (!change.pixels && layer?.kind === "text") {
+        renderTextLayer(s, layer);
+        s.runtime.touch(layer.id);
+      }
+    } else {
+      s.runtime.remove(change.layer.id);
+    }
+  }
+  const active = forward ? entry.activeAfter : entry.activeBefore;
+  if (s.doc.layers.some((l) => l.id === active && isPaintLike(l))) s.doc.activeLayerId = active;
+  releaseRemovedLayers(s);
+  emitLayerEvents(s);
+}
+function emitLayerEvents(s) {
+  s.events.emit("layers", void 0);
+  s.events.emit("mask", void 0);
+}
+function clean(n) {
+  return n === 0 ? 0 : n;
+}
+function dragDelta(start, current) {
+  return { x: clean(Math.round(current.x - start.x)), y: clean(Math.round(current.y - start.y)) };
+}
+function nudgeStep(imagePx, mapScale) {
+  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
+  return Math.max(1, Math.round(imagePx / mapScale));
+}
+function alphaBounds(data, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    let first = -1;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3]) {
+        first = x;
+        break;
+      }
+    }
+    if (first < 0) continue;
+    let last = first;
+    for (let x = width - 1; x > first; x--) {
+      if (data[row + x * 4 + 3]) {
+        last = x;
+        break;
+      }
+    }
+    if (first < minX) minX = first;
+    if (last > maxX) maxX = last;
+    if (minY === height) minY = y;
+    maxY = y;
+  }
+  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function offsetRect(r, dx, dy) {
+  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
+}
+function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
+  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
+  const target = offsetRect(content, dx, dy);
+  const grown = growBounds(bounds, target, frame, limits);
+  const kind = containsRect(grown, target) ? "translate" : "patch";
+  return { kind, bounds: grown, target, region: unionRect(content, target) };
+}
+function translateStep(entry, forward) {
+  const moved = offsetRect(entry.content, entry.dx, entry.dy);
+  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean(-entry.dx), dy: clean(-entry.dy) };
+}
+function mergeTranslate(entry, dx, dy) {
+  entry.dx = clean(entry.dx + dx);
+  entry.dy = clean(entry.dy + dy);
+}
+const TRANSLATE_ENTRY_BYTES = 128;
+const contentCache = /* @__PURE__ */ new WeakMap();
+function cacheOf(s) {
+  let cache2 = contentCache.get(s);
+  if (!cache2) {
+    cache2 = /* @__PURE__ */ new Map();
+    contentCache.set(s, cache2);
+  }
+  return cache2;
+}
+function layerContentRect(s, layerId) {
+  const cache2 = cacheOf(s);
+  const revision = s.runtime.revision(layerId);
+  const hit = cache2.get(layerId);
+  if (hit && hit.revision === revision) return { ...hit.rect };
+  let rect = { x: 0, y: 0, width: 0, height: 0 };
+  if (s.runtime.get(layerId)?.hasContent) {
+    const bounds = s.store.bounds;
+    const data = s.store.snapshot(layerId);
+    const local = alphaBounds(data.data, data.width, data.height);
+    if (!isEmptyRect(local)) rect = offsetRect(local, bounds.x, bounds.y);
+  }
+  cache2.set(layerId, { revision, rect });
+  return { ...rect };
+}
+function shiftRegion(s, layerId, from, dx, dy) {
+  const bounds = s.store.bounds;
+  const src = intersectRect(from, bounds);
+  if (isEmptyRect(src)) return;
+  const surface = s.store.ensure(layerId);
+  const lx = src.x - bounds.x;
+  const ly = src.y - bounds.y;
+  const tmp = createSurface(src.width, src.height);
+  tmp.ctx.drawImage(surface.canvas, lx, ly, src.width, src.height, 0, 0, src.width, src.height);
+  const ctx = surface.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(lx, ly, src.width, src.height);
+  ctx.drawImage(tmp.canvas, lx + dx, ly + dy);
+  ctx.restore();
+  releaseSurface(tmp);
+}
+function translateLayerPixels(s, layerId, dx, dy, gesture) {
+  const content = layerContentRect(s, layerId);
+  const plan = planTranslate(s.store.bounds, content, dx, dy, s.doc.frame);
+  if (plan.kind === "none") return false;
+  s.ensureBounds(plan.target, true);
+  const cache2 = cacheOf(s);
+  if (plan.kind === "translate") {
+    shiftRegion(s, layerId, content, dx, dy);
+    const merge = gesture ? s.history.mergeTarget() : void 0;
+    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
+      mergeTranslate(merge, dx, dy);
+      if (merge.dx === 0 && merge.dy === 0) s.history.discardNewest();
+    } else {
+      const entry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
+      if (gesture) entry.gesture = gesture;
+      s.history.push(entry);
+    }
+    s.runtime.touch(layerId);
+    cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
+    return true;
+  }
+  const region = intersectRect(plan.region, s.store.bounds);
+  const before = s.store.read(layerId, region);
+  if (!before) return false;
+  shiftRegion(s, layerId, content, dx, dy);
+  const after = s.store.read(layerId, before.rect);
+  if (after) {
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+  }
+  s.runtime.touch(layerId);
+  cache2.delete(layerId);
+  return true;
+}
+function applyTranslateEntry(s, entry, forward) {
+  if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+  const step = translateStep(entry, forward);
+  s.ensureBounds(step.to, false);
+  shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
+  s.runtime.touch(entry.layerId);
+  cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
+}
+class PaintOps {
+  /**
+   * @param s - Shared editor state.
+   * @param frames - Frame operations (Clear snapshots for undo).
+   * @param stamps - Dab stamp cache.
+   */
+  constructor(s, frames, stamps) {
+    this.s = s;
+    this.frames = frames;
+    this.stamps = stamps;
+  }
+  s;
+  frames;
+  stamps;
+  // ── Quick Mask / paint target ───────────────────────────────────────────
+  /**
+   * Switch the paint target. Targeting the mask adds a default mask layer to
+   * documents that have none.
+   * @param target - New target.
+   */
+  setPaintTarget(target) {
+    const s = this.s;
+    if (target === s.target) return;
+    if (s.stroke.active) s.cancelStroke();
+    if (target === "mask") s.ensureMask();
+    s.target = target;
+    s.events.emit("mask", void 0);
+  }
+  /**
+   * Show or hide the mask layer (adds one if missing).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible) {
+    const s = this.s;
+    const layer = s.ensureMask();
+    if (layer.visible === visible) return;
+    if (s.stroke.active && s.strokeLayerId === layer.id) s.cancelStroke();
+    layer.visible = visible;
+    s.events.emit("mask", void 0);
+    s.events.emit("change", void 0);
+    s.events.emit("render", void 0);
+  }
+  // ── Strokes ─────────────────────────────────────────────────────────────
+  /**
+   * Start a stroke on the paint target (mask strokes paint white coverage).
+   * @param style - Stroke appearance.
+   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
+   * @returns `false` if painting is not possible (loading, locked, hidden).
+   */
+  beginStroke(style, maxDiameter) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
+    if (!layer) return false;
+    if (preparePixelEdit(s, layer) !== "proceed") return false;
+    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
+    s.strokeLayerId = layer.id;
+    s.strokeDiameter = Math.max(1, maxDiameter);
+    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle);
+    s.events.emit("history", void 0);
+    return true;
+  }
+  /**
+   * Add dabs to the current stroke, growing bounds when they go off-frame.
+   * @param dabs - Dabs in document coords.
+   */
+  addDabs(dabs) {
+    const s = this.s;
+    if (!s.stroke.active || dabs.length === 0) return;
+    let need = { x: 0, y: 0, width: 0, height: 0 };
+    for (const dab of dabs) {
+      const r = dab.size / 2 + 1;
+      need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
+    }
+    s.ensureBounds(need, true);
+    s.stroke.addDabs(dabs, this.stamps, s.strokeDiameter);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * Replace the current stroke's content with one shape (live preview;
+   * shape tools call this on every move). Grows bounds like dabs do; on a
+   * mask target every part paints white coverage.
+   * @param shape - Shape in document coords.
+   */
+  drawShape(shape) {
+    const s = this.s;
+    const layerId = s.strokeLayerId;
+    if (!s.stroke.active || !layerId) return;
+    const need = shapeBounds(shape);
+    if (!isEmptyRect(need)) s.ensureBounds(need, true);
+    const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
+    const rect = intersectRect(roundOutRect(need), s.store.bounds);
+    s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
+    s.events.emit("render", void 0);
+  }
+  /**
+   * Commit the stroke to its layer as one undo step.
+   * @param end - Where the stroke ended, document coords.
+   */
+  endStroke(end) {
+    const s = this.s;
+    const layerId = s.strokeLayerId;
+    if (!s.stroke.active || !layerId) return;
+    const rect = s.stroke.touched;
+    const surface = s.store.ensure(layerId);
+    if (isEmptyRect(rect)) {
+      s.stroke.cancel();
+    } else {
+      const before = s.store.read(layerId, rect);
+      s.stroke.commit(surface);
+      const after = s.store.read(layerId, rect);
+      if (before && after) {
+        const bytes = before.data.data.byteLength + after.data.data.byteLength;
+        s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+        s.runtime.touch(layerId);
+      }
+    }
+    s.strokeLayerId = null;
+    if (end) s.lastStrokeEnd = { ...end };
+    s.afterEdit();
+  }
+  // ── Undo / redo ─────────────────────────────────────────────────────────
+  /** Undo the last operation (no-op while stroking; cancels a Move drag preview). */
+  undo() {
+    const s = this.s;
+    if (!s.history.canUndo || s.stroke.active) return;
+    s.movePreview = null;
+    const entry = s.history.undo();
+    if (entry) this.applyEntry(entry, "before");
+    s.afterEdit();
+  }
+  /** Redo the last undone operation (no-op while stroking; cancels a Move drag preview). */
+  redo() {
+    const s = this.s;
+    if (!s.history.canRedo || s.stroke.active) return;
+    s.movePreview = null;
+    const entry = s.history.redo();
+    if (entry) this.applyEntry(entry, "after");
+    s.afterEdit();
+  }
+  applyEntry(entry, side) {
+    const s = this.s;
+    if (entry.kind === "clear") {
+      this.frames.applySnapshot(side === "before" ? entry.before : entry.after);
+      s.lastStrokeEnd = null;
+      return;
+    }
+    if (entry.kind === "layers") {
+      applyLayersEntry(s, entry, side === "after");
+      return;
+    }
+    if (entry.kind === "selection") {
+      s.selection.set(side === "before" ? entry.before : entry.after);
+      return;
+    }
+    if (entry.kind === "translate") {
+      applyTranslateEntry(s, entry, side === "after");
+      return;
+    }
+    if (entry.kind === "text") {
+      applyTextEntry(s, entry, side === "after");
+      return;
+    }
+    if (entry.kind === "group") {
+      const parts = side === "after" ? entry.entries : [...entry.entries].reverse();
+      for (const part of parts) this.applyEntry(part, side);
+      return;
+    }
+    if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+    const data = side === "before" ? entry.before : entry.after;
+    s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
+    s.store.write(entry.layerId, entry.x, entry.y, data);
+    s.runtime.touch(entry.layerId);
+  }
+}
+const MAX_STAMPS = 32;
+class StampCache {
+  stamps = /* @__PURE__ */ new Map();
+  /**
+   * Get (or render) a stamp.
+   *
+   * @param diameter - Largest diameter it will be drawn at, px.
+   * @param hardness - 0..1.
+   * @param color - CSS colour.
+   * @returns Square surface with the disc centred.
+   */
+  get(diameter, hardness, color) {
+    const size = Math.max(2, Math.ceil(diameter));
+    const key = `${size}|${hardness.toFixed(2)}|${color}`;
+    const hit = this.stamps.get(key);
+    if (hit) {
+      this.stamps.delete(key);
+      this.stamps.set(key, hit);
+      return hit;
+    }
+    const stamp = renderStamp(size, hardness, color);
+    this.stamps.set(key, stamp);
+    if (this.stamps.size > MAX_STAMPS) {
+      const oldest = this.stamps.keys().next().value;
+      if (oldest !== void 0) this.stamps.delete(oldest);
+    }
+    return stamp;
+  }
+  /** Drop all stamps. */
+  clear() {
+    this.stamps.clear();
+  }
+}
+function renderStamp(size, hardness, color) {
+  const surface = createSurface(size, size);
+  const { ctx } = surface;
+  const r = size / 2;
+  const gradient = ctx.createRadialGradient(r, r, 0, r, r, r);
+  const rgb = colorToRgb(ctx, color);
+  for (const [offset, alpha] of stampStops(hardness, r)) {
+    gradient.addColorStop(offset, `rgba(${rgb}, ${alpha})`);
+  }
+  ctx.fillStyle = gradient;
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+  return surface;
+}
+function colorToRgb(ctx, color) {
+  ctx.fillStyle = "#000000";
+  ctx.fillStyle = color;
+  const parsed = String(ctx.fillStyle);
+  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
+  if (hex) {
+    const n = parseInt(hex, 16);
+    return `${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255}`;
+  }
+  const rgba = /^rgba?\(([^)]+)\)$/i.exec(parsed)?.[1];
+  if (rgba) return rgba.split(",").slice(0, 3).join(",");
+  return "0, 0, 0";
+}
+class EditorBase {
+  events;
+  view;
+  stamps = new StampCache();
+  /** FG/BG colours (session-scoped, not saved). */
+  colors;
+  s;
+  frames;
+  paint;
+  io;
+  display;
+  /**
+   * @param doc - Document (copied).
+   * @param source - Origin of its frame size.
+   * @param store - Existing pixels (for clones); a blank store is created otherwise.
+   * @param colors - Colour state to start from (forks copy their source's).
+   */
+  constructor(doc, source, store, colors) {
+    this.s = new EditorState(doc, source, store);
+    this.events = this.s.events;
+    this.view = this.s.view;
+    this.colors = new ColorState(colors?.current);
+    this.frames = new FrameOps(this.s);
+    this.paint = new PaintOps(this.s, this.frames, this.stamps);
+    this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
+    this.display = new LayerDisplay(this.s);
+  }
+  // ── Background / frame ──────────────────────────────────────────────────
+  /**
+   * Set what is drawn under the paint; layer pixels are untouched.
+   * @param background - Image or fill.
+   * @param imageSize - Current image size: the image's natural size, or the
+   *   `width` x `height` widgets for a fill; `null` = show `doc.frame`.
+   */
+  setBackground(background, imageSize2) {
+    this.frames.setBackground(background, imageSize2);
+  }
+  /**
+   * A new current-image size arrived (an empty document adopts it; a painted
+   * one is only displayed through the frame map). Call after `setBackground`.
+   * @param size - Current image size.
+   */
+  handleBackgroundSize(size) {
+    this.frames.handleBackgroundSize(size);
+  }
+  /**
+   * Replace the frame of an empty document (no history).
+   * @param size - New frame.
+   * @param source - Origin of the size.
+   */
+  adoptFrame(size, source) {
+    this.frames.adoptFrame(size, source);
+  }
+  /** Clear all paint (masks included) and reset the frame; one undo step. */
+  clear() {
+    this.frames.clear();
+  }
+  // ── Restore bookkeeping (persistence) ───────────────────────────────────
+  /** Mark the start of an async layer restore (disables painting). */
+  beginLoading() {
+    this.io.beginLoading();
+  }
+  /** Mark the end of an async layer restore; applies a deferred frame change. */
+  endLoading() {
+    this.io.endLoading();
+  }
+  /**
+   * Draw a restored PNG into a layer (not an undo step, not dirty).
+   * @param layerId - Layer id.
+   * @param image - Decoded PNG (sized to `bounds`).
+   */
+  restoreLayerPixels(layerId, image) {
+    this.io.restoreLayerPixels(layerId, image);
+  }
+  /**
+   * A layer file failed to restore: re-render a text layer from `textData`
+   * (marked dirty); other layers stay empty with their `file` kept.
+   * @param layerId - Layer id.
+   * @returns `true` if the layer was recovered.
+   */
+  recoverMissingLayer(layerId) {
+    return this.io.recoverMissingLayer(layerId);
+  }
+  /**
+   * Record a finished upload.
+   * @param layerId - Layer id.
+   * @param version - Layer version that was uploaded.
+   * @param file - Stored file reference (`null` for an empty layer).
+   */
+  markUploaded(layerId, version, file) {
+    this.io.markUploaded(layerId, version, file);
+  }
+  // ── Strokes ─────────────────────────────────────────────────────────────
+  /**
+   * Start a stroke on the paint target.
+   * @param style - Stroke appearance.
+   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
+   * @returns `false` if painting is not possible (loading, locked, hidden).
+   */
+  beginStroke(style, maxDiameter) {
+    return this.paint.beginStroke(style, maxDiameter);
+  }
+  /**
+   * Add dabs to the current stroke.
+   * @param dabs - Dabs in document coords.
+   */
+  addDabs(dabs) {
+    this.paint.addDabs(dabs);
+  }
+  /**
+   * Replace the current stroke's content with one shape (shape tools: live
+   * preview on every move, rasterized into the layer by {@link endStroke}).
+   * @param shape - Shape in document coords.
+   */
+  drawShape(shape) {
+    this.paint.drawShape(shape);
+  }
+  /**
+   * Commit the stroke to its layer as one undo step.
+   * @param end - Where the stroke ended, document coords (for Shift+click lines).
+   */
+  endStroke(end) {
+    this.paint.endStroke(end);
+  }
+  /** Abort the current stroke. */
+  cancelStroke() {
+    this.s.cancelStroke();
+  }
+}
+const PICK_ALPHA_THRESHOLD = 10;
+function pickLayer(layers2, alphaAt, threshold = PICK_ALPHA_THRESHOLD) {
+  for (let i = layers2.length - 1; i >= 0; i--) {
+    const layer = layers2[i];
+    if (!layer || !layer.visible || layer.locked) continue;
+    if (layer.kind !== "paint" && layer.kind !== "text") continue;
+    if (alphaAt(layer.id) > threshold) return layer.id;
+  }
+  return null;
+}
+class LayerOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  // ── Queries ─────────────────────────────────────────────────────────────
+  /**
+   * Pixel revision of a layer: changes whenever its committed pixels change
+   * (thumbnail cache key; not bumped during a stroke preview).
+   * @param layerId - Layer id.
+   * @returns Revision number.
+   */
+  revision(layerId) {
+    return this.s.runtime.revision(layerId);
+  }
+  /**
+   * Whether the layer can be deleted (paint-like, not the last one).
+   * @param layerId - Layer id.
+   * @returns `true` if deletable.
+   */
+  canDelete(layerId) {
+    return canDeleteLayer(this.s.doc.layers, layerId);
+  }
+  /**
+   * Whether the layer can be duplicated (paint-like).
+   * @param layerId - Layer id.
+   * @returns `true` if duplicable.
+   */
+  canDuplicate(layerId) {
+    return canDuplicateLayer(this.s.doc.layers, layerId);
+  }
+  /**
+   * Move-tool auto-select: the topmost visible, unlocked paint/text layer
+   * with a visible pixel at a document point ({@link pickLayer}; reads one
+   * pixel per candidate layer).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns Layer id, or `null` if nothing is hit.
+   */
+  pickAt(x, y) {
+    const s = this.s;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const rect = { x: Math.floor(x), y: Math.floor(y), width: 1, height: 1 };
+    return pickLayer(s.doc.layers, (id) => s.store.get(id) ? s.store.read(id, rect)?.data.data[3] ?? 0 : 0);
+  }
+  // ── Not undoable ────────────────────────────────────────────────────────
+  /**
+   * Make a paint layer the active one (the layer strokes go to outside
+   * Quick Mask). Mask layers are selected via the paint target instead.
+   * @param layerId - Paint layer id.
+   * @returns `true` if the active layer changed.
+   */
+  setActiveLayer(layerId) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
+    if (s.stroke.active) s.cancelStroke();
+    s.doc.activeLayerId = layerId;
+    s.events.emit("layers", void 0);
+    s.events.emit("change", void 0);
+    return true;
+  }
+  /**
+   * Show or hide a layer (hidden layers are skipped in `IMAGE`/`MASK`).
+   * @param layerId - Layer id.
+   * @param visible - Visibility.
+   */
+  setVisible(layerId, visible) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || layer.visible === visible) return;
+    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
+    layer.visible = visible;
+    this.afterMeta();
+  }
+  /**
+   * Lock or unlock a layer (painting on a locked layer is refused).
+   * @param layerId - Layer id.
+   * @param locked - Lock state.
+   */
+  setLocked(layerId, locked) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || layer.locked === locked) return;
+    if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
+    layer.locked = locked;
+    this.afterMeta();
+  }
+  // ── Structural (undoable) ───────────────────────────────────────────────
+  /**
+   * Add an empty "Layer N" above the active paint layer and make it active.
+   * @returns New layer id, or `null` while loading.
+   */
+  add() {
+    return this.addLayer(createPaintLayer(nextLayerName(this.s.doc.layers)));
+  }
+  /**
+   * Insert a prepared, empty layer (e.g. a new text layer) above the active
+   * paint layer and make it active, as one undoable add.
+   * @param layer - New layer (fresh id, not yet in the document).
+   * @returns Its id, or `null` while loading.
+   */
+  addLayer(layer) {
+    if (!this.ready()) return null;
+    this.insert(layer, paintInsertIndex(this.s.doc), null);
+    return layer.id;
+  }
+  /**
+   * Duplicate a paint layer (pixels included) directly above it; the copy
+   * becomes active.
+   * @param layerId - Source layer (default: the active layer).
+   * @returns New layer id, or `null` if not possible.
+   */
+  duplicate(layerId = this.s.doc.activeLayerId) {
+    const s = this.s;
+    if (!this.ready() || !this.canDuplicate(layerId)) return null;
+    const index = s.doc.layers.findIndex((l) => l.id === layerId);
+    const source = s.doc.layers[index];
+    if (!source) return null;
+    const layer = { ...source, id: createId(8), name: `${source.name} copy` };
+    this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    return layer.id;
+  }
+  /**
+   * Delete a paint layer (not the last one; masks are not deletable). The
+   * pixels stay in the undo entry.
+   * @param layerId - Layer (default: the active layer).
+   * @returns `true` if deleted.
+   */
+  remove(layerId = this.s.doc.activeLayerId) {
+    const s = this.s;
+    if (!this.ready() || !this.canDelete(layerId)) return false;
+    const index = s.doc.layers.findIndex((l) => l.id === layerId);
+    const layer = s.doc.layers[index];
+    if (!layer) return false;
+    const activeBefore = s.doc.activeLayerId;
+    const pixels = captureLayerPixels(s, layerId);
+    s.doc.layers.splice(index, 1);
+    s.runtime.remove(layerId);
+    releaseRemovedLayers(s);
+    if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
+    this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
+    return true;
+  }
+  /**
+   * Reorder a paint layer next to another paint layer.
+   * @param layerId - Dragged layer.
+   * @param targetId - Layer it is dropped next to.
+   * @param above - Above (true) or below the target in the stack.
+   * @returns `true` if the order changed.
+   */
+  move(layerId, targetId, above) {
+    const s = this.s;
+    if (!this.ready()) return false;
+    const move = resolveMove(s.doc.layers, layerId, targetId, above);
+    if (!move) return false;
+    const [layer] = s.doc.layers.splice(move.from, 1);
+    if (!layer) return false;
+    s.doc.layers.splice(move.to, 0, layer);
+    this.record([{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
+    return true;
+  }
+  /**
+   * Rename a layer (trimmed; empty names are ignored).
+   * @param layerId - Layer id.
+   * @param name - New name.
+   * @returns `true` if renamed.
+   */
+  rename(layerId, name) {
+    const trimmed = name.trim().slice(0, 100);
+    if (!trimmed) return false;
+    return this.setProps(layerId, { name: trimmed });
+  }
+  /**
+   * Layer opacity (paint: composite opacity; mask: overlay display only).
+   * @param layerId - Layer id.
+   * @param opacity - 0..1 (clamped).
+   * @param gesture - Edits with the same key merge into one undo entry (a scrub/slider drag).
+   * @returns `true` if changed.
+   */
+  setOpacity(layerId, opacity, gesture) {
+    if (!Number.isFinite(opacity)) return false;
+    return this.setProps(layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
+  }
+  /**
+   * Mask display colour.
+   * @param layerId - Mask layer id.
+   * @param color - `#rrggbb`.
+   * @param gesture - Edits with the same key merge into one undo entry (picker drag).
+   * @returns `true` if changed.
+   */
+  setMaskColor(layerId, color, gesture) {
+    if (this.find(layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
+    return this.setProps(layerId, { color: color.toLowerCase() }, gesture);
+  }
+  /**
+   * Per-mask invert (applied before the union, decision 5).
+   * @param layerId - Mask layer id.
+   * @param invert - Invert state.
+   * @returns `true` if changed.
+   */
+  setMaskInvert(layerId, invert) {
+    if (this.find(layerId)?.kind !== "mask") return false;
+    return this.setProps(layerId, { invert });
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  find(layerId) {
+    return this.s.doc.layers.find((l) => l.id === layerId);
+  }
+  /** Structural edits wait for restores and cancel a running stroke. */
+  ready() {
+    const s = this.s;
+    if (s.loading) return false;
+    if (s.stroke.active) s.cancelStroke();
+    return true;
+  }
+  insert(layer, index, pixels) {
+    const s = this.s;
+    const activeBefore = s.doc.activeLayerId;
+    s.doc.layers.splice(index, 0, layer);
+    installLayerPixels(s, layer.id, pixels);
+    s.doc.activeLayerId = layer.id;
+    this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
+  }
+  setProps(layerId, props, gesture) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || s.loading || !propsDiffer(layer, props)) return false;
+    const merge = gesture ? s.history.mergeTarget() : void 0;
+    const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
+    if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
+      Object.assign(change.after, props);
+      writeProps(layer, props);
+      if (merge?.kind === "layers" && merge.changes.length === 1 && propsEqual(change.before, change.after)) s.history.discardNewest();
+      this.afterMeta(true);
+      return true;
+    }
+    const before = readProps(layer, props);
+    writeProps(layer, props);
+    this.record([{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
+    return true;
+  }
+  record(changes, activeBefore, gesture) {
+    const s = this.s;
+    s.history.push({
+      kind: "layers",
+      changes,
+      activeBefore,
+      activeAfter: s.doc.activeLayerId,
+      bytes: changesBytes(changes),
+      ...gesture ? { gesture } : {}
+    });
+    this.afterMeta(true);
+  }
+  /** Events after a metadata change (`history` too when it was recorded). */
+  afterMeta(history = false) {
+    const s = this.s;
+    if (history) s.events.emit("history", void 0);
+    emitLayerEvents(s);
+    s.events.emit("change", void 0);
+    s.events.emit("render", void 0);
+  }
+}
+function sameKeys(a, b) {
+  const ka = Object.keys(a).sort().join();
+  return ka === Object.keys(b).sort().join();
+}
+class EditorMaskOps {
+  /**
+   * @param s - Shared editor state.
+   * @param paint - Paint operations (owns `setPaintTarget` / `setMaskVisible`).
+   */
+  constructor(s, paint2) {
+    this.s = s;
+    this.paint = paint2;
+  }
+  s;
+  paint;
+  /** What brush/eraser strokes paint into (UI state, not saved). */
+  get paintTarget() {
+    return this.s.target;
+  }
+  /** The mask layer Quick Mask edits, if the document has one. */
+  get maskLayer() {
+    return findMaskLayer(this.s.doc);
+  }
+  /**
+   * Whether any mask layer is hidden AND has ever held paint (queue-time
+   * warning: it will not be in the MASK output).
+   * @returns `true` if a hidden-but-painted mask exists.
+   */
+  hiddenMaskHasContent() {
+    return this.s.doc.layers.some((l) => l.kind === "mask" && !l.visible && this.s.runtime.get(l.id)?.hasContent === true);
+  }
+  /**
+   * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
+   * @param target - New target.
+   */
+  setPaintTarget(target) {
+    this.paint.setPaintTarget(target);
+  }
+  /** Toggle between the paint layer and the mask. */
+  togglePaintTarget() {
+    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+  }
+  /**
+   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
+   * also excluded from the `MASK` output (saved-file contract).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible) {
+    this.paint.setMaskVisible(visible);
+  }
+}
+const pixelMover = {
+  move: (s, layer, dx, dy, gesture) => translateLayerPixels(s, layer.id, dx, dy, gesture)
+};
+const textMover = {
+  move: (s, layer, dx, dy, gesture) => moveTextLayer(s, layer, dx, dy, gesture)
+};
+const MOVERS = {
+  paint: pixelMover,
+  mask: pixelMover,
+  text: textMover
+};
+const UNMOVABLE_LAYER_NOTE = "This layer can't be moved.";
+function moverFor(layer) {
+  return MOVERS[layer.kind];
+}
+const NUDGE_GESTURE = "move-nudge";
+class LayerMoveOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /** A drag preview is in progress. */
+  get dragging() {
+    return this.s.movePreview !== null;
+  }
+  /**
+   * Start a drag of the active layer (notes when locked / hidden / unmovable).
+   * @returns `false` if the layer can't be moved now.
+   */
+  begin() {
+    const s = this.s;
+    if (s.movePreview) return true;
+    const layer = this.editable();
+    if (!layer) return false;
+    s.movePreview = { layerId: layer.id, dx: 0, dy: 0 };
+    return true;
+  }
+  /**
+   * Update the drag offset (cheap: redraw only).
+   * @param dx - Offset from the drag start, whole document px.
+   * @param dy - Offset from the drag start, whole document px.
+   */
+  preview(dx, dy) {
+    const p = this.s.movePreview;
+    if (!p || p.dx === dx && p.dy === dy) return;
+    p.dx = dx;
+    p.dy = dy;
+    this.s.events.emit("render", void 0);
+  }
+  /**
+   * End the drag: move the layer by the preview offset as one undo entry.
+   * @returns `true` if the layer moved.
+   */
+  commit() {
+    const s = this.s;
+    const p = s.movePreview;
+    if (!p) return false;
+    s.movePreview = null;
+    const moved = this.apply(p.layerId, p.dx, p.dy, void 0);
+    if (!moved) s.events.emit("render", void 0);
+    return moved;
+  }
+  /** Abort the drag (Esc, pointer cancel, tool switch); nothing changes. */
+  cancel() {
+    if (!this.s.movePreview) return;
+    this.s.movePreview = null;
+    this.s.events.emit("render", void 0);
+  }
+  /**
+   * Arrow nudge of the active layer (merges with the previous nudge).
+   * @param dx - X shift, whole document px.
+   * @param dy - Y shift, whole document px.
+   * @returns `true` if the layer moved.
+   */
+  nudge(dx, dy) {
+    if (this.s.movePreview) return false;
+    const layer = this.editable();
+    return layer ? this.apply(layer.id, dx, dy, NUDGE_GESTURE) : false;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** The layer to move, if it can be moved now (emits the reason otherwise). */
+  editable() {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    const layer = activeEditLayer(s.doc, s.target);
+    if (!layer) return null;
+    const note = blockedNote(layer);
+    if (note) {
+      s.events.emit("note", note);
+      return null;
+    }
+    return layer;
+  }
+  apply(layerId, dx, dy, gesture) {
+    const s = this.s;
+    if (s.loading || s.stroke.active || dx === 0 && dy === 0) return false;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    if (!layer || blockedNote(layer)) return false;
+    const mover = moverFor(layer);
+    if (!mover?.move(s, layer, dx, dy, gesture)) return false;
+    s.afterEdit();
+    return true;
+  }
+}
+function blockedNote(layer) {
+  if (layer.locked) return LOCKED_LAYER_NOTE;
+  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+  if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
+  return null;
+}
+function sceneFor(input, source) {
+  return source === "background" ? { ...input, layers: [] } : input;
+}
+function drawDocRegion(ctx, input, rect) {
+  const { map, imageSize: imageSize2, bounds } = input;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize2.width, height: imageSize2.height });
+  const bx = image.x - rect.x;
+  const by = image.y - rect.y;
+  if (input.background.kind === "image") {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(input.background.image, bx, by, image.width, image.height);
+  } else {
+    ctx.fillStyle = input.background.color;
+    ctx.fillRect(bx, by, image.width, image.height);
+  }
+  for (const layer of input.layers) {
+    if (layer.opacity <= 0) continue;
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(layer.source, bounds.x - rect.x, bounds.y - rect.y);
+  }
+  ctx.globalAlpha = 1;
+}
+function readDocRegion(input, rect, scratch2) {
+  const canvas = scratch2 ?? document.createElement("canvas");
+  if (canvas.width !== rect.width) canvas.width = rect.width;
+  if (canvas.height !== rect.height) canvas.height = rect.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  drawDocRegion(ctx, input, rect);
+  const data = ctx.getImageData(0, 0, rect.width, rect.height);
+  if (!scratch2) canvas.width = canvas.height = 0;
+  return data;
+}
+const EMPTY_RECT = { x: 0, y: 0, width: 0, height: 0 };
+const MATCH = 1;
+const FILLED = 255;
+function floodFill(data, width, height, options) {
+  const coverage = new Uint8Array(width * height);
+  const sx = Math.floor(options.x);
+  const sy = Math.floor(options.y);
+  if (!(sx >= 0 && sy >= 0 && sx < width && sy < height) || data.length < width * height * 4) {
+    return { coverage, bbox: { ...EMPTY_RECT } };
+  }
+  const seed = sy * width + sx;
+  const clip = options.clip && options.clip.length === coverage.length ? options.clip : void 0;
+  markMatches(data, coverage, seed, clampTolerance(options.tolerance), clip);
+  if (coverage[seed] !== MATCH) return { coverage: new Uint8Array(width * height), bbox: { ...EMPTY_RECT } };
+  let bbox = options.contiguous ? fillContiguous(coverage, width, height, seed) : keepAllMatches(coverage, width, height);
+  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip);
+  if (clip) applyClip(coverage, width, bbox, clip);
+  return { coverage, bbox };
+}
+function clampTolerance(tolerance) {
+  return Number.isFinite(tolerance) ? Math.min(255, Math.max(0, Math.round(tolerance))) : 0;
+}
+function markMatches(data, coverage, seed, tol, clip) {
+  const p0 = seed * 4;
+  const r = data[p0] ?? 0;
+  const g = data[p0 + 1] ?? 0;
+  const b = data[p0 + 2] ?? 0;
+  const a = data[p0 + 3] ?? 0;
+  const n = coverage.length;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    if (clip && clip[i] === 0) continue;
+    const pa = data[p + 3];
+    if (pa === 0 && a === 0) {
+      coverage[i] = MATCH;
+      continue;
+    }
+    const dr = data[p] - r;
+    const dg = data[p + 1] - g;
+    const db = data[p + 2] - b;
+    const da = pa - a;
+    if (dr <= tol && dr >= -tol && dg <= tol && dg >= -tol && db <= tol && db >= -tol && da <= tol && da >= -tol) {
+      coverage[i] = MATCH;
+    }
+  }
+}
+function fillContiguous(coverage, width, height, seed) {
+  let stack = new Int32Array(1024);
+  let sp = 0;
+  const push = (i) => {
+    if (sp === stack.length) {
+      const grown = new Int32Array(stack.length * 2);
+      grown.set(stack);
+      stack = grown;
+    }
+    stack[sp++] = i;
+  };
+  const scanRow = (from, to) => {
+    let inRun = false;
+    for (let i = from; i <= to; i++) {
+      if (coverage[i] === MATCH) {
+        if (!inRun) push(i);
+        inRun = true;
+      } else {
+        inRun = false;
+      }
+    }
+  };
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  push(seed);
+  while (sp > 0) {
+    const idx = stack[--sp];
+    if (coverage[idx] !== MATCH) continue;
+    const y = idx / width | 0;
+    const rowStart = y * width;
+    const rowEnd = rowStart + width - 1;
+    let l = idx;
+    let r = idx;
+    while (l > rowStart && coverage[l - 1] === MATCH) l--;
+    while (r < rowEnd && coverage[r + 1] === MATCH) r++;
+    coverage.fill(FILLED, l, r + 1);
+    const xl = l - rowStart;
+    const xr = r - rowStart;
+    if (xl < minX) minX = xl;
+    if (xr > maxX) maxX = xr;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (y > 0) scanRow(l - width, r - width);
+    if (y < height - 1) scanRow(l + width, r + width);
+  }
+  for (let i = 0; i < coverage.length; i++) if (coverage[i] === MATCH) coverage[i] = 0;
+  return maxX < 0 ? { ...EMPTY_RECT } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function keepAllMatches(coverage, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    let rowMin = -1;
+    let rowMax = -1;
+    for (let x = 0; x < width; x++) {
+      if (coverage[row + x] !== MATCH) continue;
+      coverage[row + x] = FILLED;
+      if (rowMin < 0) rowMin = x;
+      rowMax = x;
+    }
+    if (rowMin < 0) continue;
+    if (rowMin < minX) minX = rowMin;
+    if (rowMax > maxX) maxX = rowMax;
+    if (y < minY) minY = y;
+    maxY = y;
+  }
+  return maxX < 0 ? { ...EMPTY_RECT } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function addFringe(coverage, width, height, bbox, clip) {
+  if (bbox.width <= 0) return bbox;
+  const x0 = Math.max(0, bbox.x - 1);
+  const y0 = Math.max(0, bbox.y - 1);
+  const x1 = Math.min(width - 1, bbox.x + bbox.width);
+  const y1 = Math.min(height - 1, bbox.y + bbox.height);
+  let minX = bbox.x;
+  let minY = bbox.y;
+  let maxX = bbox.x + bbox.width - 1;
+  let maxY = bbox.y + bbox.height - 1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (coverage[i] !== 0 || clip && clip[i] === 0) continue;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < width && coverage[yy * width + xx] === FILLED) n++;
+        }
+      }
+      if (n === 0) continue;
+      coverage[i] = Math.round(n * 255 / 9);
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function applyClip(coverage, width, bbox, clip) {
+  for (let y = bbox.y; y < bbox.y + bbox.height; y++) {
+    for (let x = bbox.x; x < bbox.x + bbox.width; x++) {
+      const i = y * width + x;
+      const c = clip[i];
+      if (c < 255) coverage[i] = Math.round(coverage[i] * c / 255);
+    }
+  }
+}
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  const body = m?.[1];
+  if (!body) return { r: 0, g: 0, b: 0 };
+  const full = body.length === 3 ? [...body].map((c) => c + c).join("") : body;
+  const n = parseInt(full, 16);
+  return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+}
+function rgbToHex(rgb) {
+  const part = (v) => Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${part(rgb.r)}${part(rgb.g)}${part(rgb.b)}`;
+}
+function averageColor(data) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let a = 0;
+  for (let p = 0; p + 3 < data.length; p += 4) {
+    const w = data[p + 3];
+    if (w === 0) continue;
+    r += data[p] * w;
+    g += data[p + 1] * w;
+    b += data[p + 2] * w;
+    a += w;
+  }
+  if (a === 0) return null;
+  return { r: Math.round(r / a), g: Math.round(g / a), b: Math.round(b / a) };
+}
+function blendCoverage(dst, rect, coverage, coverageWidth, color, opacity) {
+  const k = Math.min(1, Math.max(0, opacity)) / 255;
+  if (k <= 0) return;
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4;
+      const sa = c * k;
+      const da = dst[p + 3] / 255;
+      const keep = da * (1 - sa);
+      const oa = sa + keep;
+      if (oa <= 0) continue;
+      dst[p] = (color.r * sa + dst[p] * keep) / oa;
+      dst[p + 1] = (color.g * sa + dst[p + 1] * keep) / oa;
+      dst[p + 2] = (color.b * sa + dst[p + 2] * keep) / oa;
+      dst[p + 3] = oa * 255;
+    }
+  }
+}
+function wandSelection(pixels, area, point, options) {
+  const { coverage, bbox } = floodFill(pixels, area.width, area.height, {
+    x: Math.floor(point.x) - area.x,
+    y: Math.floor(point.y) - area.y,
+    tolerance: options.tolerance,
+    contiguous: options.contiguous,
+    antiAlias: options.antiAlias
+  });
+  return selectionFromCoverage(coverage, area, bbox);
+}
+function sampleTarget(sample, layer) {
+  if (sample === "layer") return layer ? { kind: "layer", layer } : { kind: "scene", source: "all" };
+  return { kind: "scene", source: sample };
+}
+class PixelOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /** Small reusable canvas for eyedropper reads. */
+  scratch = null;
+  // ── Fill ────────────────────────────────────────────────────────────────
+  /**
+   * Flood fill the paint target from a point, as one undo step.
+   * @param req - Fill parameters.
+   * @returns `true` if pixels changed.
+   */
+  fill(req) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
+    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+    const px = Math.floor(req.point.x);
+    const py = Math.floor(req.point.y);
+    const image = this.imageRectInDoc();
+    if (!inside(image, px, py) && !inside(s.store.bounds, px, py)) return false;
+    s.ensureBounds(image, true);
+    const bounds = s.store.bounds;
+    if (!inside(bounds, px, py)) return false;
+    const source = this.sampleArea(bounds, sampleTarget(req.sample, layer));
+    if (!source) return false;
+    const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
+      x: px - bounds.x,
+      y: py - bounds.y,
+      tolerance: req.tolerance,
+      contiguous: req.contiguous,
+      antiAlias: req.antiAlias,
+      // M5: confined to (and scaled by) the selection.
+      clip: s.selection.coverage(bounds)
+    });
+    if (isEmptyRect(bbox)) return false;
+    const docRect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
+    const before = s.store.read(layer.id, docRect);
+    if (!before) return false;
+    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
+    const color = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
+    blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
+    s.store.write(layer.id, docRect.x, docRect.y, next);
+    const after = s.store.read(layer.id, docRect);
+    if (after) {
+      const bytes = before.data.data.byteLength + after.data.data.byteLength;
+      s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
+    }
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    return true;
+  }
+  // ── Magic wand ──────────────────────────────────────────────────────────
+  /**
+   * Magic-wand coverage at a point (not applied: the tool combines it with
+   * the current selection via `Editor.selection.apply`). Samples like the
+   * bucket, over the paint bounds united with the image rect, without growing
+   * the bounds (the wand edits no pixels). "Current layer" is the active paint
+   * layer (colours, also in Quick Mask; like the eyedropper).
+   * @param req - Click position, matching options and sample source.
+   * @returns Selection in document coords, or `null` (nothing matched / loading / outside).
+   */
+  wandSelection(req) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    const area = unionRect(this.imageRectInDoc(), s.store.bounds);
+    if (!inside(area, Math.floor(req.point.x), Math.floor(req.point.y))) return null;
+    const source = this.sampleArea(area, sampleTarget(req.sample, targetLayer(s.doc, "paint")));
+    return source ? wandSelection(source, area, req.point, req) : null;
+  }
+  // ── Sampling ────────────────────────────────────────────────────────────
+  /**
+   * Colour under a point (eyedropper).
+   * @param point - Document coords.
+   * @param source - Active paint layer, the visible composite, or the background only.
+   * @param size - Sample window side: 1 (point), 3 or 5 (average).
+   * @returns `#rrggbb`, or `null` if the window is fully transparent / off the layer.
+   */
+  sampleColor(point, source, size) {
+    const r = Math.max(0, Math.floor((size - 1) / 2));
+    const rect = { x: Math.floor(point.x) - r, y: Math.floor(point.y) - r, width: r * 2 + 1, height: r * 2 + 1 };
+    const layer = targetLayer(this.s.doc, "paint");
+    if (source === "layer" && !layer) return null;
+    this.scratch ??= document.createElement("canvas");
+    const data = this.sampleArea(rect, sampleTarget(source, layer), this.scratch);
+    const rgb = data ? averageColor(data) : null;
+    return rgb ? rgbToHex(rgb) : null;
+  }
+  /** Release the scratch canvas. */
+  dispose() {
+    if (this.scratch) this.scratch.width = this.scratch.height = 0;
+    this.scratch = null;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /**
+   * RGBA of a document area as the bucket / wand / eyedropper see it: the
+   * visible composite, the background only, or one layer (transparent
+   * outside the bounds). The one sampling path of all three tools.
+   * @param scratch - Reusable canvas for scene reads (eyedropper drags).
+   */
+  sampleArea(area, target, scratch2) {
+    if (target.kind === "scene") return readDocRegion(sceneFor(this.compositeInput(), target.source), area, scratch2)?.data ?? null;
+    const read = this.s.store.read(target.layer.id, area);
+    if (read && rectEquals(read.rect, area)) return read.data.data;
+    const out = new Uint8ClampedArray(area.width * area.height * 4);
+    if (!read) return out;
+    const { rect, data } = read;
+    for (let y = 0; y < rect.height; y++) {
+      const src = y * rect.width * 4;
+      out.set(data.data.subarray(src, src + rect.width * 4), ((rect.y - area.y + y) * area.width + (rect.x - area.x)) * 4);
+    }
+    return out;
+  }
+  /** The current image's rect in document coords (rounded out). */
+  imageRectInDoc() {
+    const s = this.s;
+    const map = documentMap(s.doc, s.imageSize);
+    const size = s.imageSize;
+    return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
+  }
+  compositeInput() {
+    const s = this.s;
+    const layers2 = [];
+    for (const layer of s.doc.layers) {
+      if (!layer.visible || layer.kind === "mask") continue;
+      layers2.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
+    }
+    return {
+      background: s.background,
+      imageSize: s.imageSize,
+      map: documentMap(s.doc, s.imageSize),
+      bounds: s.store.bounds,
+      layers: layers2
+    };
+  }
+}
+function inside(r, x, y) {
+  return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
+}
+const WHEEL_SCALE_STEP = 1.05;
+const MAX_WHEEL_DELTA = 300;
+function fitScale(frame, image) {
+  return frameMap(frame, image).scale;
+}
+function translatePlacement(p, frame, image, dx, dy) {
+  const s = fitScale(frame, image);
+  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
+}
+function scalePlacementAt(p, frame, image, factor, anchor) {
+  const base = frameMap(frame, image);
+  const now = frameMap(frame, image, p);
+  const k = clampPlacementScale(p.scale * factor);
+  const docX = (anchor.x - now.offsetX) / now.scale;
+  const docY = (anchor.y - now.offsetY) / now.scale;
+  const s = base.scale;
+  return {
+    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
+    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
+    scale: k
+  };
+}
+function wheelScaleFactor(deltaPx) {
+  if (!Number.isFinite(deltaPx)) return 1;
+  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
+  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
+}
+function placementImageOffset(p, frame, image) {
+  const s = fitScale(frame, image);
+  return { x: p.x * s, y: p.y * s };
+}
+function imageOffsetToPlacement(imagePx, frame, image) {
+  return imagePx / fitScale(frame, image);
+}
+class PlacementOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /** Current placement (a copy; identity when unset). */
+  get current() {
+    return { ...this.s.doc.placement ?? IDENTITY_PLACEMENT };
+  }
+  /** Whether the drawing is moved or scaled. */
+  get isMoved() {
+    return !isIdentityPlacement(this.s.doc.placement);
+  }
+  /** Current offset in image px (options bar X / Y). */
+  get imageOffset() {
+    const s = this.s;
+    return placementImageOffset(this.current, s.doc.frame, s.imageSize);
+  }
+  /**
+   * Replace the placement (normalized: finite, scale clamped).
+   * @param next - New placement.
+   * @param commit - `true` (default): also update the widget value
+   *   (`change`); `false` for live drag frames (redraw only).
+   */
+  set(next, commit = true) {
+    const s = this.s;
+    const p = normalizePlacement(next);
+    const before = s.doc.placement;
+    const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
+    if (!same) {
+      if (isIdentityPlacement(p)) delete s.doc.placement;
+      else s.doc.placement = p;
+      s.events.emit("placement", void 0);
+      s.events.emit("render", void 0);
+    }
+    if (commit) this.commit();
+  }
+  /** Publish the current placement to the widget value (end of a drag). */
+  commit() {
+    this.s.events.emit("change", void 0);
+  }
+  /**
+   * Move by an image-px delta (arrow nudges).
+   * @param dx - Image px.
+   * @param dy - Image px.
+   * @param commit - See {@link set}.
+   */
+  translateImage(dx, dy, commit = true) {
+    const s = this.s;
+    this.set(translatePlacement(this.current, s.doc.frame, s.imageSize, dx, dy), commit);
+  }
+  /**
+   * Multiply the scale around an image point (kept fixed).
+   * @param factor - Scale multiplier.
+   * @param anchor - Image point.
+   * @param commit - See {@link set}.
+   */
+  scaleAt(factor, anchor, commit = true) {
+    const s = this.s;
+    this.set(scalePlacementAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
+  }
+  /** Back to identity ("Reset position"). */
+  reset() {
+    this.set(IDENTITY_PLACEMENT);
+  }
+}
+const NO_SELECTION_NOTE = "Nothing is selected.";
+class SelectionOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  // ── Read access ─────────────────────────────────────────────────────────
+  /** Current selection (`null` = none: painting is not clipped). */
+  get current() {
+    return this.s.selection.current;
+  }
+  /** Whether a selection exists. */
+  get active() {
+    return this.s.selection.current !== null;
+  }
+  /** Bumped on every selection change (UI cache key). */
+  get revision() {
+    return this.s.selection.revision;
+  }
+  /**
+   * Cached marching-ants outline: closed contours (flat corner lists), in
+   * document coords. An inverted selection also outlines the current image
+   * area in document coords (Photoshop's ants along the canvas edge), so the
+   * ants follow the image boundary rather than `doc.frame` when the image
+   * has a different aspect ratio or a Move-tool placement.
+   * @returns Contours, or `null` without a selection.
+   */
+  outline() {
+    return this.s.selection.outline(this.imageRectInDoc());
+  }
+  /**
+   * Largest document area a selection may cover (the bounds growth cap plus
+   * the current bounds); tools need not clip, {@link apply} does.
+   */
+  get limit() {
+    return unionRect(boundsCap(this.s.doc.frame), this.s.store.bounds);
+  }
+  // ── Selection changes (one history entry each) ──────────────────────────
+  /**
+   * Combine new coverage with the current selection, as one undo step.
+   * @param next - Tool coverage in document coords (`null` = selects nothing).
+   * @param mode - Photoshop mode from the modifiers at drag start.
+   * @returns `true` if the selection changed.
+   */
+  apply(next, mode) {
+    return this.change(combineSelection(this.current, clipSelection(next, this.limit), mode));
+  }
+  /**
+   * Ctrl+A: select the current image area (the background as shown -- the
+   * upstream image rect, or the `width x height` fill when no image is
+   * connected). The image rect `{0,0,W,H}` is converted to document coords
+   * via {@link imageRectToDoc} so the result is correct regardless of the
+   * frame size, Move-tool placement, or upstream image changes. Bounds are
+   * grown to cover the image rect first (like the bucket fill) so the whole
+   * image area is paintable after selecting it.
+   * @returns `true` if the selection changed.
+   */
+  selectAll() {
+    const imageRect = this.imageRectInDoc();
+    this.s.ensureBounds(imageRect, true);
+    const sel = rectSelection(intersectRect(imageRect, this.limit));
+    return this.change(sel);
+  }
+  /**
+   * Ctrl+D: drop the selection.
+   * @returns `true` if there was one.
+   */
+  deselect() {
+    return this.change(null);
+  }
+  /**
+   * Shift+F7 / options-bar "Invert": invert (no-op without a selection).
+   * @returns `true` if the selection changed.
+   */
+  invert() {
+    return this.change(invertSelection(this.current));
+  }
+  // ── Pixel commands (one undo patch each) ────────────────────────────────
+  /**
+   * Delete/Backspace: clear the selected pixels of the paint target (on the
+   * mask target this removes mask coverage).
+   * @returns `true` if pixels changed.
+   */
+  clearSelected() {
+    const layer = this.editableTarget();
+    return layer ? this.editPixels(layer, (px, rect, cov, stride) => eraseCoverage(px, rect, cov, stride)) : false;
+  }
+  /**
+   * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
+   * target (on the mask target: add coverage, colour ignored).
+   * @param color - CSS hex colour.
+   * @returns `true` if pixels changed.
+   */
+  fillSelected(color) {
+    const layer = this.editableTarget();
+    if (!layer) return false;
+    const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
+  }
+  /**
+   * "Selection to mask": add the selection coverage to the mask layer
+   * (whatever the paint target is; a mask layer is added if missing).
+   * @returns `true` if pixels changed.
+   */
+  toMask() {
+    const s = this.s;
+    if (!this.ready()) return false;
+    const layer = s.ensureMask();
+    if (!this.canEdit(layer)) return false;
+    const white = hexToRgb(MASK_STROKE_COLOR);
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1));
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  change(next) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const before = s.selection.current;
+    if (selectionsEqual(before, next)) return false;
+    s.history.push({ kind: "selection", before, after: next, bytes: selectionBytes(before) + selectionBytes(next) });
+    s.selection.set(next);
+    s.events.emit("history", void 0);
+    return true;
+  }
+  /** Not loading/stroking and a selection exists (notes otherwise). */
+  ready() {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    if (!s.selection.current) {
+      s.events.emit("note", NO_SELECTION_NOTE);
+      return false;
+    }
+    return true;
+  }
+  editableTarget() {
+    const s = this.s;
+    if (!this.ready()) return null;
+    const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
+    return layer && this.canEdit(layer) ? layer : null;
+  }
+  /**
+   * The shared pixel-edit gate (`rasterize.ts`): lock/visibility notes, and a
+   * text layer is rasterized first (the edit joins that undo step).
+   */
+  canEdit(layer) {
+    return preparePixelEdit(this.s, layer) !== "blocked";
+  }
+  /**
+   * Run a coverage pixel op over the selection extent of a layer and record
+   * one patch. Bounds first grow (chunked, capped) to cover a normal
+   * selection; an inverted one covers the whole bounds.
+   */
+  editPixels(layer, op) {
+    const s = this.s;
+    const sel = s.selection.current;
+    if (!sel) return false;
+    if (!sel.outside) s.ensureBounds(sel.rect, true);
+    const area = selectionExtent(sel, s.store.bounds);
+    if (isEmptyRect(area)) return false;
+    const before = s.store.read(layer.id, area);
+    if (!before) return false;
+    const rect = intersectRect(before.rect, area);
+    const coverage = coverageFor(sel, rect);
+    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
+    op(next.data, { x: 0, y: 0, width: rect.width, height: rect.height }, coverage, rect.width);
+    s.store.write(layer.id, rect.x, rect.y, next);
+    const after = s.store.read(layer.id, rect);
+    if (after) {
+      const bytes = before.data.data.byteLength + after.data.data.byteLength;
+      s.history.push({ kind: "patch", layerId: layer.id, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
+    }
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    return true;
+  }
+  /**
+   * The current image rect `{0,0,W,H}` converted to document coords (rounded
+   * out to integer pixels). Mirrors `pixelOps.imageRectInDoc` -- the single
+   * authoritative way to find "where the image is" in doc coords. Uses
+   * {@link documentMap} so it includes the Move-tool placement.
+   */
+  imageRectInDoc() {
+    const s = this.s;
+    const map = documentMap(s.doc, s.imageSize);
+    const size = s.imageSize;
+    return roundOutRect(imageRectToDoc(map, frameRect(size)));
+  }
+}
+function missingFontNote(font) {
+  return `Font '${font}' isn't installed; editing will use a fallback.`;
+}
+class TextOps {
+  /**
+   * @param s - Shared editor state.
+   * @param layers - Layer commands (undoable add / delete / active layer).
+   */
+  constructor(s, layers2) {
+    this.s = s;
+    this.layers = layers2;
+  }
+  s;
+  layers;
+  session = null;
+  /** The open edit, or `null`. */
+  get editing() {
+    const e = this.session;
+    const layer = e ? this.find(e.layerId) : void 0;
+    return e && layer?.kind === "text" && layer.textData ? { layerId: e.layerId, textData: layer.textData } : null;
+  }
+  /**
+   * Install the rasterize prompt (the engine has no DOM UI; `rasterize.ts`).
+   * @param confirm - Returns `true` when the user agrees.
+   */
+  setConfirmRasterize(confirm) {
+    this.s.confirmRasterize = confirm;
+  }
+  /**
+   * Top-most visible text layer under a point.
+   * @param point - Document coords.
+   * @returns Layer id, or `null`.
+   */
+  hitTest(point) {
+    return hitTestText(this.s.doc.layers, point, (td) => textLayout(td).box);
+  }
+  /**
+   * Create an empty text layer above the active paint layer (undoable add)
+   * and open it for editing. Commits any open edit first.
+   * @param at - Anchor (first baseline), document coords.
+   * @param style - Font, size (document px), colour, bold/italic, alignment.
+   * @returns New layer id, or `null` while loading / stroking.
+   */
+  create(at, style) {
+    this.commit();
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    const textData = { ...style, text: "", x: at.x, y: at.y };
+    const layer = createTextLayer(textData);
+    if (!this.layers.addLayer(layer)) return null;
+    this.session = { layerId: layer.id, created: true, before: textData, beforeName: layer.name };
+    s.events.emit("text", void 0);
+    this.noteMissingFont(textData.font);
+    return layer.id;
+  }
+  /**
+   * Open an existing text layer for editing (makes it active). Commits any
+   * other open edit first; locked / hidden layers show a note.
+   * @param layerId - Text layer id.
+   * @returns `true` if the edit is open.
+   */
+  edit(layerId) {
+    if (this.session?.layerId === layerId) return true;
+    this.commit();
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
+    if (layer.locked || !layer.visible) {
+      s.events.emit("note", layer.locked ? LOCKED_LAYER_NOTE : HIDDEN_LAYER_NOTE);
+      return false;
+    }
+    this.layers.setActiveLayer(layerId);
+    this.session = { layerId, created: false, before: layer.textData, beforeName: layer.name };
+    s.events.emit("text", void 0);
+    this.noteMissingFont(layer.textData.font);
+    return true;
+  }
+  /**
+   * Live change of the open edit (text or style); re-renders, no history.
+   * @param patch - Fields to change.
+   */
+  update(patch) {
+    const e = this.session;
+    const layer = e ? this.find(e.layerId) : void 0;
+    const td = layer?.kind === "text" ? layer.textData : void 0;
+    if (!layer || !td) return;
+    const next = { ...td, ...patch };
+    if (sameTextData(next, td)) return;
+    layer.textData = next;
+    renderTextLayer(this.s, layer);
+    this.s.runtime.bump(layer.id);
+    this.s.events.emit("text", void 0);
+    this.s.events.emit("render", void 0);
+    if (next.font !== td.font) this.noteMissingFont(next.font);
+  }
+  /**
+   * Close the open edit: record it as one undo step (or remove an empty
+   * layer). No-op without an edit.
+   * @returns `true` if the history gained / changed an undo step.
+   */
+  commit() {
+    const e = this.session;
+    if (!e) return false;
+    this.session = null;
+    const layer = this.find(e.layerId);
+    let recorded = false;
+    if (layer?.kind === "text" && layer.textData) {
+      recorded = layer.textData.text.trim() ? this.record(layer, layer.textData, e) : this.removeEmpty(layer, e);
+    }
+    this.s.events.emit("text", void 0);
+    return recorded;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** Note when the edited font is not installed (the canvas falls back). */
+  noteMissingFont(font) {
+    if (!isFontAvailable(font)) this.s.events.emit("note", missingFontNote(font));
+  }
+  find(layerId) {
+    return this.s.doc.layers.find((l) => l.id === layerId);
+  }
+  /** The newest history entry if it is this session's own "add layer". */
+  ownAddEntry(layerId) {
+    const top = this.s.history.mergeTarget();
+    const change = top?.kind === "layers" && top.changes.length === 1 ? top.changes[0] : void 0;
+    return top?.kind === "layers" && change?.op === "insert" && change.layer.id === layerId ? { entry: top, change } : null;
+  }
+  record(layer, td, e) {
+    const s = this.s;
+    const name = e.created ? nameFromText(td.text) : commitName(layer.name, e.before.text, td.text);
+    const own = e.created ? this.ownAddEntry(layer.id) : null;
+    if (own) {
+      layer.name = name;
+      own.change.layer = { ...layer };
+    } else {
+      if (sameTextData(td, e.before) && name === layer.name) return false;
+      const before = { kind: "text", name: e.beforeName, textData: e.before };
+      layer.name = name;
+      recordTextChange(s, layer.id, before, textStateOf(layer));
+    }
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    emitLayerEvents(s);
+    return true;
+  }
+  removeEmpty(layer, e) {
+    const s = this.s;
+    const own = e.created ? this.ownAddEntry(layer.id) : null;
+    if (own) {
+      s.history.discardNewest();
+      s.doc.layers.splice(s.doc.layers.indexOf(layer), 1);
+      s.runtime.remove(layer.id);
+      releaseRemovedLayers(s);
+      if (s.doc.layers.some((l) => l.id === own.entry.activeBefore)) s.doc.activeLayerId = own.entry.activeBefore;
+      emitLayerEvents(s);
+      s.afterEdit();
+      return false;
+    }
+    layer.textData = e.before;
+    renderTextLayer(s, layer);
+    s.runtime.bump(layer.id);
+    if (this.layers.remove(layer.id)) return true;
+    s.events.emit("render", void 0);
+    return false;
+  }
+}
+class Editor extends EditorBase {
+  /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
+  layerOps;
+  /** Paint-bucket fill and eyedropper sampling. */
+  pixelOps;
+  /** Move-tool placement of the whole drawing (not undoable). */
+  placement;
+  /** Layer Move tool (V): move the active layer's content (undoable). */
+  layerMove;
+  /** Selection (session state, undoable) and its pixel commands. */
+  selection;
+  /** Text tool: create / edit / commit text layers (M6b). */
+  text;
+  maskOps;
+  /**
+   * @param doc - Document (copied).
+   * @param source - Origin of its frame size.
+   * @param store - Existing pixels (for clones); a blank store is created otherwise.
+   * @param colors - Colour state to start from (forks copy their source's).
+   */
+  constructor(doc, source, store, colors) {
+    super(doc, source, store, colors);
+    this.layerOps = new LayerOps(this.s);
+    this.pixelOps = new PixelOps(this.s);
+    this.placement = new PlacementOps(this.s);
+    this.layerMove = new LayerMoveOps(this.s);
+    this.selection = new SelectionOps(this.s);
+    this.maskOps = new EditorMaskOps(this.s, this.paint);
+    this.text = new TextOps(this.s, this.layerOps);
+  }
+  // ── Read access ─────────────────────────────────────────────────────────
+  /** Current document (treat as read-only). */
+  get doc() {
+    return this.s.doc;
+  }
+  /** Where the frame size came from. */
+  get frameSource() {
+    return this.s.frameSource;
+  }
+  /** Undo available. */
+  get canUndo() {
+    return this.s.history.canUndo && !this.s.stroke.active;
+  }
+  /** Redo available. */
+  get canRedo() {
+    return this.s.history.canRedo && !this.s.stroke.active;
+  }
+  /** Layer files are being restored; painting is disabled. */
+  get loading() {
+    return this.s.loading;
+  }
+  /** Whether any layer has ever held paint. */
+  get hasPaint() {
+    return this.s.runtime.hasPaint;
+  }
+  /** Whether any layer needs uploading. */
+  get dirty() {
+    return this.s.runtime.dirty;
+  }
+  /**
+   * Whether any mask layer is hidden AND has ever held paint (queue-time
+   * warning: it will not be in the MASK output).
+   * @returns `true` if a hidden-but-painted mask exists.
+   */
+  hiddenMaskHasContent() {
+    return this.maskOps.hiddenMaskHasContent();
+  }
+  /** Background drawn under the paint. */
+  get background() {
+    return this.s.background;
+  }
+  /** Size of what the view shows: the current image (or widget-sized fill), else `doc.frame`. */
+  get imageSize() {
+    return this.s.imageSize;
+  }
+  /**
+   * Document -> image transform: frame fit + Move-tool placement, same as
+   * Python's `_layout` (see `frameMap.ts` {@link documentMap}).
+   */
+  get frameMap() {
+    return documentMap(this.s.doc, this.s.imageSize);
+  }
+  /**
+   * Runtime state of a layer.
+   * @param layerId - Layer id.
+   * @returns Bookkeeping or `undefined`.
+   */
+  layerRuntime(layerId) {
+    return this.s.runtime.get(layerId);
+  }
+  /**
+   * Canvas of a layer (for export/upload).
+   * @param layerId - Layer id.
+   * @returns The canvas.
+   */
+  layerCanvas(layerId) {
+    return this.s.store.ensure(layerId).canvas;
+  }
+  /** Current paint bounds (document coords). */
+  get bounds() {
+    return this.s.store.bounds;
+  }
+  /** Where the previous stroke ended, document coords (Shift+click line start). */
+  get lastStrokeEnd() {
+    return this.s.lastStrokeEnd;
+  }
+  set lastStrokeEnd(point) {
+    this.s.lastStrokeEnd = point ? { ...point } : null;
+  }
+  /**
+   * Visible layers to composite (live stroke preview for the painted layer).
+   * @returns Bottom -> top layers.
+   */
+  compositeLayers() {
+    return this.display.compositeLayers();
+  }
+  /**
+   * Visible mask layers as tinted overlays (drawn above all paint).
+   * @returns Bottom -> top overlays.
+   */
+  maskOverlays() {
+    return this.display.maskOverlays();
+  }
+  // ── Quick Mask / paint target ───────────────────────────────────────────
+  /** What brush/eraser strokes paint into (UI state, not saved). */
+  get paintTarget() {
+    return this.maskOps.paintTarget;
+  }
+  /** The mask layer Quick Mask edits, if the document has one. */
+  get maskLayer() {
+    return this.maskOps.maskLayer;
+  }
+  /**
+   * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
+   * @param target - New target.
+   */
+  setPaintTarget(target) {
+    this.maskOps.setPaintTarget(target);
+  }
+  /** Toggle between the paint layer and the mask. */
+  togglePaintTarget() {
+    this.maskOps.togglePaintTarget();
+  }
+  /**
+   * Show or hide the mask layer (adds one if missing). Hidden mask layers are
+   * also excluded from the `MASK` output (saved-file contract).
+   * @param visible - Visibility.
+   */
+  setMaskVisible(visible) {
+    this.maskOps.setMaskVisible(visible);
+  }
+  /**
+   * Where a lazily added mask layer (documents without one) gets its colour
+   * and opacity; read only when a mask is created. Existing masks never change.
+   * @param style - Provider (the session reads the user's settings).
+   */
+  setMaskStyleProvider(style) {
+    this.s.maskStyle = style;
+  }
+  // ── Background / frame ──────────────────────────────────────────────────
+  // ── Undo / redo ─────────────────────────────────────────────────────────
+  /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
+  undo() {
+    if (!this.text.editing || this.text.commit()) this.paint.undo();
+  }
+  /** Redo the last undone operation (an open text edit is committed first). */
+  redo() {
+    this.text.commit();
+    this.paint.redo();
+  }
+  // ── Cloning / teardown ──────────────────────────────────────────────────
+  /**
+   * Independent copy with a new document id (node duplicated while its source
+   * is still live). History is not copied.
+   * @param docId - New id.
+   * @returns New editor.
+   */
+  fork(docId) {
+    const doc = cloneDocument(this.s.doc);
+    doc.docId = docId;
+    const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
+    copy.s.runtime.copyFrom(this.s.runtime);
+    copy.s.maskStyle = this.s.maskStyle;
+    copy.setBackground(this.s.background, this.s.backgroundSize);
+    return copy;
+  }
+  /** Estimated memory held (pixels + history; mask tint caches excluded). */
+  get bytes() {
+    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes;
+  }
+  /** Release everything. */
+  dispose() {
+    this.s.stroke.dispose();
+    this.s.store.dispose();
+    this.display.dispose();
+    this.pixelOps.dispose();
+    this.s.selection.dispose();
+    this.s.history.clear();
+    this.stamps.clear();
+    this.events.clear();
+    this.colors.events.clear();
+  }
 }
 const PAINT_OPTION_DESCRIPTORS = [
   { kind: "number", key: "size", label: "Size", title: "Brush size ([ / ])", min: 1, max: 1e3, step: 1, unit: "px", curve: "pow" },
@@ -9939,7 +10643,7 @@ class PaintTool {
     };
   }
 }
-function createBrushTool() {
+function createBrushTool(pressure = PRESSURE_DEFAULTS) {
   return new PaintTool({
     id: "brush",
     label: "Brush",
@@ -9953,14 +10657,11 @@ function createBrushTool() {
       opacity: 1,
       flow: 1,
       spacing: 0.1,
-      pressureSize: true,
-      pressureOpacity: false,
-      minSize: 0.1,
-      gamma: 1
+      ...pressure
     }
   });
 }
-function createEraserTool() {
+function createEraserTool(pressure = PRESSURE_DEFAULTS) {
   return new PaintTool({
     id: "eraser",
     label: "Eraser",
@@ -9973,10 +10674,7 @@ function createEraserTool() {
       opacity: 1,
       flow: 1,
       spacing: 0.1,
-      pressureSize: true,
-      pressureOpacity: false,
-      minSize: 0.1,
-      gamma: 1
+      ...pressure
     }
   });
 }
@@ -9998,9 +10696,16 @@ class FillTool {
   shortcut = "g";
   icon = "bucket";
   altEyedropper = true;
-  /** Default sample: the background (fill regions of the input image, not of earlier paint). */
-  values = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample: "background" };
-  options = new OptionSet(DESCRIPTORS$4, this.values);
+  /** Sample defaults to the background (fill regions of the input image); the setting `PainterSketch.BucketSample` can change it. */
+  values;
+  options;
+  /**
+   * @param sample - Initial sample source (settings default).
+   */
+  constructor(sample = "background") {
+    this.values = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample };
+    this.options = new OptionSet(DESCRIPTORS$4, this.values);
+  }
   /** @inheritdoc */
   onPointerDown(editor, samples) {
     const first = samples[0];
@@ -10030,8 +10735,8 @@ class FillTool {
     return { kind: "icon", icon: "bucket" };
   }
 }
-function createFillTool() {
-  return new FillTool();
+function createFillTool(sample) {
+  return new FillTool(sample);
 }
 const DESCRIPTORS$3 = [
   { kind: "select", key: "sample", label: "Sample", title: "Pixels to pick from", choices: SAMPLE_CHOICES },
@@ -10394,9 +11099,16 @@ class MagicWandTool {
   label = "Magic wand";
   shortcut = "w";
   icon = "magicWand";
-  /** Default sample: the background (select regions of the input image). */
-  values = { tolerance: 32, contiguous: true, antiAlias: true, sample: "background" };
-  options = new OptionSet(DESCRIPTORS$2, this.values);
+  /** Sample defaults to the background (select regions of the input image); the setting `PainterSketch.WandSample` can change it. */
+  values;
+  options;
+  /**
+   * @param sample - Initial sample source (settings default).
+   */
+  constructor(sample = "background") {
+    this.values = { tolerance: 32, contiguous: true, antiAlias: true, sample };
+    this.options = new OptionSet(DESCRIPTORS$2, this.values);
+  }
   combinesSelection = true;
   /** @inheritdoc */
   onPointerDown(editor, samples) {
@@ -10427,8 +11139,8 @@ class MagicWandTool {
     return { kind: "icon", icon: "crosshair" };
   }
 }
-function createMagicWandTool() {
-  return new MagicWandTool();
+function createMagicWandTool(sample) {
+  return new MagicWandTool(sample);
 }
 const CLICK_SLOP_PX = 3;
 const RECT_MARQUEE = {
@@ -11319,14 +12031,14 @@ class ToolRegistry {
 function ctrlMoves(tool) {
   return tool.rail !== false && tool.ctrlMove !== false && !(tool.pending?.() ?? false);
 }
-function createDefaultTools(editor) {
+function createDefaultTools(editor, pressure = PRESSURE_DEFAULTS, samples = SAMPLE_DEFAULTS) {
   const eyedropper = createEyedropperTool();
   const moveLayer = createMoveLayerTool();
   const registry = new ToolRegistry(
     [
-      createBrushTool(),
-      createEraserTool(),
-      createFillTool(),
+      createBrushTool(pressure),
+      createEraserTool(pressure),
+      createFillTool(samples.bucket),
       eyedropper,
       ...createShapeTools(),
       createTextTool(editor),
@@ -11335,7 +12047,7 @@ function createDefaultTools(editor) {
       moveLayer,
       ...createMarqueeTools(),
       createLassoTool(),
-      createMagicWandTool()
+      createMagicWandTool(samples.wand)
     ],
     [SHAPE_GROUP, MARQUEE_GROUP]
   );
@@ -11406,6 +12118,11 @@ function toBlob(canvas, type, quality) {
   return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
 }
 const IDLE_UPLOAD_DELAY_MS = 5e3;
+const RETRY_MIN_MS = 15e3;
+const RETRY_MAX_MS = 12e4;
+const UPLOAD_FAILED_KEY = "upload-failed";
+const UPLOAD_RECOVERED_KEY = "upload-recovered";
+const UPLOAD_TOAST_WINDOW_MS = 6e4;
 class LayerUploader {
   /**
    * @param editor - Editor whose layers are uploaded.
@@ -11419,7 +12136,10 @@ class LayerUploader {
   knownFiles;
   running = null;
   timer = null;
+  /** The current failure streak has been toasted. */
   failureNotified = false;
+  /** Current automatic retry interval (0 = last batch succeeded). */
+  retryDelay = 0;
   disposed = false;
   settledListeners = /* @__PURE__ */ new Set();
   /** @returns Whether an upload batch is in progress. */
@@ -11487,28 +12207,50 @@ class LayerUploader {
       if (!rt?.dirty) continue;
       const version = rt.version;
       try {
-        const file = await this.uploadLayer(layer.id, layer.kind, layer.file, paintQuality);
+        const file = await this.uploadLayer(layer, paintQuality);
         if (this.disposed) return;
         if (file) this.knownFiles.add(file);
         this.editor.markUploaded(layer.id, version, file);
       } catch (error) {
-        failures.push(error instanceof Error ? error.message : String(error));
+        failures.push(error);
       }
     }
+    if (this.disposed) return;
     if (failures.length) {
+      const message = uploadFailureMessage(failures[0]);
       if (!this.failureNotified) {
-        notify("error", `Could not save paint layers (kept in memory, will retry): ${failures[0]}`);
+        notify("error", message, { key: UPLOAD_FAILED_KEY, windowMs: UPLOAD_TOAST_WINDOW_MS, details: failures });
         this.failureNotified = true;
+      } else {
+        log.warn("upload retry failed:", ...failures);
       }
-      throw new Error(`PainterSketch upload failed: ${failures[0]}`);
+      this.scheduleRetry();
+      throw new Error(`PainterSketch: ${message}`);
     }
-    this.failureNotified = false;
+    this.retryDelay = 0;
+    if (this.failureNotified) {
+      this.failureNotified = false;
+      notify("info", "Paint layers saved again.", { key: UPLOAD_RECOVERED_KEY, windowMs: UPLOAD_TOAST_WINDOW_MS });
+    }
+  }
+  /** After a failed batch: retry with backoff unless an edit already scheduled an upload. */
+  scheduleRetry() {
+    this.retryDelay = Math.min(RETRY_MAX_MS, Math.max(RETRY_MIN_MS, this.retryDelay * 2));
+    if (this.timer !== null) return;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.flushQuietly();
+    }, this.retryDelay);
   }
   /** @returns The file reference for the layer's current pixels (null = empty). */
-  async uploadLayer(layerId, kind, currentFile, paintQuality) {
-    const canvas = this.editor.layerCanvas(layerId);
+  async uploadLayer(layer, paintQuality) {
+    const canvas = this.editor.layerCanvas(layer.id);
     if (isCanvasEmpty(canvas)) return null;
-    const { blob, bytes, ext } = await encodeLayer(canvas, kind, paintQuality);
+    const currentFile = layer.file;
+    const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error) => {
+      log.warn(`encoding layer "${layer.name}" (${canvas.width}x${canvas.height}) failed:`, error);
+      throw new EncodeError(layer.name);
+    });
     const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
     if (currentFile === expected || this.knownFiles.has(expected)) return expected;
@@ -11529,8 +12271,11 @@ async function uploadImage(blob, name) {
   body.append("subfolder", DOCUMENT_SUBFOLDER);
   body.append("overwrite", "true");
   const response = await api.fetchApi("/upload/image", { method: "POST", body });
-  if (response.status !== 200) throw new Error(`upload returned ${response.status} ${response.statusText}`);
-  const data = await response.json();
+  if (response.status !== 200) {
+    const text = (await response.text().catch(() => "")).trim();
+    throw new HttpError(response.status, response.statusText, text && !text.startsWith("<") ? text.slice(0, 200) : void 0);
+  }
+  const data = await response.json().catch(() => null);
   if (!isUploadResponse(data)) throw new Error("upload response is missing 'name'");
   const subfolder = data.subfolder || DOCUMENT_SUBFOLDER;
   return `${subfolder}/${data.name} [${data.type || "input"}]`;
@@ -11539,41 +12284,56 @@ function isUploadResponse(value) {
   return typeof value === "object" && value !== null && typeof value.name === "string";
 }
 async function restoreLayers(editor, isAlive) {
-  const layers = editor.doc.layers.filter((l) => l.file);
-  if (!layers.length) return;
+  const layers2 = editor.doc.layers.filter((l) => l.file);
+  if (!layers2.length) return;
   const bounds = editor.bounds;
+  const problems = [];
   editor.beginLoading();
   try {
     await Promise.all(
-      layers.map(async (layer) => {
+      layers2.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
+        const url = viewUrl(item, (route) => api.apiURL(route));
         try {
-          const image = await loadImage(viewUrl(item, (route) => api.apiURL(route)));
+          const image = await fetchImage(url);
           if (!isAlive()) return;
           if (image.naturalWidth !== bounds.width || image.naturalHeight !== bounds.height) {
             log.warn(
-              `Layer "${layer.name}" is ${image.naturalWidth}x${image.naturalHeight}, expected ${bounds.width}x${bounds.height}`
+              `layer "${layer.name}" file is ${image.naturalWidth}x${image.naturalHeight}, expected ${bounds.width}x${bounds.height}:`,
+              layer.file
             );
+            if (!(layer.kind === "text" && layer.textData)) problems.push({ name: layer.name, kind: "stale" });
           }
           editor.restoreLayerPixels(layer.id, image);
-        } catch {
-          if (isAlive()) notify("warn", `Missing paint layer file ${layer.file}; layer "${layer.name}" is empty.`);
+        } catch (error) {
+          if (!isAlive()) return;
+          log.warn(`could not restore layer "${layer.name}" from ${layer.file}:`, error);
+          if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
       })
     );
   } finally {
     if (isAlive()) editor.endLoading();
   }
+  const summary = isAlive() ? restoreSummary(problems) : null;
+  if (summary) notify(summary.severity, summary.message, { key: `restore:${editor.doc.docId}:${summary.message}` });
 }
-function loadImage(url) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`could not load ${url}`));
-    image.src = url;
-  });
+async function fetchImage(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new HttpError(response.status, response.statusText);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new DecodeError(url));
+      image.src = objectUrl;
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 const MAX_DETACHED_SESSIONS = 6;
 const RECENT_SIGNATURES = 4;
@@ -11582,12 +12342,13 @@ const detachedOrder = [];
 function createSession(doc, source, editor) {
   releaseSession(doc.docId);
   const ed = editor ?? new Editor(doc, source);
+  ed.setMaskStyleProvider(readFirstMaskStyle);
   const knownFiles = /* @__PURE__ */ new Set();
   for (const layer of ed.doc.layers) if (layer.file) knownFiles.add(layer.file);
   const session = {
     docId: doc.docId,
     editor: ed,
-    tools: createDefaultTools(ed),
+    tools: createDefaultTools(ed, readPressureDefaults(), readSampleDefaults()),
     uploader: new LayerUploader(ed, knownFiles),
     knownFiles,
     recentSignatures: [fileSignature(ed.doc)],
@@ -11657,126 +12418,70 @@ async function flushAll() {
   );
   return errors;
 }
-const controllers = /* @__PURE__ */ new WeakMap();
-function getController(node) {
-  return controllers.get(node);
-}
-class PainterSketchController {
-  /**
-   * @param node - The node this controller belongs to.
-   */
-  constructor(node) {
-    this.node = node;
-    this.host = new EditorHost({
-      onBecameVisible: () => this.refresh(),
-      isDetached: () => this.isOffViewedGraph(),
-      onDisengage: () => this.session?.uploader.flushQuietly(),
-      onSave: () => void this.saveWorkflow()
-    });
-    this.isolation = isolateEvents({
-      root: this.host.root,
-      stage: this.host.stage,
-      onWheel: (event) => this.host.input.handleWheel(event),
-      onChromeWheel: (event) => this.host.handleChromeWheel(event),
-      onMiddlePointer: (event) => this.host.input.handlePointer(event)
-    });
-    controllers.set(node, this);
-    this.attach(createSession(createEmptyDocument(this.fallbackFrame().size), "widgets"));
-  }
-  node;
-  /** Editor DOM shell; its `element` is the DOM widget element. */
-  host;
-  session = null;
-  sessionUnbind = null;
-  valueCache = "";
-  lastExecuted = null;
-  /** Last loaded background image; shown only while `image` is connected. */
-  background = null;
-  /** Key of the most recent source we started loading (success or not). */
-  requestedKey = null;
-  /** A background load is in flight. */
-  loadPending = false;
-  loadSeq = 0;
-  /**
-   * Session handed off by this node's previous instance, until the widget
-   * value has been applied (same task; see `handoff.ts`).
-   */
-  handoff = null;
-  contentKey = "";
-  pollTimer = null;
-  startTimer = null;
-  listening = false;
-  isolation;
-  /** A Ctrl+S flush + save is in progress. */
-  saving = false;
-  disposed = false;
-  handleApiExecuted = () => this.refresh();
-  // ── Widget value ────────────────────────────────────────────────────────
-  /** @returns The manifest string (`""` = never painted). */
-  getValue() {
-    return this.valueCache;
-  }
-  /**
-   * A value arrived from outside (workflow load, paste, graph undo, ...).
-   *
-   * @param value - Incoming widget value.
-   */
-  setValue(value) {
-    if (this.disposed) return;
-    if (!this.handoff && typeof value === "string" && value === this.valueCache) return;
-    const parsed = parseDocument(value);
-    if (parsed.status === "ok") {
-      const existing = findSession(parsed.document.docId);
-      const session = this.sessionFor(parsed.document);
-      const handedOff = session === this.handoff;
-      this.attach(session);
-      this.handoff = null;
-      const reusedOrForked = session === existing || session.docId !== parsed.document.docId;
-      if (!handedOff && reusedOrForked && this.valueCache !== value) {
-        requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
+function sessionForManifest(doc, owner, handoff) {
+  const existing = findSession(doc.docId);
+  if (!existing) return createSession(doc, "document");
+  const choice = chooseForManifest({
+    owner: existing.owner === null ? "none" : existing.owner === owner ? "self" : "other",
+    matchesRecent: sessionMatches(existing, doc),
+    handedOff: existing === handoff
+  });
+  switch (choice) {
+    case "reuse":
+      return existing;
+    case "restore":
+      if (existing.editor.dirty) {
+        notify(
+          "warn",
+          "Loaded the painting as saved in this workflow; newer unsaved strokes from the previous copy of this node were discarded.",
+          { details: [`docId ${doc.docId}`] }
+        );
       }
-      return;
+      return createSession(doc, "document");
+    case "fork-copy":
+    case "fork-restore": {
+      const docId = createId();
+      return choice === "fork-copy" ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
     }
-    if (parsed.status === "invalid") {
-      notify("warn", `Could not read the saved painting (${parsed.reason}); starting with an empty canvas.`);
-    }
-    const handoff = this.handoff?.alive && this.handoff.owner === null ? this.handoff : null;
-    this.handoff = null;
-    const choice = chooseForEmpty(parsed.status, {
-      hasPaint: this.session?.editor.hasPaint ?? false,
-      handoff: handoff !== null
-    });
-    if (choice === "adopt" && handoff) this.attach(handoff);
-    else if (choice === "reset") this.attach(createSession(createEmptyDocument(this.fallbackFrame().size), "widgets"));
   }
-  /**
-   * Value for the prompt: uploads dirty layers first (decision 8).
-   * @returns Manifest string.
-   * @throws If an upload failed (the toast has been shown); queueing stops so
-   *   the output never silently differs from the editor.
-   */
-  async serialize() {
-    const session = this.session;
-    if (!session) return this.valueCache;
-    await session.ready;
-    await session.uploader.flush();
-    if (session.editor.hiddenMaskHasContent()) {
-      session.editor.events.emit("note", HIDDEN_MASK_NOTE);
-    }
-    return this.valueCache;
+}
+function releaseOrDetach(session, owner) {
+  if (!session.editor.hasPaint && !session.editor.dirty) releaseSession(session.docId);
+  else {
+    session.uploader.flushQuietly();
+    detachSession(session, owner);
   }
+}
+function bindSessionUploads(node, session, syncValue) {
+  const { editor } = session;
+  const offChange = editor.events.on("change", () => {
+    if (syncValue() && !session.uploader.busy) requestGraphSync(node, EDIT_SYNC_DELAY_MS);
+    if (editor.dirty) session.uploader.schedule();
+  });
+  const offSettled = session.uploader.onSettled(() => requestGraphSync(node, UPLOAD_SYNC_DELAY_MS));
+  return () => {
+    offChange();
+    offSettled();
+  };
+}
+async function flushForQueue(session) {
+  await session.ready;
+  await session.uploader.flush();
+  if (session.editor.hiddenMaskHasContent()) {
+    session.editor.events.emit("note", HIDDEN_MASK_NOTE);
+  }
+}
+class WorkflowSaver {
+  /** A flush + save is in progress. */
+  saving = false;
   /**
-   * Ctrl/Cmd+S in the editor: upload dirty layers, then run ComfyUI's save
-   * command so the saved workflow references the new files (the widget value
-   * is updated by the upload's `change` event before the save serializes).
-   * If an upload failed (already toasted), ask before saving the workflow
-   * without the latest paint; the pixels stay in memory either way.
+   * @param session - Session to flush first, if any.
+   * @returns Resolves when done (errors are toasted, never thrown).
    */
-  async saveWorkflow() {
+  async save(session) {
     if (this.saving) return;
     this.saving = true;
     try {
-      const session = this.session;
       if (session) {
         try {
           await session.ready;
@@ -11792,22 +12497,122 @@ class PainterSketchController {
       this.saving = false;
     }
   }
+}
+const controllers = /* @__PURE__ */ new WeakMap();
+function getController(node) {
+  return controllers.get(node);
+}
+class PainterSketchController {
+  /**
+   * @param node - The node this controller belongs to.
+   */
+  constructor(node) {
+    this.node = node;
+    this.host = new EditorHost({
+      onBecameVisible: () => this.refresh(),
+      isDetached: () => this.isOffViewedGraph(),
+      onDisengage: () => this.session?.uploader.flushQuietly(),
+      onSave: () => void this.saver.save(this.session)
+    });
+    this.isolation = isolateEvents({
+      root: this.host.root,
+      stage: this.host.stage,
+      onWheel: (event) => this.host.input.handleWheel(event),
+      onChromeWheel: (event) => this.host.handleChromeWheel(event),
+      onMiddlePointer: (event) => this.host.input.handlePointer(event)
+    });
+    this.loader = new BackgroundLoader(node, () => this.updateContent());
+    this.watcher = new SourceWatcher(() => this.refresh(), () => this.tick());
+    this.frame = new FrameSync(node, this.loader);
+    controllers.set(node, this);
+    this.attach(this.newEmptySession());
+  }
+  node;
+  /** Editor DOM shell; its `element` is the DOM widget element. */
+  host;
+  session = null;
+  sessionUnbind = null;
+  valueCache = "";
+  /**
+   * An incoming value `parseDocument` rejected (unknown version, corrupt),
+   * reported as our value while the editor is untouched; `null` otherwise.
+   */
+  unreadableValue = null;
+  /**
+   * Session handed off by this node's previous instance, until the widget
+   * value has been applied (same task; see `handoff.ts`).
+   */
+  handoff = null;
+  isolation;
+  loader;
+  watcher;
+  frame;
+  saver = new WorkflowSaver();
+  disposed = false;
+  /** A session for a brand-new document (mask styled by the user's "Defaults" settings). */
+  newEmptySession() {
+    return createSession(createEmptyDocument(this.frame.fallbackFrame().size, void 0, readFirstMaskStyle()), "widgets");
+  }
+  // ── Widget value ────────────────────────────────────────────────────────
+  /** @returns The manifest string (`""` = never painted). */
+  getValue() {
+    return this.valueCache;
+  }
+  /**
+   * A value arrived from outside (workflow load, paste, graph undo, ...).
+   *
+   * @param value - Incoming widget value.
+   */
+  setValue(value) {
+    if (this.disposed) return;
+    if (!this.handoff && typeof value === "string" && value === this.valueCache) return;
+    const parsed = parseDocument(value);
+    if (parsed.status === "ok") {
+      this.unreadableValue = null;
+      const existing = findSession(parsed.document.docId);
+      const session = sessionForManifest(parsed.document, this, this.handoff);
+      const handedOff = session === this.handoff;
+      this.attach(session);
+      this.handoff = null;
+      const reusedOrForked = session === existing || session.docId !== parsed.document.docId;
+      if (!handedOff && reusedOrForked && this.valueCache !== value) {
+        requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
+      }
+      return;
+    }
+    this.unreadableValue = null;
+    if (parsed.status === "invalid") {
+      this.unreadableValue = typeof value === "string" ? value : JSON.stringify(value);
+      notify("warn", invalidDocumentMessage(parsed.reason), { key: `invalid-document:${parsed.reason}` });
+    }
+    const handoff = this.handoff?.alive && this.handoff.owner === null ? this.handoff : null;
+    this.handoff = null;
+    const choice = chooseForEmpty(parsed.status, {
+      hasPaint: this.session?.editor.hasPaint ?? false,
+      handoff: handoff !== null
+    });
+    if (choice === "adopt" && handoff) this.attach(handoff);
+    else if (choice === "reset") this.attach(this.newEmptySession());
+  }
+  /**
+   * Value for the prompt: uploads dirty layers first (decision 8).
+   * @returns Manifest string.
+   * @throws If an upload failed (the toast has been shown); queueing stops so
+   *   the output never silently differs from the editor.
+   */
+  async serialize() {
+    const session = this.session;
+    if (!session) return this.valueCache;
+    await flushForQueue(session);
+    return this.valueCache;
+  }
   // ── Lifecycle (called from node hooks) ──────────────────────────────────
   /**
    * Node constructor finished: chain our own widgets' callbacks so fallback
    * frame edits apply immediately (the poll catches programmatic changes).
    */
   handleNodeCreated() {
-    for (const name of [INPUT_NAMES.width, INPUT_NAMES.height, INPUT_NAMES.background]) {
-      const widget = this.findWidget(name);
-      if (!widget) continue;
-      const original = widget.callback;
-      widget.callback = (...args) => {
-        const [value, ...rest] = args;
-        original?.call(widget, value, ...rest);
-        this.updateContent();
-      };
-    }
+    this.frame.chainWidgetCallbacks(() => this.updateContent());
     this.updateContent();
   }
   /**
@@ -11815,24 +12620,18 @@ class PainterSketchController {
    * hand-off from a predecessor re-created in this task, then start listening.
    */
   handleAdded() {
-    if (this.disposed || this.listening) return;
-    this.listening = true;
+    if (this.disposed || this.watcher.active) return;
     const key = handoffKey(this.node);
     const handoff = key ? takeHandoff(key) : void 0;
     if (handoff) this.adoptHandoff(handoff);
-    api.addEventListener("executed", this.handleApiExecuted);
-    this.pollTimer = setInterval(() => this.tick(), SOURCE_POLL_MS);
-    this.startTimer = setTimeout(() => {
-      this.startTimer = null;
-      this.refresh();
-    }, 0);
+    this.watcher.start();
   }
   /**
    * Our node executed; its `ui` output carries the input image preview.
    * @param output - Execution output.
    */
   handleExecuted(output) {
-    this.lastExecuted = output;
+    this.loader.setExecuted(output);
     this.refresh();
   }
   /**
@@ -11842,45 +12641,12 @@ class PainterSketchController {
    * @param isConnected - `false` when a link was removed.
    */
   handleConnectionsChange(type, slot, isConnected) {
-    if (this.startTimer !== null) {
+    if (this.watcher.starting) {
       this.updateContent();
       return;
     }
-    const imageSlot = inputSlotIndex(this.node, INPUT_NAMES.image);
-    if (type === LINK_INPUT && slot === imageSlot && !isConnected && this.session && this.node.graph) {
-      this.handleImageDisconnected(this.session.editor.imageSize);
-    }
+    this.frame.handleLinkChange(type, slot, isConnected, this.session, () => !this.disposed && !this.isImageConnected());
     this.refresh();
-  }
-  /**
-   * `image` lost its link (a user edit, not a load): the widgets take over the
-   * last image size so the canvas keeps its size and the node shows it.
-   * Deferred a microtask so a link replaced by another (disconnect, then
-   * connect in one call) leaves the widgets alone.
-   * @param size - Image size shown when the link was removed.
-   */
-  handleImageDisconnected(size) {
-    queueMicrotask(() => {
-      if (this.disposed || this.isImageConnected()) return;
-      const width = this.setWidgetValue(INPUT_NAMES.width, widgetDimension(size.width));
-      const height = this.setWidgetValue(INPUT_NAMES.height, widgetDimension(size.height));
-      if (!width && !height) return;
-      this.node.graph?.incrementVersion?.();
-      app.canvas?.setDirty?.(true, true);
-    });
-  }
-  /**
-   * Set a widget's value like a user edit: the value setter (backed by the
-   * widget value store, so both renderers update) plus its callback (ours
-   * re-applies the frame; see `handleNodeCreated`).
-   * @returns `true` if the value changed.
-   */
-  setWidgetValue(name, value) {
-    const widget = this.findWidget(name);
-    if (!widget || widget.value === value) return false;
-    widget.value = value;
-    widget.callback?.(widget.value);
-    return true;
   }
   /**
    * Release node-bound resources; the session is only detached. The widget
@@ -11892,13 +12658,8 @@ class PainterSketchController {
     const key = handoffKey(this.node);
     const session = this.session;
     this.disposed = true;
-    this.loadSeq++;
-    if (this.listening) api.removeEventListener("executed", this.handleApiExecuted);
-    this.listening = false;
-    if (this.pollTimer !== null) clearInterval(this.pollTimer);
-    if (this.startTimer !== null) clearTimeout(this.startTimer);
-    this.pollTimer = null;
-    this.startTimer = null;
+    this.loader.dispose();
+    this.watcher.stop();
     this.detach();
     this.isolation.dispose();
     this.host.dispose();
@@ -11911,8 +12672,8 @@ class PainterSketchController {
     offerHandoff(key, {
       element,
       session: session?.alive ? session : null,
-      background: this.background,
-      lastExecuted: this.lastExecuted
+      background: this.loader.background,
+      lastExecuted: this.loader.lastExecuted
     });
   }
   /**
@@ -11924,11 +12685,7 @@ class PainterSketchController {
     const element = this.host.element;
     if (!element.isConnected && handoff.element.isConnected) handoff.element.replaceWith(element);
     else handoff.element.remove();
-    this.lastExecuted ??= handoff.lastExecuted;
-    if (handoff.background) {
-      this.background = handoff.background;
-      this.requestedKey = handoff.background.key;
-    }
+    this.loader.adopt(handoff.background, handoff.lastExecuted);
     const session = handoff.session;
     if (!session?.alive || session.owner !== null) return;
     this.handoff = session;
@@ -11939,27 +12696,6 @@ class PainterSketchController {
     });
   }
   // ── Sessions ────────────────────────────────────────────────────────────
-  /** Pick/create the session for a parsed manifest. */
-  sessionFor(doc) {
-    const existing = findSession(doc.docId);
-    if (!existing) return createSession(doc, "document");
-    const choice = chooseForManifest({
-      owner: existing.owner === null ? "none" : existing.owner === this ? "self" : "other",
-      matchesRecent: sessionMatches(existing, doc),
-      handedOff: existing === this.handoff
-    });
-    switch (choice) {
-      case "reuse":
-        return existing;
-      case "restore":
-        return createSession(doc, "document");
-      case "fork-copy":
-      case "fork-restore": {
-        const docId = createId();
-        return choice === "fork-copy" ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
-      }
-    }
-  }
   attach(session) {
     if (session === this.session) {
       this.syncValue();
@@ -11968,21 +12704,12 @@ class PainterSketchController {
     this.detach();
     this.session = session;
     attachSession(session, this);
-    const { editor } = session;
-    const offChange = editor.events.on("change", () => {
-      if (this.syncValue() && !session.uploader.busy) requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
-      if (editor.dirty) session.uploader.schedule();
-    });
-    const offSettled = session.uploader.onSettled(() => requestGraphSync(this.node, UPLOAD_SYNC_DELAY_MS));
-    this.sessionUnbind = () => {
-      offChange();
-      offSettled();
-    };
+    this.sessionUnbind = bindSessionUploads(this.node, session, () => this.syncValue());
     this.host.setSession(session);
-    this.contentKey = "";
+    this.frame.reset();
     this.syncValue();
     this.updateContent();
-    if (editor.dirty) session.uploader.schedule();
+    if (session.editor.dirty) session.uploader.schedule();
   }
   detach() {
     const session = this.session;
@@ -11991,11 +12718,7 @@ class PainterSketchController {
     this.sessionUnbind = null;
     this.session = null;
     this.host.setSession(null);
-    if (!session.editor.hasPaint && !session.editor.dirty) releaseSession(session.docId);
-    else {
-      session.uploader.flushQuietly();
-      detachSession(session, this);
-    }
+    releaseOrDetach(session, this);
   }
   /** @returns `true` if the widget value changed. */
   syncValue() {
@@ -12003,30 +12726,30 @@ class PainterSketchController {
     if (!editor) return false;
     const untouched = !editor.hasPaint && editor.doc.layers.every((l) => l.file === null);
     const previous = this.valueCache;
-    this.valueCache = untouched ? "" : stringifyDocument(editor.doc);
+    if (!untouched) this.unreadableValue = null;
+    this.valueCache = untouched ? this.unreadableValue ?? "" : stringifyDocument(editor.doc);
     return this.valueCache !== previous;
   }
-  // ── Background resolution ───────────────────────────────────────────────
+  // ── Background + content ────────────────────────────────────────────────
   /**
    * Re-resolve the background source and reload only if it changed. While
    * `image` is disconnected no source is used and in-flight loads are dropped.
    */
   refresh() {
     if (this.disposed) return;
-    if (this.isImageConnected()) {
-      const source = this.resolveSource();
-      if (source && source.key !== this.requestedKey) this.load(source);
-    } else if (this.requestedKey !== (this.background?.key ?? null)) {
-      this.loadSeq++;
-      this.loadPending = false;
-      this.requestedKey = this.background?.key ?? null;
-    }
+    this.loader.refresh(this.isImageConnected());
     this.updateContent();
   }
   tick() {
     if (!this.host.isVisible()) return;
     this.host.refreshScale();
     this.refresh();
+  }
+  /** Push background + frame to the editor when anything relevant changed. */
+  updateContent() {
+    const session = this.session;
+    if (this.disposed || !session) return;
+    this.frame.apply(session, this.isImageConnected());
   }
   /**
    * Fullscreen exit check: the node left its graph (removal, tab switch
@@ -12041,86 +12764,6 @@ class PainterSketchController {
   }
   isImageConnected() {
     return isInputConnected(this.node, INPUT_NAMES.image);
-  }
-  /** Live upstream source first, else our own last executed preview. */
-  resolveSource() {
-    const slot = inputSlotIndex(this.node, INPUT_NAMES.image);
-    const upstream = slot >= 0 ? findUpstreamNode(this.node, slot) : null;
-    return (upstream ? sourceFromNode(upstream) : null) ?? sourceFromExecuted(this.node, this.lastExecuted);
-  }
-  /** Load `source`; results of superseded loads are ignored. */
-  load(source) {
-    this.requestedKey = source.key;
-    this.loadPending = true;
-    const seq = ++this.loadSeq;
-    const image = new Image();
-    image.decoding = "async";
-    image.onload = () => {
-      if (seq !== this.loadSeq || this.disposed) return;
-      this.loadPending = false;
-      if (!image.naturalWidth || !image.naturalHeight) {
-        this.updateContent();
-        return;
-      }
-      this.background = {
-        key: source.key,
-        image,
-        size: { width: image.naturalWidth, height: image.naturalHeight }
-      };
-      this.updateContent();
-    };
-    image.onerror = () => {
-      if (seq !== this.loadSeq || this.disposed) return;
-      this.loadPending = false;
-      this.updateContent();
-      log.warn(`Could not load background image from ${source.origin} node:`, source.url);
-    };
-    image.src = source.url;
-  }
-  // ── Content ─────────────────────────────────────────────────────────────
-  /**
-   * Push background + frame decisions to the editor when anything relevant
-   * changed. The current image is the loaded upstream image while connected,
-   * else `width` x `height` filled with `background`; either way an empty
-   * editor adopts its size and a painted one only maps onto it.
-   */
-  updateContent() {
-    const session = this.session;
-    if (this.disposed || !session) return;
-    const { editor } = session;
-    const connected = this.isImageConnected();
-    const bg = connected ? this.background : null;
-    if (bg) {
-      const key2 = `${session.docId}|image|${bg.key}`;
-      if (key2 === this.contentKey) return;
-      this.contentKey = key2;
-      editor.setBackground({ kind: "image", image: bg.image }, bg.size);
-      editor.handleBackgroundSize(bg.size);
-      return;
-    }
-    const awaitingImage = connected && (this.loadPending || this.requestedKey === null);
-    if (awaitingImage && editor.background.kind === "image") return;
-    const frame = this.fallbackFrame();
-    const key = `${session.docId}|fill|${frame.color}|${frame.size.width}x${frame.size.height}`;
-    if (key === this.contentKey) return;
-    this.contentKey = key;
-    editor.setBackground({ kind: "fill", color: frame.color }, frame.size);
-    editor.handleBackgroundSize(frame.size);
-  }
-  /**
-   * The current image while disconnected: `width` x `height` filled with
-   * `background`. Like any upstream image, an empty document adopts it and a
-   * painted one is shown through the frame map (decision 4).
-   */
-  fallbackFrame() {
-    return resolveFallbackFrame(
-      this.findWidget(INPUT_NAMES.width)?.value,
-      this.findWidget(INPUT_NAMES.height)?.value,
-      this.findWidget(INPUT_NAMES.background)?.value
-    );
-  }
-  findWidget(name) {
-    return this.node.widgets?.find((widget) => widget.name === name);
   }
 }
 function installNodeHooks(nodeType) {
@@ -12164,6 +12807,13 @@ function isReloadKey(event) {
   if (mod && !event.altKey && key === "r") return true;
   return false;
 }
+function reloadConfirmText(outcome) {
+  if (outcome === "saved") return null;
+  if (outcome === "timeout") {
+    return "PainterSketch is still uploading paint (slow or unreachable server). Reload anyway and lose the unsaved paint?";
+  }
+  return "PainterSketch could not upload some paint. Reload anyway and lose the unsaved paint?";
+}
 const RELOAD_FLUSH_TIMEOUT_MS = 3e3;
 function flushQuietlyAll() {
   flushGraphSync();
@@ -12178,10 +12828,12 @@ const handleReloadKey = (event) => {
   }
   event.preventDefault();
   event.stopPropagation();
-  const timeout = new Promise((resolve) => setTimeout(resolve, RELOAD_FLUSH_TIMEOUT_MS));
-  void Promise.race([flushAll(), timeout.then(() => [])]).then((errors) => {
+  const timeout = new Promise((resolve) => setTimeout(() => resolve("timeout"), RELOAD_FLUSH_TIMEOUT_MS));
+  const flushed = flushAll().then((errors) => errors.length ? "failed" : "saved");
+  void Promise.race([flushed, timeout]).then((outcome) => {
     flushGraphSync();
-    if (errors.length > 0 && !window.confirm("Some paint couldn't be uploaded. Reload anyway?")) return;
+    const question = reloadConfirmText(outcome);
+    if (question !== null && !window.confirm(question)) return;
     location.reload();
   });
 };

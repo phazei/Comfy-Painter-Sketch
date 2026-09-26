@@ -111,6 +111,8 @@ export function translateLayerPixels(s: EditorState, layerId: string, dx: number
     const merge = gesture ? s.history.mergeTarget() : undefined;
     if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
       mergeTranslate(merge, dx, dy);
+      // Nudged back to the start: the (lossless) entry is a no-op, drop it.
+      if (merge.dx === 0 && merge.dy === 0) s.history.discardNewest();
     } else {
       const entry: TranslateEntry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
       if (gesture) entry.gesture = gesture;

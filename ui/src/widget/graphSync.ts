@@ -24,6 +24,7 @@
 
 import { app } from "@comfy/scripts/app.js";
 
+import { log } from "../log";
 import type { LGraphNode } from "../types/comfy";
 import { CoalescedTask, captureTrackerState, isInRootGraph } from "./graphSyncCore";
 
@@ -36,13 +37,25 @@ export const UPLOAD_SYNC_DELAY_MS = 0;
 /** Nodes whose value changed since the last capture. */
 const requested = new Set<LGraphNode>();
 
+/** A capture failure was logged (log once per page). */
+let captureFailureLogged = false;
+
 const task = new CoalescedTask(() => {
   const nodes = [...requested];
   requested.clear();
   const root = app.graph;
   if (!nodes.some((node) => isInRootGraph(node.graph, root))) return;
   const tracker = app.extensionManager?.workflow?.activeWorkflow?.changeTracker;
-  if (tracker) captureTrackerState(tracker);
+  if (!tracker) return;
+  // Frontend internals: a throw here must not break the caller (reload
+  // guard, pagehide). Degraded only -- the widget value is current, just
+  // the draft may lag -- so console-only, once.
+  try {
+    captureTrackerState(tracker);
+  } catch (error) {
+    if (!captureFailureLogged) log.warn("workflow draft update failed (ChangeTracker capture threw):", error);
+    captureFailureLogged = true;
+  }
 });
 
 /**

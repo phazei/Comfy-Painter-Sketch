@@ -40,9 +40,17 @@ export class MagicWandTool implements Tool {
   readonly label = "Magic wand";
   readonly shortcut = "w";
   readonly icon = "magicWand";
-  /** Default sample: the background (select regions of the input image). */
-  readonly values: WandToolOptions = { tolerance: 32, contiguous: true, antiAlias: true, sample: "background" };
-  readonly options = new OptionSet(DESCRIPTORS, this.values);
+  /** Sample defaults to the background (select regions of the input image); the setting `PainterSketch.WandSample` can change it. */
+  readonly values: WandToolOptions;
+  readonly options: OptionSet;
+
+  /**
+   * @param sample - Initial sample source (settings default).
+   */
+  constructor(sample: SampleSource = "background") {
+    this.values = { tolerance: 32, contiguous: true, antiAlias: true, sample };
+    this.options = new OptionSet(DESCRIPTORS, this.values);
+  }
   readonly combinesSelection = true;
 
   /** @inheritdoc */
@@ -79,8 +87,9 @@ export class MagicWandTool implements Tool {
 
 /**
  * Create a magic wand with default options.
+ * @param sample - Initial sample source (settings default).
  * @returns The tool.
  */
-export function createMagicWandTool(): MagicWandTool {
-  return new MagicWandTool();
+export function createMagicWandTool(sample?: SampleSource): MagicWandTool {
+  return new MagicWandTool(sample);
 }

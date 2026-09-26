@@ -68,6 +68,23 @@ export class DocIO {
   }
 
   /**
+   * A layer's file could not be restored. A text layer is re-rendered from
+   * its `textData` (the source of truth) and marked dirty so a new file is
+   * uploaded; any other layer stays empty with its `file` reference intact.
+   * @param layerId - Layer id.
+   * @returns `true` if the layer was recovered (text layer).
+   */
+  recoverMissingLayer(layerId: string): boolean {
+    const s = this.s;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    if (layer?.kind !== "text" || !layer.textData) return false;
+    renderTextLayer(s, layer);
+    s.runtime.touch(layerId);
+    s.events.emit("render", undefined);
+    return true;
+  }
+
+  /**
    * Record a finished upload.
    * @param layerId - Layer id.
    * @param version - Layer version that was uploaded.

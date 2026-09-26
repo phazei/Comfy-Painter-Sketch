@@ -4,7 +4,8 @@
  * only resolve which document layer a target refers to.
  */
 
-import { createMaskLayer, DEFAULT_MASK_COLOR } from "./create";
+import { createMaskLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_STYLE } from "./create";
+import type { MaskStyle } from "./create";
 import type { Layer, PainterDocument } from "./types";
 
 /** What brush/eraser strokes paint into. */
@@ -72,12 +73,16 @@ export function activeEditLayer(doc: Readonly<PainterDocument>, target: PaintTar
  * the stack if it has none (documents saved before M2). Mutates `doc`.
  *
  * @param doc - Document to update in place.
+ * @param style - Style of a newly created mask (only read when one is created).
  * @returns The mask layer and whether it was just created.
  */
-export function ensureMaskLayer(doc: PainterDocument): { layer: Layer; created: boolean } {
+export function ensureMaskLayer(
+  doc: PainterDocument,
+  style: () => Readonly<MaskStyle> = () => DEFAULT_MASK_STYLE,
+): { layer: Layer; created: boolean } {
   const existing = findMaskLayer(doc);
   if (existing) return { layer: existing, created: false };
-  const layer = createMaskLayer();
+  const layer = createMaskLayer("Mask", style());
   doc.layers.push(layer);
   return { layer, created: true };
 }

@@ -1,7 +1,15 @@
 ﻿import { describe, expect, it } from "vitest";
 
 import type { KeyChord } from "./fullscreenKeys";
-import { isReloadKey } from "./reloadGuard";
+import { isReloadKey, reloadConfirmText } from "./reloadGuard";
+
+describe("reloadConfirmText", () => {
+  it("reloads directly only when everything was saved", () => {
+    expect(reloadConfirmText("saved")).toBeNull();
+    expect(reloadConfirmText("failed")).toContain("could not upload");
+    expect(reloadConfirmText("timeout")).toContain("still uploading");
+  });
+});
 
 function chord(key: string, mods: Partial<Omit<KeyChord, "key">> = {}): KeyChord {
   return { key, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods };

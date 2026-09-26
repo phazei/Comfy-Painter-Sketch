@@ -13,8 +13,13 @@ it reads (WebP with alpha, PNG) loads the same way.  This module:
 
 The returned tensor dimensions are exactly ``bounds.width x bounds.height`` as
 recorded in the layer's document bounds.  If the loaded image differs in size
-we warn and resize with PIL LANCZOS before returning (the frontend is supposed
-to upload a correctly-sized image, so size mismatch means the document is stale).
+we warn and place it unscaled at the top-left, cropped or padded with
+transparency -- exactly what the editor draws, so output matches the screen
+(the frontend always uploads a correctly-sized image, so a mismatch means the
+document is stale).
+
+A missing or unreadable file is logged and treated as an empty layer (SPEC
+"Saved-file contract"): the node still runs with the remaining layers.
 
 Callers (composite.py) never see PIL objects; they only see torch tensors or
 None for missing/skipped files.
@@ -81,7 +86,9 @@ def load_layer_rgba(
     """Load a layer's image file (WebP or PNG) and return an RGBA float32 tensor.
 
     Returns ``None`` when the layer has no file (``file is None``), the file
-    is unsafe, or the file is missing; logs a warning in each case.
+    is unsafe, missing or unreadable (corrupt, not an image); logs one
+    warning in each case (called once per layer per execution). Never raises
+    for these recoverable cases.
 
     The returned tensor is ``[bounds.height, bounds.width, 4]`` float32 in
     ``[0, 1]`` (straight alpha, matching the frontend's saved images).
@@ -107,16 +114,27 @@ def load_layer_rgba(
 
     path = folder_paths.get_annotated_filepath(layer.file)
 
-    pil_img = node_helpers.pillow(Image.open, path)
-    pil_img = pil_img.convert("RGBA")
+    # Corrupt / truncated beyond repair / not an image / unreadable (permissions,
+    # removed between the exists check and the read): a recoverable per-layer
+    # problem, never a node failure.
+    try:
+        pil_img = node_helpers.pillow(Image.open, path)
+        pil_img = pil_img.convert("RGBA")
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        log.warning("layers: layer %r file %r is unreadable (%s); treating as empty", layer.id, layer.file, exc)
+        return None
 
     expected_w, expected_h = bounds.width, bounds.height
     if pil_img.size != (expected_w, expected_h):
         log.warning(
-            "layers: layer %r image size %s != bounds %dx%d; resizing",
-            layer.id, pil_img.size, expected_w, expected_h,
+            "layers: layer %r file %r is %dx%d, document bounds are %dx%d; placing it "
+            "unscaled at the top-left like the editor does (the file predates a canvas "
+            "growth, its latest edits were probably never uploaded)",
+            layer.id, layer.file, pil_img.size[0], pil_img.size[1], expected_w, expected_h,
         )
-        pil_img = pil_img.resize((expected_w, expected_h), Image.LANCZOS)
+        canvas = Image.new("RGBA", (expected_w, expected_h), (0, 0, 0, 0))
+        canvas.paste(pil_img, (0, 0))
+        pil_img = canvas
 
     arr = np.array(pil_img, dtype=np.float32) / 255.0  # [H, W, 4]
     return torch.from_numpy(arr)

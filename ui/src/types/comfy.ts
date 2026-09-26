@@ -188,7 +188,11 @@ export interface SettingParams {
   /** Unique id, prefixed `PainterSketch.`. */
   id: string;
   name: string;
-  type: "boolean" | "number" | "slider" | "combo" | "text" | "hidden" | SettingCustomRenderer;
+  /**
+   * `color` renders the frontend's `FormColorPicker` (1.52.7 and 1.55); it
+   * stores hex WITHOUT the leading `#` (`"ff0000"`).
+   */
+  type: "boolean" | "number" | "slider" | "combo" | "text" | "color" | "hidden" | SettingCustomRenderer;
   defaultValue: unknown;
   /** Panel path; defaults to `id.split(".")`. */
   category?: string[];

@@ -18,6 +18,7 @@ import {
   nextLayerName,
   paintInsertIndex,
   propsDiffer,
+  propsEqual,
   readProps,
   resolveMove,
   writeProps,
@@ -296,6 +297,10 @@ export class LayerOps {
     if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
       Object.assign(change.after, props);
       writeProps(layer, props);
+      // The gesture came back to where it started (picker Esc, scrub back):
+      // drop the entry so no empty undo step remains. A later edit in the
+      // same gesture simply starts a new entry.
+      if (merge?.kind === "layers" && merge.changes.length === 1 && propsEqual(change.before, change.after)) s.history.discardNewest();
       this.afterMeta(true);
       return true;
     }

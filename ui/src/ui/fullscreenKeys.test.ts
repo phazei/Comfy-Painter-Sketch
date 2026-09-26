@@ -39,7 +39,16 @@ describe("fullscreenKeyPolicy", () => {
     expect(fullscreenKeyPolicy(chord("g", { ctrlKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("r"))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("Tab"))).toBe("swallow");
-    expect(fullscreenKeyPolicy(chord("Shift", { shiftKey: true }))).toBe("swallow");
+  });
+
+  it("passes bare modifier keydowns (modifier tracking is observe-only)", () => {
+    expect(fullscreenKeyPolicy(chord("Shift", { shiftKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("Control", { ctrlKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("Alt", { altKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("Meta", { metaKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("AltGraph", { ctrlKey: true, altKey: true }))).toBe("pass");
+    // Held Ctrl+Shift, then Shift pressed again: still a bare modifier.
+    expect(fullscreenKeyPolicy(chord("Shift", { ctrlKey: true, shiftKey: true }))).toBe("pass");
   });
 
   it("does not treat Ctrl+Alt combos as browser keys", () => {

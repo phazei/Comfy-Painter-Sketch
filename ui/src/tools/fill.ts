@@ -49,9 +49,17 @@ export class FillTool implements Tool {
   readonly shortcut = "g";
   readonly icon = "bucket";
   readonly altEyedropper = true;
-  /** Default sample: the background (fill regions of the input image, not of earlier paint). */
-  readonly values: FillOptions = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample: "background" };
-  readonly options = new OptionSet(DESCRIPTORS, this.values);
+  /** Sample defaults to the background (fill regions of the input image); the setting `PainterSketch.BucketSample` can change it. */
+  readonly values: FillOptions;
+  readonly options: OptionSet;
+
+  /**
+   * @param sample - Initial sample source (settings default).
+   */
+  constructor(sample: SampleSource = "background") {
+    this.values = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample };
+    this.options = new OptionSet(DESCRIPTORS, this.values);
+  }
 
   /** @inheritdoc */
   onPointerDown(editor: Editor, samples: readonly ToolPointer[]): void {
@@ -86,8 +94,9 @@ export class FillTool implements Tool {
 
 /**
  * Create a paint bucket with default options.
+ * @param sample - Initial sample source (settings default).
  * @returns The tool.
  */
-export function createFillTool(): FillTool {
-  return new FillTool();
+export function createFillTool(sample?: SampleSource): FillTool {
+  return new FillTool(sample);
 }

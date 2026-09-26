@@ -4,6 +4,8 @@
  * through this API; it has no DOM UI dependencies (it only creates
  * offscreen canvases). The work is split over:
  *
+ * - `editorBase.ts`  -- base class: core state construction + the
+ *   background/frame, restore bookkeeping and stroke forwarding sections
  * - `editorState.ts` -- shared mutable state + common helpers
  * - `frameOps.ts`    -- background, frame adoption, Clear (+ snapshots)
  * - `paintOps.ts`    -- Quick Mask target, strokes, undo/redo
@@ -25,34 +27,25 @@
  * ordinary layers whose alpha is coverage; Quick Mask picks the paint target.
  */
 
+import type { MaskStyle } from "../document/create";
 import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
 import { cloneDocument } from "../document/serialize";
 import type { Point, Rect, Size } from "../geometry/rect";
-import type { Dab } from "./brush";
-import { ColorState } from "./colors";
+import type { ColorState } from "./colors";
 import type { CompositeLayer, FrameBackground, MaskOverlay } from "./compositor";
-import { DocIO } from "./docIO";
-import type { EditorEvents, FrameSource, LayerRuntime } from "./editorTypes";
-import { EditorState } from "./editorState";
-import type { Emitter } from "./emitter";
+import { EditorBase } from "./editorBase";
+import type { FrameSource, LayerRuntime } from "./editorTypes";
 import { documentMap } from "./frameMap";
 import type { FrameMap } from "./frameMap";
-import { FrameOps } from "./frameOps";
-import { LayerDisplay } from "./layerDisplay";
 import { LayerOps } from "./layerOps";
 import type { LayerStore } from "./layerStore";
 import { EditorMaskOps } from "./editorMaskOps";
 import { LayerMoveOps } from "./moveOps";
-import { PaintOps } from "./paintOps";
 import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
 import { SelectionOps } from "./selectionOps";
-import type { ShapeSpec } from "./shapes";
-import { StampCache } from "./stampCache";
-import type { StrokeStyle } from "./stroke";
 import { TextOps } from "./textOps";
-import type { ViewState } from "./view";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
 export type { LayerOps } from "./layerOps";
@@ -66,12 +59,7 @@ export { HIDDEN_MASK_NOTE } from "./editorTypes";
  * Editing state for one document (lives in the session, outlives node
  * instances).
  */
-export class Editor {
-  readonly events: Emitter<EditorEvents>;
-  readonly view: ViewState;
-  readonly stamps = new StampCache();
-  /** FG/BG colours (session-scoped, not saved). */
-  readonly colors: ColorState;
+export class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   readonly layerOps: LayerOps;
   /** Paint-bucket fill and eyedropper sampling. */
@@ -85,11 +73,6 @@ export class Editor {
   /** Text tool: create / edit / commit text layers (M6b). */
   readonly text: TextOps;
 
-  private readonly s: EditorState;
-  private readonly frames: FrameOps;
-  private readonly paint: PaintOps;
-  private readonly io: DocIO;
-  private readonly display: LayerDisplay;
   private readonly maskOps: EditorMaskOps;
 
   /**
@@ -99,14 +82,8 @@ export class Editor {
    * @param colors - Colour state to start from (forks copy their source's).
    */
   constructor(doc: PainterDocument, source: FrameSource, store?: LayerStore, colors?: ColorState) {
-    this.s = new EditorState(doc, source, store);
-    this.events = this.s.events;
-    this.view = this.s.view;
-    this.colors = new ColorState(colors?.current);
-    this.frames = new FrameOps(this.s);
-    this.paint = new PaintOps(this.s, this.frames, this.stamps);
-    this.io = new DocIO(this.s, (size) => this.frames.handleBackgroundSize(size));
-    this.display = new LayerDisplay(this.s);
+    // Core state, frames, paint, io and display first (`editorBase.ts`).
+    super(doc, source, store, colors);
     this.layerOps = new LayerOps(this.s);
     this.pixelOps = new PixelOps(this.s);
     this.placement = new PlacementOps(this.s);
@@ -250,110 +227,14 @@ export class Editor {
    */
   setMaskVisible(visible: boolean): void { this.maskOps.setMaskVisible(visible); }
 
+  /**
+   * Where a lazily added mask layer (documents without one) gets its colour
+   * and opacity; read only when a mask is created. Existing masks never change.
+   * @param style - Provider (the session reads the user's settings).
+   */
+  setMaskStyleProvider(style: () => Readonly<MaskStyle>): void { this.s.maskStyle = style; }
+
   // ── Background / frame ──────────────────────────────────────────────────
-
-  /**
-   * Set what is drawn under the paint; layer pixels are untouched.
-   * @param background - Image or fill.
-   * @param imageSize - Current image size: the image's natural size, or the
-   *   `width` x `height` widgets for a fill; `null` = show `doc.frame`.
-   */
-  setBackground(background: FrameBackground, imageSize: Size | null): void {
-    this.frames.setBackground(background, imageSize);
-  }
-
-  /**
-   * A new current-image size arrived (an empty document adopts it; a painted
-   * one is only displayed through the frame map). Call after `setBackground`.
-   * @param size - Current image size.
-   */
-  handleBackgroundSize(size: Size): void {
-    this.frames.handleBackgroundSize(size);
-  }
-
-  /**
-   * Replace the frame of an empty document (no history).
-   * @param size - New frame.
-   * @param source - Origin of the size.
-   */
-  adoptFrame(size: Size, source: FrameSource): void {
-    this.frames.adoptFrame(size, source);
-  }
-
-  /** Clear all paint (masks included) and reset the frame; one undo step. */
-  clear(): void {
-    this.frames.clear();
-  }
-
-  // ── Restore bookkeeping (persistence) ───────────────────────────────────
-
-  /** Mark the start of an async layer restore (disables painting). */
-  beginLoading(): void { this.io.beginLoading(); }
-
-  /** Mark the end of an async layer restore; applies a deferred frame change. */
-  endLoading(): void { this.io.endLoading(); }
-
-  /**
-   * Draw a restored PNG into a layer (not an undo step, not dirty).
-   * @param layerId - Layer id.
-   * @param image - Decoded PNG (sized to `bounds`).
-   */
-  restoreLayerPixels(layerId: string, image: CanvasImageSource): void {
-    this.io.restoreLayerPixels(layerId, image);
-  }
-
-  /**
-   * Record a finished upload.
-   * @param layerId - Layer id.
-   * @param version - Layer version that was uploaded.
-   * @param file - Stored file reference (`null` for an empty layer).
-   */
-  markUploaded(layerId: string, version: number, file: string | null): void {
-    this.io.markUploaded(layerId, version, file);
-  }
-
-  // ── Strokes ─────────────────────────────────────────────────────────────
-
-  /**
-   * Start a stroke on the paint target.
-   * @param style - Stroke appearance.
-   * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
-   * @returns `false` if painting is not possible (loading, locked, hidden).
-   */
-  beginStroke(style: StrokeStyle, maxDiameter: number): boolean {
-    return this.paint.beginStroke(style, maxDiameter);
-  }
-
-  /**
-   * Add dabs to the current stroke.
-   * @param dabs - Dabs in document coords.
-   */
-  addDabs(dabs: readonly Dab[]): void {
-    this.paint.addDabs(dabs);
-  }
-
-  /**
-   * Replace the current stroke's content with one shape (shape tools: live
-   * preview on every move, rasterized into the layer by {@link endStroke}).
-   * @param shape - Shape in document coords.
-   */
-  drawShape(shape: ShapeSpec): void {
-    this.paint.drawShape(shape);
-  }
-
-  /**
-   * Commit the stroke to its layer as one undo step.
-   * @param end - Where the stroke ended, document coords (for Shift+click lines).
-   */
-  endStroke(end: Point | null): void {
-    this.paint.endStroke(end);
-  }
-
-  /** Abort the current stroke. */
-  cancelStroke(): void {
-    this.s.cancelStroke();
-  }
-
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
   /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
@@ -375,6 +256,7 @@ export class Editor {
     doc.docId = docId;
     const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
+    copy.s.maskStyle = this.s.maskStyle;
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
   }

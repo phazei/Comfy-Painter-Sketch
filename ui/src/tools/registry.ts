@@ -2,6 +2,10 @@
  * Tool registry: the set of tools for one editor session and which is active.
  */
 
+import { PRESSURE_DEFAULTS } from "../defaults/pressureDefaults";
+import type { PressureDefaults } from "../defaults/pressureDefaults";
+import { SAMPLE_DEFAULTS } from "../defaults/sampleDefaults";
+import type { SampleDefaults } from "../defaults/sampleDefaults";
 import type { Editor } from "../engine/editor";
 import { Emitter } from "../engine/emitter";
 import { createBrushTool } from "./brush";
@@ -172,16 +176,22 @@ export function ctrlMoves(tool: Tool): boolean {
 /**
  * The session tool set (brush first = default active).
  * @param editor - Session editor (the Move tool's options read its placement).
+ * @param pressure - Initial brush/eraser pressure options (built-in by default).
+ * @param samples - Initial bucket/wand sample sources (built-in by default).
  * @returns New registry.
  */
-export function createDefaultTools(editor: Editor): ToolRegistry {
+export function createDefaultTools(
+  editor: Editor,
+  pressure: Readonly<PressureDefaults> = PRESSURE_DEFAULTS,
+  samples: Readonly<SampleDefaults> = SAMPLE_DEFAULTS,
+): ToolRegistry {
   const eyedropper = createEyedropperTool();
   const moveLayer = createMoveLayerTool();
   const registry = new ToolRegistry(
     [
-      createBrushTool(),
-      createEraserTool(),
-      createFillTool(),
+      createBrushTool(pressure),
+      createEraserTool(pressure),
+      createFillTool(samples.bucket),
       eyedropper,
       ...createShapeTools(),
       createTextTool(editor),
@@ -190,7 +200,7 @@ export function createDefaultTools(editor: Editor): ToolRegistry {
       moveLayer,
       ...createMarqueeTools(),
       createLassoTool(),
-      createMagicWandTool(),
+      createMagicWandTool(samples.wand),
     ],
     [SHAPE_GROUP, MARQUEE_GROUP],
   );
