@@ -463,7 +463,7 @@ Details per milestone are in the Milestones section.
 
 ### Handoff notes (for the next session)
 - M0-M6 and M7a are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
-- Work style that worked: small, scoped agents with explicit concurrency rules; coordinator builds and runs all tests (`cd ui && npm run typecheck && npm test && npm run build`; Python `-m unittest discover tests` with the ComfyUI venv and `PYTHONPATH` = ComfyUI folder). Long-running agent sessions get large -- start fresh agents per task.
+- Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
 - Next: M8 (multiple masks), then M9-M12 (agreed 2026-09-24), then M7b release polish. The user will not publicly release until M8-M12 are done.
 - M8 starting points: the first mask's style comes from `readFirstMaskStyle()` (`ui/src/defaults/maskDefaults.ts`, "first mask" naming so the M8 palette continues after it); v1 limits to one mask in `document/layerList.ts` / `document/masks.ts` and the layers panel, while Python (`combine_mask_layers`) and the compositor already handle N masks.
