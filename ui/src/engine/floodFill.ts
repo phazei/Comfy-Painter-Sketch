@@ -4,8 +4,11 @@
  * caller blends a colour through it (`coverageBlend.ts`).
  *
  * Matching is Photoshop-like: a pixel matches the seed when every channel
- * (R, G, B and alpha) differs by at most `tolerance` (0-255). Two fully
- * transparent pixels always match, whatever their (meaningless) RGB.
+ * (R, G, B and alpha) differs by at most `tolerance` (0-255). Colours are
+ * compared alpha-weighted (premultiplied), so a nearly transparent pixel is
+ * close to transparent whatever its RGB -- a stroke's faint anti-aliased
+ * edge no longer stops a fill of the empty area around it. Two fully
+ * transparent pixels always match.
  *
  * Contiguous mode is a scanline fill with an explicit `Int32Array` stack --
  * no recursion, no string-keyed visited set (ComfySketch's was the slow
@@ -14,10 +17,12 @@
  * every match. Anti-alias adds a 1 px soft fringe outside the filled area
  * (3x3 box average of the hard mask, inside stays fully covered so the fill
  * still meets its boundary). `clip` (M5 selection) restricts and scales the
- * coverage. No DOM.
+ * coverage. `under` (the target layer's pixels) adds the fill-behind pass of
+ * `fillUnder.ts` for the layer's own soft edges (anti-alias only). No DOM.
  */
 
 import type { Rect } from "../geometry/rect";
+import { growUnder } from "./fillUnder";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,14 +40,21 @@ export interface FloodFillOptions {
   antiAlias: boolean;
   /** Optional selection coverage (same size as the buffer): 0 blocks, partial values scale. */
   clip?: Uint8Array;
+  /**
+   * Target layer RGBA (same size): with `antiAlias`, the fill also goes
+   * behind the layer's soft edges next to it (result `under`).
+   */
+  under?: Uint8ClampedArray;
 }
 
 /** Flood fill output. */
 export interface FloodFillResult {
   /** Coverage per pixel (`width * height`), 0-255. */
   coverage: Uint8Array;
-  /** Bounding box of non-zero coverage (buffer coords; empty when nothing filled). */
+  /** Bounding box of non-zero coverage (and `under`; buffer coords; empty when nothing filled). */
   bbox: Rect;
+  /** Coverage to blend *behind* the target layer (only with the `under` option), 0-255. */
+  under?: Uint8Array;
 }
 
 const EMPTY_RECT: Rect = { x: 0, y: 0, width: 0, height: 0 };
@@ -73,9 +85,18 @@ export function floodFill(data: Uint8ClampedArray, width: number, height: number
   if (coverage[seed] !== MATCH) return { coverage: new Uint8Array(width * height), bbox: { ...EMPTY_RECT } };
 
   let bbox = options.contiguous ? fillContiguous(coverage, width, height, seed) : keepAllMatches(coverage, width, height);
-  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip);
-  if (clip) applyClip(coverage, width, bbox, clip);
-  return { coverage, bbox };
+  let under: Uint8Array | undefined;
+  if (options.antiAlias && options.under) {
+    const grown = growUnder(coverage, options.under, width, height, bbox, clip);
+    under = grown.under;
+    bbox = grown.bbox;
+  }
+  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip, under);
+  if (clip) {
+    applyClip(coverage, width, bbox, clip);
+    if (under) applyClip(under, width, bbox, clip);
+  }
+  return under ? { coverage, bbox, under } : { coverage, bbox };
 }
 
 // ── Passes ────────────────────────────────────────────────────────────────────
@@ -87,10 +108,11 @@ function clampTolerance(tolerance: number): number {
 /** Pass 1: `coverage[i] = MATCH` for every pixel within tolerance of the seed (and inside the clip). */
 function markMatches(data: Uint8ClampedArray, coverage: Uint8Array, seed: number, tol: number, clip: Uint8Array | undefined): void {
   const p0 = seed * 4;
-  const r = data[p0] ?? 0;
-  const g = data[p0 + 1] ?? 0;
-  const b = data[p0 + 2] ?? 0;
   const a = data[p0 + 3] ?? 0;
+  // Alpha-weighted (premultiplied) seed colour.
+  const r = ((data[p0] ?? 0) * a) / 255;
+  const g = ((data[p0 + 1] ?? 0) * a) / 255;
+  const b = ((data[p0 + 2] ?? 0) * a) / 255;
   const n = coverage.length;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     if (clip && clip[i] === 0) continue;
@@ -99,9 +121,10 @@ function markMatches(data: Uint8ClampedArray, coverage: Uint8Array, seed: number
       coverage[i] = MATCH;
       continue;
     }
-    const dr = (data[p] as number) - r;
-    const dg = (data[p + 1] as number) - g;
-    const db = (data[p + 2] as number) - b;
+    const w = pa / 255;
+    const dr = (data[p] as number) * w - r;
+    const dg = (data[p + 1] as number) * w - g;
+    const db = (data[p + 2] as number) * w - b;
     const da = pa - a;
     if (dr <= tol && dr >= -tol && dg <= tol && dg >= -tol && db <= tol && db >= -tol && da <= tol && da >= -tol) {
       coverage[i] = MATCH;
@@ -191,11 +214,19 @@ function keepAllMatches(coverage: Uint8Array, width: number, height: number): Re
 
 /**
  * Anti-alias: every uncovered pixel next to the fill gets the 3x3 box
- * average of the hard mask (n filled neighbours -> n/9). Fringe values stay
+ * average of the hard mask (n filled neighbours -> n/9); `under` pixels are
+ * already covered (behind). Fringe values stay
  * below 255, so they never count as filled neighbours themselves.
  * @returns The bbox grown to include the fringe.
  */
-function addFringe(coverage: Uint8Array, width: number, height: number, bbox: Rect, clip: Uint8Array | undefined): Rect {
+function addFringe(
+  coverage: Uint8Array,
+  width: number,
+  height: number,
+  bbox: Rect,
+  clip: Uint8Array | undefined,
+  under: Uint8Array | undefined,
+): Rect {
   if (bbox.width <= 0) return bbox;
   const x0 = Math.max(0, bbox.x - 1);
   const y0 = Math.max(0, bbox.y - 1);
@@ -208,7 +239,7 @@ function addFringe(coverage: Uint8Array, width: number, height: number, bbox: Re
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const i = y * width + x;
-      if (coverage[i] !== 0 || (clip && clip[i] === 0)) continue;
+      if (coverage[i] !== 0 || (clip && clip[i] === 0) || (under && under[i] !== 0)) continue;
       let n = 0;
       for (let dy = -1; dy <= 1; dy++) {
         const yy = y + dy;

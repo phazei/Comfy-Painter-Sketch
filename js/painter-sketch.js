@@ -7570,8 +7570,10 @@ class StrokeBuffer {
   refreshed = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
   clipSource = () => null;
-  /** Buffer x clip, composited instead of the buffer while a selection exists. */
+  /** Buffer x clip (x colour for dab strokes), composited instead of the raw buffer when needed. */
   clipped = null;
+  /** The buffer holds coverage-only dabs that still need the stroke colour. */
+  needsTint = false;
   /**
    * Clip every composite (live preview and commit) to a selection: the
    * buffer is multiplied by the clip's alpha right before compositing, so
@@ -7636,8 +7638,8 @@ class StrokeBuffer {
   addDabs(dabs, stamps, maxDiameter) {
     if (!this.style || dabs.length === 0) return;
     const { ctx } = this.surfaces().buffer;
-    const color = this.style.mode === "erase" ? "#000000" : this.style.color;
-    const stamp = stamps.get(maxDiameter, this.style.hardness, color);
+    const stamp = stamps.get(maxDiameter, this.style.hardness, "#000000");
+    this.needsTint = this.style.mode === "paint";
     for (const dab of dabs) {
       ctx.globalAlpha = dab.alpha;
       const r = dab.size / 2;
@@ -7716,17 +7718,22 @@ class StrokeBuffer {
   // ── Internals ───────────────────────────────────────────────────────────
   compositeBuffer(ctx, buffer, x, y, width, height) {
     if (!this.style) return;
-    const source = this.clipBuffer(buffer, x, y, width, height);
+    const source = this.sourceFor(buffer, x, y, width, height);
     ctx.save();
     ctx.globalAlpha = this.style.opacity;
     ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
     ctx.drawImage(source, x, y, width, height, x, y, width, height);
     ctx.restore();
   }
-  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
-  clipBuffer(buffer, x, y, width, height) {
+  /**
+   * The buffer region ready to composite: multiplied by the selection clip
+   * and, for dab strokes, filled with the stroke colour (or the buffer itself
+   * when neither applies).
+   */
+  sourceFor(buffer, x, y, width, height) {
     const clip = this.clipSource();
-    if (!clip) return buffer.canvas;
+    const tint = this.needsTint && this.style ? this.style.color : null;
+    if (!clip && !tint) return buffer.canvas;
     this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
     const { ctx } = this.clipped;
     ctx.save();
@@ -7735,8 +7742,15 @@ class StrokeBuffer {
     ctx.clip();
     ctx.clearRect(x, y, width, height);
     ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
-    ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    if (clip) {
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    }
+    if (tint) {
+      ctx.globalCompositeOperation = "source-in";
+      ctx.fillStyle = tint;
+      ctx.fillRect(x, y, width, height);
+    }
     ctx.restore();
     return this.clipped.canvas;
   }
@@ -7750,6 +7764,7 @@ class StrokeBuffer {
       this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
     }
     this.style = null;
+    this.needsTint = false;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;
@@ -9486,6 +9501,56 @@ function readDocRegion(input, rect, scratch2) {
   if (!scratch2) canvas.width = canvas.height = 0;
   return data;
 }
+const MAX_DEPTH = 64;
+function growUnder(coverage, layer, width, height, bbox, clip) {
+  const under = new Uint8Array(width * height);
+  if (bbox.width <= 0 || layer.length < width * height * 4) return { under, bbox };
+  const alpha = (i) => layer[i * 4 + 3];
+  const open = (i) => coverage[i] === 0 && under[i] === 0 && !(clip && clip[i] === 0);
+  let queue = [];
+  let minX = bbox.x;
+  let minY = bbox.y;
+  let maxX = bbox.x + bbox.width - 1;
+  let maxY = bbox.y + bbox.height - 1;
+  const mark = (i) => {
+    under[i] = 255;
+    queue.push(i);
+    const x = i % width;
+    const y = i / width | 0;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  };
+  const visit = (i, floor) => {
+    const x = i % width;
+    const y = i / width | 0;
+    const tryJoin = (n) => {
+      const a = alpha(n);
+      if (a > floor && a < 255 && open(n)) mark(n);
+    };
+    if (x > 0) tryJoin(i - 1);
+    if (x < width - 1) tryJoin(i + 1);
+    if (y > 0) tryJoin(i - width);
+    if (y < height - 1) tryJoin(i + width);
+  };
+  const x0 = Math.max(0, bbox.x - 1);
+  const y0 = Math.max(0, bbox.y - 1);
+  const x1 = Math.min(width - 1, bbox.x + bbox.width);
+  const y1 = Math.min(height - 1, bbox.y + bbox.height);
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * width + x;
+      if (coverage[i] === 255) visit(i, alpha(i));
+    }
+  }
+  for (let depth = 1; depth < MAX_DEPTH && queue.length > 0; depth++) {
+    const current = queue;
+    queue = [];
+    for (const i of current) visit(i, alpha(i));
+  }
+  return { under, bbox: { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } };
+}
 const EMPTY_RECT = { x: 0, y: 0, width: 0, height: 0 };
 const MATCH = 1;
 const FILLED = 255;
@@ -9501,19 +9566,28 @@ function floodFill(data, width, height, options) {
   markMatches(data, coverage, seed, clampTolerance(options.tolerance), clip);
   if (coverage[seed] !== MATCH) return { coverage: new Uint8Array(width * height), bbox: { ...EMPTY_RECT } };
   let bbox = options.contiguous ? fillContiguous(coverage, width, height, seed) : keepAllMatches(coverage, width, height);
-  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip);
-  if (clip) applyClip(coverage, width, bbox, clip);
-  return { coverage, bbox };
+  let under;
+  if (options.antiAlias && options.under) {
+    const grown = growUnder(coverage, options.under, width, height, bbox, clip);
+    under = grown.under;
+    bbox = grown.bbox;
+  }
+  if (options.antiAlias) bbox = addFringe(coverage, width, height, bbox, clip, under);
+  if (clip) {
+    applyClip(coverage, width, bbox, clip);
+    if (under) applyClip(under, width, bbox, clip);
+  }
+  return under ? { coverage, bbox, under } : { coverage, bbox };
 }
 function clampTolerance(tolerance) {
   return Number.isFinite(tolerance) ? Math.min(255, Math.max(0, Math.round(tolerance))) : 0;
 }
 function markMatches(data, coverage, seed, tol, clip) {
   const p0 = seed * 4;
-  const r = data[p0] ?? 0;
-  const g = data[p0 + 1] ?? 0;
-  const b = data[p0 + 2] ?? 0;
   const a = data[p0 + 3] ?? 0;
+  const r = (data[p0] ?? 0) * a / 255;
+  const g = (data[p0 + 1] ?? 0) * a / 255;
+  const b = (data[p0 + 2] ?? 0) * a / 255;
   const n = coverage.length;
   for (let i = 0, p = 0; i < n; i++, p += 4) {
     if (clip && clip[i] === 0) continue;
@@ -9522,9 +9596,10 @@ function markMatches(data, coverage, seed, tol, clip) {
       coverage[i] = MATCH;
       continue;
     }
-    const dr = data[p] - r;
-    const dg = data[p + 1] - g;
-    const db = data[p + 2] - b;
+    const w = pa / 255;
+    const dr = data[p] * w - r;
+    const dg = data[p + 1] * w - g;
+    const db = data[p + 2] * w - b;
     const da = pa - a;
     if (dr <= tol && dr >= -tol && dg <= tol && dg >= -tol && db <= tol && db >= -tol && da <= tol && da >= -tol) {
       coverage[i] = MATCH;
@@ -9604,7 +9679,7 @@ function keepAllMatches(coverage, width, height) {
   }
   return maxX < 0 ? { ...EMPTY_RECT } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
-function addFringe(coverage, width, height, bbox, clip) {
+function addFringe(coverage, width, height, bbox, clip, under) {
   if (bbox.width <= 0) return bbox;
   const x0 = Math.max(0, bbox.x - 1);
   const y0 = Math.max(0, bbox.y - 1);
@@ -9617,7 +9692,7 @@ function addFringe(coverage, width, height, bbox, clip) {
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const i = y * width + x;
-      if (coverage[i] !== 0 || clip && clip[i] === 0) continue;
+      if (coverage[i] !== 0 || clip && clip[i] === 0 || under && under[i] !== 0) continue;
       let n = 0;
       for (let dy = -1; dy <= 1; dy++) {
         const yy = y + dy;
@@ -9695,6 +9770,26 @@ function blendCoverage(dst, rect, coverage, coverageWidth, color, opacity) {
     }
   }
 }
+function blendCoverageBehind(dst, rect, coverage, coverageWidth, color, opacity) {
+  const k = Math.min(1, Math.max(0, opacity)) / 255;
+  if (k <= 0) return;
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4;
+      const da = dst[p + 3] / 255;
+      const add = c * k * (1 - da);
+      const oa = da + add;
+      if (oa <= 0) continue;
+      dst[p] = (dst[p] * da + color.r * add) / oa;
+      dst[p + 1] = (dst[p + 1] * da + color.g * add) / oa;
+      dst[p + 2] = (dst[p + 2] * da + color.b * add) / oa;
+      dst[p + 3] = oa * 255;
+    }
+  }
+}
 function wandSelection(pixels, area, point, options) {
   const { coverage, bbox } = floodFill(pixels, area.width, area.height, {
     x: Math.floor(point.x) - area.x,
@@ -9737,16 +9832,19 @@ class PixelOps {
     s.ensureBounds(image, true);
     const bounds = s.store.bounds;
     if (!inside(bounds, px, py)) return false;
-    const source = this.sampleArea(bounds, sampleTarget(req.sample, layer));
+    const target = sampleTarget(req.sample, layer);
+    const source = this.sampleArea(bounds, target);
     if (!source) return false;
-    const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
+    const own = !req.antiAlias ? void 0 : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
+    const { coverage, bbox, under } = floodFill(source, bounds.width, bounds.height, {
       x: px - bounds.x,
       y: py - bounds.y,
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
       // M5: confined to (and scaled by) the selection.
-      clip: s.selection.coverage(bounds)
+      clip: s.selection.coverage(bounds),
+      under: own ?? void 0
     });
     if (isEmptyRect(bbox)) return false;
     const docRect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
@@ -9755,6 +9853,7 @@ class PixelOps {
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     const color = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
     blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
+    if (under) blendCoverageBehind(next.data, bbox, under, bounds.width, color, req.opacity);
     s.store.write(layer.id, docRect.x, docRect.y, next);
     const after = s.store.read(layer.id, docRect);
     if (after) {

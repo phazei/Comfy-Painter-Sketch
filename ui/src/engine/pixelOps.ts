@@ -9,7 +9,9 @@
  * image in document coords -- so a click anywhere on the image works even
  * when its aspect differs from `doc.frame`. Clicks outside both the image
  * and the bounds do nothing. One dirty-rect undo patch (decision 10) covering
- * the coverage bbox.
+ * the coverage bbox. With anti-alias the fill also goes behind the target
+ * layer's own soft edges next to it (`fillUnder.ts`), so filling around a
+ * stroke leaves no halo.
  *
  * Sampling (bucket, wand, eyedropper) goes through one path
  * ({@link sampleTarget} + `sampleArea`): one layer, "All layers" (the
@@ -31,7 +33,7 @@ import type { EditorState } from "./editorState";
 import { preparePixelEdit } from "./rasterize";
 import { floodFill } from "./floodFill";
 import { documentMap, imageRectToDoc } from "./frameMap";
-import { averageColor, blendCoverage, hexToRgb, rgbToHex } from "./pixelColor";
+import { averageColor, blendCoverage, blendCoverageBehind, hexToRgb, rgbToHex } from "./pixelColor";
 import type { Selection } from "./selection";
 import { wandSelection } from "./wand";
 import type { WandOptions } from "./wand";
@@ -115,9 +117,12 @@ export class PixelOps {
     const bounds = s.store.bounds;
     if (!inside(bounds, px, py)) return false;
 
-    const source = this.sampleArea(bounds, sampleTarget(req.sample, layer));
+    const target = sampleTarget(req.sample, layer);
+    const source = this.sampleArea(bounds, target);
     if (!source) return false;
-    const { coverage, bbox } = floodFill(source, bounds.width, bounds.height, {
+    // The target layer's own pixels, so the fill can go behind its soft edges (anti-alias only).
+    const own = !req.antiAlias ? undefined : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
+    const { coverage, bbox, under } = floodFill(source, bounds.width, bounds.height, {
       x: px - bounds.x,
       y: py - bounds.y,
       tolerance: req.tolerance,
@@ -125,6 +130,7 @@ export class PixelOps {
       antiAlias: req.antiAlias,
       // M5: confined to (and scaled by) the selection.
       clip: s.selection.coverage(bounds),
+      under: own ?? undefined,
     });
     if (isEmptyRect(bbox)) return false;
 
@@ -134,6 +140,7 @@ export class PixelOps {
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     const color = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
     blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
+    if (under) blendCoverageBehind(next.data, bbox, under, bounds.width, color, req.opacity);
     s.store.write(layer.id, docRect.x, docRect.y, next);
     // Re-read so the patch holds exactly what the canvas stores (premultiplied round trip).
     const after = s.store.read(layer.id, docRect);

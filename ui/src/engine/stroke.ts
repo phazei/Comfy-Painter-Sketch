@@ -7,6 +7,11 @@
  * the last frame.
  *
  * Brush composites with `source-over`, eraser with `destination-out`.
+ * Dabs are accumulated as coverage only (opaque black stamps) and the
+ * colour is applied once, right before compositing (`source-in` fill):
+ * accumulating coloured low-alpha dabs in the 8-bit premultiplied canvas
+ * drifts the colour of soft edges (visible as dark "dust" rings when painting
+ * a mid-tone over the same colour).
  * Shape tools use the same buffer but replace its content on every move
  * ({@link StrokeBuffer.replaceContent}) instead of accumulating dabs.
  * With a selection ({@link StrokeBuffer.setClip}) both the preview and the
@@ -50,8 +55,10 @@ export class StrokeBuffer {
   private refreshed: Rect = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
   private clipSource: () => CanvasImageSource | null = () => null;
-  /** Buffer x clip, composited instead of the buffer while a selection exists. */
+  /** Buffer x clip (x colour for dab strokes), composited instead of the raw buffer when needed. */
   private clipped: Surface | null = null;
+  /** The buffer holds coverage-only dabs that still need the stroke colour. */
+  private needsTint = false;
 
   /**
    * Clip every composite (live preview and commit) to a selection: the
@@ -123,8 +130,9 @@ export class StrokeBuffer {
   addDabs(dabs: readonly Dab[], stamps: StampCache, maxDiameter: number): void {
     if (!this.style || dabs.length === 0) return;
     const { ctx } = this.surfaces().buffer;
-    const color = this.style.mode === "erase" ? "#000000" : this.style.color;
-    const stamp = stamps.get(maxDiameter, this.style.hardness, color);
+    // Coverage only; the colour is applied once in `sourceFor` (no premultiplied drift).
+    const stamp = stamps.get(maxDiameter, this.style.hardness, "#000000");
+    this.needsTint = this.style.mode === "paint";
     for (const dab of dabs) {
       ctx.globalAlpha = dab.alpha;
       const r = dab.size / 2;
@@ -217,7 +225,7 @@ export class StrokeBuffer {
     height: number,
   ): void {
     if (!this.style) return;
-    const source = this.clipBuffer(buffer, x, y, width, height);
+    const source = this.sourceFor(buffer, x, y, width, height);
     ctx.save();
     ctx.globalAlpha = this.style.opacity;
     ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
@@ -225,10 +233,15 @@ export class StrokeBuffer {
     ctx.restore();
   }
 
-  /** The buffer region multiplied by the selection clip (or the buffer itself without one). */
-  private clipBuffer(buffer: Surface, x: number, y: number, width: number, height: number): HTMLCanvasElement {
+  /**
+   * The buffer region ready to composite: multiplied by the selection clip
+   * and, for dab strokes, filled with the stroke colour (or the buffer itself
+   * when neither applies).
+   */
+  private sourceFor(buffer: Surface, x: number, y: number, width: number, height: number): HTMLCanvasElement {
     const clip = this.clipSource();
-    if (!clip) return buffer.canvas;
+    const tint = this.needsTint && this.style ? this.style.color : null;
+    if (!clip && !tint) return buffer.canvas;
     this.clipped ??= createSurface(buffer.canvas.width, buffer.canvas.height);
     const { ctx } = this.clipped;
     ctx.save();
@@ -238,8 +251,15 @@ export class StrokeBuffer {
     ctx.clip();
     ctx.clearRect(x, y, width, height);
     ctx.drawImage(buffer.canvas, x, y, width, height, x, y, width, height);
-    ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    if (clip) {
+      ctx.globalCompositeOperation = "destination-in";
+      ctx.drawImage(clip, x, y, width, height, x, y, width, height);
+    }
+    if (tint) {
+      ctx.globalCompositeOperation = "source-in";
+      ctx.fillStyle = tint;
+      ctx.fillRect(x, y, width, height);
+    }
     ctx.restore();
     return this.clipped.canvas;
   }
@@ -255,6 +275,7 @@ export class StrokeBuffer {
       this.buffer.ctx.clearRect(r.x - this.bounds.x, r.y - this.bounds.y, r.width, r.height);
     }
     this.style = null;
+    this.needsTint = false;
     this.strokeRect = EMPTY;
     this.pendingPreview = EMPTY;
     this.refreshed = EMPTY;

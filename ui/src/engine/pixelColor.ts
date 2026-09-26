@@ -109,3 +109,42 @@ export function blendCoverage(
     }
   }
 }
+
+/**
+ * Blend a colour *behind* straight-alpha RGBA pixels through a coverage mask
+ * (Photoshop "Behind": existing paint stays on top, transparency is filled).
+ * Used for the bucket's fill under a stroke's soft edge (`fillUnder.ts`).
+ * @param dst - Pixels of `rect` (`rect.width * rect.height * 4`), modified in place.
+ * @param rect - Area of `dst` inside the coverage buffer.
+ * @param coverage - Coverage buffer, `coverageWidth` wide.
+ * @param coverageWidth - Coverage row length.
+ * @param color - Fill colour.
+ * @param opacity - 0..1.
+ */
+export function blendCoverageBehind(
+  dst: Uint8ClampedArray,
+  rect: Rect,
+  coverage: Uint8Array,
+  coverageWidth: number,
+  color: Rgb,
+  opacity: number,
+): void {
+  const k = Math.min(1, Math.max(0, opacity)) / 255;
+  if (k <= 0) return;
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x] as number;
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4;
+      const da = (dst[p + 3] as number) / 255;
+      const add = c * k * (1 - da);
+      const oa = da + add;
+      if (oa <= 0) continue;
+      dst[p] = ((dst[p] as number) * da + color.r * add) / oa;
+      dst[p + 1] = ((dst[p + 1] as number) * da + color.g * add) / oa;
+      dst[p + 2] = ((dst[p + 2] as number) * da + color.b * add) / oa;
+      dst[p + 3] = oa * 255;
+    }
+  }
+}
