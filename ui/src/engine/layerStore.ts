@@ -78,6 +78,33 @@ export class LayerStore {
   }
 
   /**
+   * Resample every layer once into new bounds (Match image resolution): old
+   * document point `p` lands on `p * factor + (tx, ty)`, high-quality smoothing.
+   * @param bounds - New bounds (new document coords).
+   * @param factor - Scale, new px per old px.
+   * @param tx - X shift, new document px.
+   * @param ty - Y shift, new document px.
+   */
+  resample(bounds: Rect, factor: number, tx: number, ty: number): void {
+    const from = this.currentBounds;
+    for (const [id, surface] of this.surfaces) {
+      const next = createSurface(bounds.width, bounds.height);
+      next.ctx.imageSmoothingEnabled = true;
+      next.ctx.imageSmoothingQuality = "high";
+      next.ctx.drawImage(
+        surface.canvas,
+        from.x * factor + tx - bounds.x,
+        from.y * factor + ty - bounds.y,
+        from.width * factor,
+        from.height * factor,
+      );
+      releaseSurface(surface);
+      this.surfaces.set(id, next);
+    }
+    this.currentBounds = { ...bounds };
+  }
+
+  /**
    * Replace bounds and clear every layer (no pixel preservation).
    * @param bounds - New bounds.
    */

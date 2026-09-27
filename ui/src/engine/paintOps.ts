@@ -27,6 +27,14 @@ import { preparePixelEdit } from "./rasterize";
 import { applyTextEntry } from "./textLayer";
 import type { StrokeStyle } from "./stroke";
 import { applyOutputs } from "./regionHistory";
+import { selectionExtent } from "./selection";
+
+/** Byte-wise equality of two pixel buffers. */
+function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 /**
  * Paint target, stroke and history operations over a shared {@link EditorState}.
@@ -107,7 +115,7 @@ export class PaintOps {
       const r = (dab.size / 2) * s.stroke.reach + 2;
       need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
     }
-    s.ensureBounds(need, true);
+    this.growFor(need);
     s.stroke.addDabs(dabs);
     s.events.emit("render", undefined);
   }
@@ -123,7 +131,7 @@ export class PaintOps {
     const layerId = s.strokeLayerId;
     if (!s.stroke.active || !layerId) return;
     const need = shapeBounds(shape);
-    if (!isEmptyRect(need)) s.ensureBounds(need, true);
+    this.growFor(need);
     const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
     const rect = intersectRect(roundOutRect(need), s.store.bounds);
     s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
@@ -138,7 +146,9 @@ export class PaintOps {
     const s = this.s;
     const layerId = s.strokeLayerId;
     if (!s.stroke.active || !layerId) return;
-    const rect = s.stroke.touched;
+    const sel = s.selection.current;
+    // Pixels outside the selection extent cannot change: patch only the clipped rect.
+    const rect = sel ? intersectRect(s.stroke.touched, selectionExtent(sel, s.store.bounds)) : s.stroke.touched;
     const surface = s.store.ensure(layerId);
     if (isEmptyRect(rect)) {
       s.stroke.cancel();
@@ -146,7 +156,8 @@ export class PaintOps {
       const before = s.store.read(layerId, rect);
       s.stroke.commit(surface);
       const after = s.store.read(layerId, rect);
-      if (before && after) {
+      // A stroke that changed no pixel (zero coverage in the clip) is no undo step and no re-upload.
+      if (before && after && !sameBytes(before.data.data, after.data.data)) {
         const bytes = before.data.data.byteLength + after.data.data.byteLength;
         s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
         s.runtime.touch(layerId);
@@ -155,6 +166,18 @@ export class PaintOps {
     s.strokeLayerId = null;
     if (end) s.lastStrokeEnd = { ...end };
     s.afterEdit();
+  }
+
+  /**
+   * Grow bounds for a stroke's need rect, limited to where the selection can
+   * let paint through: a normal selection's bbox; an inverted one
+   * (`outside` > 0) covers everything outside its rect, so no limit.
+   */
+  private growFor(need: Rect): void {
+    const s = this.s;
+    const sel = s.selection.current;
+    const area = sel && !sel.outside ? intersectRect(need, sel.rect) : need;
+    if (!isEmptyRect(area)) s.ensureBounds(area, true);
   }
 
   // ── Undo / redo ─────────────────────────────────────────────────────────

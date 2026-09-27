@@ -6,6 +6,7 @@
  * pixel ratio x graph zoom (never cached: re-read on every sync).
  */
 
+import { boundsCap } from "../engine/bounds";
 import { composite } from "../engine/compositor";
 import { imageToDoc } from "../engine/frameMap";
 import { backgroundShown } from "../engine/solo";
@@ -235,6 +236,7 @@ export class StageView {
       backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
       masks: editor.maskOverlays(),
+      paintArea: boundsCap(editor.doc.frame),
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();

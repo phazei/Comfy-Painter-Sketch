@@ -10,7 +10,7 @@ import type { Size } from "../geometry/rect";
 import type { FrameBackground } from "./compositor";
 import type { DocSnapshot, FrameSource } from "./editorTypes";
 import type { EditorState } from "./editorState";
-import { clampStoredPlacement } from "./placementClamp";
+import { minimumFrame } from "./drawingResolution";
 import { applyOutputs, captureOutputs, outputsKey } from "./regionHistory";
 
 /**
@@ -37,23 +37,7 @@ export class FrameOps {
     const after = this.s.imageSize;
     // Output cards show image-px sizes and field bounds (regions never rescale).
     if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", undefined);
-    if (imageSize) this.clampPlacement();
     this.s.events.emit("render", undefined);
-  }
-
-  /**
-   * Clamp the stored placement to the paint-area rule for the current image
-   * (load and image-size changes). A change is written back as a normal
-   * metadata change (`change`, no history: placement is not undoable).
-   */
-  private clampPlacement(): void {
-    const s = this.s;
-    const next = clampStoredPlacement(s.doc.placement, s.doc.frame, s.imageSize);
-    if (!next.changed) return;
-    if (next.placement) s.doc.placement = next.placement;
-    else delete s.doc.placement;
-    s.events.emit("placement", undefined);
-    s.events.emit("change", undefined);
   }
 
   /**
@@ -71,7 +55,8 @@ export class FrameOps {
     }
     const source: FrameSource = s.background.kind === "image" ? "image" : "widgets";
     const frame = s.doc.frame;
-    if (size.width === frame.width && size.height === frame.height) {
+    const target = minimumFrame(size);
+    if (target.width === frame.width && target.height === frame.height) {
       s.frameSource = source;
       return;
     }
@@ -80,13 +65,13 @@ export class FrameOps {
 
   /**
    * Replace the frame of an empty document (no history).
-   * @param size - New frame.
+   * @param size - Image size; the frame is its {@link minimumFrame}.
    * @param source - Origin of the size.
    */
   adoptFrame(size: Size, source: FrameSource): void {
     const s = this.s;
     if (s.stroke.active) s.cancelStroke();
-    const frame = { width: Math.round(size.width), height: Math.round(size.height) };
+    const frame = minimumFrame(size);
     s.doc.frame = frame;
     s.doc.bounds = frameRect(frame);
     delete s.doc.placement;
@@ -98,7 +83,7 @@ export class FrameOps {
       s.runtime.reset(layer.id, false);
       s.runtime.bump(layer.id);
     }
-    s.history.clear();
+    this.rebaseHistory(frame, source);
     s.selection.set(null); // document coords changed meaning
     s.lastStrokeEnd = null;
     s.syncViewFrame();
@@ -115,7 +100,7 @@ export class FrameOps {
     if (s.loading) return;
     if (s.stroke.active) s.cancelStroke();
     const size = s.imageSize;
-    const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
+    const frame = minimumFrame(size);
     const source: FrameSource = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
     const before = this.captureSnapshot();
     const after: DocSnapshot = { frame, bounds: frameRect(frame), source, pixels: null };
@@ -153,10 +138,32 @@ export class FrameOps {
         delete layer.textData;
       }
       s.runtime.touch(layer.id);
+      // A cleared layer is empty again (it re-uploads blank, but may adopt frames).
+      const rt = s.runtime.get(layer.id);
+      if (rt) rt.hasContent = data !== undefined || textData !== undefined;
     }
     s.syncViewFrame();
     s.events.emit("placement", undefined);
     s.events.emit("layers", undefined);
+  }
+
+  /**
+   * History after adopting `frame`: without a Clear step it is dropped (a
+   * fresh document). With one, the Clear stays undoable (its `before` holds
+   * the old frame, bounds and placement); only the selection steps after it
+   * (stale coords) are dropped, and its `after` moves to the adopted frame
+   * so redo returns the cleared document as last seen.
+   */
+  private rebaseHistory(frame: Size, source: FrameSource): void {
+    const s = this.s;
+    const { barrier } = s.history.since((e) => e.kind === "clear");
+    if (barrier?.kind !== "clear") {
+      s.history.clear();
+      return;
+    }
+    s.history.truncateAfter(barrier);
+    barrier.after = { ...barrier.after, frame: { ...frame }, bounds: frameRect(frame), source };
+    s.events.emit("history", undefined);
   }
 
   private captureSnapshot(): DocSnapshot {

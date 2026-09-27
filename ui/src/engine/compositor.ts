@@ -7,12 +7,16 @@
  * the image rect (unless the background eye is off), visible paint layers bottom -> top at their opacity (Normal
  * blend, decision 11), visible mask layers as tinted overlays at their display
  * opacity, then a dim veil over paint outside the image and the image outline.
+ * With `paintArea`: a screen-space cobweb texture over the surround outside the
+ * maximum paint area (right after the surround fill, under everything else)
+ * and a crisp border around it (drawn last).
  *
  * Canvas 2D only; no DOM UI.
  */
 
 import { containsRect, frameRect } from "../geometry/rect";
 import type { Point, Rect, Size } from "../geometry/rect";
+import { cobwebPattern } from "./cobweb";
 import { docRectToImage, layerPlacement } from "./frameMap";
 import type { FrameMap } from "./frameMap";
 import { docRectToStage } from "./viewport";
@@ -67,6 +71,8 @@ export interface CompositeInput {
   layers: readonly CompositeLayer[];
   /** Visible mask overlays, drawn above every paint layer. */
   masks: readonly MaskOverlay[];
+  /** Maximum paint area (`boundsCap(doc.frame)`), document coords: outlined, cobwebs outside. */
+  paintArea?: Rect;
 }
 
 /** Visual constants. */
@@ -78,6 +84,8 @@ export const STAGE_STYLE = {
   offFrameVeil: "rgba(30, 30, 30, 0.55)",
   frameOutline: "rgba(255, 255, 255, 0.55)",
   frameShadow: "rgba(0, 0, 0, 0.6)",
+  capLine: "#000000",
+  capGlow: "rgba(255, 255, 255, 0.18)",
 } as const;
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -95,6 +103,8 @@ export function composite(input: CompositeInput): void {
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = STAGE_STYLE.surround;
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const capScreen = input.paintArea ? capStageRect(input, input.paintArea) : null;
+  if (capScreen) drawCobwebs(ctx, capScreen);
 
   const imageRect = frameRect(imageSize);
   const paintRect = docRectToImage(map, bounds);
@@ -180,6 +190,39 @@ export function composite(input: CompositeInput): void {
   ctx.lineWidth = lw;
   ctx.strokeStyle = extends_ ? STAGE_STYLE.frameOutline : STAGE_STYLE.frameShadow;
   ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
+  if (capScreen) drawCapBorder(ctx, capScreen);
+}
+
+// ── Maximum paint area ────────────────────────────────────────────────────────
+
+/** Paint-area cap in device px, snapped to whole pixels (crisp edges). */
+function capStageRect(input: CompositeInput, cap: Rect): Rect {
+  const r = scaleRect(docRectToStage(input.view, layerPlacement(input.map, cap)), input.pixelRatio);
+  const x0 = Math.round(r.x);
+  const y0 = Math.round(r.y);
+  return { x: x0, y: y0, width: Math.round(r.x + r.width) - x0, height: Math.round(r.y + r.height) - y0 };
+}
+
+/** Screen-space cobweb pattern over (stage minus cap); one even-odd fill. */
+function drawCobwebs(ctx: CanvasRenderingContext2D, cap: Rect): void {
+  const { width, height } = ctx.canvas;
+  if (cap.x <= 0 && cap.y <= 0 && cap.x + cap.width >= width && cap.y + cap.height >= height) return;
+  const pattern = cobwebPattern(ctx);
+  if (!pattern) return;
+  ctx.fillStyle = pattern;
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height);
+  ctx.rect(cap.x, cap.y, cap.width, cap.height);
+  ctx.fill("evenodd");
+}
+
+/** 1 device px black line just outside the cap, with a faint light line outside it. */
+function drawCapBorder(ctx: CanvasRenderingContext2D, cap: Rect): void {
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = STAGE_STYLE.capLine;
+  ctx.strokeRect(cap.x - 0.5, cap.y - 0.5, cap.width + 1, cap.height + 1);
+  ctx.strokeStyle = STAGE_STYLE.capGlow;
+  ctx.strokeRect(cap.x - 1.5, cap.y - 1.5, cap.width + 3, cap.height + 3);
 }
 
 /** Tolerance (image px) for float error in the mapped paint rect. */

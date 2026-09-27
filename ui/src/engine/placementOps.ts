@@ -7,7 +7,8 @@
  * paint. A committed change emits `change` (widget value update; nothing is
  * dirty, so nothing uploads); live drag updates only redraw. Clear resets
  * the placement as part of its own (undoable) snapshot (`frameOps.ts`).
- * Every change is clamped to the paint-area rule (`placementClamp.ts`).
+ * Interactive changes are clamped to the paint-area rule relative to the
+ * current placement (`placementClamp.ts`); Reset and drag-cancel are not.
  */
 
 import { IDENTITY_PLACEMENT, isIdentityPlacement, normalizePlacement } from "../document/placement";
@@ -47,10 +48,12 @@ export class PlacementOps {
    * @param next - New placement.
    * @param commit - `true` (default): also update the widget value
    *   (`change`); `false` for live drag frames (redraw only).
+   * @param clamp - `false`: store as given (Reset, drag cancel).
    */
-  set(next: Readonly<Placement>, commit = true): void {
+  set(next: Readonly<Placement>, commit = true, clamp = true): void {
     const s = this.s;
-    const p = clampPlacement(normalizePlacement(next), s.doc.frame, s.imageSize);
+    const n = normalizePlacement(next);
+    const p = clamp ? clampPlacement(n, s.doc.frame, s.imageSize, this.current) : n;
     const before = s.doc.placement;
     const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
     if (!same) {
@@ -89,8 +92,8 @@ export class PlacementOps {
     this.set(clampedScaleAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
   }
 
-  /** Back to identity, clamped to the paint-area rule ("Reset position"). */
+  /** Back to identity, unclamped ("Reset position"; may violate the rule). */
   reset(): void {
-    this.set(IDENTITY_PLACEMENT);
+    this.set(IDENTITY_PLACEMENT, true, false);
   }
 }

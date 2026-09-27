@@ -126,9 +126,15 @@ export class EditorState {
     return size ? { ...size } : { ...this.doc.frame };
   }
 
-  /** No paint ever and nothing in history that depends on the frame (selection steps don't count). */
+  /**
+   * The document may adopt a new frame: no paint or text, and no history
+   * step since the newest Clear (or ever) other than selection changes.
+   * Output metadata edits (regions, Main options) count as content, like
+   * `hasDocumentContent`; Clear resets them.
+   */
   get isEmpty(): boolean {
-    return !this.runtime.hasPaint && !this.history.some((entry) => entry.kind !== "selection");
+    if (this.runtime.hasPaint || this.doc.layers.some((l) => l.kind === "text")) return false;
+    return this.history.since((e) => e.kind === "clear").newer.every((e) => e.kind === "selection");
   }
 
   /** The view fits the image, not the document frame. */

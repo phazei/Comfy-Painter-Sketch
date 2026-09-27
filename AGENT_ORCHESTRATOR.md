@@ -22,8 +22,9 @@ decisions, not file contents.
 - **Opus agents** (`general`, no underscore suffix): design and multi-file work
   -- engine, persistence, lifecycle/focus bugs, new tools, anything needing
   research in the ComfyUI frontend source.
-- **Sonnet agents** (`general_sonnet`, `explore_sonnet`): narrow jobs -- a file
-  split, a cursor/icon tweak, a single-cause bug, codebase lookups.
+- **Sonnet agents** (`explore_sonnet`): searches and investigation only (where
+  is X, how does Y work). **No code changes** -- the codebase is too intricate;
+  every code change goes to an opus agent (`general`), even small ones.
 - **Start a fresh agent per task.** Resuming an agent (`task_id`) keeps its
   whole history; sessions grew past 400k tokens that way. Resume only for a
   tiny follow-up on work the agent just did.
@@ -60,7 +61,7 @@ $env:PYTHONPATH='D:\AITools\StabilityMatrixData\Packages\ComfyUI'
 ```
 
 Also watch for files creeping past ~400 lines and CRLF line endings; hand those
-to a small Sonnet agent.
+to an opus agent.
 
 ## Working with the user
 

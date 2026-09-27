@@ -258,3 +258,22 @@
   color: var(--cps-fg-muted);
   font-weight: 600;
 }
+
+/* ── Drawing resolution notice (options bar, every tool) ──────────────── */
+
+.cps-resolution-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+
+.cps-resolution-notice[hidden] {
+  display: none;
+}
+
+.cps-resolution-label {
+  color: var(--cps-danger);
+  font-size: 11px;
+}

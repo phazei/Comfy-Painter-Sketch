@@ -922,11 +922,11 @@ function defaultRegionRect(image) {
   return { x, y, width, height };
 }
 function clampEdges(start, end, min, max) {
-  const low = clamp$1(roundRegionEdge(start), min, max - 1);
-  const high = clamp$1(roundRegionEdge(end), low + 1, max);
+  const low = clamp$2(roundRegionEdge(start), min, max - 1);
+  const high = clamp$2(roundRegionEdge(end), low + 1, max);
   return [low, high];
 }
-function clamp$1(value, min, max) {
+function clamp$2(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 function createRegion(id, slot, rect) {
@@ -3916,6 +3916,13 @@ class LayersPanel {
     this.moveDrawingButton.classList.toggle("cps-active", active);
     this.moveDrawingButton.setAttribute("aria-pressed", String(active));
   }
+  /**
+   * Red Move drawing icon while the image is much finer than the drawing grid.
+   * @param on - Mismatch notice showing.
+   */
+  setMoveDrawingWarning(on) {
+    this.moveDrawingButton.classList.toggle("cps-resolution-warn", on);
+  }
   /** Remove listeners and DOM. */
   dispose() {
     this.setEditor(null);
@@ -5275,6 +5282,87 @@ class OutputsPanel {
     return { slot, element, empty, card: null };
   }
 }
+const toldDocs = /* @__PURE__ */ new Set();
+const FIT_LABEL = "The image's shape doesn't fit the drawing — parts can't be painted.";
+const CONFIRM_TEXT = "Resample all layers to the current image resolution? This clears the undo history.";
+const CROP_TEXT = "\n\nSome paint far outside the image exceeds the 16384 px paint-area limit and will be cropped.";
+function formatRatio(ratio) {
+  return `${(Math.floor(ratio * 10) / 10).toFixed(1)}x`;
+}
+class ResolutionNotice {
+  /**
+   * @param setWarning - Turns the Move drawing icon red / back.
+   * @param beforeMatch - Cancel drags / pending tool interactions first.
+   */
+  constructor(setWarning, beforeMatch) {
+    this.setWarning = setWarning;
+    this.beforeMatch = beforeMatch;
+    this.element = document.createElement("div");
+    this.element.className = "cps-resolution-notice";
+    this.element.hidden = true;
+    this.label = document.createElement("span");
+    this.label.className = "cps-resolution-label";
+    this.button = document.createElement("button");
+    this.button.type = "button";
+    this.button.className = "cps-toggle cps-resolution-match";
+    this.button.textContent = "Match image resolution";
+    this.button.title = "Resample all layers to the current image resolution (clears undo history)";
+    this.button.addEventListener("click", () => this.confirmMatch());
+    this.element.append(this.label, this.button);
+  }
+  setWarning;
+  beforeMatch;
+  /** Root element (goes into the bar's trailing area). */
+  element;
+  label;
+  button;
+  editor = null;
+  /** Last shown label (`""` = hidden); skips DOM writes on unchanged syncs. */
+  shown = null;
+  /**
+   * Bind to an editor (or none) and sync.
+   * @param editor - Editor shown by the host.
+   */
+  setEditor(editor) {
+    this.editor = editor;
+    this.shown = null;
+    this.sync();
+  }
+  /** Re-evaluate the mismatch (after frame, placement or image-size changes). */
+  sync() {
+    const editor = this.editor;
+    const notice = editor && !editor.loading ? editor.resolution.notice() : null;
+    const ratio = notice ? formatRatio(notice.info.ratio) : "";
+    const text = !notice ? "" : notice.kind === "resolution" ? `Drawing grid ${notice.info.gridPx} px — image ${notice.info.imagePx} px (${ratio})` : FIT_LABEL;
+    if (text === this.shown) return;
+    this.shown = text;
+    const show = notice !== null;
+    this.element.hidden = !show;
+    this.setWarning(show);
+    this.label.textContent = text;
+    if (!notice || !editor) return;
+    const told = `${notice.kind}:${editor.doc.docId}`;
+    if (toldDocs.has(told)) return;
+    toldDocs.add(told);
+    if (notice.kind === "resolution") {
+      notify("warn", `The image is ${ratio} the drawing's resolution — use Match image resolution for full detail.`, {
+        key: `resolution-mismatch:${editor.doc.docId}`
+      });
+    } else {
+      notify("warn", `${FIT_LABEL} Use Match image resolution to fix it.`, { key: `resolution-fit:${editor.doc.docId}` });
+    }
+  }
+  /** Button: confirm, then resample. */
+  confirmMatch() {
+    const editor = this.editor;
+    if (!editor || editor.loading || !editor.resolution.notice()) return;
+    const text = CONFIRM_TEXT + (editor.resolution.wouldCrop() ? CROP_TEXT : "");
+    if (!window.confirm(text)) return;
+    this.beforeMatch();
+    editor.matchImageResolution();
+    this.sync();
+  }
+}
 const REGION_TOOL_ID = "region";
 const CLICK_SLOP_PX$3 = 3;
 const HANDLE_HIT_PX = 6;
@@ -5428,6 +5516,8 @@ class HostSync {
       beforeEdit: () => this.onCancelDrag(),
       releaseFocus
     });
+    this.resolution = new ResolutionNotice((on) => this.layers.setMoveDrawingWarning(on), () => this.onCancelDrag());
+    shell.bar.trailing.prepend(this.resolution.element);
     shell.sidePanel.setTabs([
       { id: LAYERS_TAB, label: "Layers", panel: this.layers.element },
       { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element }
@@ -5451,6 +5541,8 @@ class HostSync {
   layers;
   /** Output metadata panel, bound alongside Layers. */
   outputs;
+  /** Drawing-resolution mismatch notice + Match image resolution (options bar). */
+  resolution;
   /**
    * Last active rail tool per registry (restored when "Move drawing" is
    * toggled off). Keyed by registry so a host showing another session (tab
@@ -5468,6 +5560,7 @@ class HostSync {
     this.layers.setEditor(editor);
     this.outputs.setEditor(editor);
     this.selectionActions.setEditor(editor);
+    this.resolution.setEditor(editor);
   }
   /** Sync rail, options bar and cursor when the active tool changes. */
   syncTools() {
@@ -6135,11 +6228,11 @@ class PopoverHost {
       if (placement === "below" && top + h > rootH) top = box.top - GAP - h;
       if (placement === "above" && top < 0) top = box.bottom + GAP;
     }
-    element.style.left = `${Math.round(clamp(left, 0, rootW - w))}px`;
-    element.style.top = `${Math.round(clamp(top, 0, rootH - h))}px`;
+    element.style.left = `${Math.round(clamp$1(left, 0, rootW - w))}px`;
+    element.style.top = `${Math.round(clamp$1(top, 0, rootH - h))}px`;
   }
 }
-function clamp(v, lo, hi) {
+function clamp$1(v, lo, hi) {
   return Math.max(lo, Math.min(Math.max(lo, hi), v));
 }
 const NARROW_EDITOR_WIDTH = 520;
@@ -6968,6 +7061,145 @@ class StageInput {
     if (this.stage.hasPointerCapture(pointerId)) this.stage.releasePointerCapture(pointerId);
   }
 }
+const DEFAULT_GROWTH = { chunk: 256, marginFactor: 1, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
+  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
+  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
+  return {
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
+  };
+}
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
+  const cap = boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
+  };
+  return unionRect(intersectRect(grown, cap), bounds);
+}
+const COBWEB_TILE = 384;
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = a + 1831565813 >>> 0;
+    let t = a;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function cobwebSegments(size = COBWEB_TILE, seed = 1515) {
+  const rnd = mulberry32(seed);
+  const out = [];
+  const slots = [
+    { cx: 0.27, cy: 0.3, r: 0.22 },
+    { cx: 0.72, cy: 0.62, r: 0.24 },
+    { cx: 0.3, cy: 0.8, r: 0.14 }
+  ];
+  for (const s of slots) {
+    const r = size * s.r * (0.85 + rnd() * 0.15);
+    const margin = 2;
+    const cx = clamp(size * s.cx + (rnd() - 0.5) * size * 0.06, r + margin, size - r - margin);
+    const cy = clamp(size * s.cy + (rnd() - 0.5) * size * 0.06, r + margin, size - r - margin);
+    addWeb(out, cx, cy, r, rnd);
+  }
+  return out;
+}
+function addWeb(out, cx, cy, radius, rnd) {
+  const spokes = 7 + Math.floor(rnd() * 4);
+  const base = rnd() * Math.PI * 2;
+  const angles = [];
+  const lengths = [];
+  for (let i = 0; i < spokes; i++) {
+    angles.push(base + (i + (rnd() - 0.5) * 0.5) / spokes * Math.PI * 2);
+    lengths.push(radius * (0.8 + rnd() * 0.2));
+  }
+  for (let i = 0; i < spokes; i++) {
+    const a = angles[i];
+    const l = lengths[i];
+    out.push({ x1: cx, y1: cy, x2: cx + Math.cos(a) * l, y2: cy + Math.sin(a) * l, spoke: true });
+  }
+  const rings = 4 + Math.floor(rnd() * 3);
+  const SUB = 4;
+  for (let k = 1; k <= rings; k++) {
+    const f = k / (rings + 0.4) * (0.95 + rnd() * 0.05);
+    for (let i = 0; i < spokes; i++) {
+      const j = (i + 1) % spokes;
+      const a0 = angles[i];
+      let a1 = angles[j];
+      if (a1 < a0) a1 += Math.PI * 2;
+      const r0 = lengths[i] * f;
+      const r1 = lengths[j] * f;
+      const sag = 0.12 + rnd() * 0.1;
+      let px = cx + Math.cos(a0) * r0;
+      let py = cy + Math.sin(a0) * r0;
+      for (let t = 1; t <= SUB; t++) {
+        const u = t / SUB;
+        const qx = Math.cos(a0) * r0 * (1 - u) + Math.cos(a1) * r1 * u;
+        const qy = Math.sin(a0) * r0 * (1 - u) + Math.sin(a1) * r1 * u;
+        const pull = 1 - sag * 4 * u * (1 - u);
+        const nx = cx + qx * pull;
+        const ny = cy + qy * pull;
+        out.push({ x1: px, y1: py, x2: nx, y2: ny, spoke: false });
+        px = nx;
+        py = ny;
+      }
+    }
+  }
+}
+function clamp(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+const COBWEB_STYLE = {
+  spoke: "rgba(210, 210, 210, 0.10)",
+  thread: "rgba(210, 210, 210, 0.07)"
+};
+const patterns = /* @__PURE__ */ new WeakMap();
+let tileCanvas;
+function cobwebPattern(ctx) {
+  const cached = patterns.get(ctx);
+  if (cached) return cached;
+  if (tileCanvas === void 0) tileCanvas = renderTile();
+  if (!tileCanvas) return null;
+  const pattern = ctx.createPattern(tileCanvas, "repeat");
+  if (pattern) patterns.set(ctx, pattern);
+  return pattern;
+}
+function renderTile() {
+  if (typeof document === "undefined") return null;
+  const tile = document.createElement("canvas");
+  tile.width = tile.height = COBWEB_TILE;
+  const t = tile.getContext("2d");
+  if (!t) return null;
+  const segs = cobwebSegments(COBWEB_TILE);
+  t.lineWidth = 1;
+  t.lineCap = "round";
+  for (const spoke of [true, false]) {
+    t.strokeStyle = spoke ? COBWEB_STYLE.spoke : COBWEB_STYLE.thread;
+    t.beginPath();
+    for (const s of segs) {
+      if (s.spoke !== spoke) continue;
+      t.moveTo(s.x1, s.y1);
+      t.lineTo(s.x2, s.y2);
+    }
+    t.stroke();
+  }
+  return tile;
+}
 const STAGE_STYLE = {
   surround: "#1e1e1e",
   checkerLight: "#cfcfcf",
@@ -6975,7 +7207,9 @@ const STAGE_STYLE = {
   checkerCell: 8,
   offFrameVeil: "rgba(30, 30, 30, 0.55)",
   frameOutline: "rgba(255, 255, 255, 0.55)",
-  frameShadow: "rgba(0, 0, 0, 0.6)"
+  frameShadow: "rgba(0, 0, 0, 0.6)",
+  capLine: "#000000",
+  capGlow: "rgba(255, 255, 255, 0.18)"
 };
 const checkerPatterns = /* @__PURE__ */ new WeakMap();
 function composite(input) {
@@ -6985,6 +7219,8 @@ function composite(input) {
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = STAGE_STYLE.surround;
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  const capScreen = input.paintArea ? capStageRect(input, input.paintArea) : null;
+  if (capScreen) drawCobwebs(ctx, capScreen);
   const imageRect = frameRect(imageSize2);
   const paintRect = docRectToImage(map, bounds);
   const frameScreen = scaleRect(docRectToStage(view, imageRect), pr);
@@ -7052,6 +7288,31 @@ function composite(input) {
   ctx.lineWidth = lw;
   ctx.strokeStyle = extends_ ? STAGE_STYLE.frameOutline : STAGE_STYLE.frameShadow;
   ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
+  if (capScreen) drawCapBorder(ctx, capScreen);
+}
+function capStageRect(input, cap) {
+  const r = scaleRect(docRectToStage(input.view, layerPlacement(input.map, cap)), input.pixelRatio);
+  const x0 = Math.round(r.x);
+  const y0 = Math.round(r.y);
+  return { x: x0, y: y0, width: Math.round(r.x + r.width) - x0, height: Math.round(r.y + r.height) - y0 };
+}
+function drawCobwebs(ctx, cap) {
+  const { width, height } = ctx.canvas;
+  if (cap.x <= 0 && cap.y <= 0 && cap.x + cap.width >= width && cap.y + cap.height >= height) return;
+  const pattern = cobwebPattern(ctx);
+  if (!pattern) return;
+  ctx.fillStyle = pattern;
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height);
+  ctx.rect(cap.x, cap.y, cap.width, cap.height);
+  ctx.fill("evenodd");
+}
+function drawCapBorder(ctx, cap) {
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = STAGE_STYLE.capLine;
+  ctx.strokeRect(cap.x - 0.5, cap.y - 0.5, cap.width + 1, cap.height + 1);
+  ctx.strokeStyle = STAGE_STYLE.capGlow;
+  ctx.strokeRect(cap.x - 1.5, cap.y - 1.5, cap.width + 3, cap.height + 3);
 }
 const EPSILON = 1e-6;
 function inflateRect(r, d) {
@@ -7733,7 +7994,8 @@ class StageView {
       background: editor.background,
       backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
-      masks: editor.maskOverlays()
+      masks: editor.maskOverlays(),
+      paintArea: boundsCap(editor.doc.frame)
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
@@ -8174,7 +8436,9 @@ class EditorHost {
         editor.events.on("mask", () => this.sync.syncMask()),
         editor.events.on("change", () => this.sync.syncMask()),
         // Move tool: live X / Y / Scale fields.
-        editor.events.on("placement", () => this.sync.optionsBar.refresh()),
+        editor.events.on("placement", () => (this.sync.optionsBar.refresh(), this.sync.resolution.sync())),
+        // Drawing resolution notice: frame / image size / load changes (cheap, de-duplicated).
+        editor.events.on("render", () => this.sync.resolution.sync()),
         // Selection: marching ants + "To mask" button.
         editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.view.requestOverlay())),
         editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),
@@ -8773,6 +9037,70 @@ class FrameSync {
     return this.node.widgets?.find((widget) => widget.name === name);
   }
 }
+const MIN_FRAME_SHORT_SIDE = 1024;
+const MAX_BOOSTED_LONG_SIDE = 4096;
+const RESOLUTION_NOTICE_RATIO = 1.5;
+const MAX_BOUNDS_SIDE = 16384;
+function minimumFrame(size) {
+  const w = Math.max(1, Math.round(size.width));
+  const h = Math.max(1, Math.round(size.height));
+  const boost = Math.max(1, Math.min(MIN_FRAME_SHORT_SIDE / Math.min(w, h), MAX_BOOSTED_LONG_SIDE / Math.max(w, h)));
+  if (boost === 1) return { width: w, height: h };
+  return { width: Math.max(1, Math.round(w * boost)), height: Math.max(1, Math.round(h * boost)) };
+}
+function resolutionInfo(doc, image) {
+  const current = documentMap(doc, image).scale;
+  const ideal = frameMap(minimumFrame(image), image).scale;
+  const ratio = current > 0 && ideal > 0 ? current / ideal : 1;
+  const imagePx = Math.max(image.width, image.height);
+  const gridPx = current > 0 ? Math.round(imagePx / current) : imagePx;
+  return { ratio, gridPx, imagePx, mismatch: ratio > RESOLUTION_NOTICE_RATIO };
+}
+function transformPoint(t, p) {
+  return { x: p.x * t.factor + t.tx, y: p.y * t.factor + t.ty };
+}
+function transformRect(t, r) {
+  return { x: r.x * t.factor + t.tx, y: r.y * t.factor + t.ty, width: r.width * t.factor, height: r.height * t.factor };
+}
+function clipSide(start, length, centre, max) {
+  if (length <= max) return [start, length];
+  const lo = Math.min(start + length - max, Math.max(start, Math.round(centre - max / 2)));
+  return [lo, max];
+}
+function keepResolution(frame, image, currentScale) {
+  const ideal = frameMap(frame, image).scale;
+  if (!(currentScale > 0) || currentScale >= ideal) return frame;
+  const k = Math.min(ideal / currentScale, MAX_BOUNDS_SIDE / Math.max(frame.width, frame.height));
+  if (k <= 1) return frame;
+  return { width: Math.max(1, Math.round(frame.width * k)), height: Math.max(1, Math.round(frame.height * k)) };
+}
+function imageFits(doc, image) {
+  const r = docRectToImage(documentMap(doc, image), unionRect(boundsCap(doc.frame), doc.bounds));
+  const eps = 1e-6;
+  return r.x <= eps && r.y <= eps && r.x + r.width >= image.width - eps && r.y + r.height >= image.height - eps;
+}
+function matchGeometry(doc, image) {
+  const placement = void 0;
+  const before = documentMap(doc, image);
+  const frame = keepResolution(minimumFrame(image), image, before.scale);
+  const after = frameMap(frame, image, placement);
+  const factor = before.scale / after.scale;
+  const transform = { factor, tx: (before.offsetX - after.offsetX) / after.scale, ty: (before.offsetY - after.offsetY) / after.scale };
+  const moved = transformRect(transform, doc.bounds);
+  const x0 = Math.floor(moved.x + 1e-6);
+  const y0 = Math.floor(moved.y + 1e-6);
+  const out = { x: x0, y: y0, width: Math.ceil(moved.x + moved.width - 1e-6) - x0, height: Math.ceil(moved.y + moved.height - 1e-6) - y0 };
+  const full = unionRect(out, { x: 0, y: 0, width: frame.width, height: frame.height });
+  const [bx, bw] = clipSide(full.x, full.width, frame.width / 2, MAX_BOUNDS_SIDE);
+  const [by, bh] = clipSide(full.y, full.height, frame.height / 2, MAX_BOUNDS_SIDE);
+  const bounds = { x: bx, y: by, width: bw, height: bh };
+  const cropped = bw < full.width || bh < full.height;
+  return { frame, bounds, placement, transform, cropped };
+}
+function scaleTextData(td, t) {
+  const p = transformPoint(t, td);
+  return { ...td, x: p.x, y: p.y, size: clampSize(td.size * t.factor) };
+}
 const offers = /* @__PURE__ */ new Map();
 function handoffKey(node) {
   const graph = node.graph;
@@ -8886,35 +9214,6 @@ function requestGraphSync(node, delayMs) {
 }
 function flushGraphSync() {
   task.flush();
-}
-const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
-  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
 }
 function sceneFor(input, source) {
   return source === "background" ? { ...input, layers: [], backgroundHidden: false } : input;
@@ -9696,6 +9995,33 @@ class HistoryStack {
   some(predicate) {
     return this.undoStack.some(predicate) || this.redoStack.some(predicate);
   }
+  /**
+   * Split the history at the newest undo entry matching `isBarrier`.
+   * @param isBarrier - Barrier test (e.g. a Clear step).
+   * @returns The barrier (or `undefined`) and every entry the barrier does
+   *   not cover: undo entries newer than it (all undo entries without one)
+   *   plus the whole redo side.
+   */
+  since(isBarrier) {
+    let i = this.undoStack.length - 1;
+    for (; i >= 0; i--) {
+      const entry = this.undoStack[i];
+      if (entry !== void 0 && isBarrier(entry)) break;
+    }
+    return { barrier: i >= 0 ? this.undoStack[i] : void 0, newer: [...this.undoStack.slice(i + 1), ...this.redoStack] };
+  }
+  /**
+   * Drop every undo entry newer than `entry` and the whole redo side;
+   * `entry` becomes the newest step. No-op when `entry` is not on the undo side.
+   * @param entry - Entry to keep as the newest.
+   */
+  truncateAfter(entry) {
+    const i = this.undoStack.indexOf(entry);
+    if (i < 0) return;
+    this.joining = null;
+    for (const dropped of [...this.undoStack.splice(i + 1), ...this.redoStack]) this.total -= dropped.bytes;
+    this.redoStack.length = 0;
+  }
   /** Drop everything. */
   clear() {
     this.joining = null;
@@ -9874,6 +10200,32 @@ class LayerStore {
     for (const [id, surface] of this.surfaces) {
       this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds));
       releaseSurface(surface);
+    }
+    this.currentBounds = { ...bounds };
+  }
+  /**
+   * Resample every layer once into new bounds (Match image resolution): old
+   * document point `p` lands on `p * factor + (tx, ty)`, high-quality smoothing.
+   * @param bounds - New bounds (new document coords).
+   * @param factor - Scale, new px per old px.
+   * @param tx - X shift, new document px.
+   * @param ty - Y shift, new document px.
+   */
+  resample(bounds, factor, tx, ty) {
+    const from = this.currentBounds;
+    for (const [id, surface] of this.surfaces) {
+      const next = createSurface(bounds.width, bounds.height);
+      next.ctx.imageSmoothingEnabled = true;
+      next.ctx.imageSmoothingQuality = "high";
+      next.ctx.drawImage(
+        surface.canvas,
+        from.x * factor + tx - bounds.x,
+        from.y * factor + ty - bounds.y,
+        from.width * factor,
+        from.height * factor
+      );
+      releaseSurface(surface);
+      this.surfaces.set(id, next);
     }
     this.currentBounds = { ...bounds };
   }
@@ -10971,9 +11323,15 @@ class EditorState {
     const size = this.backgroundSize;
     return size ? { ...size } : { ...this.doc.frame };
   }
-  /** No paint ever and nothing in history that depends on the frame (selection steps don't count). */
+  /**
+   * The document may adopt a new frame: no paint or text, and no history
+   * step since the newest Clear (or ever) other than selection changes.
+   * Output metadata edits (regions, Main options) count as content, like
+   * `hasDocumentContent`; Clear resets them.
+   */
   get isEmpty() {
-    return !this.runtime.hasPaint && !this.history.some((entry) => entry.kind !== "selection");
+    if (this.runtime.hasPaint || this.doc.layers.some((l) => l.kind === "text")) return false;
+    return this.history.since((e) => e.kind === "clear").newer.every((e) => e.kind === "selection");
   }
   /** The view fits the image, not the document frame. */
   syncViewFrame() {
@@ -11028,81 +11386,6 @@ class EditorState {
     this.events.emit("render", void 0);
   }
 }
-const WHEEL_SCALE_STEP = 1.05;
-const MAX_WHEEL_DELTA = 300;
-function fitScale(frame, image) {
-  return frameMap(frame, image).scale;
-}
-function translatePlacement(p, frame, image, dx, dy) {
-  const s = fitScale(frame, image);
-  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
-}
-function scalePlacementAt(p, frame, image, factor, anchor) {
-  const base = frameMap(frame, image);
-  const now = frameMap(frame, image, p);
-  const k = clampPlacementScale(p.scale * factor);
-  const docX = (anchor.x - now.offsetX) / now.scale;
-  const docY = (anchor.y - now.offsetY) / now.scale;
-  const s = base.scale;
-  return {
-    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
-    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
-    scale: k
-  };
-}
-function wheelScaleFactor(deltaPx) {
-  if (!Number.isFinite(deltaPx)) return 1;
-  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
-  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
-}
-function placementImageOffset(p, frame, image) {
-  const s = fitScale(frame, image);
-  return { x: p.x * s, y: p.y * s };
-}
-function imageOffsetToPlacement(imagePx, frame, image) {
-  return imagePx / fitScale(frame, image);
-}
-const PLACEMENT_MARGIN = 50;
-function validSizes(frame, image) {
-  return [frame.width, frame.height, image.width, image.height].every((v) => Number.isFinite(v) && v > 0);
-}
-function clampShift(t, lo, hi, mid) {
-  if (lo > hi) return mid;
-  return Math.min(hi, Math.max(lo, t));
-}
-function placementScaleRange(frame, image) {
-  const max = PLACEMENT_MAX_SCALE;
-  if (!validSizes(frame, image)) return { min: PLACEMENT_MIN_SCALE, max, feasible: true };
-  const cap = docRectToImage(frameMap(frame, image), boundsCap(frame));
-  const m2 = 2 * PLACEMENT_MARGIN;
-  const min = Math.max(PLACEMENT_MIN_SCALE, (image.width + m2) / cap.width, (image.height + m2) / cap.height);
-  return { min, max, feasible: min <= max };
-}
-function clampPlacement(p, frame, image) {
-  const n = normalizePlacement(p);
-  if (!validSizes(frame, image)) return n;
-  const range = placementScaleRange(frame, image);
-  const scale = range.feasible ? Math.min(range.max, Math.max(range.min, n.scale)) : range.max;
-  const s = frameMap(frame, image).scale;
-  const cap = docRectToImage(frameMap(frame, image, { x: 0, y: 0, scale }), boundsCap(frame));
-  const m = PLACEMENT_MARGIN;
-  const tx = clampShift(n.x * s, image.width + m - (cap.x + cap.width), -m - cap.x, (image.width - cap.width) / 2 - cap.x);
-  const ty = clampShift(n.y * s, image.height + m - (cap.y + cap.height), -m - cap.y, (image.height - cap.height) / 2 - cap.y);
-  return { x: tx === n.x * s ? n.x : tx / s, y: ty === n.y * s ? n.y : ty / s, scale };
-}
-function clampedScaleAt(p, frame, image, factor, anchor) {
-  const range = placementScaleRange(frame, image);
-  const current = p.scale > 0 && Number.isFinite(p.scale) ? p.scale : 1;
-  const wanted = current * (Number.isFinite(factor) && factor > 0 ? factor : 1);
-  const k = range.feasible ? Math.min(range.max, Math.max(range.min, wanted)) : range.max;
-  return clampPlacement(scalePlacementAt({ ...p, scale: current }, frame, image, k / current, anchor), frame, image);
-}
-function clampStoredPlacement(placement, frame, image) {
-  const before = placement ?? { x: 0, y: 0, scale: 1 };
-  const next = clampPlacement(before, frame, image);
-  const changed = next.x !== before.x || next.y !== before.y || next.scale !== before.scale;
-  return { placement: isIdentityPlacement(next) ? void 0 : next, changed };
-}
 function captureOutputs(s) {
   const snapshot = { regions: s.doc.regions.map(cloneRegion), selected: s.selectedRegionId };
   if (s.doc.mainOutput) snapshot.main = cloneOutputOptions(s.doc.mainOutput);
@@ -11140,22 +11423,7 @@ class FrameOps {
     this.s.syncViewFrame();
     const after = this.s.imageSize;
     if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", void 0);
-    if (imageSize2) this.clampPlacement();
     this.s.events.emit("render", void 0);
-  }
-  /**
-   * Clamp the stored placement to the paint-area rule for the current image
-   * (load and image-size changes). A change is written back as a normal
-   * metadata change (`change`, no history: placement is not undoable).
-   */
-  clampPlacement() {
-    const s = this.s;
-    const next = clampStoredPlacement(s.doc.placement, s.doc.frame, s.imageSize);
-    if (!next.changed) return;
-    if (next.placement) s.doc.placement = next.placement;
-    else delete s.doc.placement;
-    s.events.emit("placement", void 0);
-    s.events.emit("change", void 0);
   }
   /**
    * A new current-image size arrived (upstream image, or the widgets while
@@ -11172,7 +11440,8 @@ class FrameOps {
     }
     const source = s.background.kind === "image" ? "image" : "widgets";
     const frame = s.doc.frame;
-    if (size.width === frame.width && size.height === frame.height) {
+    const target = minimumFrame(size);
+    if (target.width === frame.width && target.height === frame.height) {
       s.frameSource = source;
       return;
     }
@@ -11180,13 +11449,13 @@ class FrameOps {
   }
   /**
    * Replace the frame of an empty document (no history).
-   * @param size - New frame.
+   * @param size - Image size; the frame is its {@link minimumFrame}.
    * @param source - Origin of the size.
    */
   adoptFrame(size, source) {
     const s = this.s;
     if (s.stroke.active) s.cancelStroke();
-    const frame = { width: Math.round(size.width), height: Math.round(size.height) };
+    const frame = minimumFrame(size);
     s.doc.frame = frame;
     s.doc.bounds = frameRect(frame);
     delete s.doc.placement;
@@ -11198,7 +11467,7 @@ class FrameOps {
       s.runtime.reset(layer.id, false);
       s.runtime.bump(layer.id);
     }
-    s.history.clear();
+    this.rebaseHistory(frame, source);
     s.selection.set(null);
     s.lastStrokeEnd = null;
     s.syncViewFrame();
@@ -11214,7 +11483,7 @@ class FrameOps {
     if (s.loading) return;
     if (s.stroke.active) s.cancelStroke();
     const size = s.imageSize;
-    const frame = { width: Math.max(1, Math.round(size.width)), height: Math.max(1, Math.round(size.height)) };
+    const frame = minimumFrame(size);
     const source = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
     const before = this.captureSnapshot();
     const after = { frame, bounds: frameRect(frame), source, pixels: null };
@@ -11250,10 +11519,30 @@ class FrameOps {
         delete layer.textData;
       }
       s.runtime.touch(layer.id);
+      const rt = s.runtime.get(layer.id);
+      if (rt) rt.hasContent = data !== void 0 || textData !== void 0;
     }
     s.syncViewFrame();
     s.events.emit("placement", void 0);
     s.events.emit("layers", void 0);
+  }
+  /**
+   * History after adopting `frame`: without a Clear step it is dropped (a
+   * fresh document). With one, the Clear stays undoable (its `before` holds
+   * the old frame, bounds and placement); only the selection steps after it
+   * (stale coords) are dropped, and its `after` moves to the adopted frame
+   * so redo returns the cleared document as last seen.
+   */
+  rebaseHistory(frame, source) {
+    const s = this.s;
+    const { barrier } = s.history.since((e) => e.kind === "clear");
+    if (barrier?.kind !== "clear") {
+      s.history.clear();
+      return;
+    }
+    s.history.truncateAfter(barrier);
+    barrier.after = { ...barrier.after, frame: { ...frame }, bounds: frameRect(frame), source };
+    s.events.emit("history", void 0);
   }
   captureSnapshot() {
     const s = this.s;
@@ -11630,6 +11919,11 @@ function emitLayerEvents(s) {
   s.events.emit("layers", void 0);
   s.events.emit("mask", void 0);
 }
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 class PaintOps {
   /**
    * @param s - Shared editor state.
@@ -11701,7 +11995,7 @@ class PaintOps {
       const r = dab.size / 2 * s.stroke.reach + 2;
       need = unionRect(need, { x: dab.x - r, y: dab.y - r, width: r * 2, height: r * 2 });
     }
-    s.ensureBounds(need, true);
+    this.growFor(need);
     s.stroke.addDabs(dabs);
     s.events.emit("render", void 0);
   }
@@ -11716,7 +12010,7 @@ class PaintOps {
     const layerId = s.strokeLayerId;
     if (!s.stroke.active || !layerId) return;
     const need = shapeBounds(shape);
-    if (!isEmptyRect(need)) s.ensureBounds(need, true);
+    this.growFor(need);
     const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
     const rect = intersectRect(roundOutRect(need), s.store.bounds);
     s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
@@ -11730,7 +12024,8 @@ class PaintOps {
     const s = this.s;
     const layerId = s.strokeLayerId;
     if (!s.stroke.active || !layerId) return;
-    const rect = s.stroke.touched;
+    const sel = s.selection.current;
+    const rect = sel ? intersectRect(s.stroke.touched, selectionExtent(sel, s.store.bounds)) : s.stroke.touched;
     const surface = s.store.ensure(layerId);
     if (isEmptyRect(rect)) {
       s.stroke.cancel();
@@ -11738,7 +12033,7 @@ class PaintOps {
       const before = s.store.read(layerId, rect);
       s.stroke.commit(surface);
       const after = s.store.read(layerId, rect);
-      if (before && after) {
+      if (before && after && !sameBytes(before.data.data, after.data.data)) {
         const bytes = before.data.data.byteLength + after.data.data.byteLength;
         s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
         s.runtime.touch(layerId);
@@ -11747,6 +12042,17 @@ class PaintOps {
     s.strokeLayerId = null;
     if (end) s.lastStrokeEnd = { ...end };
     s.afterEdit();
+  }
+  /**
+   * Grow bounds for a stroke's need rect, limited to where the selection can
+   * let paint through: a normal selection's bbox; an inverted one
+   * (`outside` > 0) covers everything outside its rect, so no limit.
+   */
+  growFor(need) {
+    const s = this.s;
+    const sel = s.selection.current;
+    const area = sel && !sel.outside ? intersectRect(need, sel.rect) : need;
+    if (!isEmptyRect(area)) s.ensureBounds(area, true);
   }
   // ── Undo / redo ─────────────────────────────────────────────────────────
   /** Undo the last operation (no-op while stroking; cancels a Move drag preview). */
@@ -13176,6 +13482,87 @@ class PixelOps {
 function inside(r, x, y) {
   return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
 }
+const WHEEL_SCALE_STEP = 1.05;
+const MAX_WHEEL_DELTA = 300;
+function fitScale(frame, image) {
+  return frameMap(frame, image).scale;
+}
+function translatePlacement(p, frame, image, dx, dy) {
+  const s = fitScale(frame, image);
+  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
+}
+function scalePlacementAt(p, frame, image, factor, anchor) {
+  const base = frameMap(frame, image);
+  const now = frameMap(frame, image, p);
+  const k = clampPlacementScale(p.scale * factor);
+  const docX = (anchor.x - now.offsetX) / now.scale;
+  const docY = (anchor.y - now.offsetY) / now.scale;
+  const s = base.scale;
+  return {
+    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
+    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
+    scale: k
+  };
+}
+function wheelScaleFactor(deltaPx) {
+  if (!Number.isFinite(deltaPx)) return 1;
+  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
+  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
+}
+function placementImageOffset(p, frame, image) {
+  const s = fitScale(frame, image);
+  return { x: p.x * s, y: p.y * s };
+}
+function imageOffsetToPlacement(imagePx, frame, image) {
+  return imagePx / fitScale(frame, image);
+}
+const PLACEMENT_MARGIN = 50;
+function validSizes(frame, image) {
+  return [frame.width, frame.height, image.width, image.height].every((v) => Number.isFinite(v) && v > 0);
+}
+function clampShift(t, lo, hi, mid) {
+  if (lo > hi) return mid;
+  return Math.min(hi, Math.max(lo, t));
+}
+function edgeLimits(frame, image, from) {
+  const m = PLACEMENT_MARGIN;
+  const strict = { left: -m, top: -m, right: image.width + m, bottom: image.height + m };
+  if (!from) return strict;
+  const r = docRectToImage(frameMap(frame, image, normalizePlacement(from)), boundsCap(frame));
+  return {
+    left: Math.max(strict.left, r.x),
+    top: Math.max(strict.top, r.y),
+    right: Math.min(strict.right, r.x + r.width),
+    bottom: Math.min(strict.bottom, r.y + r.height)
+  };
+}
+function placementScaleRange(frame, image, from) {
+  const max = PLACEMENT_MAX_SCALE;
+  if (!validSizes(frame, image)) return { min: PLACEMENT_MIN_SCALE, max, feasible: true };
+  const cap = docRectToImage(frameMap(frame, image), boundsCap(frame));
+  const e = edgeLimits(frame, image, from);
+  const min = Math.max(PLACEMENT_MIN_SCALE, (e.right - e.left) / cap.width, (e.bottom - e.top) / cap.height);
+  return { min, max, feasible: min <= max };
+}
+function clampPlacement(p, frame, image, from) {
+  const n = normalizePlacement(p);
+  if (!validSizes(frame, image)) return n;
+  const range = placementScaleRange(frame, image, from);
+  const scale = range.feasible ? Math.min(range.max, Math.max(range.min, n.scale)) : range.max;
+  const s = frameMap(frame, image).scale;
+  const cap = docRectToImage(frameMap(frame, image, { x: 0, y: 0, scale }), boundsCap(frame));
+  const e = edgeLimits(frame, image, from);
+  const tx = clampShift(n.x * s, e.right - (cap.x + cap.width), e.left - cap.x, (image.width - cap.width) / 2 - cap.x);
+  const ty = clampShift(n.y * s, e.bottom - (cap.y + cap.height), e.top - cap.y, (image.height - cap.height) / 2 - cap.y);
+  return { x: tx === n.x * s ? n.x : tx / s, y: ty === n.y * s ? n.y : ty / s, scale };
+}
+function clampedScaleAt(p, frame, image, factor, anchor) {
+  const range = placementScaleRange(frame, image, p);
+  const current = p.scale > 0 && Number.isFinite(p.scale) ? p.scale : 1;
+  const wanted = current * (Number.isFinite(factor) && factor > 0 ? factor : 1);
+  const k = range.feasible ? Math.min(range.max, Math.max(range.min, wanted)) : range.max;
+  return clampPlacement(scalePlacementAt({ ...p, scale: current }, frame, image, k / current, anchor), frame, image, p);
+}
 class PlacementOps {
   /**
    * @param s - Shared editor state.
@@ -13202,10 +13589,12 @@ class PlacementOps {
    * @param next - New placement.
    * @param commit - `true` (default): also update the widget value
    *   (`change`); `false` for live drag frames (redraw only).
+   * @param clamp - `false`: store as given (Reset, drag cancel).
    */
-  set(next, commit = true) {
+  set(next, commit = true, clamp2 = true) {
     const s = this.s;
-    const p = clampPlacement(normalizePlacement(next), s.doc.frame, s.imageSize);
+    const n = normalizePlacement(next);
+    const p = clamp2 ? clampPlacement(n, s.doc.frame, s.imageSize, this.current) : n;
     const before = s.doc.placement;
     const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
     if (!same) {
@@ -13240,9 +13629,9 @@ class PlacementOps {
     const s = this.s;
     this.set(clampedScaleAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
   }
-  /** Back to identity, clamped to the paint-area rule ("Reset position"). */
+  /** Back to identity, unclamped ("Reset position"; may violate the rule). */
   reset() {
-    this.set(IDENTITY_PLACEMENT);
+    this.set(IDENTITY_PLACEMENT, true, false);
   }
 }
 const NO_SELECTION_NOTE = "Nothing is selected.";
@@ -13840,6 +14229,93 @@ function validRect(rect) {
   const finite2 = [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite);
   return finite2 && !isEmptyRect(rect);
 }
+class ResolutionOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /**
+   * Current mismatch against the image, or `null` when no image size is known.
+   * @returns Ratio and label numbers.
+   */
+  info() {
+    const s = this.s;
+    if (!s.backgroundSize) return null;
+    return resolutionInfo(s.doc, s.imageSize);
+  }
+  /**
+   * Whether the image area fits the maximum paint area (`imageFits`);
+   * `true` when no image size is known.
+   * @returns Fit state.
+   */
+  fits() {
+    const s = this.s;
+    if (!s.backgroundSize) return true;
+    return imageFits({ frame: s.doc.frame, bounds: s.store.bounds, placement: s.doc.placement }, s.imageSize);
+  }
+  /**
+   * What the notice should show: `null` for nothing (also for an empty
+   * document, which adopts the image size anyway, and while loading);
+   * `"resolution"` when the ratio is too high (takes precedence; Match fixes
+   * the shape too); `"fit"` when only the image's shape doesn't fit.
+   * @returns Notice case.
+   */
+  notice() {
+    const s = this.s;
+    const info = this.info();
+    if (!info || s.loading || s.isEmpty) return null;
+    if (info.mismatch) return { kind: "resolution", info };
+    return this.fits() ? null : { kind: "fit", info };
+  }
+  /**
+   * Whether Match image resolution would crop content (bounds side limit).
+   * @returns `true` if some paint would be cut off.
+   */
+  wouldCrop() {
+    const s = this.s;
+    return matchGeometry({ frame: s.doc.frame, bounds: s.store.bounds, placement: s.doc.placement }, s.imageSize).cropped;
+  }
+  /**
+   * Resample to the image resolution (never lowers resolution; no-op unless
+   * {@link notice} applies). Callers settle floats / open edits first.
+   * @returns `true` if the document changed.
+   */
+  match() {
+    const s = this.s;
+    if (!this.notice()) return false;
+    if (s.stroke.active) s.cancelStroke();
+    const g = matchGeometry({ frame: s.doc.frame, bounds: s.store.bounds, placement: s.doc.placement }, s.imageSize);
+    const { factor, tx, ty } = g.transform;
+    s.store.resample(g.bounds, factor, tx, ty);
+    s.stroke.rebase(g.bounds);
+    s.doc.frame = { ...g.frame };
+    s.doc.bounds = { ...g.bounds };
+    if (g.placement) s.doc.placement = { ...g.placement };
+    else delete s.doc.placement;
+    const source = s.background.kind === "image" ? "image" : "widgets";
+    s.frameSource = source;
+    for (const layer of s.doc.layers) {
+      if (layer.kind !== "text" || !layer.textData) continue;
+      layer.textData = scaleTextData(layer.textData, g.transform);
+      renderTextLayer(s, layer);
+    }
+    for (const layer of s.doc.layers) {
+      if (s.runtime.get(layer.id)?.hasContent) s.runtime.touch(layer.id);
+      else s.runtime.bump(layer.id);
+    }
+    s.history.clear();
+    s.selection.set(null);
+    s.lastStrokeEnd = null;
+    s.syncViewFrame();
+    s.events.emit("placement", void 0);
+    s.events.emit("layers", void 0);
+    s.afterEdit();
+    return true;
+  }
+}
 class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   layerOps;
@@ -13861,6 +14337,8 @@ class Editor extends EditorBase {
   selectionMove;
   /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
   clipboard;
+  /** Drawing-grid vs image resolution check + Match image resolution. */
+  resolution;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -13881,6 +14359,7 @@ class Editor extends EditorBase {
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
     this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"));
+    this.resolution = new ResolutionOps(this.s);
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -14098,6 +14577,17 @@ class Editor extends EditorBase {
     this.s.settleFloat();
     this.regionOps.cancel();
     super.clear();
+  }
+  /**
+   * Match image resolution (`resolutionOps.ts`): settle float / open edits, resample every layer, clear history.
+   * @returns `true` if the document changed.
+   */
+  matchImageResolution() {
+    this.s.settleFloat();
+    this.layerMove.cancel();
+    this.regionOps.cancel();
+    this.text.commit();
+    return this.resolution.match();
   }
   // ── Cloning / teardown ──────────────────────────────────────────────────
   /**
@@ -14955,7 +15445,7 @@ class MoveTool {
   onCancel(editor) {
     const drag = this.drag;
     this.drag = null;
-    if (drag) editor.placement.set(drag.start);
+    if (drag) editor.placement.set(drag.start, true, false);
   }
   /** @inheritdoc */
   onWheel(editor, deltaPx, at) {
@@ -16309,7 +16799,7 @@ class PainterSketchController {
   disposed = false;
   /** A session for a brand-new document (mask styled by the user's "Defaults" settings). */
   newEmptySession() {
-    return createSession(createEmptyDocument(this.frame.fallbackFrame().size, void 0, readFirstMaskStyle()), "widgets");
+    return createSession(createEmptyDocument(minimumFrame(this.frame.fallbackFrame().size), void 0, readFirstMaskStyle()), "widgets");
   }
   // ── Widget value ────────────────────────────────────────────────────────
   /** @returns The manifest string (`""` = untouched). */
@@ -16614,8 +17104,8 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
-const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n';
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\r\n.cps-rail-clipboard {\r\n  padding-top: 3px;\r\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\r\n}\r\n\r\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\r\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\r\n  cursor: var(--cps-tool-cursor, crosshair);\r\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\r\n  pointer-events: none;\r\n}\r\n\r\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\r\n * transform; the canvas shows the glyphs, the textarea only the caret. */\r\n.cps-text-edit {\r\n  position: absolute;\r\n  left: 0;\r\n  top: 0;\r\n  box-sizing: content-box;\r\n  margin: 0;\r\n  padding: 0;\r\n  border: 0;\r\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\r\n  background: transparent;\r\n  color: transparent;\r\n  resize: none;\r\n  overflow: hidden;\r\n  white-space: pre;\r\n  transform-origin: 0 0;\r\n  cursor: text;\r\n  letter-spacing: normal;\r\n  word-spacing: normal;\r\n  text-indent: 0;\r\n  text-transform: none;\r\n  font-kerning: auto;\r\n  touch-action: auto;\r\n}\r\n\r\n.cps-text-edit::selection {\r\n  background: rgba(80, 140, 255, 0.35);\r\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
+const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
  *
@@ -16991,6 +17481,11 @@ const layersCss = `/*
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+/* Move drawing icon: the image is much finer than the drawing grid. */
+.cps-layers-move-drawing.cps-resolution-warn {
+  color: var(--cps-danger);
 }
 `;
 const toolGroupsCss = "/* ── Tool group slot + flyout (ui/toolGroupSlot.ts) ─────────────────────── */\n\n.cps-rail-grouped {\n  position: relative;\n}\n\n/* Photoshop's corner triangle: this slot holds more tools. */\n.cps-rail-corner {\n  position: absolute;\n  right: 2px;\n  bottom: 2px;\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid currentColor;\n  opacity: 0.7;\n  pointer-events: none;\n}\n\n.cps-tool-flyout {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 120px;\n}\n\n.cps-tool-flyout-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 3px 6px;\n  border: 1px solid transparent;\n  border-radius: 3px;\n  background: transparent;\n  color: var(--cps-fg);\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-tool-flyout-item:hover {\n  background: var(--cps-hover);\n}\n\n.cps-tool-flyout-item.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-tool-flyout-key {\n  margin-left: auto;\n  color: var(--cps-fg-muted);\n}\n";

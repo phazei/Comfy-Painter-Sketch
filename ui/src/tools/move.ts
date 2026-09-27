@@ -154,7 +154,7 @@ export class MoveTool implements Tool {
   onCancel(editor: Editor): void {
     const drag = this.drag;
     this.drag = null;
-    if (drag) editor.placement.set(drag.start);
+    if (drag) editor.placement.set(drag.start, true, false);
   }
 
   /** @inheritdoc */

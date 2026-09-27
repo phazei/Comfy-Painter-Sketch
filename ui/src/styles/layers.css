@@ -274,3 +274,8 @@
   opacity: 0;
   pointer-events: none;
 }
+
+/* Move drawing icon: the image is much finer than the drawing grid. */
+.cps-layers-move-drawing.cps-resolution-warn {
+  color: var(--cps-danger);
+}

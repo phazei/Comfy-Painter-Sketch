@@ -153,6 +153,35 @@ export class HistoryStack<T extends Sized> {
     return this.undoStack.some(predicate) || this.redoStack.some(predicate);
   }
 
+  /**
+   * Split the history at the newest undo entry matching `isBarrier`.
+   * @param isBarrier - Barrier test (e.g. a Clear step).
+   * @returns The barrier (or `undefined`) and every entry the barrier does
+   *   not cover: undo entries newer than it (all undo entries without one)
+   *   plus the whole redo side.
+   */
+  since(isBarrier: (entry: T) => boolean): { barrier: T | undefined; newer: T[] } {
+    let i = this.undoStack.length - 1;
+    for (; i >= 0; i--) {
+      const entry = this.undoStack[i];
+      if (entry !== undefined && isBarrier(entry)) break;
+    }
+    return { barrier: i >= 0 ? this.undoStack[i] : undefined, newer: [...this.undoStack.slice(i + 1), ...this.redoStack] };
+  }
+
+  /**
+   * Drop every undo entry newer than `entry` and the whole redo side;
+   * `entry` becomes the newest step. No-op when `entry` is not on the undo side.
+   * @param entry - Entry to keep as the newest.
+   */
+  truncateAfter(entry: T): void {
+    const i = this.undoStack.indexOf(entry);
+    if (i < 0) return;
+    this.joining = null;
+    for (const dropped of [...this.undoStack.splice(i + 1), ...this.redoStack]) this.total -= dropped.bytes;
+    this.redoStack.length = 0;
+  }
+
   /** Drop everything. */
   clear(): void {
     this.joining = null;

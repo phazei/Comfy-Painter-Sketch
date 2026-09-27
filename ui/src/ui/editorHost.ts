@@ -230,7 +230,9 @@ export class EditorHost {
         editor.events.on("mask", () => this.sync.syncMask()),
         editor.events.on("change", () => this.sync.syncMask()),
         // Move tool: live X / Y / Scale fields.
-        editor.events.on("placement", () => this.sync.optionsBar.refresh()),
+        editor.events.on("placement", () => (this.sync.optionsBar.refresh(), this.sync.resolution.sync())),
+        // Drawing resolution notice: frame / image size / load changes (cheap, de-duplicated).
+        editor.events.on("render", () => this.sync.resolution.sync()),
         // Selection: marching ants + "To mask" button.
         editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.view.requestOverlay())),
         editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),

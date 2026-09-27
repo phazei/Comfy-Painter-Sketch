@@ -59,6 +59,7 @@ import { BACKGROUND_SOLO_ID, toggleSolo } from "./solo";
 import { createSurface } from "./surface";
 import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
+import { ResolutionOps } from "./resolutionOps";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
 export type { LayerOps } from "./layerOps";
@@ -93,6 +94,8 @@ export class Editor extends EditorBase {
   readonly selectionMove: SelectionMoveOps;
   /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
   readonly clipboard: ClipboardOps;
+  /** Drawing-grid vs image resolution check + Match image resolution. */
+  readonly resolution: ResolutionOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -116,6 +119,7 @@ export class Editor extends EditorBase {
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
     this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"));
+    this.resolution = new ResolutionOps(this.s);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -335,6 +339,15 @@ export class Editor extends EditorBase {
 
   /** Clear paint and output metadata in the existing single Clear history step. */
   override clear(): void { this.s.settleFloat(); this.regionOps.cancel(); super.clear(); }
+
+  /**
+   * Match image resolution (`resolutionOps.ts`): settle float / open edits, resample every layer, clear history.
+   * @returns `true` if the document changed.
+   */
+  matchImageResolution(): boolean {
+    this.s.settleFloat(); this.layerMove.cancel(); this.regionOps.cancel(); this.text.commit();
+    return this.resolution.match();
+  }
 
   // ── Cloning / teardown ──────────────────────────────────────────────────
 

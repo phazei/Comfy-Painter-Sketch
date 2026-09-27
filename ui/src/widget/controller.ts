@@ -37,6 +37,7 @@ import { INPUT_NAMES } from "./constants";
 import { isolateEvents } from "./eventIsolation";
 import type { EventIsolation } from "./eventIsolation";
 import { FrameSync } from "./frameSync";
+import { minimumFrame } from "../engine/drawingResolution";
 import { handoffKey, offerHandoff, takeHandoff } from "./handoff";
 import type { NodeHandoff } from "./handoff";
 import { invalidDocumentMessage, skippedLayersMessage } from "./failures";
@@ -120,7 +121,7 @@ export class PainterSketchController {
 
   /** A session for a brand-new document (mask styled by the user's "Defaults" settings). */
   private newEmptySession(): EditorSession {
-    return createSession(createEmptyDocument(this.frame.fallbackFrame().size, undefined, readFirstMaskStyle()), "widgets");
+    return createSession(createEmptyDocument(minimumFrame(this.frame.fallbackFrame().size), undefined, readFirstMaskStyle()), "widgets");
   }
 
   // ── Widget value ────────────────────────────────────────────────────────

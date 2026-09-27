@@ -143,8 +143,8 @@ interface OutputOptions {                           // per region, and doc-level
 - **Coordinates:** paint is in *frame* pixels; M9 regions are in current-image pixels (see "Output regions"). `bounds` is the paint area and
   may extend past the frame (negative `x`/`y`, larger size) but always contains
   it. Initially `bounds = {x:0, y:0, width:frame.width, height:frame.height}`;
-  it grows in 256 px chunks while painting off-frame, capped at 3x the frame per
-  axis and 16384 px.
+  it grows in 256 px chunks while painting off-frame, capped at the frame plus its short side on every side (was 3x the frame per axis until 2026-09-27) and 16384 px per
+  axis.
 - **Layer image:** RGBA, exactly `bounds.width x bounds.height`; pixel `(px,py)`
   sits at frame coords `(bounds.x+px, bounds.y+py)`. Straight (non-premultiplied)
   alpha. `file: null` = empty layer.
@@ -382,7 +382,7 @@ dynamic output slots on the main node.
   input image changes, not on width/height widget changes. Move drawing doesn't move
   them. (`regionsReferenceSize` is dropped; nothing was released.)
 - Regions may extend partly or fully outside the image, clamped to the paint area
-  (one image size beyond each edge, the 3x paint cap). Edge rule (editor and Python):
+  (one image size beyond each edge; independent of the paint-area cap). Edge rule (editor and Python):
   `floor(clamp(v, -W, 2W) + 0.5)` per edge (y with H), then at least 1x1. New
   regions from `+ Region N` are centred at half the image size. Outside the image a region
   outputs the `background` widget colour plus any paint and mask coverage that lies
@@ -446,7 +446,7 @@ their own layer; whole-pixel moves, no resampling).
   cancel (everything back). A committed float = one undo step (one patch on that layer).
 - Works on the current mask with Quick Mask on. Text layer -> usual rasterize prompt.
   Hidden / solo-hidden / locked layers -> the usual `editBlockNote`.
-- Pixels moved beyond the paint area (3x cap) are cropped.
+- Pixels moved beyond the maximum paint area are cropped.
 
 **Merge Down (Ctrl+E)**: merges the current row into the next row below of the same
 group (paint/text into paint, mask into mask); one undo step. Same rule for both (PS):
@@ -606,7 +606,7 @@ Design: "Floating selections + clipboard (M10) -- agreed design".
 - [ ] Python returns previews for all image inputs so the editor can see them after a run (LoadImage-style upstreams work before a run)
 
 ### M7b -- Release polish (last)
-- [ ] README: real feature list, shortcuts table, screenshots/GIF, install, storage + cleanup explanation
+- [ ] README: real feature list, drawing-vs-image model (fit, paint area, Match image resolution), shortcuts table, screenshots/GIF, install, storage + cleanup explanation
 - [ ] Example workflows (`example_workflows/`): e.g. LoadImage -> PainterSketch -> inpaint (Crop to mask); regions -> per-person prompts
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
@@ -678,6 +678,16 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-27: Clear is a normal undo step on top of earlier history (verified by test; image-size changes don't touch document coords, and undoing Clear restores the old frame, so earlier patches line up). Second notice case: the image area doesn't fit the maximum paint area -> "The image's shape doesn't fit the drawing" + Match image resolution (one notice when both apply). Match never lowers resolution (frame enlarged proportionally if needed, 16384 cap). README (M7b) should explain the image area vs drawing model (why the drawing fits onto a changing upstream image, like video overlays / annotations, unlike PS where the canvas is the document).
+
+- 2026-09-27: After Clear the document adopts every size change like a fresh one while nothing is drawn (only selection steps since the Clear). Adoption is not a history step; undoing the Clear restores the drawing at its original frame / bounds / placement; redo returns the cleared doc at the last adopted frame.
+
+- 2026-09-27: Maximum paint area changed from 3x the frame per axis to the frame plus its SHORT side as a margin on every side (`boundsCap`, `marginFactor: 1`; 16384 per-axis cap unchanged). Square frames are unchanged; long frames no longer get a huge long-axis margin. Python has no copy of the rule (reads saved bounds). Existing bounds beyond the new cap are kept. Paint-area border + cobweb texture outside it on the stage (`engine/cobweb.ts`).
+
+- 2026-09-27: Placement clamp is interaction-only (supersedes the load / image-size clamp and write-back in the "Move drawing clamp" entry): nothing automatic changes the user's placement; Reset = identity always; from a state that already breaks the 50 px rule, an edge may move outward or stay but never further inside (no jump). Match image resolution also resets to identity.
+
+- 2026-09-27: Drawing resolution code done (needs browser check): `engine/drawingResolution.ts` `minimumFrame()` used by new documents, empty-doc adoption and Clear (also the no-image width/height path). Mismatch ratio = resample factor Match would apply (image px per doc px incl. placement scale, relative to a fresh frame from this image). Match keeps all content; bounds beyond 16384 are clipped centred with a warning line in the confirm. Python unchanged (reads the frame).
 
 - 2026-09-27: Merge Down button in the layers footer (Move drawing | New layer, New mask, Duplicate, Merge Down, Delete), disabled when not possible. Alt+click eye = solo removed (solo button only). A paint solo keeps the image per its eye (the background has its own eye).
 

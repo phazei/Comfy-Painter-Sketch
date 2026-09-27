@@ -18,6 +18,7 @@
   --cps-accent: var(--p-primary-color, #3b82f6);
   --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);
   --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);
+  --cps-danger: var(--p-red-400, #f87171);
 
   position: relative;
   box-sizing: border-box;

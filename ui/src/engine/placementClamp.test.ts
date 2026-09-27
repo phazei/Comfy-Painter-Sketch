@@ -5,7 +5,7 @@ import type { Placement } from "../document/types";
 import type { Size } from "../geometry/rect";
 import { boundsCap } from "./bounds";
 import { docRectToImage, docToImage, frameMap, imageToDoc } from "./frameMap";
-import { PLACEMENT_MARGIN, clampPlacement, clampStoredPlacement, clampedScaleAt, placementScaleRange } from "./placementClamp";
+import { PLACEMENT_MARGIN, clampPlacement, clampedScaleAt, placementScaleRange } from "./placementClamp";
 import { translatePlacement } from "./placementMath";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ describe("frame cases", () => {
     expect(r.width).toBeGreaterThanOrEqual(img.width);
   });
 
-  it("non-1 fit: reset (identity) is clamped into the rule", () => {
+  it("non-1 fit: identity is clamped into the rule (strict)", () => {
     const narrow = { width: 100, height: 1000 }; // fit 1 into 1000 x 1000, cap 300 wide
     const p = clampPlacement(IDENTITY_PLACEMENT, narrow, image);
     expect(p.scale).toBeCloseTo(1100 / 300, 12);
@@ -108,26 +108,36 @@ describe("frame cases", () => {
   });
 });
 
-// ── Load-time ─────────────────────────────────────────────────────────────────
+// ── Relative to a violating placement ─────────────────────────────────────────
 
-describe("clampStoredPlacement", () => {
-  it("reports no change for valid / missing placement", () => {
-    expect(clampStoredPlacement(undefined, frame, image)).toEqual({ placement: undefined, changed: false });
-    expect(clampStoredPlacement({ x: 5, y: 5, scale: 1 }, frame, image).changed).toBe(false);
+describe("clamp from a violating placement", () => {
+  // Frame 1024 on image 1024 x 256: fit 0.25, cap 768 wide at x 128..896 -> both
+  // horizontal edges violate; vertical (-256..512) is fine.
+  const f = { width: 1024, height: 1024 };
+  const img = { width: 1024, height: 256 };
+  const from = IDENTITY_PLACEMENT;
+
+  it("keeps the placement when nothing changes (no jump)", () => {
+    expect(clampPlacement(from, f, img, from)).toEqual(from);
   });
 
-  it("clamps an out-of-range stored placement for write-back", () => {
-    const out = clampStoredPlacement({ x: 99999, y: 0, scale: 20 }, frame, image);
-    expect(out.changed).toBe(true);
-    expect(out.placement?.scale).toBe(10);
-    expect(out.placement && holds(out.placement, frame, image)).toBe(true);
-    // Clamping again is stable (no further write-back).
-    expect(clampStoredPlacement(out.placement, frame, image).changed).toBe(false);
+  it("blocks moves that worsen a violated edge, allows free axes", () => {
+    const right = clampPlacement(translatePlacement(from, f, img, 100, 0), f, img, from);
+    expect(right.x).toBeCloseTo(0, 9);
+    expect(right.scale).toBe(1);
+    const down = clampPlacement(translatePlacement(from, f, img, 0, 30), f, img, from);
+    expect(down.y * 0.25).toBeCloseTo(30, 9);
   });
 
-  it("clamps a missing placement when identity breaks the rule (image changed)", () => {
-    const out = clampStoredPlacement(undefined, { width: 100, height: 1000 }, image);
-    expect(out.changed).toBe(true);
-    expect(out.placement?.scale).toBeCloseTo(1100 / 300, 12);
+  it("allows scaling up (improves both edges) and blocks scaling down", () => {
+    const anchor = { x: 512, y: 128 };
+    expect(clampedScaleAt(from, f, img, 1.2, anchor).scale).toBeCloseTo(1.2, 12);
+    expect(clampedScaleAt(from, f, img, 0.5, anchor).scale).toBe(1);
+  });
+
+  it("once satisfied, the strict rule applies", () => {
+    const ok = clampPlacement({ x: 0, y: 0, scale: 2 }, f, img);
+    expect(holds(ok, f, img)).toBe(true);
+    expect(clampPlacement({ ...ok, scale: 0.5 }, f, img, ok).scale).toBeCloseTo((1024 + 100) / 768, 12);
   });
 });

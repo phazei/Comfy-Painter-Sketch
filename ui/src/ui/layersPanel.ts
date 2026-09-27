@@ -148,6 +148,14 @@ export class LayersPanel {
     this.moveDrawingButton.setAttribute("aria-pressed", String(active));
   }
 
+  /**
+   * Red Move drawing icon while the image is much finer than the drawing grid.
+   * @param on - Mismatch notice showing.
+   */
+  setMoveDrawingWarning(on: boolean): void {
+    this.moveDrawingButton.classList.toggle("cps-resolution-warn", on);
+  }
+
   /** Remove listeners and DOM. */
   dispose(): void {
     this.setEditor(null);

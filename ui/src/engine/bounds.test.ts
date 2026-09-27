@@ -6,12 +6,12 @@ const frame = { width: 1000, height: 500 };
 const initial = { x: 0, y: 0, width: 1000, height: 500 };
 
 describe("boundsCap", () => {
-  it("is 3x the frame per axis, centred", () => {
-    expect(boundsCap(frame)).toEqual({ x: -1000, y: -500, width: 3000, height: 1500 });
+  it("adds the short side as a margin on every side, centred", () => {
+    expect(boundsCap(frame)).toEqual({ x: -500, y: -500, width: 2000, height: 1500 });
   });
 
   it("respects the absolute max side but never shrinks below the frame", () => {
-    expect(boundsCap({ width: 8000, height: 100 }).width).toBe(16384);
+    expect(boundsCap({ width: 16000, height: 10000 }).width).toBe(16384);
     expect(boundsCap({ width: 20000, height: 100 }).width).toBe(20000);
   });
 });
@@ -31,17 +31,17 @@ describe("growBounds", () => {
     expect(growBounds(initial, { x: 900, y: 450, width: 400, height: 300 }, frame)).toEqual({
       x: 0,
       y: 0,
-      width: 1512,
+      width: 1500,
       height: 756,
     });
   });
 
   it("clips growth to the cap", () => {
     expect(growBounds(initial, { x: -5000, y: 0, width: 10, height: 10 }, frame)).toEqual(initial);
-    expect(growBounds(initial, { x: -999, y: 0, width: 10, height: 10 }, frame)).toEqual({
-      x: -1000,
+    expect(growBounds(initial, { x: -499, y: 0, width: 10, height: 10 }, frame)).toEqual({
+      x: -500,
       y: 0,
-      width: 2000,
+      width: 1500,
       height: 500,
     });
   });

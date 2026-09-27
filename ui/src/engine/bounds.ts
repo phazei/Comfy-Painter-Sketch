@@ -4,7 +4,9 @@
  * Growth: when a stroke reaches past `bounds`, the bounds grow outward on the
  * affected side(s) in whole chunks (so a scribble along the edge doesn't
  * reallocate every few pixels), limited to a cap rect centred on the frame:
- * `capFactor` x the frame per axis, never more than `maxSide`.
+ * the frame plus a margin of `marginFactor` x its SHORT side on every side,
+ * never more than `maxSide` per axis. (Was 3x per axis until 2026-09-27: a
+ * 1:4 frame got a huge margin along its long side.)
  *
  * The document -> image mapping (decision 4) lives in `frameMap.ts`; bounds
  * never change when the upstream image size does.
@@ -19,26 +21,28 @@ import type { Rect, Size } from "../geometry/rect";
 export interface GrowthLimits {
   /** Growth granularity in px. */
   chunk: number;
-  /** Cap per axis as a multiple of the frame size. */
-  capFactor: number;
+  /** Margin on every side, as a multiple of the frame's short side. */
+  marginFactor: number;
   /** Absolute cap per side in px. */
   maxSide: number;
 }
 
 /** Default growth limits. */
-export const DEFAULT_GROWTH: GrowthLimits = { chunk: 256, capFactor: 3, maxSide: 16384 };
+export const DEFAULT_GROWTH: GrowthLimits = { chunk: 256, marginFactor: 1, maxSide: 16384 };
 
 /**
- * The largest bounds allowed for a frame: centred on it, `capFactor` x the
- * frame per axis, clamped to `maxSide` (but never smaller than the frame).
+ * The largest bounds allowed for a frame: centred on it, the frame plus
+ * `marginFactor` x its short side on every side, clamped to `maxSide` per
+ * axis (but never smaller than the frame).
  *
  * @param frame - Frame size.
  * @param limits - Growth limits.
  * @returns Cap rect in frame coords.
  */
 export function boundsCap(frame: Size, limits: GrowthLimits = DEFAULT_GROWTH): Rect {
-  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
-  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
+  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
+  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
+  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
   return {
     x: -Math.floor((width - frame.width) / 2),
     y: -Math.floor((height - frame.height) / 2),

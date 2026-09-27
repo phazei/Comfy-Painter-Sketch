@@ -29,6 +29,7 @@ import type { EditorShell } from "./shell";
 import { SwatchWidget } from "./swatches";
 import { ToolRail } from "./toolRail";
 import { OutputsPanel } from "./outputsPanel";
+import { ResolutionNotice } from "./resolutionNotice";
 import { LAYERS_TAB, OUTPUTS_TAB, tabForTool, toolForTab } from "./regionMode";
 import { REGION_TOOL_ID } from "../tools/region";
 
@@ -52,6 +53,8 @@ export class HostSync {
   readonly layers: LayersPanel;
   /** Output metadata panel, bound alongside Layers. */
   readonly outputs: OutputsPanel;
+  /** Drawing-resolution mismatch notice + Match image resolution (options bar). */
+  readonly resolution: ResolutionNotice;
 
   /**
    * Last active rail tool per registry (restored when "Move drawing" is
@@ -129,6 +132,8 @@ export class HostSync {
       beforeEdit: () => this.onCancelDrag(),
       releaseFocus,
     });
+    this.resolution = new ResolutionNotice((on) => this.layers.setMoveDrawingWarning(on), () => this.onCancelDrag());
+    shell.bar.trailing.prepend(this.resolution.element);
     shell.sidePanel.setTabs([
       { id: LAYERS_TAB, label: "Layers", panel: this.layers.element },
       { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element },
@@ -148,6 +153,7 @@ export class HostSync {
     this.layers.setEditor(editor);
     this.outputs.setEditor(editor);
     this.selectionActions.setEditor(editor);
+    this.resolution.setEditor(editor);
   }
 
   /** Sync rail, options bar and cursor when the active tool changes. */
