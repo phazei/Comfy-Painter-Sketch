@@ -181,6 +181,7 @@ export class SelectionOps {
   private change(next: Selection | null): boolean {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
+    s.settleFloat();
     const before = s.selection.current;
     if (selectionsEqual(before, next)) return false;
     s.history.push({ kind: "selection", before, after: next, bytes: selectionBytes(before) + selectionBytes(next) });

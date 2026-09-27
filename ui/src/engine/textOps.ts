@@ -126,6 +126,7 @@ export class TextOps {
     if (this.session?.layerId === layerId) return true;
     this.commit();
     const s = this.s;
+    s.settleFloat();
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
     const note = editBlockNote(s, layer);

@@ -45,6 +45,7 @@ export function findLayer(s: EditorState, layerId: string): Layer | undefined {
  */
 export function readyCheck(s: EditorState): boolean {
   if (s.loading) return false;
+  s.settleFloat();
   if (s.stroke.active) s.cancelStroke();
   return true;
 }
@@ -88,6 +89,7 @@ export function setLayerProps(
 ): boolean {
   const layer = findLayer(s, layerId);
   if (!layer || s.loading || !propsDiffer(layer, props)) return false;
+  s.settleFloat();
   const merge = gesture ? s.history.mergeTarget() : undefined;
   const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : undefined;
   if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {

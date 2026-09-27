@@ -7,7 +7,8 @@
  */
 
 import { composite } from "../engine/compositor";
-import { backingStoreSize } from "../engine/viewport";
+import { imageToDoc } from "../engine/frameMap";
+import { backingStoreSize, stageToDoc } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
 import { REGION_TOOL_ID } from "../tools/region";
 import type { Tool } from "../tools/types";
@@ -15,6 +16,8 @@ import type { EditorSession } from "../widget/sessions";
 import { cssCursor, cursorBadge } from "./cursors";
 import type { CursorBadge } from "./cursors";
 import { drawLoupe } from "./loupe";
+import { moveCursorCss, moveCursorKind } from "./moveCursors";
+import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
 
@@ -52,6 +55,8 @@ export class StageView {
   shiftDown = false;
   /** Selection-mode badge on the cursor (kept fixed during a drag). */
   private badge: CursorBadge | null = null;
+  /** Move cursor kind (cut / copy / outline / move; kept fixed during a drag). */
+  private moveKind: MoveCursorKind | null = null;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered: (() => void) | null = null;
 
@@ -158,11 +163,14 @@ export class StageView {
   syncCursor(): Tool | null {
     const session = this.session();
     const dragTool = this.getDragTool();
-    const tool = session ? (dragTool ?? session.tools.resolve(this.altDown, this.ctrlDown)) : null;
+    const inSelection = session !== null && dragTool === null && this.hoverInSelection(session);
+    const press = { shift: this.shiftDown, inSelection };
+    const tool = session ? (dragTool ?? session.tools.resolve(this.altDown, this.ctrlDown, press)) : null;
     // Selection-mode badge: follows the modifiers between drags; during a
     // drag (or a pending polygonal lasso) the one from pointer-down stays.
     const locked = dragTool !== null || (tool?.pending?.() ?? false);
     if (!locked) {
+      this.moveKind = tool && session ? moveCursorKind({ toolId: tool.id, alt: this.altDown, inSelection, floatActive: session.editor.float.active }) : null;
       this.badge = cursorBadge({
         combinesSelection: tool?.combinesSelection ?? false,
         hasSelection: session?.editor.selection.active ?? false,
@@ -170,7 +178,7 @@ export class StageView {
         alt: this.altDown,
       });
     }
-    const value = tool ? cssCursor(tool.cursor(), this.badge) : "crosshair";
+    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(tool.cursor(), this.badge);
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -191,6 +199,14 @@ export class StageView {
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
+
+  /** Whether the hover point is inside the selection (the press test, `selectionMove.hit`). */
+  private hoverInSelection(session: EditorSession): boolean {
+    const { editor } = session;
+    if (!this.hover || !editor.selection.active) return false;
+    const doc = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover));
+    return editor.selectionMove.hit(doc.x, doc.y);
+  }
 
   private stageSize(): Size {
     return { width: this.stage.clientWidth, height: this.stage.clientHeight };

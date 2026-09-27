@@ -131,6 +131,7 @@ export class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
+    s.settleFloat();
     if (s.stroke.active) s.cancelStroke();
     s.doc.activeLayerId = layerId;
     s.events.emit("layers", undefined);
@@ -147,6 +148,7 @@ export class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || layer.visible === visible) return;
+    s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
     afterMetaChange(s);
@@ -161,6 +163,7 @@ export class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || layer.locked === locked) return;
+    s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.locked = locked;
     afterMetaChange(s);

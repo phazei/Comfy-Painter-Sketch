@@ -20,6 +20,7 @@ import { createMoveLayerTool } from "./moveLayer";
 import { SHAPE_GROUP, createShapeTools } from "./shapeTools";
 import { createTextTool } from "./text";
 import { createRegionTool } from "./region";
+import { OutlineDragTool } from "./outlineDrag";
 import { ToolGroupState } from "./toolGroups";
 import type { ToolGroupSpec } from "./toolGroups";
 import type { Tool } from "./types";
@@ -111,6 +112,7 @@ export class ToolRegistry {
    */
   setActive(id: string): void {
     if (!this.tools.has(id) || id === this.activeId) return;
+    this.beforeSwitch?.();
     this.activeId = id;
     this.groups.noteActive(id);
     this.events.emit("change", undefined);
@@ -119,6 +121,17 @@ export class ToolRegistry {
   /** Notify that the active tool's options changed. */
   notifyOptions(): void {
     this.events.emit("change", undefined);
+  }
+
+  /** Runs before the active tool changes (commits a floating selection). */
+  private beforeSwitch: (() => void) | null = null;
+
+  /**
+   * Hook run before every tool switch.
+   * @param hook - Callback, or `null`.
+   */
+  setBeforeSwitch(hook: (() => void) | null): void {
+    this.beforeSwitch = hook;
   }
 
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
@@ -136,6 +149,7 @@ export class ToolRegistry {
   // ── Ctrl = temporary layer Move ─────────────────────────────────────────
 
   private ctrlTool: Tool | null = null;
+  private readonly outlineTool = new OutlineDragTool();
 
   /**
    * Tool that takes over while Ctrl is held in tools that opt in (`Tool.ctrlMove`).
@@ -152,12 +166,18 @@ export class ToolRegistry {
    * tool (eyedropper) while Alt is held and the active tool has
    * `Tool.altEyedropper`; else the active tool. So Ctrl+Alt in the brush
    * is Move, not the eyedropper.
+   * With no modifier at all, a press inside the selection with a selection
+   * tool drags only the outline ({@link OutlineDragTool}).
    * @param altHeld - Alt is down.
    * @param ctrlHeld - Ctrl (or Cmd) is down.
+   * @param press - Pointer-down facts: Shift held, press inside the selection.
    * @returns The effective tool.
    */
-  resolve(altHeld: boolean, ctrlHeld = false): Tool {
+  resolve(altHeld: boolean, ctrlHeld = false, press?: { shift: boolean; inSelection: boolean }): Tool {
     const active = this.active;
+    if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
+      return this.outlineTool.wrap(active);
+    }
     if (ctrlHeld && this.ctrlTool && this.ctrlTool !== active && ctrlMoves(active)) return this.ctrlTool;
     return altHeld && active.altEyedropper && this.altTool ? this.altTool : active;
   }
@@ -208,5 +228,6 @@ export function createDefaultTools(
   );
   registry.setAltTool(eyedropper.temporary);
   registry.setCtrlTool(moveLayer);
+  registry.setBeforeSwitch(() => editor.settle());
   return registry;
 }

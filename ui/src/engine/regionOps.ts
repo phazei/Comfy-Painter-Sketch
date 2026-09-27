@@ -117,6 +117,7 @@ export class RegionOps {
    */
   begin(): boolean {
     if (this.s.loading || this.s.stroke.active) return false;
+    this.s.settleFloat();
     if (!this.before) {
       this.before = captureOutputs(this.s);
       this.touched = false;

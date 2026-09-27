@@ -85,6 +85,9 @@ function fakeEditor(hit: string | null, target: "paint" | "mask" = "paint") {
       pickMaskAt: (x: number, y: number) => (log.push(`pickMask:${x},${y}`), hit),
       setActiveLayer: (id: string) => (log.push(`active:${id}`), true),
     },
+    float: { active: false },
+    selection: { active: false },
+    selectionMove: { hit: () => false },
     layerMove: {
       begin: () => (log.push("begin"), true),
       preview: () => undefined,

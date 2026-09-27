@@ -188,11 +188,18 @@ export class StageInput {
     this.host.setAlt?.(event.altKey);
     const ctrl = event.ctrlKey || event.metaKey;
     this.host.setCtrl?.(ctrl);
-    const tool = session.tools.resolve(event.altKey, ctrl);
+    const samples = this.samples(event, session);
+    const at = samples[0];
+    const inSelection = at ? session.editor.selectionMove.hit(at.x, at.y) : false;
+    const tool = session.tools.resolve(event.altKey, ctrl, { shift: event.shiftKey, inSelection });
     this.drag = { kind: "tool", pointerId: event.pointerId, tool };
     this.lastToolEvent = event;
     this.modifierWatch.start();
-    tool.onPointerDown(session.editor, this.samples(event, session));
+    tool.onPointerDown(session.editor, samples);
+    // A press that needs a modal (rasterize confirm): end the gesture, then ask.
+    const deferred = tool.takeDeferred?.() ?? null;
+    if (deferred) this.abortDrag();
+    deferred?.();
     this.setHover(this.toStage(event));
   }
 

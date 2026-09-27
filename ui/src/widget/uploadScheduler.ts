@@ -50,6 +50,8 @@ export function bindSessionUploads(node: LGraphNode, session: EditorSession, syn
  */
 export async function flushForQueue(session: EditorSession): Promise<void> {
   await session.ready;
+  // A floating selection lands before the queued document is saved.
+  session.editor.settle();
   await session.uploader.flush();
   if (session.editor.hiddenMaskHasContent()) {
     session.editor.events.emit("note", HIDDEN_MASK_NOTE);

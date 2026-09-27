@@ -10,8 +10,9 @@
  *   into one undo entry.
  * - How a kind moves is the per-kind handler in `layerMovers.ts` (text
  *   layers: M6b).
- * - The selection is not involved (yet): the whole layer moves, the
- *   selection stays where it is.
+ * - A selection moves with the layer by the same delta, in the same undo
+ *   step (selectionFollow.ts). Moving only the selected pixels is a
+ *   floating selection (loatOps.ts).
  *
  * Undo/redo cancels a drag preview (`paintOps.ts`).
  */
@@ -21,6 +22,12 @@ import type { Layer } from "../document/types";
 import { editBlockNote } from "./rasterize";
 import type { EditorState } from "./editorState";
 import { moverFor, UNMOVABLE_LAYER_NOTE } from "./layerMovers";
+import { offsetSelection } from "./floatMath";
+import { EMPTY_FLOAT_NOTE } from "./floatOps";
+import { isEmptyRect } from "../geometry/rect";
+import { layerContentRect } from "./layerTranslate";
+import type { Selection } from "./selection";
+import { followSelection } from "./selectionFollow";
 
 /** Gesture key that merges consecutive arrow nudges. */
 export const NUDGE_GESTURE = "move-nudge";
@@ -29,6 +36,9 @@ export const NUDGE_GESTURE = "move-nudge";
  * Layer move commands over a shared {@link EditorState}.
  */
 export class LayerMoveOps {
+  /** Selection at drag start (the outline follows the drag preview live). */
+  private selStart: Selection | null = null;
+
   /**
    * @param s - Shared editor state.
    */
@@ -46,9 +56,16 @@ export class LayerMoveOps {
   begin(): boolean {
     const s = this.s;
     if (s.movePreview) return true;
+    s.settleFloat();
     const layer = this.editable();
     if (!layer) return false;
+    // Empty layer with a selection: refuse up front (no preview that bounces back).
+    if (s.selection.current && layer.kind !== "text" && isEmptyRect(layerContentRect(s, layer.id))) {
+      s.events.emit("note", EMPTY_FLOAT_NOTE);
+      return false;
+    }
     s.movePreview = { layerId: layer.id, dx: 0, dy: 0 };
+    this.selStart = s.selection.current;
     return true;
   }
 
@@ -62,6 +79,7 @@ export class LayerMoveOps {
     if (!p || (p.dx === dx && p.dy === dy)) return;
     p.dx = dx;
     p.dy = dy;
+    if (this.selStart) this.s.selection.set(offsetSelection(this.selStart, dx, dy));
     this.s.events.emit("render", undefined);
   }
 
@@ -74,6 +92,7 @@ export class LayerMoveOps {
     const p = s.movePreview;
     if (!p) return false;
     s.movePreview = null;
+    this.restoreSelection();
     const moved = this.apply(p.layerId, p.dx, p.dy, undefined);
     if (!moved) s.events.emit("render", undefined);
     return moved;
@@ -83,6 +102,7 @@ export class LayerMoveOps {
   cancel(): void {
     if (!this.s.movePreview) return;
     this.s.movePreview = null;
+    this.restoreSelection();
     this.s.events.emit("render", undefined);
   }
 
@@ -94,11 +114,18 @@ export class LayerMoveOps {
    */
   nudge(dx: number, dy: number): boolean {
     if (this.s.movePreview) return false;
+    this.s.settleFloat();
     const layer = this.editable();
     return layer ? this.apply(layer.id, dx, dy, NUDGE_GESTURE) : false;
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
+
+  /** Put the live-previewed outline back (commit re-applies it with the move). */
+  private restoreSelection(): void {
+    if (this.selStart) this.s.selection.set(this.selStart);
+    this.selStart = null;
+  }
 
   /** The layer to move, if it can be moved now (emits the reason otherwise). */
   private editable(): Layer | null {
@@ -121,7 +148,9 @@ export class LayerMoveOps {
     const layer = s.doc.layers.find((l) => l.id === layerId);
     if (!layer || blockedNote(s, layer)) return false;
     const mover = moverFor(layer);
-    if (!mover?.move(s, layer, dx, dy, gesture)) return false;
+    if (!mover) return false;
+    // The selection moves with the layer, in the same undo step (M10a).
+    if (!followSelection(s, dx, dy, gesture, () => mover.move(s, layer, dx, dy, gesture))) return false;
     s.afterEdit();
     return true;
   }

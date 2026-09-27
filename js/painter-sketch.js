@@ -4542,7 +4542,7 @@ class OutputsPanel {
   }
 }
 const REGION_TOOL_ID = "region";
-const CLICK_SLOP_PX$2 = 3;
+const CLICK_SLOP_PX$3 = 3;
 const HANDLE_HIT_PX = 6;
 const FULL_NOTE = "All 6 region slots are used. Delete a region to draw another.";
 function grabAt(editor, p) {
@@ -4566,7 +4566,7 @@ function createRegionTool() {
     const p = docToImage(editor.frameMap, sample);
     const delta = { x: p.x - drag.start.x, y: p.y - drag.start.y };
     if (!drag.moved) {
-      if (Math.hypot(delta.x, delta.y) * editor.view.screenScale < CLICK_SLOP_PX$2) return;
+      if (Math.hypot(delta.x, delta.y) * editor.view.screenScale < CLICK_SLOP_PX$3) return;
       drag.moved = true;
       if (drag.mode === "draw" && !ops.canAdd()) {
         editor.events.emit("note", FULL_NOTE);
@@ -5667,6 +5667,29 @@ function div(className) {
   element.className = className;
   return element;
 }
+function handleFloatShortcut(event, editor, effects) {
+  const ctrl = event.ctrlKey || event.metaKey;
+  const key = event.key.toLowerCase();
+  if (ctrl && !event.altKey && !event.shiftKey && key === "e") {
+    if (!event.repeat) {
+      effects.cancelDrag();
+      editor.mergeDown();
+    }
+    return true;
+  }
+  if (!editor.float.active || ctrl || event.altKey) return false;
+  if (key === "escape") {
+    effects.cancelDrag();
+    editor.float.cancel();
+    return true;
+  }
+  if (key === "enter" && !event.shiftKey) {
+    effects.cancelDrag();
+    editor.float.commit();
+    return true;
+  }
+  return false;
+}
 function handleSelectionShortcut(event, editor, cancelDrag) {
   const ctrl = event.ctrlKey || event.metaKey;
   const alt = event.altKey;
@@ -5698,6 +5721,7 @@ function handleShortcut(event, session, effects) {
   const { editor, tools } = session;
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
+  if (handleFloatShortcut(event, editor, { cancelDrag: () => effects.cancelDrag() })) return true;
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }
@@ -6114,11 +6138,17 @@ class StageInput {
     this.host.setAlt?.(event.altKey);
     const ctrl = event.ctrlKey || event.metaKey;
     this.host.setCtrl?.(ctrl);
-    const tool = session.tools.resolve(event.altKey, ctrl);
+    const samples = this.samples(event, session);
+    const at = samples[0];
+    const inSelection = at ? session.editor.selectionMove.hit(at.x, at.y) : false;
+    const tool = session.tools.resolve(event.altKey, ctrl, { shift: event.shiftKey, inSelection });
     this.drag = { kind: "tool", pointerId: event.pointerId, tool };
     this.lastToolEvent = event;
     this.modifierWatch.start();
-    tool.onPointerDown(session.editor, this.samples(event, session));
+    tool.onPointerDown(session.editor, samples);
+    const deferred = tool.takeDeferred?.() ?? null;
+    if (deferred) this.abortDrag();
+    deferred?.();
     this.setHover(this.toStage(event));
   }
   move(event) {
@@ -6396,6 +6426,14 @@ function selectionFromCoverage(coverage, area, bbox) {
   const data = copyRegion(coverage, area.width, crop);
   return trimSelection({ rect: { x: area.x + crop.x, y: area.y + crop.y, width: crop.width, height: crop.height }, data, outside: 0 });
 }
+function coverageAt(sel, x, y) {
+  if (!sel) return 0;
+  const { rect } = sel;
+  const px = x - rect.x;
+  const py = y - rect.y;
+  if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return sel.outside;
+  return sel.data[py * rect.width + px];
+}
 function coverageFor(sel, area) {
   const out = new Uint8Array(Math.max(0, area.width * area.height));
   if (sel.outside) out.fill(sel.outside);
@@ -6502,23 +6540,23 @@ const OUTLINE_WIDTH = 4;
 const ICON_WIDTH = 1.75;
 const OUTLINE_COLOR = "#111";
 const ICON_COLOR = "#fff";
-const HOTSPOTS = {
+const HOTSPOTS$1 = {
   eyedropper: [3, 21],
   bucket: [19, 20]
 };
-const cache = /* @__PURE__ */ new Map();
+const cache$1 = /* @__PURE__ */ new Map();
 function iconCursor(icon) {
   if (icon === "crosshair") return "crosshair";
   if (icon === "move") return "move";
   if (icon === "text") return "text";
-  const cached = cache.get(icon);
+  const cached = cache$1.get(icon);
   if (cached) return cached;
   const d = iconPath(icon);
-  const [x, y] = HOTSPOTS[icon];
+  const [x, y] = HOTSPOTS$1[icon];
   const pathAttrs = `fill='none' stroke-linecap='round' stroke-linejoin='round'`;
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${ICON_SIZE}' height='${ICON_SIZE}' viewBox='0 0 ${ICON_SIZE} ${ICON_SIZE}'><path ${pathAttrs} stroke='${OUTLINE_COLOR}' stroke-width='${OUTLINE_WIDTH}' d='${d}'/><path ${pathAttrs} stroke='${ICON_COLOR}' stroke-width='${ICON_WIDTH}' d='${d}'/></svg>`;
   const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, crosshair`;
-  cache.set(icon, value);
+  cache$1.set(icon, value);
   return value;
 }
 function cssCursor(cursor, badge = null) {
@@ -6575,6 +6613,41 @@ function drawLoupe(ctx, x, y, pr, overlay) {
     ctx.stroke();
   }
   ctx.restore();
+}
+const MOVE_LAYER_ID = "move-layer";
+const OUTLINE_ID = "selection-outline";
+function moveCursorKind(state) {
+  if (state.toolId === OUTLINE_ID) return "outline";
+  if (state.toolId !== MOVE_LAYER_ID) return null;
+  if (state.floatActive || !state.inSelection) return "move";
+  return state.alt ? "copy" : "cut";
+}
+const SIZE = 32;
+const MOVE_PATH = "M11 1.5l-3.5 3.5h2.5v5H5V7.5L1.5 11 5 14.5V12h5v5H7.5l3.5 3.5 3.5-3.5H12v-5h5v2.5l3.5-3.5L17 7.5V10h-5V5h2.5z";
+const ARROW_PATH = "M2 2v16l4.2-4 3 6.6 2.6-1.2-3-6.4H14.5z";
+const BADGES = {
+  cut: "<circle cx='22' cy='28' r='2.2'/><circle cx='28.5' cy='28' r='2.2'/><path d='M23.2 26.2L28 18.5M27.3 26.2L22.5 18.5'/>",
+  copy: "<path d='M25 19v10M20 24h10'/>",
+  outline: "<rect x='18.5' y='20.5' width='11' height='8'/>"
+};
+const HOTSPOTS = {
+  cut: [11, 11, "move"],
+  copy: [11, 11, "move"],
+  outline: [2, 2, "default"]
+};
+const cache = /* @__PURE__ */ new Map();
+function moveCursorCss(kind) {
+  if (kind === "move") return "move";
+  const cached = cache.get(kind);
+  if (cached) return cached;
+  const shape = kind === "outline" ? ARROW_PATH : MOVE_PATH;
+  const badge = BADGES[kind];
+  const dash = kind === "outline" ? " stroke-dasharray='2 1.5'" : "";
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${SIZE}' height='${SIZE}' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${shape}' fill='#000' stroke='#fff' stroke-width='1.5' stroke-linejoin='round' paint-order='stroke'/><g fill='none' stroke='#fff' stroke-width='3.5' stroke-linecap='round'>${badge}</g><g fill='none' stroke='#000' stroke-width='1.5' stroke-linecap='round'${dash}>${badge}</g></svg>`;
+  const [x, y, fallback] = HOTSPOTS[kind];
+  const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
+  cache.set(kind, value);
+  return value;
 }
 const STEP_MS = 125;
 const DASH = 4;
@@ -6845,6 +6918,8 @@ class StageView {
   shiftDown = false;
   /** Selection-mode badge on the cursor (kept fixed during a drag). */
   badge = null;
+  /** Move cursor kind (cut / copy / outline / move; kept fixed during a drag). */
+  moveKind = null;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered = null;
   /** Whether the stage is attached and has a non-zero layout size. */
@@ -6918,9 +6993,12 @@ class StageView {
   syncCursor() {
     const session = this.session();
     const dragTool = this.getDragTool();
-    const tool = session ? dragTool ?? session.tools.resolve(this.altDown, this.ctrlDown) : null;
+    const inSelection = session !== null && dragTool === null && this.hoverInSelection(session);
+    const press = { shift: this.shiftDown, inSelection };
+    const tool = session ? dragTool ?? session.tools.resolve(this.altDown, this.ctrlDown, press) : null;
     const locked = dragTool !== null || (tool?.pending?.() ?? false);
     if (!locked) {
+      this.moveKind = tool && session ? moveCursorKind({ toolId: tool.id, alt: this.altDown, inSelection, floatActive: session.editor.float.active }) : null;
       this.badge = cursorBadge({
         combinesSelection: tool?.combinesSelection ?? false,
         hasSelection: session?.editor.selection.active ?? false,
@@ -6928,7 +7006,7 @@ class StageView {
         alt: this.altDown
       });
     }
-    const value = tool ? cssCursor(tool.cursor(), this.badge) : "crosshair";
+    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(tool.cursor(), this.badge);
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -6947,6 +7025,13 @@ class StageView {
     this.overlay.width = this.overlay.height = 0;
   }
   // ── Internals ───────────────────────────────────────────────────────────
+  /** Whether the hover point is inside the selection (the press test, `selectionMove.hit`). */
+  hoverInSelection(session) {
+    const { editor } = session;
+    if (!this.hover || !editor.selection.active) return false;
+    const doc = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover));
+    return editor.selectionMove.hit(doc.x, doc.y);
+  }
   stageSize() {
     return { width: this.stage.clientWidth, height: this.stage.clientHeight };
   }
@@ -7102,6 +7187,7 @@ function editBlockNote(s, layer) {
   return null;
 }
 function preparePixelEdit(s, layer) {
+  s.settleFloat();
   const note = editBlockNote(s, layer);
   if (note) {
     s.events.emit("note", note);
@@ -9640,6 +9726,16 @@ class EditorState {
    */
   confirmRasterize = () => false;
   /**
+   * Commit a floating selection, if any (`floatOps.ts` installs it). Called
+   * before every other edit / history action -- the float's central hook.
+   */
+  settleFloat = () => void 0;
+  /**
+   * Live display of a layer with its floating selection (hole + float at
+   * its offset), or `null` when the layer has no float (`floatOps.ts`).
+   */
+  floatPreview = () => null;
+  /**
    * Style of a mask layer added lazily ({@link ensureMask}); the session
    * installs one that reads the user's settings. Default: built-in red, 50 %.
    */
@@ -9964,7 +10060,7 @@ class LayerDisplay {
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
-      const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      const source = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       const offset = this.moveOffset(layer.id);
       out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
     }
@@ -9987,7 +10083,7 @@ class LayerDisplay {
       if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const stroking = s.strokeLayerId === layer.id && s.stroke.active;
-      const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      const source = s.floatPreview(layer.id) ?? (stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       let tint = this.tints.get(layer.id);
       if (!tint) {
         tint = new MaskTint();
@@ -10692,6 +10788,7 @@ function findLayer(s, layerId) {
 }
 function readyCheck(s) {
   if (s.loading) return false;
+  s.settleFloat();
   if (s.stroke.active) s.cancelStroke();
   return true;
 }
@@ -10705,6 +10802,7 @@ function insertLayer(s, layer, index, pixels, activate = true) {
 function setLayerProps(s, layerId, props, gesture) {
   const layer = findLayer(s, layerId);
   if (!layer || s.loading || !propsDiffer(layer, props)) return false;
+  s.settleFloat();
   const merge = gesture ? s.history.mergeTarget() : void 0;
   const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
   if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
@@ -10839,6 +10937,7 @@ class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
+    s.settleFloat();
     if (s.stroke.active) s.cancelStroke();
     s.doc.activeLayerId = layerId;
     s.events.emit("layers", void 0);
@@ -10854,6 +10953,7 @@ class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || layer.visible === visible) return;
+    s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
     afterMetaChange(s);
@@ -10867,6 +10967,7 @@ class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || layer.locked === locked) return;
+    s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.locked = locked;
     afterMetaChange(s);
@@ -11083,6 +11184,472 @@ class EditorMaskOps {
     this.paint.setMaskVisible(visible);
   }
 }
+const INSIDE_COVERAGE = 128;
+function liftPixels(src, coverage, cut) {
+  const float = new Uint8ClampedArray(src);
+  const rest = new Uint8ClampedArray(src);
+  const n = Math.min(coverage.length, src.length >> 2);
+  for (let i = 0; i < src.length >> 2; i++) {
+    const c = i < n ? coverage[i] : 0;
+    const p = i * 4 + 3;
+    const a = src[p];
+    float[p] = Math.round(a * c / 255);
+    if (float[p] === 0) {
+      float[p - 3] = 0;
+      float[p - 2] = 0;
+      float[p - 1] = 0;
+    }
+    if (cut) rest[p] = Math.round(a * (255 - c) / 255);
+  }
+  return { float, rest };
+}
+function compositeOver(dst, dstWidth, dstHeight, src, srcWidth, srcHeight, ox, oy, opacity = 1) {
+  const x0 = Math.max(0, ox);
+  const y0 = Math.max(0, oy);
+  const x1 = Math.min(dstWidth, ox + srcWidth);
+  const y1 = Math.min(dstHeight, oy + srcHeight);
+  const k = Math.min(1, Math.max(0, opacity));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const s = ((y - oy) * srcWidth + (x - ox)) * 4;
+      const sa = src[s + 3] / 255 * k;
+      if (sa <= 0) continue;
+      const d = (y * dstWidth + x) * 4;
+      const da = dst[d + 3] / 255;
+      const oa = sa + da * (1 - sa);
+      for (let c = 0; c < 3; c++) {
+        dst[d + c] = Math.round((src[s + c] * sa + dst[d + c] * da * (1 - sa)) / oa);
+      }
+      dst[d + 3] = Math.round(oa * 255);
+    }
+  }
+}
+function copyPixels(dst, dstRect, src, srcRect) {
+  const x0 = Math.max(dstRect.x, srcRect.x);
+  const y0 = Math.max(dstRect.y, srcRect.y);
+  const x1 = Math.min(dstRect.x + dstRect.width, srcRect.x + srcRect.width);
+  const y1 = Math.min(dstRect.y + dstRect.height, srcRect.y + srcRect.height);
+  if (x1 <= x0) return;
+  for (let y = y0; y < y1; y++) {
+    const s = ((y - srcRect.y) * srcRect.width + (x0 - srcRect.x)) * 4;
+    const d = ((y - dstRect.y) * dstRect.width + (x0 - dstRect.x)) * 4;
+    dst.set(src.subarray(s, s + (x1 - x0) * 4), d);
+  }
+}
+function mergeMaskCoverage(upper, upperInvert, lower, lowerInvert) {
+  for (let p = 0; p < lower.length; p += 4) {
+    const u = upper[p + 3];
+    const l = lower[p + 3];
+    const eu = upperInvert ? 255 - u : u;
+    const el2 = lowerInvert ? 255 - l : l;
+    const union = eu > el2 ? eu : el2;
+    lower[p] = 255;
+    lower[p + 1] = 255;
+    lower[p + 2] = 255;
+    lower[p + 3] = lowerInvert ? 255 - union : union;
+  }
+}
+function offsetSelection(sel, dx, dy) {
+  if (dx === 0 && dy === 0) return sel;
+  return { rect: { ...sel.rect, x: sel.rect.x + dx, y: sel.rect.y + dy }, data: sel.data, outside: sel.outside };
+}
+function selectionHit(sel, x, y) {
+  if (!sel || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return coverageAt(sel, Math.floor(x), Math.floor(y)) >= INSIDE_COVERAGE;
+}
+function recordSelectionMove(s, before, after, join) {
+  if (selectionsEqual(before, after)) return;
+  if (join) s.history.joinNext((entry) => entry.kind === "selection");
+  s.history.push({ kind: "selection", before, after, bytes: selectionBytes(before) + selectionBytes(after) });
+  s.events.emit("history", void 0);
+}
+function followSelection(s, dx, dy, gesture, move) {
+  const sel = s.selection.current;
+  if (!sel) return move();
+  let before = sel;
+  let unwrapped = false;
+  const top = gesture ? s.history.mergeTarget() : void 0;
+  if (top?.kind === "group" && top.entries.length === 2) {
+    const [first, last] = top.entries;
+    if (last.kind === "selection" && last.after === sel && hasGesture(first, gesture)) {
+      s.history.discardNewest();
+      s.history.push(first);
+      before = last.before;
+      unwrapped = true;
+    }
+  }
+  const moved = move();
+  const after = moved ? offsetSelection(sel, dx, dy) : sel;
+  s.selection.set(after);
+  if (moved || unwrapped) recordSelectionMove(s, before, after, true);
+  return moved;
+}
+function hasGesture(entry, gesture) {
+  return gesture !== void 0 && "gesture" in entry && entry.gesture === gesture;
+}
+class SelectionMoveOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  start = null;
+  /**
+   * Whether a document point is inside the current selection (coverage >= 50 %).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns `true` if inside.
+   */
+  hit(x, y) {
+    return selectionHit(this.s.selection.current, x, y);
+  }
+  /**
+   * Start an outline drag (commits a floating selection first).
+   * @returns `false` without a selection or while busy.
+   */
+  begin() {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    s.settleFloat();
+    if (!s.selection.current) return false;
+    this.start = s.selection.current;
+    return true;
+  }
+  /**
+   * Show the outline at an offset from the drag start.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   */
+  preview(dx, dy) {
+    if (this.start) this.s.selection.set(offsetSelection(this.start, dx, dy));
+  }
+  /**
+   * End the drag: one `selection` history entry (nothing if it did not move).
+   * @returns `true` if the selection moved.
+   */
+  commit() {
+    const start = this.start;
+    this.start = null;
+    if (!start) return false;
+    const after = this.s.selection.current;
+    if (after === start) return false;
+    recordSelectionMove(this.s, start, after, false);
+    return true;
+  }
+  /** Abort the drag: the outline goes back. */
+  cancel() {
+    if (this.start) this.s.selection.set(this.start);
+    this.start = null;
+  }
+}
+const EMPTY_FLOAT_NOTE = "No pixels are selected.";
+class FloatOps {
+  /**
+   * @param s - Shared editor state (installs the settle hook and the preview).
+   */
+  constructor(s) {
+    this.s = s;
+    s.settleFloat = () => {
+      this.commit();
+    };
+    s.floatPreview = (layerId) => this.preview(layerId);
+  }
+  s;
+  f = null;
+  /** Whether a float exists. */
+  get active() {
+    return this.f !== null;
+  }
+  /** Current offset of the float from where it was lifted (document px), or `null`. */
+  get offset() {
+    return this.f ? { dx: this.f.dx, dy: this.f.dy } : null;
+  }
+  /** Layer the float belongs to, or `null`. */
+  get layerId() {
+    return this.f?.layerId ?? null;
+  }
+  /**
+   * Whether a document point is inside the float's (moved) selection.
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns `true` if inside.
+   */
+  hit(x, y) {
+    return this.f !== null && selectionHit(this.s.selection.current, x, y);
+  }
+  /**
+   * What a lift of the current edit layer would do, decided at pointer-down
+   * before anything changes (no modal dialog here): `"blocked"` (note shown:
+   * locked / hidden / no selected pixels), `"confirm"` (text layer: the
+   * rasterize prompt must run outside the gesture, {@link prepareLift}) or
+   * `"ok"`.
+   * @returns Check result.
+   */
+  check() {
+    const s = this.s;
+    if (this.f) return "ok";
+    const sel = s.selection.current;
+    if (s.loading || s.stroke.active || !sel) return "blocked";
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+    if (!layer) return "blocked";
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
+      return "blocked";
+    }
+    if (layer.kind === "text") return "confirm";
+    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
+    if (isEmptyRect(area)) return this.empty() || "blocked";
+    return "ok";
+  }
+  /**
+   * Outside any gesture: run the pixel-edit gate for a lift (the text
+   * rasterize confirm; Yes = its own undo step). Nothing is lifted.
+   */
+  prepareLift() {
+    const s = this.s;
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+    if (layer) preparePixelEdit(s, layer);
+  }
+  /**
+   * Lift the selected pixels of the current edit layer into a float (the
+   * pixel-edit gate runs first: lock / hidden notes, text rasterize prompt).
+   * @param copy - `true` = copy (no hole).
+   * @returns `true` if a float exists afterwards.
+   */
+  lift(copy) {
+    const s = this.s;
+    if (this.f) return true;
+    const sel = s.selection.current;
+    if (s.loading || s.stroke.active || !sel) return false;
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
+    const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
+    if (!read) return this.empty();
+    const { float, rest } = liftPixels(read.data.data, coverageFor(sel, read.rect), !copy);
+    if (!hasAlpha(float)) return this.empty();
+    const w = read.rect.width;
+    const h = read.rect.height;
+    const pixels = new ImageData(float, w, h);
+    if (!copy) {
+      s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
+      s.runtime.bump(layer.id);
+    }
+    const surface = createSurface(w, h);
+    surface.ctx.putImageData(pixels, 0, 0);
+    this.f = { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, dragBase: null, preview: null };
+    s.events.emit("history", void 0);
+    s.events.emit("render", void 0);
+    return true;
+  }
+  // ── Moving ──────────────────────────────────────────────────────────────
+  /** Start a drag of the float. @returns `false` without a float. */
+  beginDrag() {
+    if (!this.f) return false;
+    this.f.dragBase = { dx: this.f.dx, dy: this.f.dy };
+    return true;
+  }
+  /**
+   * Drag offset from the drag start (whole document px).
+   * @param dx - X from the drag start.
+   * @param dy - Y from the drag start.
+   */
+  dragTo(dx, dy) {
+    const base = this.f?.dragBase;
+    if (base) this.setOffset(base.dx + dx, base.dy + dy);
+  }
+  /** End the drag (the float stays; nothing is committed). */
+  endDrag() {
+    if (this.f) this.f.dragBase = null;
+  }
+  /** Abort the drag: back to where the drag started. */
+  cancelDrag() {
+    const base = this.f?.dragBase;
+    if (!base || !this.f) return;
+    this.f.dragBase = null;
+    this.setOffset(base.dx, base.dy);
+  }
+  /**
+   * Arrow nudge.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   * @returns `true` if a float moved.
+   */
+  nudge(dx, dy) {
+    const f = this.f;
+    if (!f || f.dragBase) return false;
+    this.setOffset(f.dx + dx, f.dy + dy);
+    return true;
+  }
+  // ── Ending ──────────────────────────────────────────────────────────────
+  /**
+   * Drop the float into its layer: ONE undo step (patch over source U
+   * destination + the selection move). A float at its lift position cancels.
+   * @returns `true` if pixels changed.
+   */
+  commit() {
+    const f = this.f;
+    if (!f) return false;
+    const s = this.s;
+    if (f.dx === 0 && f.dy === 0) {
+      this.cancel();
+      return false;
+    }
+    this.f = null;
+    const dest = { ...f.area, x: f.area.x + f.dx, y: f.area.y + f.dy };
+    s.ensureBounds(dest, true);
+    const union = intersectRect(unionRect(f.area, dest), s.store.bounds);
+    const current = s.store.read(f.layerId, union);
+    if (current) {
+      const r = current.rect;
+      const before = new Uint8ClampedArray(current.data.data);
+      copyPixels(before, r, f.original.data, f.area);
+      const next = new Uint8ClampedArray(current.data.data);
+      compositeOver(next, r.width, r.height, f.pixels.data, f.area.width, f.area.height, dest.x - r.x, dest.y - r.y);
+      s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
+      const after = s.store.read(f.layerId, r);
+      if (after) {
+        const beforeData = new ImageData(before, r.width, r.height);
+        const bytes = before.byteLength + after.data.data.byteLength;
+        s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
+        recordSelectionMove(s, f.selBefore, s.selection.current, true);
+      }
+      s.runtime.touch(f.layerId);
+    }
+    release(f);
+    s.afterEdit();
+    return true;
+  }
+  /** Put everything back exactly as before the lift (Esc, Ctrl+Z). */
+  cancel() {
+    const f = this.f;
+    if (!f) return;
+    const s = this.s;
+    this.f = null;
+    s.store.write(f.layerId, f.area.x, f.area.y, f.original);
+    s.runtime.bump(f.layerId);
+    s.selection.set(f.selBefore);
+    release(f);
+    s.events.emit("history", void 0);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * Layer pixels as they were before the lift, for saving while floating.
+   * @param layerId - Layer id.
+   * @returns Original pixels over the lifted area, or `null` if the layer has no float.
+   */
+  savedPatch(layerId) {
+    const f = this.f;
+    return f && f.layerId === layerId ? { x: f.area.x, y: f.area.y, data: f.original } : null;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  empty() {
+    this.s.events.emit("note", EMPTY_FLOAT_NOTE);
+    return false;
+  }
+  setOffset(dx, dy) {
+    const f = this.f;
+    if (!f || f.dx === dx && f.dy === dy) return;
+    const s = this.s;
+    s.ensureBounds({ ...f.area, x: f.area.x + dx, y: f.area.y + dy }, true);
+    f.dx = dx;
+    f.dy = dy;
+    s.runtime.bump(f.layerId);
+    s.selection.set(offsetSelection(f.selBefore, dx, dy));
+    s.events.emit("render", void 0);
+  }
+  preview(layerId) {
+    const f = this.f;
+    if (!f || f.layerId !== layerId) return null;
+    const s = this.s;
+    const b = s.store.bounds;
+    const key = `${s.runtime.revision(layerId)}:${b.x},${b.y},${b.width},${b.height}`;
+    if (f.preview?.key === key) return f.preview.surface.canvas;
+    if (f.preview) releaseSurface(f.preview.surface);
+    const surface = createSurface(b.width, b.height);
+    surface.ctx.drawImage(s.store.ensure(layerId).canvas, 0, 0);
+    surface.ctx.drawImage(f.surface.canvas, f.area.x + f.dx - b.x, f.area.y + f.dy - b.y);
+    f.preview = { surface, key };
+    return surface.canvas;
+  }
+}
+function hasAlpha(px) {
+  for (let p = 3; p < px.length; p += 4) if (px[p] !== 0) return true;
+  return false;
+}
+function release(f) {
+  releaseSurface(f.surface);
+  if (f.preview) releaseSurface(f.preview.surface);
+  f.preview = null;
+}
+const MERGE_NOTHING_NOTE = "Nothing to merge down into.";
+function mergeDown(s) {
+  if (!readyCheck(s)) return false;
+  const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!upper) return false;
+  const index = s.doc.layers.indexOf(upper);
+  const lower = s.doc.layers[index - 1];
+  if (!lower || isPaintLike(lower) !== isPaintLike(upper)) {
+    s.events.emit("note", MERGE_NOTHING_NOTE);
+    return false;
+  }
+  const note = editBlockNote(s, upper) ?? editBlockNote(s, lower);
+  if (note) {
+    s.events.emit("note", note);
+    return false;
+  }
+  const depth = s.history.undoDepth;
+  if (preparePixelEdit(s, upper) === "blocked" || preparePixelEdit(s, lower) === "blocked") {
+    return false;
+  }
+  const entries = [];
+  while (s.history.undoDepth > depth) {
+    const entry = s.history.discardNewest();
+    if (entry) entries.unshift(entry);
+  }
+  const patch = mergePixels(s, upper, lower);
+  if (patch) entries.push(patch);
+  entries.push(removeUpper(s, upper, lower, index));
+  s.history.push({ kind: "group", entries, bytes: entries.reduce((n, e) => n + e.bytes, 0) });
+  s.runtime.touch(lower.id);
+  emitLayerEvents(s);
+  s.afterEdit();
+  return true;
+}
+function mergePixels(s, upper, lower) {
+  const bounds = s.store.bounds;
+  const rect = upper.kind === "mask" && upper.invert === true ? bounds : intersectRect(layerContentRect(s, upper.id), bounds);
+  if (isEmptyRect(rect)) return null;
+  const up = s.store.read(upper.id, rect);
+  const before = s.store.read(lower.id, rect);
+  if (!up || !before) return null;
+  const r = before.rect;
+  const next = new Uint8ClampedArray(before.data.data);
+  if (upper.kind === "mask") {
+    mergeMaskCoverage(up.data.data, upper.invert === true, next, lower.invert === true);
+  } else {
+    compositeOver(next, r.width, r.height, up.data.data, r.width, r.height, 0, 0, upper.opacity);
+  }
+  s.store.write(lower.id, r.x, r.y, new ImageData(next, r.width, r.height));
+  const after = s.store.read(lower.id, r);
+  if (!after) return null;
+  const bytes = before.data.data.byteLength + after.data.data.byteLength;
+  return { kind: "patch", layerId: lower.id, x: r.x, y: r.y, before: before.data, after: after.data, bytes };
+}
+function removeUpper(s, upper, lower, index) {
+  const activeBefore = s.doc.activeLayerId;
+  const pixels = captureLayerPixels(s, upper.id);
+  s.doc.layers.splice(index, 1);
+  s.runtime.remove(upper.id);
+  releaseRemovedLayers(s);
+  if (activeBefore === upper.id) s.doc.activeLayerId = lower.id;
+  if (upper.kind === "mask") s.currentMaskId = lower.id;
+  const changes = [{ op: "remove", index, layer: { ...upper }, pixels }];
+  return { kind: "layers", changes, activeBefore, activeAfter: s.doc.activeLayerId, bytes: changesBytes(changes) };
+}
 const pixelMover = {
   move: (s, layer, dx, dy, gesture) => translateLayerPixels(s, layer.id, dx, dy, gesture)
 };
@@ -11107,6 +11674,8 @@ class LayerMoveOps {
     this.s = s;
   }
   s;
+  /** Selection at drag start (the outline follows the drag preview live). */
+  selStart = null;
   /** A drag preview is in progress. */
   get dragging() {
     return this.s.movePreview !== null;
@@ -11118,9 +11687,15 @@ class LayerMoveOps {
   begin() {
     const s = this.s;
     if (s.movePreview) return true;
+    s.settleFloat();
     const layer = this.editable();
     if (!layer) return false;
+    if (s.selection.current && layer.kind !== "text" && isEmptyRect(layerContentRect(s, layer.id))) {
+      s.events.emit("note", EMPTY_FLOAT_NOTE);
+      return false;
+    }
     s.movePreview = { layerId: layer.id, dx: 0, dy: 0 };
+    this.selStart = s.selection.current;
     return true;
   }
   /**
@@ -11133,6 +11708,7 @@ class LayerMoveOps {
     if (!p || p.dx === dx && p.dy === dy) return;
     p.dx = dx;
     p.dy = dy;
+    if (this.selStart) this.s.selection.set(offsetSelection(this.selStart, dx, dy));
     this.s.events.emit("render", void 0);
   }
   /**
@@ -11144,6 +11720,7 @@ class LayerMoveOps {
     const p = s.movePreview;
     if (!p) return false;
     s.movePreview = null;
+    this.restoreSelection();
     const moved = this.apply(p.layerId, p.dx, p.dy, void 0);
     if (!moved) s.events.emit("render", void 0);
     return moved;
@@ -11152,6 +11729,7 @@ class LayerMoveOps {
   cancel() {
     if (!this.s.movePreview) return;
     this.s.movePreview = null;
+    this.restoreSelection();
     this.s.events.emit("render", void 0);
   }
   /**
@@ -11162,10 +11740,16 @@ class LayerMoveOps {
    */
   nudge(dx, dy) {
     if (this.s.movePreview) return false;
+    this.s.settleFloat();
     const layer = this.editable();
     return layer ? this.apply(layer.id, dx, dy, NUDGE_GESTURE) : false;
   }
   // ── Internals ───────────────────────────────────────────────────────────
+  /** Put the live-previewed outline back (commit re-applies it with the move). */
+  restoreSelection() {
+    if (this.selStart) this.s.selection.set(this.selStart);
+    this.selStart = null;
+  }
   /** The layer to move, if it can be moved now (emits the reason otherwise). */
   editable() {
     const s = this.s;
@@ -11185,7 +11769,8 @@ class LayerMoveOps {
     const layer = s.doc.layers.find((l) => l.id === layerId);
     if (!layer || blockedNote(s, layer)) return false;
     const mover = moverFor(layer);
-    if (!mover?.move(s, layer, dx, dy, gesture)) return false;
+    if (!mover) return false;
+    if (!followSelection(s, dx, dy, gesture, () => mover.move(s, layer, dx, dy, gesture))) return false;
     s.afterEdit();
     return true;
   }
@@ -11837,6 +12422,7 @@ class SelectionOps {
   change(next) {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
+    s.settleFloat();
     const before = s.selection.current;
     if (selectionsEqual(before, next)) return false;
     s.history.push({ kind: "selection", before, after: next, bytes: selectionBytes(before) + selectionBytes(next) });
@@ -11973,6 +12559,7 @@ class TextOps {
     if (this.session?.layerId === layerId) return true;
     this.commit();
     const s = this.s;
+    s.settleFloat();
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
     const note = editBlockNote(s, layer);
@@ -12149,6 +12736,7 @@ class RegionOps {
    */
   begin() {
     if (this.s.loading || this.s.stroke.active) return false;
+    this.s.settleFloat();
     if (!this.before) {
       this.before = captureOutputs(this.s);
       this.touched = false;
@@ -12325,6 +12913,10 @@ class Editor extends EditorBase {
   text;
   /** Region rectangles, output options and metadata gesture transactions. */
   regionOps;
+  /** Floating selection (M10a): lift / move / commit / cancel selected pixels. */
+  float;
+  /** Outline-only selection drag (selection tools, plain drag inside). */
+  selectionMove;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -12342,6 +12934,8 @@ class Editor extends EditorBase {
     this.maskOps = new EditorMaskOps(this.s, this.paint);
     this.text = new TextOps(this.s, this.layerOps);
     this.regionOps = new RegionOps(this.s);
+    this.float = new FloatOps(this.s);
+    this.selectionMove = new SelectionMoveOps(this.s);
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -12354,11 +12948,11 @@ class Editor extends EditorBase {
   }
   /** Undo available. */
   get canUndo() {
-    return this.s.history.canUndo && !this.s.stroke.active;
+    return (this.s.history.canUndo || this.float.active) && !this.s.stroke.active;
   }
   /** Redo available. */
   get canRedo() {
-    return this.s.history.canRedo && !this.s.stroke.active;
+    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active;
   }
   /** Layer files are being restored; painting is disabled. */
   get loading() {
@@ -12411,6 +13005,34 @@ class Editor extends EditorBase {
   layerCanvas(layerId) {
     return this.s.store.ensure(layerId).canvas;
   }
+  /**
+   * Canvas to SAVE for a layer: its pixels, or -- while it has a floating
+   * selection -- the pixels as they were before the lift (a float is never
+   * half-saved; queueing commits it first, `Editor.settle`).
+   * @param layerId - Layer id.
+   * @returns The canvas (a temporary copy while floating).
+   */
+  savedLayerCanvas(layerId) {
+    const canvas = this.s.store.ensure(layerId).canvas;
+    const patch = this.float.savedPatch(layerId);
+    if (!patch) return canvas;
+    const b = this.s.store.bounds;
+    const copy = createSurface(canvas.width, canvas.height);
+    copy.ctx.drawImage(canvas, 0, 0);
+    copy.ctx.putImageData(patch.data, patch.x - b.x, patch.y - b.y);
+    return copy.canvas;
+  }
+  /** Commit a floating selection, if any (before queueing / serializing). */
+  settle() {
+    this.s.settleFloat();
+  }
+  /**
+   * Ctrl+E: merge the current row into the row below (`mergeDown.ts`).
+   * @returns `true` if merged.
+   */
+  mergeDown() {
+    return mergeDown(this.s);
+  }
   /** Current paint bounds (document coords). */
   get bounds() {
     return this.s.store.bounds;
@@ -12446,6 +13068,7 @@ class Editor extends EditorBase {
    */
   toggleSolo(layerId) {
     const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    if (layer) this.s.settleFloat();
     if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
   }
   // ── Quick Mask / paint target ───────────────────────────────────────────
@@ -12462,10 +13085,12 @@ class Editor extends EditorBase {
    * @param target - New target.
    */
   setPaintTarget(target) {
+    this.s.settleFloat();
     this.maskOps.setPaintTarget(target);
   }
   /** Toggle between the paint layer and the current mask. */
   togglePaintTarget() {
+    this.s.settleFloat();
     this.maskOps.togglePaintTarget();
   }
   /**
@@ -12474,6 +13099,7 @@ class Editor extends EditorBase {
    * @returns `false` if it is not a mask layer.
    */
   selectMask(layerId) {
+    this.s.settleFloat();
     return this.maskOps.selectMask(layerId);
   }
   /**
@@ -12482,6 +13108,7 @@ class Editor extends EditorBase {
    * @param visible - Visibility.
    */
   setMaskVisible(visible) {
+    this.s.settleFloat();
     this.maskOps.setMaskVisible(visible);
   }
   /**
@@ -12494,22 +13121,32 @@ class Editor extends EditorBase {
   }
   // ── Background / frame ──────────────────────────────────────────────────
   // ── Undo / redo ─────────────────────────────────────────────────────────
-  /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
+  /**
+   * Undo the last operation; with a text edit open: commit it, then undo it
+   * (a no-op edit just closes). A floating selection is cancelled instead.
+   */
   undo() {
+    if (this.float.active) {
+      this.float.cancel();
+      return;
+    }
+    this.layerMove.cancel();
     if (this.regionOps.active) {
       this.regionOps.cancel();
       return;
     }
     if (!this.text.editing || this.text.commit()) this.paint.undo();
   }
-  /** Redo the last undone operation (an open text edit is committed first). */
+  /** Redo the last undone operation (an open text edit is committed first). Ignored while floating. */
   redo() {
+    if (this.float.active) return;
     this.regionOps.cancel();
     this.text.commit();
     this.paint.redo();
   }
   /** Clear paint and output metadata in the existing single Clear history step. */
   clear() {
+    this.s.settleFloat();
     this.regionOps.cancel();
     super.clear();
   }
@@ -12523,7 +13160,12 @@ class Editor extends EditorBase {
   fork(docId) {
     const doc = cloneDocument(this.s.doc);
     doc.docId = docId;
-    const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
+    const store = this.s.store.clone();
+    for (const layer of doc.layers) {
+      const patch = this.float.savedPatch(layer.id);
+      if (patch) store.write(layer.id, patch.x, patch.y, patch.data);
+    }
+    const copy = new Editor(doc, this.s.frameSource, store, this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;
@@ -12981,7 +13623,7 @@ class SelectionModifiers {
   }
 }
 const DECIMATE_IMAGE_PX = 1;
-const CLICK_SLOP_PX$1 = 3;
+const CLICK_SLOP_PX$2 = 3;
 const DOUBLE_CLICK_MS = 400;
 function appendDecimated(points, p, minDistance) {
   const last = points[points.length - 1];
@@ -13021,7 +13663,7 @@ class LassoTool {
       points: [{ x: first.x, y: first.y }],
       mods,
       minDistance: imageLengthToDoc(map, DECIMATE_IMAGE_PX),
-      slop: imageLengthToDoc(map, CLICK_SLOP_PX$1 / (scale > 0 ? scale : 1)),
+      slop: imageLengthToDoc(map, CLICK_SLOP_PX$2 / (scale > 0 ? scale : 1)),
       polygon: mods.update(first).fromCentre,
       buttonDown: true,
       moved: false,
@@ -13177,7 +13819,7 @@ class MagicWandTool {
 function createMagicWandTool(sample) {
   return new MagicWandTool(sample);
 }
-const CLICK_SLOP_PX = 3;
+const CLICK_SLOP_PX$1 = 3;
 const RECT_MARQUEE = {
   coverage: (box) => rectSelection(box),
   preview: (box) => ({ kind: "rect", rect: box })
@@ -13213,7 +13855,7 @@ class MarqueeTool {
     this.drag = {
       start: { x: first.x, y: first.y },
       mods: new SelectionModifiers(first, editor.selection.active),
-      slop: imageLengthToDoc(editor.frameMap, CLICK_SLOP_PX / (viewScale > 0 ? viewScale : 1)),
+      slop: imageLengthToDoc(editor.frameMap, CLICK_SLOP_PX$1 / (viewScale > 0 ? viewScale : 1)),
       moved: false,
       box: { x: first.x, y: first.y, width: 0, height: 0 }
     };
@@ -13425,11 +14067,35 @@ class MoveLayerTool {
   options = new OptionSet(DESCRIPTORS, this.values);
   /** Pointer-down position (document coords) while dragging. */
   start = null;
+  /** The current drag moves a floating selection. */
+  floating = false;
+  /** Action the stage runs after ending this press (text rasterize confirm). */
+  deferred = null;
+  /** @inheritdoc */
+  takeDeferred() {
+    const action = this.deferred;
+    this.deferred = null;
+    return action;
+  }
   /** @inheritdoc */
   onPointerDown(editor, samples) {
     const first = samples[0];
     if (!first) return;
-    if ((first.ctrlKey || this.values.autoSelect === true) && !this.autoSelect(editor, first)) return;
+    this.deferred = null;
+    const float = editor.float;
+    if (!float.active && editor.selectionMove.hit(first.x, first.y)) {
+      const check = float.check();
+      if (check === "confirm") this.deferred = () => float.prepareLift();
+      if (check !== "ok" || !float.lift(first.altKey)) return;
+    }
+    if (float.active) {
+      if (!float.beginDrag()) return;
+      this.floating = true;
+      this.start = { x: first.x, y: first.y };
+      return;
+    }
+    const pick2 = (first.ctrlKey || this.values.autoSelect === true) && !editor.selection.active;
+    if (pick2 && !this.autoSelect(editor, first)) return;
     if (!editor.layerMove.begin()) return;
     this.start = { x: first.x, y: first.y };
   }
@@ -13443,12 +14109,22 @@ class MoveLayerTool {
     if (!this.start) return;
     this.previewTo(editor, sample);
     this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.endDrag();
+      return;
+    }
     editor.layerMove.commit();
   }
   /** @inheritdoc */
   onCancel(editor) {
     if (!this.start) return;
     this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.cancelDrag();
+      return;
+    }
     editor.layerMove.cancel();
   }
   /** @inheritdoc */
@@ -13457,6 +14133,7 @@ class MoveLayerTool {
     if (!dir) return false;
     if (this.start) return true;
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    if (editor.float.nudge(dir[0] * step, dir[1] * step)) return true;
     editor.layerMove.nudge(dir[0] * step, dir[1] * step);
     return true;
   }
@@ -13482,7 +14159,8 @@ class MoveLayerTool {
   previewTo(editor, sample) {
     if (!this.start) return;
     const d = dragDelta(this.start, sample);
-    editor.layerMove.preview(d.x, d.y);
+    if (this.floating) editor.float.dragTo(d.x, d.y);
+    else editor.layerMove.preview(d.x, d.y);
   }
 }
 function createMoveLayerTool() {
@@ -13910,6 +14588,77 @@ class TextTool {
 function createTextTool(editor) {
   return new TextTool(editor);
 }
+const CLICK_SLOP_PX = 3;
+class OutlineDragTool {
+  id = "selection-outline";
+  label = "Move selection outline";
+  shortcut = "";
+  icon = "move";
+  options = null;
+  rail = false;
+  inner = null;
+  first = null;
+  slop = 0;
+  started = false;
+  /**
+   * Bind the selection tool a click is replayed to.
+   * @param inner - Active selection tool.
+   * @returns This tool.
+   */
+  wrap(inner) {
+    this.inner = inner;
+    return this;
+  }
+  /** @inheritdoc */
+  onPointerDown(editor, samples) {
+    const first = samples[0];
+    if (!first) return;
+    const scale = editor.view.current.scale;
+    this.first = first;
+    this.slop = imageLengthToDoc(editor.frameMap, CLICK_SLOP_PX / (scale > 0 ? scale : 1));
+    this.started = false;
+  }
+  /** @inheritdoc */
+  onPointerMove(editor, samples) {
+    const last = samples[samples.length - 1];
+    if (last) this.track(editor, last);
+  }
+  /** @inheritdoc */
+  onPointerUp(editor, sample) {
+    const first = this.first;
+    if (!first) return;
+    this.track(editor, sample);
+    this.first = null;
+    if (this.started) {
+      this.started = false;
+      editor.selectionMove.commit();
+      return;
+    }
+    this.inner?.onPointerDown(editor, [first]);
+    this.inner?.onPointerUp(editor, first);
+  }
+  /** @inheritdoc */
+  onCancel(editor) {
+    if (this.started) editor.selectionMove.cancel();
+    this.started = false;
+    this.first = null;
+  }
+  /** @inheritdoc */
+  cursor() {
+    return { kind: "icon", icon: "move" };
+  }
+  track(editor, p) {
+    const first = this.first;
+    if (!first) return;
+    if (!this.started) {
+      if (Math.hypot(p.x - first.x, p.y - first.y) <= this.slop) return;
+      this.started = editor.selectionMove.begin();
+      if (!this.started) return;
+    }
+    const d = dragDelta(first, p);
+    editor.selectionMove.preview(d.x, d.y);
+  }
+}
 class ToolGroupState {
   specs;
   current = /* @__PURE__ */ new Map();
@@ -14023,6 +14772,7 @@ class ToolRegistry {
    */
   setActive(id) {
     if (!this.tools.has(id) || id === this.activeId) return;
+    this.beforeSwitch?.();
     this.activeId = id;
     this.groups.noteActive(id);
     this.events.emit("change", void 0);
@@ -14030,6 +14780,15 @@ class ToolRegistry {
   /** Notify that the active tool's options changed. */
   notifyOptions() {
     this.events.emit("change", void 0);
+  }
+  /** Runs before the active tool changes (commits a floating selection). */
+  beforeSwitch = null;
+  /**
+   * Hook run before every tool switch.
+   * @param hook - Callback, or `null`.
+   */
+  setBeforeSwitch(hook) {
+    this.beforeSwitch = hook;
   }
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
   altTool = null;
@@ -14042,6 +14801,7 @@ class ToolRegistry {
   }
   // ── Ctrl = temporary layer Move ─────────────────────────────────────────
   ctrlTool = null;
+  outlineTool = new OutlineDragTool();
   /**
    * Tool that takes over while Ctrl is held in tools that opt in (`Tool.ctrlMove`).
    * @param tool - Usually the layer Move tool; `null` disables.
@@ -14056,12 +14816,18 @@ class ToolRegistry {
    * tool (eyedropper) while Alt is held and the active tool has
    * `Tool.altEyedropper`; else the active tool. So Ctrl+Alt in the brush
    * is Move, not the eyedropper.
+   * With no modifier at all, a press inside the selection with a selection
+   * tool drags only the outline ({@link OutlineDragTool}).
    * @param altHeld - Alt is down.
    * @param ctrlHeld - Ctrl (or Cmd) is down.
+   * @param press - Pointer-down facts: Shift held, press inside the selection.
    * @returns The effective tool.
    */
-  resolve(altHeld, ctrlHeld = false) {
+  resolve(altHeld, ctrlHeld = false, press) {
     const active = this.active;
+    if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
+      return this.outlineTool.wrap(active);
+    }
     if (ctrlHeld && this.ctrlTool && this.ctrlTool !== active && ctrlMoves(active)) return this.ctrlTool;
     return altHeld && active.altEyedropper && this.altTool ? this.altTool : active;
   }
@@ -14092,6 +14858,7 @@ function createDefaultTools(editor, pressure = PRESSURE_DEFAULTS, samples = SAMP
   );
   registry.setAltTool(eyedropper.temporary);
   registry.setCtrlTool(moveLayer);
+  registry.setBeforeSwitch(() => editor.settle());
   return registry;
 }
 function contentHash(bytes, seed = 0) {
@@ -14283,7 +15050,7 @@ class LayerUploader {
   }
   /** @returns The file reference for the layer's current pixels (null = empty). */
   async uploadLayer(layer, paintQuality) {
-    const canvas = this.editor.layerCanvas(layer.id);
+    const canvas = this.editor.savedLayerCanvas(layer.id);
     if (isCanvasEmpty(canvas)) return null;
     const currentFile = layer.file;
     const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error) => {
@@ -14507,6 +15274,7 @@ function bindSessionUploads(node, session, syncValue) {
 }
 async function flushForQueue(session) {
   await session.ready;
+  session.editor.settle();
   await session.uploader.flush();
   if (session.editor.hiddenMaskHasContent()) {
     session.editor.events.emit("note", HIDDEN_MASK_NOTE);

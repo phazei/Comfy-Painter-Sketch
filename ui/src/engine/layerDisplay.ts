@@ -3,7 +3,8 @@
  * stroke preview for the layer being painted) and visible mask layers as
  * cached tints ({@link MaskTint}) that re-tint only the region the stroke
  * dirtied since the last frame. A Move-tool drag shows its layer offset
- * (`EditorState.movePreview`) without touching pixels. Solo (`solo.ts`,
+ * (`EditorState.movePreview`) without touching pixels; a floating selection
+ * shows inside its layer (`EditorState.floatPreview`, `floatOps.ts`). Solo (`solo.ts`,
  * view only) decides which layers count as shown here.
  */
 
@@ -35,7 +36,7 @@ export class LayerDisplay {
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
-      const source = s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      const source = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       const offset = this.moveOffset(layer.id);
       out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
     }
@@ -60,7 +61,7 @@ export class LayerDisplay {
       if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const stroking = s.strokeLayerId === layer.id && s.stroke.active;
-      const source = stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas;
+      const source = s.floatPreview(layer.id) ?? (stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       let tint = this.tints.get(layer.id);
       if (!tint) {
         tint = new MaskTint();

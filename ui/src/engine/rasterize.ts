@@ -72,6 +72,8 @@ export function editBlockNote(s: EditorState, layer: Layer): string | null {
  *   the rasterize undo step -- synchronous callers may proceed right away).
  */
 export function preparePixelEdit(s: EditorState, layer: Layer): PixelEditPlan {
+  // A floating selection lands before any other pixel edit (M10a).
+  s.settleFloat();
   const note = editBlockNote(s, layer);
   if (note) {
     s.events.emit("note", note);

@@ -18,6 +18,10 @@
  * - `moveOps.ts`     -- layer Move tool ({@link Editor.layerMove})
  * - `textOps.ts`     -- text layers ({@link Editor.text}; `textLayer.ts`,
  *   `textRender.ts`, rasterize gate `rasterize.ts`)
+ * - `floatOps.ts`   -- floating selections ({@link Editor.float}); every other
+ *   edit commits a float first (`EditorState.settleFloat`)
+ * - `mergeDown.ts`  -- Merge Down ({@link Editor.mergeDown})
+ * - `selectionFollow.ts` -- outline-only selection drags ({@link Editor.selectionMove})
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -41,12 +45,16 @@ import type { FrameMap } from "./frameMap";
 import { LayerOps } from "./layerOps";
 import type { LayerStore } from "./layerStore";
 import { EditorMaskOps } from "./editorMaskOps";
+import { FloatOps } from "./floatOps";
+import { mergeDown } from "./mergeDown";
+import { SelectionMoveOps } from "./selectionFollow";
 import { LayerMoveOps } from "./moveOps";
 import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
 import { SelectionOps } from "./selectionOps";
 import { TextOps } from "./textOps";
 import { toggleSolo } from "./solo";
+import { createSurface } from "./surface";
 import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
 
@@ -77,6 +85,10 @@ export class Editor extends EditorBase {
   readonly text: TextOps;
   /** Region rectangles, output options and metadata gesture transactions. */
   readonly regionOps: RegionOps;
+  /** Floating selection (M10a): lift / move / commit / cancel selected pixels. */
+  readonly float: FloatOps;
+  /** Outline-only selection drag (selection tools, plain drag inside). */
+  readonly selectionMove: SelectionMoveOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -97,6 +109,8 @@ export class Editor extends EditorBase {
     this.maskOps = new EditorMaskOps(this.s, this.paint);
     this.text = new TextOps(this.s, this.layerOps);
     this.regionOps = new RegionOps(this.s);
+    this.float = new FloatOps(this.s);
+    this.selectionMove = new SelectionMoveOps(this.s);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -113,12 +127,12 @@ export class Editor extends EditorBase {
 
   /** Undo available. */
   get canUndo(): boolean {
-    return this.s.history.canUndo && !this.s.stroke.active;
+    return (this.s.history.canUndo || this.float.active) && !this.s.stroke.active;
   }
 
   /** Redo available. */
   get canRedo(): boolean {
-    return this.s.history.canRedo && !this.s.stroke.active;
+    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active;
   }
 
   /** Layer files are being restored; painting is disabled. */
@@ -179,6 +193,37 @@ export class Editor extends EditorBase {
     return this.s.store.ensure(layerId).canvas;
   }
 
+  /**
+   * Canvas to SAVE for a layer: its pixels, or -- while it has a floating
+   * selection -- the pixels as they were before the lift (a float is never
+   * half-saved; queueing commits it first, `Editor.settle`).
+   * @param layerId - Layer id.
+   * @returns The canvas (a temporary copy while floating).
+   */
+  savedLayerCanvas(layerId: string): HTMLCanvasElement {
+    const canvas = this.s.store.ensure(layerId).canvas;
+    const patch = this.float.savedPatch(layerId);
+    if (!patch) return canvas;
+    const b = this.s.store.bounds;
+    const copy = createSurface(canvas.width, canvas.height);
+    copy.ctx.drawImage(canvas, 0, 0);
+    copy.ctx.putImageData(patch.data, patch.x - b.x, patch.y - b.y);
+    return copy.canvas;
+  }
+
+  /** Commit a floating selection, if any (before queueing / serializing). */
+  settle(): void {
+    this.s.settleFloat();
+  }
+
+  /**
+   * Ctrl+E: merge the current row into the row below (`mergeDown.ts`).
+   * @returns `true` if merged.
+   */
+  mergeDown(): boolean {
+    return mergeDown(this.s);
+  }
+
   /** Current paint bounds (document coords). */
   get bounds(): Rect {
     return this.s.store.bounds;
@@ -218,6 +263,7 @@ export class Editor extends EditorBase {
    */
   toggleSolo(layerId: string): void {
     const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    if (layer) this.s.settleFloat();
     if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
   }
 
@@ -233,24 +279,24 @@ export class Editor extends EditorBase {
    * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
    * @param target - New target.
    */
-  setPaintTarget(target: PaintTarget): void { this.maskOps.setPaintTarget(target); }
+  setPaintTarget(target: PaintTarget): void { this.s.settleFloat(); this.maskOps.setPaintTarget(target); }
 
   /** Toggle between the paint layer and the current mask. */
-  togglePaintTarget(): void { this.maskOps.togglePaintTarget(); }
+  togglePaintTarget(): void { this.s.settleFloat(); this.maskOps.togglePaintTarget(); }
 
   /**
    * Make a mask the current mask and turn Quick Mask on (mask row click).
    * @param layerId - Mask layer id.
    * @returns `false` if it is not a mask layer.
    */
-  selectMask(layerId: string): boolean { return this.maskOps.selectMask(layerId); }
+  selectMask(layerId: string): boolean { this.s.settleFloat(); return this.maskOps.selectMask(layerId); }
 
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
    * also excluded from the `MASK` output (saved-file contract).
    * @param visible - Visibility.
    */
-  setMaskVisible(visible: boolean): void { this.maskOps.setMaskVisible(visible); }
+  setMaskVisible(visible: boolean): void { this.s.settleFloat(); this.maskOps.setMaskVisible(visible); }
 
   /**
    * Where a lazily added mask layer (documents without one) gets its colour
@@ -262,17 +308,23 @@ export class Editor extends EditorBase {
   // ── Background / frame ──────────────────────────────────────────────────
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
-  /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
+  /**
+   * Undo the last operation; with a text edit open: commit it, then undo it
+   * (a no-op edit just closes). A floating selection is cancelled instead.
+   */
   undo(): void {
+    if (this.float.active) { this.float.cancel(); return; }
+    this.layerMove.cancel();
     if (this.regionOps.active) { this.regionOps.cancel(); return; }
     if (!this.text.editing || this.text.commit()) this.paint.undo();
   }
 
-  /** Redo the last undone operation (an open text edit is committed first). */
-  redo(): void { this.regionOps.cancel(); this.text.commit(); this.paint.redo(); }
+  /** Redo the last undone operation (an open text edit is committed first). Ignored while floating. */
+  redo(): void {
+    if (this.float.active) return; this.regionOps.cancel(); this.text.commit(); this.paint.redo(); }
 
   /** Clear paint and output metadata in the existing single Clear history step. */
-  override clear(): void { this.regionOps.cancel(); super.clear(); }
+  override clear(): void { this.s.settleFloat(); this.regionOps.cancel(); super.clear(); }
 
   // ── Cloning / teardown ──────────────────────────────────────────────────
 
@@ -285,7 +337,13 @@ export class Editor extends EditorBase {
   fork(docId: string): Editor {
     const doc = cloneDocument(this.s.doc);
     doc.docId = docId;
-    const copy = new Editor(doc, this.s.frameSource, this.s.store.clone(), this.colors);
+    const store = this.s.store.clone();
+    // A float is not copied: the fork gets the pre-lift pixels.
+    for (const layer of doc.layers) {
+      const patch = this.float.savedPatch(layer.id);
+      if (patch) store.write(layer.id, patch.x, patch.y, patch.data);
+    }
+    const copy = new Editor(doc, this.s.frameSource, store, this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;

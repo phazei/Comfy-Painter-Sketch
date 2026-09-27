@@ -7,8 +7,13 @@
  *   entry (`Editor.layerMove`). Esc / pointer cancel aborts.
  * - Arrows nudge 1 image px (in document px, at least 1), Shift+arrows 10;
  *   consecutive nudges merge into one undo entry.
- * - Locked / hidden layers show a note. The selection is not used yet: the
- *   whole layer moves and the selection stays put.
+ * - Locked / hidden layers show a note.
+ * - With a selection (M10a): a press inside it (coverage >= 50 %) lifts the
+ *   selected pixels into a floating selection (`Editor.float`; Alt = copy,
+ *   no hole) and drags it; a press outside moves the whole layer and the
+ *   selection moves with it. While a float exists every drag and arrow
+ *   nudge moves the float; Enter / other edits commit it, Esc cancels it.
+ *   Auto-select (Ctrl or the option) is off while a selection exists.
  * - Auto-select (Photoshop): with Ctrl held at pointer-down -- also when
  *   this tool is the temporary Ctrl tool of another rail tool
  *   (`Tool.ctrlMove`, `ToolRegistry.resolve`) -- or with the "Auto-select"
@@ -53,12 +58,39 @@ export class MoveLayerTool implements Tool {
   readonly options = new OptionSet(DESCRIPTORS, this.values);
   /** Pointer-down position (document coords) while dragging. */
   private start: Point | null = null;
+  /** The current drag moves a floating selection. */
+  private floating = false;
+  /** Action the stage runs after ending this press (text rasterize confirm). */
+  private deferred: (() => void) | null = null;
+
+  /** @inheritdoc */
+  takeDeferred(): (() => void) | null {
+    const action = this.deferred;
+    this.deferred = null;
+    return action;
+  }
 
   /** @inheritdoc */
   onPointerDown(editor: Editor, samples: readonly ToolPointer[]): void {
     const first = samples[0];
     if (!first) return;
-    if ((first.ctrlKey || this.values.autoSelect === true) && !this.autoSelect(editor, first)) return;
+    this.deferred = null;
+    const float = editor.float;
+    if (!float.active && editor.selectionMove.hit(first.x, first.y)) {
+      // Decide before anything moves: a refused lift never falls into a layer move,
+      // and the text rasterize confirm runs only after the gesture has ended.
+      const check = float.check();
+      if (check === "confirm") this.deferred = () => float.prepareLift();
+      if (check !== "ok" || !float.lift(first.altKey)) return;
+    }
+    if (float.active) {
+      if (!float.beginDrag()) return;
+      this.floating = true;
+      this.start = { x: first.x, y: first.y };
+      return;
+    }
+    const pick = (first.ctrlKey || this.values.autoSelect === true) && !editor.selection.active;
+    if (pick && !this.autoSelect(editor, first)) return;
     if (!editor.layerMove.begin()) return;
     this.start = { x: first.x, y: first.y };
   }
@@ -74,6 +106,11 @@ export class MoveLayerTool implements Tool {
     if (!this.start) return;
     this.previewTo(editor, sample);
     this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.endDrag();
+      return;
+    }
     editor.layerMove.commit();
   }
 
@@ -81,6 +118,11 @@ export class MoveLayerTool implements Tool {
   onCancel(editor: Editor): void {
     if (!this.start) return;
     this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.cancelDrag();
+      return;
+    }
     editor.layerMove.cancel();
   }
 
@@ -91,6 +133,7 @@ export class MoveLayerTool implements Tool {
     // A nudge mid-drag would fight the drag: swallow it.
     if (this.start) return true;
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    if (editor.float.nudge(dir[0] * step, dir[1] * step)) return true;
     editor.layerMove.nudge(dir[0] * step, dir[1] * step);
     return true;
   }
@@ -120,7 +163,8 @@ export class MoveLayerTool implements Tool {
   private previewTo(editor: Editor, sample: ToolPointer): void {
     if (!this.start) return;
     const d = dragDelta(this.start, sample);
-    editor.layerMove.preview(d.x, d.y);
+    if (this.floating) editor.float.dragTo(d.x, d.y);
+    else editor.layerMove.preview(d.x, d.y);
   }
 }
 

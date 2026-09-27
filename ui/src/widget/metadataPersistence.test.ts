@@ -28,6 +28,7 @@ vi.mock("../engine/editor", () => {
     constructor(doc: PainterDocument) { this.doc = cloneDocument(doc); }
     setMaskStyleProvider(): void {}
     hiddenMaskHasContent(): boolean { return false; }
+    settle(): void {}
     fork(docId: string): Editor {
       const copy = new Editor(this.doc);
       copy.doc.docId = docId;

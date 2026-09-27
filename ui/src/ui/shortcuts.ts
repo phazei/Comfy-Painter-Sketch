@@ -19,10 +19,12 @@
  * | Shift+group key | cycle the group (Shift+U shapes) |
  * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
  * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace) |
+ * | float / merge keys | `floatShortcuts.ts` (Enter / Esc while floating, Ctrl+E Merge Down) |
  */
 
 import type { ToolOptions } from "../tools/options";
 import type { EditorSession } from "../widget/sessions";
+import { handleFloatShortcut } from "./floatShortcuts";
 import { handleSelectionShortcut } from "./selectionShortcuts";
 
 /** Side effects the shortcuts need from the UI. */
@@ -58,6 +60,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
 
+  // Floating selection (Enter / Esc) and Merge Down (Ctrl+E).
+  if (handleFloatShortcut(event, editor, { cancelDrag: () => effects.cancelDrag() })) return true;
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }

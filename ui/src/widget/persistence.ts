@@ -193,7 +193,8 @@ export class LayerUploader {
     layer: { id: string; name: string; kind: LayerKind; file: string | null },
     paintQuality: number,
   ): Promise<string | null> {
-    const canvas = this.editor.layerCanvas(layer.id);
+    // Pre-lift pixels while a floating selection is open (never half-saved).
+    const canvas = this.editor.savedLayerCanvas(layer.id);
     if (isCanvasEmpty(canvas)) return null;
     const currentFile = layer.file;
     const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error: unknown) => {

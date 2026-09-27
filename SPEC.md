@@ -233,6 +233,8 @@ interface OutputOptions {                           // per region, and doc-level
 | Text | T | font, size, color, bold/italic, alignment |
 | Quick Mask target | Q | toggle painting on mask vs. paint layer |
 | Output regions (Outputs tab) | O (toggle) | region mode: draw / move / resize; Shift-drag = new region; click empty = Main. Button next to the side-panel toggle |
+| Float selection (M10) | Move tool: drag inside selection (Alt = copy); selection tools: Ctrl+drag inside (Ctrl+Alt = copy) | Enter commits, Esc / Ctrl+Z cancels; selection tools: plain drag inside moves the outline only |
+| Merge Down (M10) | Ctrl+E | current row into the one below (same group); lower keeps its settings |
 
 ### Selection (applies to all selection tools)
 - Shift = add, Alt = subtract, Shift+Alt = intersect (Photoshop modifiers), fixed
@@ -427,6 +429,50 @@ border shows width, colour swatch and a "Mask border" checkbox inline. Manifest 
   cap raised to 16384 (as the editor); the editor skips a single malformed layer with
   a toast instead of dropping the document (as Python); Python ignores non-boolean
   `invert` and non-numeric `opacity` (as the editor).
+### Floating selections + clipboard (M10) -- agreed design (2026-09-26)
+**Floats** (transient editor state, never a document layer, never saved; drawn above
+their own layer; whole-pixel moves, no resampling).
+- Move tool (`V`) with a selection: drag starting **inside** the selection lifts the
+  selected pixels of the current layer (hole left behind) and floats them; Alt+drag
+  floats a copy. Drag starting **outside** moves the whole layer as today. Ctrl
+  auto-select is off while a selection exists (PS).
+- Marquee / lasso / wand: plain drag inside the selection moves only the outline;
+  Ctrl+drag inside = lift and move pixels; Ctrl+Alt+drag = copy-move; Alt = subtract
+  (unchanged).
+- The selection outline always moves with what moves: floats, and whole-layer moves
+  (new: today a layer move leaves the selection behind).
+- While floating: drag again, arrows nudge (1 / Shift 10 image px). Commit = Enter,
+  deselect (Ctrl+D), tool switch, or any other edit. Esc or Ctrl+Z while floating =
+  cancel (everything back). A committed float = one undo step (one patch on that layer).
+- Works on the current mask with Quick Mask on. Text layer -> usual rasterize prompt.
+  Hidden / solo-hidden / locked layers -> the usual `editBlockNote`.
+- Pixels moved beyond the paint area (3x cap) are cropped.
+
+**Merge Down (Ctrl+E)**: merges the current row into the next row below of the same
+group (paint/text into paint, mask into mask); one undo step. Same rule for both (PS):
+the lower row keeps its name / settings, the upper one's opacity is baked in (paint).
+Masks: coverage = union of each mask's effective coverage (per-mask invert applied),
+stored under the lower mask's invert and colour. Refused with a note if either row is hidden or locked or there is nothing below;
+text is rasterized (prompt). No Merge Visible, no multi-select (repeat Ctrl+E).
+
+**Clipboard**
+- Ctrl+C copies the current layer's selected pixels (whole layer without a selection)
+  and writes a PNG to the system clipboard. Ctrl+Shift+C = copy merged (what is
+  visible, incl. the image). Ctrl+X = copy + clear selected (one undo step).
+- Ctrl+V: system clipboard image (browser `paste` event; keydown not blocked so the
+  event fires; only while the editor owns the keyboard) else ComfyUI clipspace image
+  else nothing. New paint layer at 100% (1 px = 1 image px), centred in the view, one
+  undo step; Quick Mask turns off. Ctrl+Shift+V = paste in place (copied position,
+  own copies only). Larger than the paint area -> cropped + toast.
+- Buttons Copy / Cut / Paste at the bottom of the left rail, directly above Undo / Redo, with a separator rule above and below the group; long-press
+  Paste offers System / Clipspace. Clipspace access only through `app`; if it isn't
+  reachable cleanly, skip clipspace.
+- Dropping image files on the canvas = paste at the drop point.
+- Pasted layers are ordinary layers; M11 may keep the pasted source until the next edit
+  so Free Transform resamples from it.
+- Idea for M12, not M10: pulling an image from another node = the "Copy from input N"
+  inputs (no auto-disconnecting "drop" input).
+
 ## Milestones
 
 ### M0 -- Scaffold
@@ -518,10 +564,11 @@ Design: "Output regions (M9) -- agreed design". First pass (dynamic sockets) rep
 - [x] Parity fixes (frame cap, lenient bad layer in the editor, strict invert/opacity in Python)
 - [x] Code/doc style brought to the project standard (section headers, TSDoc, no dense one-liners, no duplicated helpers)
 ### M10 -- Floating selections + clipboard
-- [ ] Move layer tool inside a selection drags the selected pixels as a floating piece; Alt+drag duplicates; commit on deselect / tool switch / Enter; Esc cancels
-- [ ] Ctrl+C / Ctrl+X / Ctrl+V inside the editor (only while it owns the keyboard -- white rail edge); paste = new layer, floating, at the view centre
-- [ ] Paste images from the system clipboard (browser `paste` event; no permission prompt) as a new floating layer
-- [ ] One undo step per committed float
+Design: "Floating selections + clipboard (M10) -- agreed design".
+- [x] M10a: floats (Move tool + marquee Ctrl / Ctrl+Alt), selection-outline move with marquee tools, selection follows layer moves, Enter/Esc/commit rules, one undo step per float
+- [x] M10a: Merge Down (Ctrl+E) for paint and masks
+- [ ] M10b: Ctrl+C / Ctrl+Shift+C / Ctrl+X / Ctrl+V / Ctrl+Shift+V; system clipboard first, clipspace fallback; Copy / Cut / Paste buttons (long-press Paste: System / Clipspace)
+- [ ] M10b: drop image files onto the canvas = new layer
 
 ### M11 -- Free Transform (Ctrl+T)
 - [ ] Destructive scale/rotate with handles for the active layer, a selection, or a floating paste; Shift keeps proportions (Photoshop); Enter commits, Esc cancels; resample once on commit
@@ -607,6 +654,12 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-26: M10a browser-verified. Added PS-style move cursors (scissors = cut, + = copy, dotted rect = outline move; `ui/moveCursors.ts`); a rasterize confirm now ends the gesture first (`Tool.takeDeferred`), Yes only rasterizes; drags on an empty layer refuse at pointerdown.
+
+- 2026-09-26: M10a code done (needs browser check). Float commit hook `EditorState.settleFloat()` (edits, layer/selection/tool changes, queue); idle/focus uploads save the pre-lift pixels; Ctrl+Y while floating is ignored; a zero-offset commit = cancel (no step); Delete while floating commits then clears (same result as PS). Merge Down is Ctrl+E only (no panel button yet).
+
+- 2026-09-26: M10 design agreed (see its section): PS move semantics (Move: inside = float, outside = whole layer + selection; marquee: drag inside = outline, Ctrl = float, Ctrl+Alt = copy), floats are transient, Merge Down incl. masks (PS: lower row keeps its settings, for paint and masks), copy/cut/paste buttons above Undo/Redo on the rail, no Merge Visible / multi-select, paste = ordinary new layer, system clipboard first with clipspace fallback, drop files. Split M10a / M10b.
 
 - 2026-09-26: Add border output option landed (browser-verified): width 1..4096 (default 64), colour (default white), "Mask border" (default on = white border in MASK, ComfyUI convention: white = area to change). Dropdown renamed "Modify"; "Fill" shown as "Fill mask".
 

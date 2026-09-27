@@ -138,6 +138,14 @@ export interface Tool {
    */
   onHover?(editor: Editor, sample: ToolPointer): void;
   /**
+   * Called right after {@link Tool.onPointerDown}: a non-null action means
+   * the press must not become a drag (e.g. it needs a modal confirm). The
+   * stage ends the gesture first (capture released, drag state reset, later
+   * events ignored until the next press), then runs the action.
+   * @returns The deferred action (taken once), or `null`.
+   */
+  takeDeferred?(): (() => void) | null;
+  /**
    * Tool-specific key while this tool is active and the editor has the
    * keyboard (e.g. Move: arrow nudges). Called before the tool/letter
    * shortcuts, never for Ctrl/Alt chords.

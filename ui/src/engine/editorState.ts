@@ -81,6 +81,16 @@ export class EditorState {
    */
   confirmRasterize: () => boolean = () => false;
   /**
+   * Commit a floating selection, if any (`floatOps.ts` installs it). Called
+   * before every other edit / history action -- the float's central hook.
+   */
+  settleFloat: () => void = () => undefined;
+  /**
+   * Live display of a layer with its floating selection (hole + float at
+   * its offset), or `null` when the layer has no float (`floatOps.ts`).
+   */
+  floatPreview: (layerId: string) => HTMLCanvasElement | null = () => null;
+  /**
    * Style of a mask layer added lazily ({@link ensureMask}); the session
    * installs one that reads the user's settings. Default: built-in red, 50 %.
    */
