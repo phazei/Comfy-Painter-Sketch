@@ -19,6 +19,13 @@ const PATHS: Readonly<Record<string, string>> = {
   quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
   undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
   redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  // Clipboard (M10b): two sheets (copy), scissors (cut), clipboard board (paste).
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  cut: "M6 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6M6 14a3 3 0 1 0 0 6a3 3 0 1 0 0-6M8.5 8.5 20 20M8.5 15.5 20 4",
+  paste: "M8 4H5v17h14V4h-3M9 2h6v4H9zM9 11h6M9 15h6",
+  // Paste from the ComfyUI clipspace: the paste board (bottom-right corner
+  // left open) with a small "C" badge there.
+  pasteClipspace: "M8 4H5v17h9M16 4h3v9M9 2h6v4H9zM9 11h6M9 15h3M22 15.9A3 3 0 1 0 22 20.1",
   // Frame corners around the image: "fit to view".
   fit: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9z",
   clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
@@ -64,10 +71,12 @@ const PATHS: Readonly<Record<string, string>> = {
     "M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
   // Selection (M): dashed rectangle.
   marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
-  // Elliptical marquee (M): dashed ellipse (8 arcs of the rectangle's ellipse).
+  // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc
+  // length with ~3.6 px gaps, so the gaps stay open under the round caps
+  // (like the rectangle marquee's dashes).
   marqueeEllipse:
-    "M19.7 10.5A8 6 0 0 1 19.7 13.5M18.9 15A8 6 0 0 1 16 17.2M14.1 17.8A8 6 0 0 1 9.9 17.8M8 17.2A8 6 0 0 1 5.1 15" +
-    "M4.3 13.5A8 6 0 0 1 4.3 10.5M5.1 9A8 6 0 0 1 8 6.8M9.9 6.2A8 6 0 0 1 14.1 6.2M16 6.8A8 6 0 0 1 18.9 9",
+    "M20.4 10.9A8.5 6.5 0 0 1 20.4 13.2M18.5 16.2A8.5 6.5 0 0 1 16.6 17.5M13.1 18.4A8.5 6.5 0 0 1 10.8 18.4M7.4 17.5A8.5 6.5 0 0 1 5.5 16.2" +
+    "M3.6 13.1A8.5 6.5 0 0 1 3.6 10.8M5.5 7.8A8.5 6.5 0 0 1 7.4 6.5M10.9 5.6A8.5 6.5 0 0 1 13.2 5.6M16.6 6.5A8.5 6.5 0 0 1 18.5 7.8",
   // Lasso (L): rope loop with a knot and a dangling tail.
   lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
   // Magic wand (W): diagonal stick with a sparkle at its tip.

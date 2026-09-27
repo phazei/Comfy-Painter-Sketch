@@ -14,8 +14,10 @@
 
 import type { Rect, Size } from "../geometry/rect";
 import type { CompositeLayer, FrameBackground } from "./compositor";
-import { imageRectToDoc } from "./frameMap";
+import type { EditorState } from "./editorState";
+import { documentMap, imageRectToDoc } from "./frameMap";
 import type { FrameMap } from "./frameMap";
+import { shownOnStage } from "./solo";
 
 /** Scene description in document terms. */
 export interface DocCompositeInput {
@@ -44,6 +46,28 @@ export type SceneSource = "all" | "background";
  */
 export function sceneFor(input: DocCompositeInput, source: SceneSource): DocCompositeInput {
   return source === "background" ? { ...input, layers: [] } : input;
+}
+
+/**
+ * The scene of an editor as shown on the stage: background + visible paint
+ * layers at their opacity, honouring solo (view only). Mask tints excluded.
+ * Shared by sampling (bucket, wand, eyedropper) and copy merged.
+ * @param s - Editor state.
+ * @returns Scene description.
+ */
+export function visibleScene(s: EditorState): DocCompositeInput {
+  const layers: CompositeLayer[] = [];
+  for (const layer of s.doc.layers) {
+    if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
+    layers.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
+  }
+  return {
+    background: s.background,
+    imageSize: s.imageSize,
+    map: documentMap(s.doc, s.imageSize),
+    bounds: s.store.bounds,
+    layers,
+  };
 }
 
 /**

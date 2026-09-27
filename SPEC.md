@@ -567,8 +567,8 @@ Design: "Output regions (M9) -- agreed design". First pass (dynamic sockets) rep
 Design: "Floating selections + clipboard (M10) -- agreed design".
 - [x] M10a: floats (Move tool + marquee Ctrl / Ctrl+Alt), selection-outline move with marquee tools, selection follows layer moves, Enter/Esc/commit rules, one undo step per float
 - [x] M10a: Merge Down (Ctrl+E) for paint and masks
-- [ ] M10b: Ctrl+C / Ctrl+Shift+C / Ctrl+X / Ctrl+V / Ctrl+Shift+V; system clipboard first, clipspace fallback; Copy / Cut / Paste buttons (long-press Paste: System / Clipspace)
-- [ ] M10b: drop image files onto the canvas = new layer
+- [x] M10b: Ctrl+C / Ctrl+Shift+C / Ctrl+X / Ctrl+V / Ctrl+Shift+V; system clipboard first, clipspace fallback; Copy / Cut / Paste buttons (long-press Paste: System / Clipspace)
+- [x] M10b: drop image files onto the canvas = new layer
 
 ### M11 -- Free Transform (Ctrl+T)
 - [ ] Destructive scale/rotate with handles for the active layer, a selection, or a floating paste; Shift keeps proportions (Photoshop); Enter commits, Esc cancels; resample once on commit
@@ -590,7 +590,7 @@ Design: "Floating selections + clipboard (M10) -- agreed design".
 - M0-M6, M7a, M8 and M9 (incl. Add border) are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: M10 (floating selections + clipboard; present a plan to the user before building -- M9's unreviewed overnight plan had to be redone), then M11, M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
+- Next: background row eye + solo (agreed, see Decisions Log), then M11 Free Transform (plan with the user first), M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
 - Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
@@ -654,6 +654,15 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-26: M10 complete (browser-verified). Terminology: the "image area" = the current image rectangle on the stage (where pastes centre). Empty-paste notes phrased alike: "The clipboard has no image -- nothing to paste." / "Clipspace has no image -- nothing to paste." Next: background row (eye + solo), then M11.
+
+- 2026-09-26: M10b round 2 (needs browser check): Ctrl+V / button pastes centre on the image (not the view); Paste menu items always enabled, empty source = note; paste source remembered per button like tool groups (removed a page-wide module variable); copy refuses hidden / solo-hidden layers (locked may be copied); browser image drags claimed at dragenter/dragover (Chrome reports the dragged file type blank).
+- 2026-09-26: Background row (AFTER M10, not now): eye + solo on the background row; eye off = transparent (checkerboard) in the editor; outputs use the `background` widget colour instead of the image (eye affects outputs, like other layers); copy merged then excludes the image. Selectable background row deferred.
+
+- 2026-09-26: M10b fixes (needs browser check): Ctrl+V = system image > own copy > clipspace; Ctrl+Shift+V = own copy in place only; clipspace explicitly via the Paste button menu (choice sticks, C-badge icon); paste/drop clears the selection (same step); copy merged with Quick Mask on = union of visible masks; browser image drags (img src / uri-list, CORS failure toast); ellipse marquee icon dashed. Paste offset likely was the clipspace fallback under Ctrl+Shift+V.
+
+- 2026-09-26: M10b code done (needs browser check). Clipspace read via `app.constructor.clipspace` (static on ComfyApp, runtime-guarded). Masks copy as opaque grayscale. Cut without a selection cuts the whole layer (PS disables it). Pasted layers are named "Pasted", "Pasted 2", ... One layer + one undo step per dropped file. Ctrl+V adds a one-shot capture `paste` listener; fullscreen lets Ctrl+V keydown through.
 
 - 2026-09-26: M10a browser-verified. Added PS-style move cursors (scissors = cut, + = copy, dotted rect = outline move; `ui/moveCursors.ts`); a rasterize confirm now ends the gesture first (`Tool.takeDeferred`), Yes only rasterizes; drags on an empty layer refuse at pointerdown.
 

@@ -24,7 +24,9 @@
  */
 
 import type { EditorSession } from "../widget/sessions";
+import { ClipboardActions } from "./clipboardActions";
 import { openColorPicker } from "./colorPicker";
+import { installDropImport } from "./dropImport";
 import { FullscreenMount } from "./fullscreen";
 import { HostSync } from "./hostSync";
 import { KeyboardScope } from "./keyboard";
@@ -86,6 +88,9 @@ export class EditorHost {
   private readonly keyboard: KeyboardScope;
   private readonly resizeObserver: ResizeObserver;
   private readonly fullscreen: FullscreenMount;
+  /** Copy / cut / paste (keys, rail, drops). */
+  private readonly clipboard: ClipboardActions;
+  private readonly removeDrop: () => void;
   private restoreState: FullscreenRestore | null = null;
 
   private session: EditorSession | null = null;
@@ -111,6 +116,10 @@ export class EditorHost {
     this.element = this.fullscreen.container;
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
+    // ── M10b: clipboard (keys, rail buttons, image drops on the stage) ─────
+    this.clipboard = new ClipboardActions(() => this.session, this.stage);
+    this.removeDrop = installDropImport(this.stage, this.clipboard, (text) => this.view.showNote(text));
+
     // ── Rail / options-bar sync (owns layers panel too) ───────────────────
     // `releaseFocus` closes over `this.keyboard` which is assigned below;
     // it is only ever called after construction completes.
@@ -120,6 +129,7 @@ export class EditorHost {
       () => this.input.cancel(),
       () => this.keyboard.reclaimFocus(),
       this.shell,
+      this.clipboard,
     );
 
     // ── M3.2: wire the colour picker ──────────────────────────────────────
@@ -170,6 +180,7 @@ export class EditorHost {
                 this.fullscreen.exit();
                 return true;
               },
+              clipboard: this.clipboard,
             })
           : false,
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
@@ -283,6 +294,8 @@ export class EditorHost {
     this.setSession(null);
     this.disposed = true;
     this.resizeObserver.disconnect();
+    this.removeDrop();
+    this.clipboard.dispose();
     this.input.dispose();
     this.keyboard.dispose();
     this.sync.dispose();

@@ -33,6 +33,11 @@ export class ViewState {
     return this.transform;
   }
 
+  /** Stage CSS size the current transform was computed for. */
+  get stageSize(): Size {
+    return { ...this.stage };
+  }
+
   /** On-screen CSS pixels per image pixel (includes graph zoom). */
   get screenScale(): number { return this.transform.scale * this.displayScale; }
 

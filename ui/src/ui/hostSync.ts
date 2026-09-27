@@ -20,6 +20,7 @@ import { maskDisplayColor } from "../document/masks";
 import type { Editor } from "../engine/editor";
 import type { ToolRegistry } from "../tools/registry";
 import type { EditorSession } from "../widget/sessions";
+import type { ClipboardActions } from "./clipboardActions";
 import { openColorPicker } from "./colorPicker";
 import { LayersPanel } from "./layersPanel";
 import { OptionsBar } from "./optionsBar";
@@ -66,6 +67,7 @@ export class HostSync {
    * @param onCancelDrag - Called before mode switches that need a clean state.
    * @param releaseFocus - Hand keyboard focus back after a panel text field blurs.
    * @param shell - Editor shell (regions + popover host).
+   * @param clipboard - Copy / cut / paste commands (rail buttons).
    */
   constructor(
     private readonly getSession: () => EditorSession | null,
@@ -73,6 +75,7 @@ export class HostSync {
     private readonly onCancelDrag: () => void,
     releaseFocus: () => void,
     private readonly shell: EditorShell,
+    clipboard: ClipboardActions,
   ) {
     this.rail = new ToolRail(
       shell.rail.tools,
@@ -91,6 +94,9 @@ export class HostSync {
         fit: () => this.getSession()?.editor.view.fit(),
         clear: () => this.confirmClear(),
         fullscreen: () => this.shell.events.emit("fullscreen", undefined),
+        copy: () => (this.onCancelDrag(), clipboard.copy(false)),
+        cut: () => (this.onCancelDrag(), clipboard.cut()),
+        paste: (request) => (this.onCancelDrag(), void clipboard.pasteFromButton(request)),
       },
       shell.popoverHost,
     );
@@ -230,6 +236,7 @@ export class HostSync {
 
   /** Dispose components that need it. */
   dispose(): void {
+    this.rail.dispose();
     this.layers.dispose();
     this.outputs.dispose();
   }

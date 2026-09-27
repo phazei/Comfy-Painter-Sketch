@@ -152,6 +152,12 @@
   border-bottom: 0;
 }
 
+/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */
+.cps-rail-clipboard {
+  padding-top: 3px;
+  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+}
+
 .cps-rail-spacer {
   flex: 1 1 auto;
 }

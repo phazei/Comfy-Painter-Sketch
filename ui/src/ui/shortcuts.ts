@@ -20,10 +20,13 @@
  * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
  * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace) |
  * | float / merge keys | `floatShortcuts.ts` (Enter / Esc while floating, Ctrl+E Merge Down) |
+ * | clipboard keys | `clipboardShortcuts.ts` (Ctrl+C, Ctrl+Shift+C, Ctrl+X, Ctrl+V, Ctrl+Shift+V) |
  */
 
 import type { ToolOptions } from "../tools/options";
 import type { EditorSession } from "../widget/sessions";
+import type { ClipboardActions } from "./clipboardActions";
+import { handleClipboardShortcut } from "./clipboardShortcuts";
 import { handleFloatShortcut } from "./floatShortcuts";
 import { handleSelectionShortcut } from "./selectionShortcuts";
 
@@ -45,6 +48,8 @@ export interface ShortcutEffects {
   closePopover(): boolean;
   /** Leave fullscreen. @returns `true` if the editor was fullscreen. */
   exitFullscreen(): boolean;
+  /** Clipboard commands (Ctrl+C / X / V); absent = clipboard keys unhandled. */
+  clipboard?: ClipboardActions;
 }
 
 /**
@@ -65,6 +70,9 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }
+  // Clipboard: Ctrl+C / Ctrl+Shift+C / Ctrl+X; Ctrl+V only stopped (the `paste` event does the work).
+  if (effects.clipboard && handleClipboardShortcut(event, effects.clipboard, () => effects.cancelDrag())) return true;
+  if (ctrl && !event.altKey && key === "v") return false;
   // Selection: Ctrl+A/D, Shift+F7, Delete/Backspace, Alt/Ctrl+Backspace.
   if (handleSelectionShortcut(event, editor, () => effects.cancelDrag())) return true;
 

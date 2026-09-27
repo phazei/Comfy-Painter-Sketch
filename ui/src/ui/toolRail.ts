@@ -1,7 +1,9 @@
-﻿/**
+/**
  * Left tool rail: tool buttons generated from the tool registry metadata
  * (id, label, shortcut, icon -- no per-tool markup; tool groups share one
- * slot with a flyout, `toolGroupSlot.ts`), then Quick Mask, then
+ * slot with a flyout, `toolGroupSlot.ts`), then Quick Mask, then the
+ * clipboard group (Copy, Cut, Paste with a long-press source menu,
+ * `pasteButton.ts`; rules above and below), then
  * the always-visible actions (Undo, Redo, Fit, Clear, Fullscreen; SPEC
  * "Canvas / view"). Renders into the shell's `rail.tools` region; the swatch
  * widget lives in `rail.swatchSlot`.
@@ -9,7 +11,9 @@
 
 import type { ToolGroupView } from "../tools/toolGroups";
 import type { Tool } from "../tools/types";
+import type { PasteRequest } from "./clipboardActions";
 import { setIcon } from "./icons";
+import { PasteButton } from "./pasteButton";
 import type { PopoverHost } from "./popover";
 import { ToolGroupSlot } from "./toolGroupSlot";
 
@@ -26,6 +30,12 @@ export interface ToolRailActions {
   clear(): void;
   /** Fullscreen requested (F). */
   fullscreen(): void;
+  /** Copy button (Ctrl+C). */
+  copy(): void;
+  /** Cut button (Ctrl+X). */
+  cut(): void;
+  /** Paste button click (its current source) or one of its long-press entries. */
+  paste(request: PasteRequest): void;
 }
 
 /**
@@ -38,6 +48,7 @@ export class ToolRail {
   private readonly redoButton: HTMLButtonElement;
   private readonly quickMaskButton: HTMLButtonElement;
   private readonly fullscreenButton: HTMLButtonElement;
+  private readonly pasteButton: PasteButton;
   private toolIds = "";
   private groupSlots: ToolGroupSlot[] = [];
 
@@ -59,6 +70,17 @@ export class ToolRail {
     maskGroup.appendChild(this.quickMaskButton);
     const spacer = document.createElement("div");
     spacer.className = "cps-rail-spacer";
+    const clipboardGroup = group();
+    clipboardGroup.classList.add("cps-rail-clipboard");
+    this.pasteButton = new PasteButton({
+      popovers,
+      paste: (request) => this.actions.paste(request),
+    });
+    clipboardGroup.append(
+      railButton("copy", "Copy (Ctrl+C; Ctrl+Shift+C copies merged)", () => this.actions.copy()),
+      railButton("cut", "Cut (Ctrl+X)", () => this.actions.cut()),
+      this.pasteButton.element,
+    );
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
     this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
     this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
@@ -71,7 +93,13 @@ export class ToolRail {
       railButton("clear", "Clear canvas", () => this.actions.clear()),
       this.fullscreenButton,
     );
-    container.append(this.toolBox, maskGroup, spacer, actionGroup);
+    container.append(this.toolBox, maskGroup, spacer, clipboardGroup, actionGroup);
+  }
+
+  /** Stop the Paste button's long-press timer and close its menu. */
+  dispose(): void {
+    this.pasteButton.dispose();
+    for (const slot of this.groupSlots) slot.dispose();
   }
 
   /**

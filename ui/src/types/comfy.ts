@@ -286,6 +286,18 @@ export interface ComfyApp {
   getRandParam(): string;
 }
 
+/**
+ * ComfyUI's clipspace (subset of frontend `Clipspace`, `src/scripts/app.ts`):
+ * a STATIC member of the `ComfyApp` class, so reachable as
+ * `app.constructor.clipspace`. Written by "Copy (Clipspace)" on image nodes.
+ * Every field is untrusted at runtime (narrow before use).
+ */
+export interface Clipspace {
+  imgs?: HTMLImageElement[] | null;
+  images?: (ResultItem | null)[] | null;
+  selectedIndex?: number;
+}
+
 /** The ComfyUI `api` singleton (subset). */
 export interface ComfyApi {
   apiURL(route: string): string;

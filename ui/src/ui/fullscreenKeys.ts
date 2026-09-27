@@ -12,7 +12,9 @@
  *   Shift), Ctrl/Cmd+Shift + I / J / C (devtools), Alt+Left / Alt+Right;
  * - ComfyUI commands that do not edit the graph and are useful while
  *   painting: Ctrl/Cmd+Shift+S (save as) and Ctrl/Cmd+Enter (queue, also
- *   with Shift). Plain Ctrl/Cmd+S never reaches this policy: the keyboard
+ *   with Shift);
+ * - Ctrl/Cmd+V (+Shift): the browser must fire `paste` (the editor stops the
+ *   keydown itself, `clipboardShortcuts.ts`). Plain Ctrl/Cmd+S never reaches this policy: the keyboard
  *   scope intercepts it (`saveKey.ts`) to flush uploads before saving.
  *
  * Everything else is swallowed (`preventDefault` + `stopPropagation`).
@@ -55,6 +57,9 @@ export function fullscreenKeyPolicy(event: KeyChord): FullscreenKeyAction {
   const mod = event.ctrlKey || event.metaKey;
   if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";
   if (mod && !event.altKey) {
+    // Ctrl/Cmd+V (+Shift): never prevented, or the browser fires no `paste`
+    // event; the editor stops it itself (`clipboardShortcuts.ts`).
+    if (key === "v") return "pass";
     if (BROWSER_MOD_KEYS.has(key) || COMFY_MOD_KEYS.has(key)) return "pass";
     if (event.shiftKey && BROWSER_MOD_SHIFT_KEYS.has(key)) return "pass";
   }

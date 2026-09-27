@@ -273,8 +273,8 @@ function scanValue(value, into) {
 }
 function scanOpenWorkflows(into) {
   const manager = app.extensionManager;
-  const store = isRecord$2(manager) ? manager["workflow"] : void 0;
-  const open = isRecord$2(store) ? store["openWorkflows"] : void 0;
+  const store2 = isRecord$2(manager) ? manager["workflow"] : void 0;
+  const open = isRecord$2(store2) ? store2["openWorkflows"] : void 0;
   if (!Array.isArray(open)) return;
   for (const workflow of open) {
     if (!isRecord$2(workflow)) continue;
@@ -1266,6 +1266,585 @@ function cloneDocument(doc) {
     layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
   };
 }
+const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
+function frameMap(frame, image, placement) {
+  const { width: fw, height: fh } = frame;
+  const { width: W2, height: H } = image;
+  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
+  const s = Math.min(W2 / fw, H / fh);
+  const offsetX = (W2 - fw * s) / 2;
+  const offsetY = (H - fh * s) / 2;
+  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
+  const k = placement.scale;
+  return {
+    scale: s * k,
+    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
+    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
+  };
+}
+function documentMap(doc, image) {
+  return frameMap(doc.frame, image, doc.placement);
+}
+function docToImage(map, p) {
+  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
+}
+function imageToDoc(map, p) {
+  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
+}
+function docRectToImage(map, r) {
+  return {
+    x: map.offsetX + r.x * map.scale,
+    y: map.offsetY + r.y * map.scale,
+    width: r.width * map.scale,
+    height: r.height * map.scale
+  };
+}
+function imageRectToDoc(map, r) {
+  return {
+    x: (r.x - map.offsetX) / map.scale,
+    y: (r.y - map.offsetY) / map.scale,
+    width: r.width / map.scale,
+    height: r.height / map.scale
+  };
+}
+function imageLengthToDoc(map, imageLength) {
+  return imageLength / map.scale;
+}
+function roundHalfEven(value) {
+  const floor = Math.floor(value);
+  const diff = value - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+function layerPlacement(map, bounds) {
+  return {
+    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
+    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
+    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
+    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
+  };
+}
+const PASTED_LAYER_NAME = "Pasted";
+function applyCoverage(rgba, coverage) {
+  let any = false;
+  const n = rgba.length >> 2;
+  for (let i = 0; i < n; i++) {
+    const p = i * 4 + 3;
+    const c = coverage ? coverage[i] ?? 0 : 255;
+    const a = c === 255 ? rgba[p] : Math.round(rgba[p] * c / 255);
+    rgba[p] = a;
+    if (a === 0) {
+      rgba[p - 3] = 0;
+      rgba[p - 2] = 0;
+      rgba[p - 1] = 0;
+    } else {
+      any = true;
+    }
+  }
+  return any;
+}
+function maskToGray(rgba, coverage) {
+  let any = false;
+  const n = rgba.length >> 2;
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const c = coverage ? coverage[i] ?? 0 : 255;
+    const v = Math.round(rgba[p + 3] * c / 255);
+    rgba[p] = v;
+    rgba[p + 1] = v;
+    rgba[p + 2] = v;
+    rgba[p + 3] = 255;
+    if (v > 0) any = true;
+  }
+  return any;
+}
+function unionMaskCoverage(union, area, read, rgba, invert) {
+  for (let y = 0; y < area.height; y++) {
+    const ry = area.y + y - (read?.y ?? 0);
+    for (let x = 0; x < area.width; x++) {
+      const rx = area.x + x - (read?.x ?? 0);
+      const inside2 = read !== null && rx >= 0 && ry >= 0 && rx < read.width && ry < read.height;
+      const a = inside2 ? rgba[(ry * read.width + rx) * 4 + 3] : 0;
+      const v = invert ? 255 - a : a;
+      const i = y * area.width + x;
+      if (v > union[i]) union[i] = v;
+    }
+  }
+}
+function imageCentreDoc(imageSize2, map) {
+  return imageToDoc(map, { x: imageSize2.width / 2, y: imageSize2.height / 2 });
+}
+function pasteRect(source, docPerSource, at) {
+  const k = Number.isFinite(docPerSource) && docPerSource > 0 ? docPerSource : 1;
+  const width = Math.max(1, Math.round(source.width * k));
+  const height = Math.max(1, Math.round(source.height * k));
+  if ("topLeft" in at) return { x: Math.round(at.topLeft.x), y: Math.round(at.topLeft.y), width, height };
+  return { x: Math.round(at.centre.x - width / 2), y: Math.round(at.centre.y - height / 2), width, height };
+}
+function cropToCap(rect, cap) {
+  const kept = intersectRect(rect, cap);
+  if (isEmptyRect(kept)) return { rect: null, cropped: true };
+  return { rect: kept, cropped: kept.width !== rect.width || kept.height !== rect.height };
+}
+function pastedLayerName(layers2) {
+  const taken = new Set(layers2.map((l) => l.name.trim()));
+  if (!taken.has(PASTED_LAYER_NAME)) return PASTED_LAYER_NAME;
+  let n = 2;
+  while (taken.has(`${PASTED_LAYER_NAME} ${n}`)) n++;
+  return `${PASTED_LAYER_NAME} ${n}`;
+}
+const MIN_ZOOM = 0.02;
+const MAX_ZOOM = 64;
+function fitContain(content, viewport, padding = 0) {
+  const vw = finitePositive(viewport.width);
+  const vh = finitePositive(viewport.height);
+  const pad = Math.max(0, Math.min(finitePositive(padding), vw / 2, vh / 2));
+  const availW = vw - pad * 2;
+  const availH = vh - pad * 2;
+  const cw = finitePositive(content.width);
+  const ch = finitePositive(content.height);
+  if (cw === 0 || ch === 0 || availW === 0 || availH === 0) {
+    return { x: vw / 2, y: vh / 2, width: 0, height: 0, scale: 0 };
+  }
+  const scale = Math.min(availW / cw, availH / ch);
+  const width = cw * scale;
+  const height = ch * scale;
+  return { x: (vw - width) / 2, y: (vh - height) / 2, width, height, scale };
+}
+function fitView(frame, stage, padding = 8) {
+  const fit = fitContain(frame, stage, padding);
+  if (fit.scale <= 0) return { scale: 1, offsetX: 0, offsetY: 0 };
+  const scale = clampZoom(fit.scale);
+  return {
+    scale,
+    offsetX: (stage.width - frame.width * scale) / 2,
+    offsetY: (stage.height - frame.height * scale) / 2
+  };
+}
+function clampZoom(scale) {
+  if (!Number.isFinite(scale) || scale <= 0) return 1;
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
+}
+function zoomAt(view, newScale, anchor) {
+  const scale = clampZoom(newScale);
+  const ratio = scale / view.scale;
+  return {
+    scale,
+    offsetX: anchor.x - (anchor.x - view.offsetX) * ratio,
+    offsetY: anchor.y - (anchor.y - view.offsetY) * ratio
+  };
+}
+function wheelZoomFactor(deltaPx) {
+  const clamped = Math.max(-300, Math.min(300, deltaPx));
+  return Math.exp(-clamped * 15e-4);
+}
+function panBy(view, dx, dy) {
+  return { scale: view.scale, offsetX: view.offsetX + dx, offsetY: view.offsetY + dy };
+}
+function clampOffset(view, frame, stage) {
+  const sw = finitePositive(stage.width);
+  const sh = finitePositive(stage.height);
+  const fw = finitePositive(frame.width) * view.scale;
+  const fh = finitePositive(frame.height) * view.scale;
+  if (sw === 0 || sh === 0 || fw === 0 || fh === 0) return view;
+  const gripX = Math.min(64, fw);
+  const gripY = Math.min(64, fh);
+  const minOffsetX = gripX - fw;
+  const maxOffsetX = sw - gripX;
+  const minOffsetY = gripY - fh;
+  const maxOffsetY = sh - gripY;
+  return {
+    scale: view.scale,
+    offsetX: Math.min(maxOffsetX, Math.max(minOffsetX, view.offsetX)),
+    offsetY: Math.min(maxOffsetY, Math.max(minOffsetY, view.offsetY))
+  };
+}
+function stageToDoc(view, p) {
+  return { x: (p.x - view.offsetX) / view.scale, y: (p.y - view.offsetY) / view.scale };
+}
+function docRectToStage(view, r) {
+  return {
+    x: r.x * view.scale + view.offsetX,
+    y: r.y * view.scale + view.offsetY,
+    width: r.width * view.scale,
+    height: r.height * view.scale
+  };
+}
+function backingStoreSize(cssSize, devicePixelRatio, displayScale = 1, maxSide = 4096) {
+  const cw = finitePositive(cssSize.width);
+  const ch = finitePositive(cssSize.height);
+  const dpr = finitePositive(devicePixelRatio) || 1;
+  const zoom = finitePositive(displayScale) || 1;
+  let ratio = dpr * zoom;
+  const largest = Math.max(cw, ch) * ratio;
+  if (largest > maxSide) ratio *= maxSide / largest;
+  return {
+    width: Math.max(1, Math.round(cw * ratio)),
+    height: Math.max(1, Math.round(ch * ratio)),
+    ratio
+  };
+}
+function finitePositive(value) {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+function choosePasteSource(f) {
+  if (f.systemImage) return f.systemIsOurs && f.internal ? "internal" : "system";
+  if (f.internal) return "internal";
+  if (f.clipspace) return "clipspace";
+  return "none";
+}
+const URL_TYPES = ["text/uri-list", "text/x-moz-url", "text/html"];
+function shouldClaimDrag(types, fileTypes) {
+  if (fileTypes.some((t) => t.startsWith("image/"))) return true;
+  if (fileTypes.some((t) => t !== "")) return false;
+  return URL_TYPES.some((t) => types.includes(t));
+}
+const IMAGE_URL = /^(https?:|data:image\/|blob:)/i;
+function imageUrlFromDrop(uriList, html) {
+  const img = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(html);
+  const src = img ? decodeEntities((img[1] ?? img[2] ?? img[3] ?? "").trim()) : "";
+  if (IMAGE_URL.test(src)) return src;
+  const first = uriList.split(/\r?\n/).map((line) => line.trim()).find((line) => line !== "" && !line.startsWith("#")) ?? "";
+  return IMAGE_URL.test(first) ? first : null;
+}
+function decodeEntities(text) {
+  return text.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+}
+const SIGNATURE_SIDE = 16;
+function signaturesMatch(a, b, tolerance = 4) {
+  if (!a || !b || a.width !== b.width || a.height !== b.height || a.thumb.length !== b.thumb.length) return false;
+  let sum = 0;
+  for (let i = 0; i < a.thumb.length; i++) sum += Math.abs(a.thumb[i] - b.thumb[i]);
+  return sum / Math.max(1, a.thumb.length) <= tolerance;
+}
+const FOLDER_TYPES = /* @__PURE__ */ new Set(["input", "output", "temp"]);
+function parseAnnotatedFilename(value, defaultType = "input") {
+  if (typeof value !== "string") return null;
+  let path = value.trim();
+  if (!path) return null;
+  let type = defaultType;
+  const annotation = /\s*\[([a-z]+)\]$/i.exec(path);
+  if (annotation?.[1] && FOLDER_TYPES.has(annotation[1].toLowerCase())) {
+    type = annotation[1].toLowerCase();
+    path = path.slice(0, annotation.index).trim();
+  }
+  const normalized = path.replace(/\\/g, "/");
+  const slash = normalized.lastIndexOf("/");
+  const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  if (!filename) return null;
+  const subfolder = slash >= 0 ? normalized.slice(0, slash) : "";
+  return { filename, subfolder, type };
+}
+function firstOutputImage(output) {
+  const images = output?.images;
+  if (!Array.isArray(images)) return null;
+  for (const image of images) {
+    if (image && typeof image.filename === "string" && image.filename) return image;
+  }
+  return null;
+}
+function viewQuery(item) {
+  const params = new URLSearchParams();
+  params.set("filename", item.filename ?? "");
+  params.set("subfolder", item.subfolder ?? "");
+  params.set("type", item.type ?? "output");
+  return params.toString();
+}
+function viewUrl(item, apiURL, cacheBust = "") {
+  return apiURL(`/view?${viewQuery(item)}${cacheBust}`);
+}
+function imageSignature(source, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = SIGNATURE_SIDE;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(source, 0, 0, SIGNATURE_SIDE, SIGNATURE_SIDE);
+  const thumb = ctx.getImageData(0, 0, SIGNATURE_SIDE, SIGNATURE_SIDE).data;
+  canvas.width = canvas.height = 0;
+  return { width, height, thumb };
+}
+function imageFiles(data) {
+  if (!data) return [];
+  const files = [];
+  for (const item of Array.from(data.items)) {
+    if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) files.push(file);
+  }
+  if (files.length === 0) {
+    for (const file of Array.from(data.files)) if (file.type.startsWith("image/")) files.push(file);
+  }
+  return files;
+}
+function dragTypes(data) {
+  if (!data) return { types: [], fileTypes: [] };
+  const fileTypes = Array.from(data.items).filter((item) => item.kind === "file").map((item) => item.type);
+  return { types: Array.from(data.types), fileTypes };
+}
+function droppedImageUrl(data) {
+  if (!data) return null;
+  const uris = data.getData("text/uri-list") || data.getData("text/x-moz-url");
+  return imageUrlFromDrop(uris, data.getData("text/html"));
+}
+async function fetchImageBlob(url) {
+  let blob;
+  try {
+    const response = await fetch(url, { credentials: "omit" });
+    if (!response.ok) {
+      log.warn(`Could not fetch the dragged image (HTTP ${response.status}):`, url);
+      return { error: "blocked" };
+    }
+    blob = await response.blob();
+  } catch (error) {
+    log.warn("Could not fetch the dragged image (CORS or network):", url, error);
+    return { error: "blocked" };
+  }
+  return blob.type === "" || blob.type.startsWith("image/") || blob.type === "application/octet-stream" ? { blob } : { error: "not-image" };
+}
+async function readSystemImage() {
+  const clipboard = navigator.clipboard;
+  if (!clipboard || typeof clipboard.read !== "function") return null;
+  try {
+    for (const item of await clipboard.read()) {
+      const type = item.types.find((t) => t.startsWith("image/"));
+      if (type) return await item.getType(type);
+    }
+  } catch (error) {
+    log.warn("Clipboard read unavailable:", error);
+  }
+  return null;
+}
+function clipspaceImageUrl() {
+  const ctor = app.constructor;
+  if (typeof ctor !== "function" || !("clipspace" in ctor)) return null;
+  const clip = ctor.clipspace;
+  if (!clip || typeof clip !== "object") return null;
+  const index = typeof clip.selectedIndex === "number" && clip.selectedIndex >= 0 ? clip.selectedIndex : 0;
+  const img = Array.isArray(clip.imgs) ? clip.imgs[index] ?? clip.imgs[0] : void 0;
+  if (img instanceof HTMLImageElement && img.src) return img.src;
+  const item = Array.isArray(clip.images) ? clip.images[index] ?? clip.images[0] : void 0;
+  if (item && typeof item === "object" && typeof item.filename === "string" && item.filename) {
+    return viewUrl(item, (route) => api.apiURL(route));
+  }
+  return null;
+}
+async function decodeBlob(blob) {
+  try {
+    return await createImageBitmap(blob);
+  } catch (error) {
+    log.warn("Could not decode the pasted image:", error);
+    return null;
+  }
+}
+async function decodeUrl(url) {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    return await decodeBlob(await response.blob());
+  } catch (error) {
+    log.warn("Could not load the clipspace image:", error);
+    return null;
+  }
+}
+const NOTHING_TO_PASTE_NOTE = "Nothing to paste.";
+const CLIPSPACE_EMPTY_NOTE = "Clipspace has no image -- nothing to paste.";
+const SYSTEM_EMPTY_NOTE = "The clipboard has no image -- nothing to paste.";
+const PASTE_WAIT_MS = 1e3;
+let internal = null;
+class ClipboardActions {
+  /**
+   * @param getSession - Current session.
+   * @param stage - Stage element (drop points).
+   */
+  constructor(getSession, stage) {
+    this.getSession = getSession;
+    this.stage = stage;
+  }
+  getSession;
+  stage;
+  armed = null;
+  onPaste = (event) => this.handlePaste(event);
+  /** Whether an internal copy exists (Ctrl+Shift+V pastes it in place). */
+  get hasInternal() {
+    return internal !== null;
+  }
+  /**
+   * Ctrl+C / Ctrl+Shift+C / Copy button.
+   * @param merged - Copy merged (what is visible, incl. the image).
+   */
+  copy(merged) {
+    const clip = this.getSession()?.editor.clipboard.copy(merged);
+    if (clip) store(clip);
+  }
+  /** Ctrl+X / Cut button. */
+  cut() {
+    const clip = this.getSession()?.editor.clipboard.cut();
+    if (clip) store(clip);
+  }
+  /**
+   * Ctrl+V keydown (editor owns the keyboard; also Ctrl+Shift+V without an
+   * internal copy): wait for the browser's `paste` event.
+   * @param plainText - Chrome's Ctrl+Shift+V ("paste as plain text") carries
+   *   no image: read the async clipboard instead when the event has none.
+   */
+  armPaste(plainText) {
+    this.disarm();
+    const timer = setTimeout(() => this.disarm(), PASTE_WAIT_MS);
+    this.armed = { plainText, timer };
+    window.addEventListener("paste", this.onPaste, true);
+  }
+  /**
+   * Ctrl+Shift+V: the internal copy at its copied position; the system
+   * clipboard is ignored.
+   * @returns `false` without an internal copy (the caller pastes like Ctrl+V).
+   */
+  pasteInPlace() {
+    const editor = this.getSession()?.editor;
+    if (!editor || !internal) return false;
+    this.place(editor, internalImage(internal.clip), true);
+    return true;
+  }
+  /**
+   * Rail Paste button (a user gesture: `navigator.clipboard.read()` may ask
+   * for permission) or one of its menu entries.
+   * @param request - `"system"` (Ctrl+V order: system, internal, clipspace) or `"clipspace"` only.
+   */
+  async pasteFromButton(request) {
+    const editor = this.getSession()?.editor;
+    if (!editor) return;
+    if (request === "clipspace") return this.pasteClipspace(editor);
+    await this.pasteFacts(editor, await readSystemImage(), SYSTEM_EMPTY_NOTE);
+  }
+  /**
+   * Dropped images: one layer each, in order, centred at the drop point.
+   * @param images - Image files / blobs (decoded here) or decoded bitmaps.
+   * @param clientPoint - Drop point (client px).
+   * @returns `true` if at least one image decoded.
+   */
+  async pasteDropped(images, clientPoint) {
+    const editor = this.getSession()?.editor;
+    if (!editor) return false;
+    const at = this.docPoint(editor, this.toStage(clientPoint));
+    let any = false;
+    for (const item of images) {
+      const bitmap = item instanceof Blob ? await decodeBlob(item) : item;
+      if (!bitmap) continue;
+      any = true;
+      this.place(editor, foreignImage(bitmap), false, at);
+    }
+    return any;
+  }
+  /** Remove the armed paste listener. */
+  dispose() {
+    this.disarm();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  disarm() {
+    if (!this.armed) return;
+    clearTimeout(this.armed.timer);
+    this.armed = null;
+    window.removeEventListener("paste", this.onPaste, true);
+  }
+  handlePaste(event) {
+    const plainText = this.armed?.plainText ?? false;
+    this.disarm();
+    event.preventDefault();
+    event.stopPropagation();
+    const editor = this.getSession()?.editor;
+    if (!editor) return;
+    const file = Array.from(event.clipboardData?.items ?? []).find((i) => i.kind === "file" && i.type.startsWith("image/"));
+    const blob = file?.getAsFile() ?? null;
+    void (async () => this.pasteFacts(editor, blob ?? (plainText ? await readSystemImage() : null)))();
+  }
+  /** Ctrl+V order (`pasteChoice.ts`): decode the system image (if any), choose the source, paste. */
+  async pasteFacts(editor, systemBlob, emptyNote = NOTHING_TO_PASTE_NOTE) {
+    const bitmap = systemBlob ? await decodeBlob(systemBlob) : null;
+    const signature = bitmap ? imageSignature(bitmap, bitmap.width, bitmap.height) : null;
+    const clipspaceUrl = clipspaceImageUrl();
+    const facts = {
+      systemImage: bitmap !== null,
+      systemIsOurs: signaturesMatch(signature, internal?.signature ?? null),
+      internal: internal !== null,
+      clipspace: clipspaceUrl !== null
+    };
+    const kind = choosePasteSource(facts);
+    if (kind !== "system") bitmap?.close();
+    if (kind === "system" && bitmap) return this.place(editor, foreignImage(bitmap), false);
+    if (kind === "internal" && internal) return this.place(editor, internalImage(internal.clip), false);
+    if (kind === "clipspace") return this.pasteClipspace(editor);
+    editor.events.emit("note", emptyNote);
+  }
+  /** The ComfyUI clipspace image, centred on the image. */
+  async pasteClipspace(editor) {
+    const url = clipspaceImageUrl();
+    const image = url ? await decodeUrl(url) : null;
+    if (image) return this.place(editor, foreignImage(image), false);
+    editor.events.emit("note", CLIPSPACE_EMPTY_NOTE);
+  }
+  /** Paste one decoded image as a new layer; toasts when cropped. */
+  place(editor, image, inPlace, centre) {
+    const map = editor.frameMap;
+    const docPerSource = image.imagePerSource / map.scale;
+    const at = inPlace && image.topLeft ? { topLeft: image.topLeft } : { centre: centre ?? imageCentreDoc(editor.imageSize, map) };
+    const result = editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
+    image.release();
+    if (result?.cropped) {
+      notify("warn", "The pasted image is larger than the paint area and was cropped.", { key: "paste-cropped" });
+    }
+  }
+  toStage(client) {
+    const rect = this.stage.getBoundingClientRect();
+    const sx = rect.width > 0 ? this.stage.clientWidth / rect.width : 1;
+    const sy = rect.height > 0 ? this.stage.clientHeight / rect.height : 1;
+    return { x: (client.x - rect.left) * sx, y: (client.y - rect.top) * sy };
+  }
+  docPoint(editor, stagePoint) {
+    return imageToDoc(editor.frameMap, stageToDoc(editor.view.current, stagePoint));
+  }
+}
+function store(clip) {
+  const canvas = document.createElement("canvas");
+  canvas.width = clip.data.width;
+  canvas.height = clip.data.height;
+  canvas.getContext("2d")?.putImageData(clip.data, 0, 0);
+  const entry = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false };
+  internal = entry;
+  const png = new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed")), "image/png");
+  });
+  const release2 = () => {
+    canvas.width = canvas.height = 0;
+  };
+  if (typeof ClipboardItem !== "function" || typeof navigator.clipboard?.write !== "function") {
+    log.warn("System clipboard unavailable; the copy is kept inside PainterSketch only.");
+    void png.then(release2, release2);
+    return;
+  }
+  navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(() => {
+    entry.systemWritten = true;
+  }).catch((error) => log.warn("Could not write the system clipboard; the copy is kept inside PainterSketch only.", error)).finally(release2);
+}
+function internalImage(clip) {
+  const canvas = document.createElement("canvas");
+  canvas.width = clip.data.width;
+  canvas.height = clip.data.height;
+  canvas.getContext("2d")?.putImageData(clip.data, 0, 0);
+  return {
+    source: canvas,
+    width: canvas.width,
+    height: canvas.height,
+    imagePerSource: clip.imageScale,
+    topLeft: { x: clip.rect.x, y: clip.rect.y },
+    release: () => {
+      canvas.width = canvas.height = 0;
+    }
+  };
+}
+function foreignImage(bitmap) {
+  return { source: bitmap, width: bitmap.width, height: bitmap.height, imagePerSource: 1, topLeft: null, release: () => bitmap.close() };
+}
 function hexToRgb$1(hex) {
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
   const digits = m?.[1];
@@ -1693,6 +2272,66 @@ function openColorPicker(host, anchor, opts) {
   );
   return handle;
 }
+const DRAG_BLOCKED_TEXT = "Couldn't load the dragged image (the site doesn't allow it). Save it and drop the file instead.";
+const DRAG_NOT_IMAGE_NOTE = "The dropped item is not an image.";
+function debug(...args) {
+  console.debug("[PainterSketch] drop:", ...args);
+}
+function installDropImport(stage, actions, note) {
+  let lastLogged = "";
+  const over = (event) => {
+    const data = event.dataTransfer;
+    const { types, fileTypes } = dragTypes(data);
+    const claim = shouldClaimDrag(types, fileTypes);
+    const summary = `${event.type} claim=${claim} types=[${types.join(", ")}] files=[${fileTypes.join(", ")}]`;
+    if (event.type === "dragenter" || summary !== lastLogged) debug(summary);
+    lastLogged = summary;
+    if (!claim) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (data) data.dropEffect = "copy";
+  };
+  const drop = (event) => {
+    lastLogged = "";
+    const data = event.dataTransfer;
+    const { types, fileTypes } = dragTypes(data);
+    if (!shouldClaimDrag(types, fileTypes)) {
+      debug("not claimed, left to ComfyUI", types, fileTypes);
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const point = { x: event.clientX, y: event.clientY };
+    const files = imageFiles(data);
+    const url = droppedImageUrl(data);
+    debug(files.length > 0 ? `files (${files.map((f) => `${f.name} ${f.type}`).join(", ")})` : url ? `url ${url.slice(0, 120)}` : "nothing usable");
+    void pasteDrop(actions, files, url, point, note);
+  };
+  const opts = { capture: true };
+  stage.addEventListener("dragenter", over, opts);
+  stage.addEventListener("dragover", over, opts);
+  stage.addEventListener("drop", drop, opts);
+  return () => {
+    stage.removeEventListener("dragenter", over, opts);
+    stage.removeEventListener("dragover", over, opts);
+    stage.removeEventListener("drop", drop, opts);
+  };
+}
+async function pasteDrop(actions, files, url, point, note) {
+  if (files.length > 0 && await actions.pasteDropped(files, point)) return;
+  if (!url) {
+    note(DRAG_NOT_IMAGE_NOTE);
+    return;
+  }
+  const result = await fetchImageBlob(url);
+  if ("error" in result) {
+    debug(`fetch failed (${result.error})`);
+    if (result.error === "blocked") notify("warn", DRAG_BLOCKED_TEXT, { key: "drag-image-blocked" });
+    else note(DRAG_NOT_IMAGE_NOTE);
+    return;
+  }
+  if (!await actions.pasteDropped([result.blob], point)) note(DRAG_NOT_IMAGE_NOTE);
+}
 const PATHS = {
   // Output regions (Outputs button): box with a "1" and corner handles.
   region: "M4 4h16v16H4zM8 9l3-2v10M8 17h6M2 2h4v4H2zM18 18h4v4h-4z",
@@ -1706,6 +2345,13 @@ const PATHS = {
   quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
   undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
   redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  // Clipboard (M10b): two sheets (copy), scissors (cut), clipboard board (paste).
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  cut: "M6 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6M6 14a3 3 0 1 0 0 6a3 3 0 1 0 0-6M8.5 8.5 20 20M8.5 15.5 20 4",
+  paste: "M8 4H5v17h14V4h-3M9 2h6v4H9zM9 11h6M9 15h6",
+  // Paste from the ComfyUI clipspace: the paste board (bottom-right corner
+  // left open) with a small "C" badge there.
+  pasteClipspace: "M8 4H5v17h9M16 4h3v9M9 2h6v4H9zM9 11h6M9 15h3M22 15.9A3 3 0 1 0 22 20.1",
   // Frame corners around the image: "fit to view".
   fit: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9z",
   clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
@@ -1747,8 +2393,10 @@ const PATHS = {
   moveDrawing: "M12 2.5 21.5 8.5 12 14.5 2.5 8.5zM2.5 13.5V15L12 20.5 21.5 15v-1.5M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
   // Selection (M): dashed rectangle.
   marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
-  // Elliptical marquee (M): dashed ellipse (8 arcs of the rectangle's ellipse).
-  marqueeEllipse: "M19.7 10.5A8 6 0 0 1 19.7 13.5M18.9 15A8 6 0 0 1 16 17.2M14.1 17.8A8 6 0 0 1 9.9 17.8M8 17.2A8 6 0 0 1 5.1 15M4.3 13.5A8 6 0 0 1 4.3 10.5M5.1 9A8 6 0 0 1 8 6.8M9.9 6.2A8 6 0 0 1 14.1 6.2M16 6.8A8 6 0 0 1 18.9 9",
+  // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc
+  // length with ~3.6 px gaps, so the gaps stay open under the round caps
+  // (like the rectangle marquee's dashes).
+  marqueeEllipse: "M20.4 10.9A8.5 6.5 0 0 1 20.4 13.2M18.5 16.2A8.5 6.5 0 0 1 16.6 17.5M13.1 18.4A8.5 6.5 0 0 1 10.8 18.4M7.4 17.5A8.5 6.5 0 0 1 5.5 16.2M3.6 13.1A8.5 6.5 0 0 1 3.6 10.8M5.5 7.8A8.5 6.5 0 0 1 7.4 6.5M10.9 5.6A8.5 6.5 0 0 1 13.2 5.6M16.6 6.5A8.5 6.5 0 0 1 18.5 7.8",
   // Lasso (L): rope loop with a knot and a dangling tail.
   lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
   // Magic wand (W): diagonal stick with a sparkle at its tip.
@@ -1927,65 +2575,6 @@ function ensureMaskLayer(doc, style = () => DEFAULT_MASK_STYLE, currentMaskId) {
 function maskDisplayColor(layer) {
   const color = layer.color;
   return typeof color === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_MASK_COLOR;
-}
-const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
-function frameMap(frame, image, placement) {
-  const { width: fw, height: fh } = frame;
-  const { width: W2, height: H } = image;
-  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
-  const s = Math.min(W2 / fw, H / fh);
-  const offsetX = (W2 - fw * s) / 2;
-  const offsetY = (H - fh * s) / 2;
-  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
-  const k = placement.scale;
-  return {
-    scale: s * k,
-    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
-    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
-  };
-}
-function documentMap(doc, image) {
-  return frameMap(doc.frame, image, doc.placement);
-}
-function docToImage(map, p) {
-  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
-}
-function imageToDoc(map, p) {
-  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
-}
-function docRectToImage(map, r) {
-  return {
-    x: map.offsetX + r.x * map.scale,
-    y: map.offsetY + r.y * map.scale,
-    width: r.width * map.scale,
-    height: r.height * map.scale
-  };
-}
-function imageRectToDoc(map, r) {
-  return {
-    x: (r.x - map.offsetX) / map.scale,
-    y: (r.y - map.offsetY) / map.scale,
-    width: r.width / map.scale,
-    height: r.height / map.scale
-  };
-}
-function imageLengthToDoc(map, imageLength) {
-  return imageLength / map.scale;
-}
-function roundHalfEven(value) {
-  const floor = Math.floor(value);
-  const diff = value - floor;
-  if (diff > 0.5) return floor + 1;
-  if (diff < 0.5) return floor;
-  return floor % 2 === 0 ? floor : floor + 1;
-}
-function layerPlacement(map, bounds) {
-  return {
-    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
-    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
-    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
-    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
-  };
 }
 const PROP_KEYS = ["name", "opacity", "color", "invert"];
 function isPaintLike(layer) {
@@ -3704,6 +4293,117 @@ function swatch(className, title, onClick) {
   button2.addEventListener("click", onClick);
   return button2;
 }
+const LONG_PRESS_MS$1 = 400;
+const MODES$1 = {
+  system: { icon: "paste", label: "System clipboard" },
+  clipspace: { icon: "pasteClipspace", label: "Clipspace" }
+};
+function pasteButtonTitle(mode) {
+  const source = mode === "clipspace" ? "from the ComfyUI clipspace" : "from the system clipboard (else our copy, else clipspace), Ctrl+V";
+  return `Paste as new layer ${source}. Ctrl+Shift+V pastes our copy in place. Hold for sources`;
+}
+class PasteButton {
+  /**
+   * @param options - Popover host and callbacks.
+   */
+  constructor(options) {
+    this.options = options;
+    const button2 = document.createElement("button");
+    button2.type = "button";
+    button2.className = "cps-rail-button cps-rail-grouped";
+    button2.setAttribute("aria-haspopup", "menu");
+    button2.addEventListener("click", () => this.handleClick());
+    button2.addEventListener("pointerdown", (e) => this.startPress(e));
+    button2.addEventListener("pointerup", () => this.endPress());
+    button2.addEventListener("pointerleave", () => this.endPress());
+    button2.addEventListener("pointercancel", () => this.endPress());
+    button2.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      this.endPress();
+      this.openMenu();
+    });
+    this.element = button2;
+    this.render();
+  }
+  options;
+  element;
+  pressTimer = null;
+  suppressClick = false;
+  menu = null;
+  /** Current main action (per instance, like `ToolGroupSlot.currentId`). */
+  currentMode = "system";
+  /** Close the menu and stop timers. */
+  dispose() {
+    this.endPress();
+    this.menu?.close();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** Icon + tooltip for the current mode (the corner mark shows there is a menu). */
+  render() {
+    const button2 = this.element;
+    setIcon(button2, MODES$1[this.currentMode].icon);
+    const corner = document.createElement("span");
+    corner.className = "cps-rail-corner";
+    button2.appendChild(corner);
+    const title = pasteButtonTitle(this.currentMode);
+    button2.title = title;
+    button2.setAttribute("aria-label", title);
+  }
+  handleClick() {
+    if (this.suppressClick) {
+      this.suppressClick = false;
+      return;
+    }
+    this.menu?.close();
+    this.options.paste(this.currentMode);
+  }
+  startPress(event) {
+    this.suppressClick = false;
+    if (event.button !== 0) return;
+    this.endPress();
+    this.pressTimer = setTimeout(() => {
+      this.pressTimer = null;
+      this.suppressClick = true;
+      this.openMenu();
+    }, LONG_PRESS_MS$1);
+  }
+  endPress() {
+    if (this.pressTimer !== null) clearTimeout(this.pressTimer);
+    this.pressTimer = null;
+  }
+  openMenu() {
+    if (this.menu) return;
+    const menu = document.createElement("div");
+    menu.className = "cps-tool-flyout";
+    menu.setAttribute("role", "menu");
+    menu.append(this.item("system"), this.item("clipspace"));
+    this.menu = this.options.popovers.open(menu, {
+      anchor: this.element,
+      placement: "right",
+      onClose: () => {
+        this.menu = null;
+      }
+    });
+  }
+  item(mode) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "cps-tool-flyout-item";
+    if (mode === this.currentMode) item.classList.add("cps-active");
+    item.setAttribute("role", "menuitem");
+    setIcon(item, MODES$1[mode].icon, 18);
+    const text = document.createElement("span");
+    text.textContent = MODES$1[mode].label;
+    item.appendChild(text);
+    item.addEventListener("click", () => {
+      this.menu?.close();
+      this.currentMode = mode;
+      this.render();
+      this.options.paste(mode);
+    });
+    return item;
+  }
+}
 const LONG_PRESS_MS = 400;
 class ToolGroupSlot {
   /**
@@ -3850,6 +4550,17 @@ class ToolRail {
     maskGroup.appendChild(this.quickMaskButton);
     const spacer = document.createElement("div");
     spacer.className = "cps-rail-spacer";
+    const clipboardGroup = group();
+    clipboardGroup.classList.add("cps-rail-clipboard");
+    this.pasteButton = new PasteButton({
+      popovers,
+      paste: (request) => this.actions.paste(request)
+    });
+    clipboardGroup.append(
+      railButton("copy", "Copy (Ctrl+C; Ctrl+Shift+C copies merged)", () => this.actions.copy()),
+      railButton("cut", "Cut (Ctrl+X)", () => this.actions.cut()),
+      this.pasteButton.element
+    );
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
     this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
     this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
@@ -3862,7 +4573,7 @@ class ToolRail {
       railButton("clear", "Clear canvas", () => this.actions.clear()),
       this.fullscreenButton
     );
-    container.append(this.toolBox, maskGroup, spacer, actionGroup);
+    container.append(this.toolBox, maskGroup, spacer, clipboardGroup, actionGroup);
   }
   actions;
   popovers;
@@ -3872,8 +4583,14 @@ class ToolRail {
   redoButton;
   quickMaskButton;
   fullscreenButton;
+  pasteButton;
   toolIds = "";
   groupSlots = [];
+  /** Stop the Paste button's long-press timer and close its menu. */
+  dispose() {
+    this.pasteButton.dispose();
+    for (const slot of this.groupSlots) slot.dispose();
+  }
   /**
    * Show the Quick Mask state (highlighted while strokes go to the mask).
    * @param on - Mask is the paint target.
@@ -4638,8 +5355,9 @@ class HostSync {
    * @param onCancelDrag - Called before mode switches that need a clean state.
    * @param releaseFocus - Hand keyboard focus back after a panel text field blurs.
    * @param shell - Editor shell (regions + popover host).
+   * @param clipboard - Copy / cut / paste commands (rail buttons).
    */
-  constructor(getSession, onOptionsChanged, onCancelDrag, releaseFocus, shell) {
+  constructor(getSession, onOptionsChanged, onCancelDrag, releaseFocus, shell, clipboard) {
     this.getSession = getSession;
     this.onOptionsChanged = onOptionsChanged;
     this.onCancelDrag = onCancelDrag;
@@ -4660,7 +5378,10 @@ class HostSync {
         // `view.fit()` emits `render` itself (engine/view.ts `onChange`).
         fit: () => this.getSession()?.editor.view.fit(),
         clear: () => this.confirmClear(),
-        fullscreen: () => this.shell.events.emit("fullscreen", void 0)
+        fullscreen: () => this.shell.events.emit("fullscreen", void 0),
+        copy: () => (this.onCancelDrag(), clipboard.copy(false)),
+        cut: () => (this.onCancelDrag(), clipboard.cut()),
+        paste: (request) => (this.onCancelDrag(), void clipboard.pasteFromButton(request))
       },
       shell.popoverHost
     );
@@ -4809,6 +5530,7 @@ class HostSync {
   }
   /** Dispose components that need it. */
   dispose() {
+    this.rail.dispose();
     this.layers.dispose();
     this.outputs.dispose();
   }
@@ -4877,6 +5599,7 @@ function fullscreenKeyPolicy(event) {
   const mod = event.ctrlKey || event.metaKey;
   if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";
   if (mod && !event.altKey) {
+    if (key === "v") return "pass";
     if (BROWSER_MOD_KEYS.has(key) || COMFY_MOD_KEYS.has(key)) return "pass";
     if (event.shiftKey && BROWSER_MOD_SHIFT_KEYS.has(key)) return "pass";
   }
@@ -5667,6 +6390,35 @@ function div(className) {
   element.className = className;
   return element;
 }
+function handleClipboardShortcut(event, actions, cancelDrag) {
+  const ctrl = event.ctrlKey || event.metaKey;
+  if (!ctrl || event.altKey) return false;
+  const key = event.key.toLowerCase();
+  if (key === "v") {
+    if (event.shiftKey && actions.hasInternal) {
+      if (!event.repeat) {
+        cancelDrag();
+        actions.pasteInPlace();
+      }
+      return true;
+    }
+    event.stopPropagation();
+    if (!event.repeat) {
+      cancelDrag();
+      actions.armPaste(event.shiftKey);
+    }
+    return false;
+  }
+  if (key === "c" || key === "x" && !event.shiftKey) {
+    if (!event.repeat) {
+      cancelDrag();
+      if (key === "x") actions.cut();
+      else actions.copy(event.shiftKey);
+    }
+    return true;
+  }
+  return false;
+}
 function handleFloatShortcut(event, editor, effects) {
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
@@ -5725,6 +6477,8 @@ function handleShortcut(event, session, effects) {
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }
+  if (effects.clipboard && handleClipboardShortcut(event, effects.clipboard, () => effects.cancelDrag())) return true;
+  if (ctrl && !event.altKey && key === "v") return false;
   if (handleSelectionShortcut(event, editor, () => effects.cancelDrag())) return true;
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());
@@ -5888,100 +6642,6 @@ function stampAlpha(u, profile) {
   if (u <= profile.core) return 1;
   const t = (u - profile.core) / profile.fade;
   return t >= FADE_CUTOFF ? 0 : Math.pow(10, -t * t);
-}
-const MIN_ZOOM = 0.02;
-const MAX_ZOOM = 64;
-function fitContain(content, viewport, padding = 0) {
-  const vw = finitePositive(viewport.width);
-  const vh = finitePositive(viewport.height);
-  const pad = Math.max(0, Math.min(finitePositive(padding), vw / 2, vh / 2));
-  const availW = vw - pad * 2;
-  const availH = vh - pad * 2;
-  const cw = finitePositive(content.width);
-  const ch = finitePositive(content.height);
-  if (cw === 0 || ch === 0 || availW === 0 || availH === 0) {
-    return { x: vw / 2, y: vh / 2, width: 0, height: 0, scale: 0 };
-  }
-  const scale = Math.min(availW / cw, availH / ch);
-  const width = cw * scale;
-  const height = ch * scale;
-  return { x: (vw - width) / 2, y: (vh - height) / 2, width, height, scale };
-}
-function fitView(frame, stage, padding = 8) {
-  const fit = fitContain(frame, stage, padding);
-  if (fit.scale <= 0) return { scale: 1, offsetX: 0, offsetY: 0 };
-  const scale = clampZoom(fit.scale);
-  return {
-    scale,
-    offsetX: (stage.width - frame.width * scale) / 2,
-    offsetY: (stage.height - frame.height * scale) / 2
-  };
-}
-function clampZoom(scale) {
-  if (!Number.isFinite(scale) || scale <= 0) return 1;
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale));
-}
-function zoomAt(view, newScale, anchor) {
-  const scale = clampZoom(newScale);
-  const ratio = scale / view.scale;
-  return {
-    scale,
-    offsetX: anchor.x - (anchor.x - view.offsetX) * ratio,
-    offsetY: anchor.y - (anchor.y - view.offsetY) * ratio
-  };
-}
-function wheelZoomFactor(deltaPx) {
-  const clamped = Math.max(-300, Math.min(300, deltaPx));
-  return Math.exp(-clamped * 15e-4);
-}
-function panBy(view, dx, dy) {
-  return { scale: view.scale, offsetX: view.offsetX + dx, offsetY: view.offsetY + dy };
-}
-function clampOffset(view, frame, stage) {
-  const sw = finitePositive(stage.width);
-  const sh = finitePositive(stage.height);
-  const fw = finitePositive(frame.width) * view.scale;
-  const fh = finitePositive(frame.height) * view.scale;
-  if (sw === 0 || sh === 0 || fw === 0 || fh === 0) return view;
-  const gripX = Math.min(64, fw);
-  const gripY = Math.min(64, fh);
-  const minOffsetX = gripX - fw;
-  const maxOffsetX = sw - gripX;
-  const minOffsetY = gripY - fh;
-  const maxOffsetY = sh - gripY;
-  return {
-    scale: view.scale,
-    offsetX: Math.min(maxOffsetX, Math.max(minOffsetX, view.offsetX)),
-    offsetY: Math.min(maxOffsetY, Math.max(minOffsetY, view.offsetY))
-  };
-}
-function stageToDoc(view, p) {
-  return { x: (p.x - view.offsetX) / view.scale, y: (p.y - view.offsetY) / view.scale };
-}
-function docRectToStage(view, r) {
-  return {
-    x: r.x * view.scale + view.offsetX,
-    y: r.y * view.scale + view.offsetY,
-    width: r.width * view.scale,
-    height: r.height * view.scale
-  };
-}
-function backingStoreSize(cssSize, devicePixelRatio, displayScale = 1, maxSide = 4096) {
-  const cw = finitePositive(cssSize.width);
-  const ch = finitePositive(cssSize.height);
-  const dpr = finitePositive(devicePixelRatio) || 1;
-  const zoom = finitePositive(displayScale) || 1;
-  let ratio = dpr * zoom;
-  const largest = Math.max(cw, ch) * ratio;
-  if (largest > maxSide) ratio *= maxSide / largest;
-  return {
-    width: Math.max(1, Math.round(cw * ratio)),
-    height: Math.max(1, Math.round(ch * ratio)),
-    ratio
-  };
-}
-function finitePositive(value) {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 const MODIFIER_KEYS = /* @__PURE__ */ new Set(["Shift", "Alt", "Control", "Meta"]);
 class DragModifierWatch {
@@ -7372,12 +8032,15 @@ class EditorHost {
     });
     this.element = this.fullscreen.container;
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
+    this.clipboard = new ClipboardActions(() => this.session, this.stage);
+    this.removeDrop = installDropImport(this.stage, this.clipboard, (text) => this.view.showNote(text));
     this.sync = new HostSync(
       () => this.session,
       () => this.optionsChanged(),
       () => this.input.cancel(),
       () => this.keyboard.reclaimFocus(),
-      this.shell
+      this.shell,
+      this.clipboard
     );
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
@@ -7421,7 +8084,8 @@ class EditorHost {
           if (!this.fullscreen.isOpen) return false;
           this.fullscreen.exit();
           return true;
-        }
+        },
+        clipboard: this.clipboard
       }) : false,
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
       onAltChange: (down) => this.setAlt(down),
@@ -7456,6 +8120,9 @@ class EditorHost {
   keyboard;
   resizeObserver;
   fullscreen;
+  /** Copy / cut / paste (keys, rail, drops). */
+  clipboard;
+  removeDrop;
   restoreState = null;
   session = null;
   unbind = [];
@@ -7545,6 +8212,8 @@ class EditorHost {
     this.setSession(null);
     this.disposed = true;
     this.resizeObserver.disconnect();
+    this.removeDrop();
+    this.clipboard.dispose();
     this.input.dispose();
     this.keyboard.dispose();
     this.sync.dispose();
@@ -7619,42 +8288,6 @@ function chooseForEmpty(status, facts) {
   if (status === "invalid") return "reset";
   if (facts.handoff) return "adopt";
   return facts.hasPaint ? "reset" : "keep";
-}
-const FOLDER_TYPES = /* @__PURE__ */ new Set(["input", "output", "temp"]);
-function parseAnnotatedFilename(value, defaultType = "input") {
-  if (typeof value !== "string") return null;
-  let path = value.trim();
-  if (!path) return null;
-  let type = defaultType;
-  const annotation = /\s*\[([a-z]+)\]$/i.exec(path);
-  if (annotation?.[1] && FOLDER_TYPES.has(annotation[1].toLowerCase())) {
-    type = annotation[1].toLowerCase();
-    path = path.slice(0, annotation.index).trim();
-  }
-  const normalized = path.replace(/\\/g, "/");
-  const slash = normalized.lastIndexOf("/");
-  const filename = slash >= 0 ? normalized.slice(slash + 1) : normalized;
-  if (!filename) return null;
-  const subfolder = slash >= 0 ? normalized.slice(0, slash) : "";
-  return { filename, subfolder, type };
-}
-function firstOutputImage(output) {
-  const images = output?.images;
-  if (!Array.isArray(images)) return null;
-  for (const image of images) {
-    if (image && typeof image.filename === "string" && image.filename) return image;
-  }
-  return null;
-}
-function viewQuery(item) {
-  const params = new URLSearchParams();
-  params.set("filename", item.filename ?? "");
-  params.set("subfolder", item.subfolder ?? "");
-  params.set("type", item.type ?? "output");
-  return params.toString();
-}
-function viewUrl(item, apiURL, cacheBust = "") {
-  return apiURL(`/view?${viewQuery(item)}${cacheBust}`);
 }
 const FILE_WIDGET_NODES = {
   LoadImage: { widget: "image", type: "input" },
@@ -8235,6 +8868,599 @@ function requestGraphSync(node, delayMs) {
 function flushGraphSync() {
   task.flush();
 }
+const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
+  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
+  return {
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
+  };
+}
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
+  const cap = boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
+  };
+  return unionRect(intersectRect(grown, cap), bounds);
+}
+function sceneFor(input, source) {
+  return source === "background" ? { ...input, layers: [] } : input;
+}
+function visibleScene(s) {
+  const layers2 = [];
+  for (const layer of s.doc.layers) {
+    if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
+    layers2.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
+  }
+  return {
+    background: s.background,
+    imageSize: s.imageSize,
+    map: documentMap(s.doc, s.imageSize),
+    bounds: s.store.bounds,
+    layers: layers2
+  };
+}
+function drawDocRegion(ctx, input, rect) {
+  const { map, imageSize: imageSize2, bounds } = input;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize2.width, height: imageSize2.height });
+  const bx = image.x - rect.x;
+  const by = image.y - rect.y;
+  if (input.background.kind === "image") {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(input.background.image, bx, by, image.width, image.height);
+  } else {
+    ctx.fillStyle = input.background.color;
+    ctx.fillRect(bx, by, image.width, image.height);
+  }
+  for (const layer of input.layers) {
+    if (layer.opacity <= 0) continue;
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(layer.source, bounds.x - rect.x, bounds.y - rect.y);
+  }
+  ctx.globalAlpha = 1;
+}
+function readDocRegion(input, rect, scratch2) {
+  const canvas = scratch2 ?? document.createElement("canvas");
+  if (canvas.width !== rect.width) canvas.width = rect.width;
+  if (canvas.height !== rect.height) canvas.height = rect.height;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  drawDocRegion(ctx, input, rect);
+  const data = ctx.getImageData(0, 0, rect.width, rect.height);
+  if (!scratch2) canvas.width = canvas.height = 0;
+  return data;
+}
+function createSurface(width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
+  return { canvas, ctx };
+}
+function releaseSurface(surface) {
+  surface.canvas.width = 0;
+  surface.canvas.height = 0;
+}
+function rebaseSurface(source, from, to) {
+  const next = createSurface(to.width, to.height);
+  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
+  return next;
+}
+function clean$1(n) {
+  return n === 0 ? 0 : n;
+}
+function dragDelta(start, current) {
+  return { x: clean$1(Math.round(current.x - start.x)), y: clean$1(Math.round(current.y - start.y)) };
+}
+function nudgeStep(imagePx, mapScale) {
+  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
+  return Math.max(1, Math.round(imagePx / mapScale));
+}
+function alphaBounds(data, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    let first = -1;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3]) {
+        first = x;
+        break;
+      }
+    }
+    if (first < 0) continue;
+    let last = first;
+    for (let x = width - 1; x > first; x--) {
+      if (data[row + x * 4 + 3]) {
+        last = x;
+        break;
+      }
+    }
+    if (first < minX) minX = first;
+    if (last > maxX) maxX = last;
+    if (minY === height) minY = y;
+    maxY = y;
+  }
+  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function offsetRect(r, dx, dy) {
+  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
+}
+function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
+  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
+  const target = offsetRect(content, dx, dy);
+  const grown = growBounds(bounds, target, frame, limits);
+  const kind = containsRect(grown, target) ? "translate" : "patch";
+  return { kind, bounds: grown, target, region: unionRect(content, target) };
+}
+function translateStep(entry, forward) {
+  const moved = offsetRect(entry.content, entry.dx, entry.dy);
+  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean$1(-entry.dx), dy: clean$1(-entry.dy) };
+}
+function mergeTranslate(entry, dx, dy) {
+  entry.dx = clean$1(entry.dx + dx);
+  entry.dy = clean$1(entry.dy + dy);
+}
+const TRANSLATE_ENTRY_BYTES = 128;
+const contentCache = /* @__PURE__ */ new WeakMap();
+function cacheOf(s) {
+  let cache2 = contentCache.get(s);
+  if (!cache2) {
+    cache2 = /* @__PURE__ */ new Map();
+    contentCache.set(s, cache2);
+  }
+  return cache2;
+}
+function layerContentRect(s, layerId) {
+  const cache2 = cacheOf(s);
+  const revision = s.runtime.revision(layerId);
+  const hit = cache2.get(layerId);
+  if (hit && hit.revision === revision) return { ...hit.rect };
+  let rect = { x: 0, y: 0, width: 0, height: 0 };
+  if (s.runtime.get(layerId)?.hasContent) {
+    const bounds = s.store.bounds;
+    const data = s.store.snapshot(layerId);
+    const local = alphaBounds(data.data, data.width, data.height);
+    if (!isEmptyRect(local)) rect = offsetRect(local, bounds.x, bounds.y);
+  }
+  cache2.set(layerId, { revision, rect });
+  return { ...rect };
+}
+function shiftRegion(s, layerId, from, dx, dy) {
+  const bounds = s.store.bounds;
+  const src = intersectRect(from, bounds);
+  if (isEmptyRect(src)) return;
+  const surface = s.store.ensure(layerId);
+  const lx = src.x - bounds.x;
+  const ly = src.y - bounds.y;
+  const tmp = createSurface(src.width, src.height);
+  tmp.ctx.drawImage(surface.canvas, lx, ly, src.width, src.height, 0, 0, src.width, src.height);
+  const ctx = surface.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(lx, ly, src.width, src.height);
+  ctx.drawImage(tmp.canvas, lx + dx, ly + dy);
+  ctx.restore();
+  releaseSurface(tmp);
+}
+function translateLayerPixels(s, layerId, dx, dy, gesture) {
+  const content = layerContentRect(s, layerId);
+  const plan = planTranslate(s.store.bounds, content, dx, dy, s.doc.frame);
+  if (plan.kind === "none") return false;
+  s.ensureBounds(plan.target, true);
+  const cache2 = cacheOf(s);
+  if (plan.kind === "translate") {
+    shiftRegion(s, layerId, content, dx, dy);
+    const merge = gesture ? s.history.mergeTarget() : void 0;
+    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
+      mergeTranslate(merge, dx, dy);
+      if (merge.dx === 0 && merge.dy === 0) s.history.discardNewest();
+    } else {
+      const entry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
+      if (gesture) entry.gesture = gesture;
+      s.history.push(entry);
+    }
+    s.runtime.touch(layerId);
+    cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
+    return true;
+  }
+  const region = intersectRect(plan.region, s.store.bounds);
+  const before = s.store.read(layerId, region);
+  if (!before) return false;
+  shiftRegion(s, layerId, content, dx, dy);
+  const after = s.store.read(layerId, before.rect);
+  if (after) {
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+  }
+  s.runtime.touch(layerId);
+  cache2.delete(layerId);
+  return true;
+}
+function applyTranslateEntry(s, entry, forward) {
+  if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+  const step = translateStep(entry, forward);
+  s.ensureBounds(step.to, false);
+  shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
+  s.runtime.touch(entry.layerId);
+  cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
+}
+const INSIDE_COVERAGE = 128;
+function liftPixels(src, coverage, cut) {
+  const float = new Uint8ClampedArray(src);
+  const rest = new Uint8ClampedArray(src);
+  const n = Math.min(coverage.length, src.length >> 2);
+  for (let i = 0; i < src.length >> 2; i++) {
+    const c = i < n ? coverage[i] : 0;
+    const p = i * 4 + 3;
+    const a = src[p];
+    float[p] = Math.round(a * c / 255);
+    if (float[p] === 0) {
+      float[p - 3] = 0;
+      float[p - 2] = 0;
+      float[p - 1] = 0;
+    }
+    if (cut) rest[p] = Math.round(a * (255 - c) / 255);
+  }
+  return { float, rest };
+}
+function compositeOver(dst, dstWidth, dstHeight, src, srcWidth, srcHeight, ox, oy, opacity = 1) {
+  const x0 = Math.max(0, ox);
+  const y0 = Math.max(0, oy);
+  const x1 = Math.min(dstWidth, ox + srcWidth);
+  const y1 = Math.min(dstHeight, oy + srcHeight);
+  const k = Math.min(1, Math.max(0, opacity));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const s = ((y - oy) * srcWidth + (x - ox)) * 4;
+      const sa = src[s + 3] / 255 * k;
+      if (sa <= 0) continue;
+      const d = (y * dstWidth + x) * 4;
+      const da = dst[d + 3] / 255;
+      const oa = sa + da * (1 - sa);
+      for (let c = 0; c < 3; c++) {
+        dst[d + c] = Math.round((src[s + c] * sa + dst[d + c] * da * (1 - sa)) / oa);
+      }
+      dst[d + 3] = Math.round(oa * 255);
+    }
+  }
+}
+function copyPixels(dst, dstRect, src, srcRect) {
+  const x0 = Math.max(dstRect.x, srcRect.x);
+  const y0 = Math.max(dstRect.y, srcRect.y);
+  const x1 = Math.min(dstRect.x + dstRect.width, srcRect.x + srcRect.width);
+  const y1 = Math.min(dstRect.y + dstRect.height, srcRect.y + srcRect.height);
+  if (x1 <= x0) return;
+  for (let y = y0; y < y1; y++) {
+    const s = ((y - srcRect.y) * srcRect.width + (x0 - srcRect.x)) * 4;
+    const d = ((y - dstRect.y) * dstRect.width + (x0 - dstRect.x)) * 4;
+    dst.set(src.subarray(s, s + (x1 - x0) * 4), d);
+  }
+}
+function mergeMaskCoverage(upper, upperInvert, lower, lowerInvert) {
+  for (let p = 0; p < lower.length; p += 4) {
+    const u = upper[p + 3];
+    const l = lower[p + 3];
+    const eu = upperInvert ? 255 - u : u;
+    const el2 = lowerInvert ? 255 - l : l;
+    const union = eu > el2 ? eu : el2;
+    lower[p] = 255;
+    lower[p + 1] = 255;
+    lower[p + 2] = 255;
+    lower[p + 3] = lowerInvert ? 255 - union : union;
+  }
+}
+function offsetSelection(sel, dx, dy) {
+  if (dx === 0 && dy === 0) return sel;
+  return { rect: { ...sel.rect, x: sel.rect.x + dx, y: sel.rect.y + dy }, data: sel.data, outside: sel.outside };
+}
+function selectionHit(sel, x, y) {
+  if (!sel || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return coverageAt(sel, Math.floor(x), Math.floor(y)) >= INSIDE_COVERAGE;
+}
+function recordSelectionMove(s, before, after, join) {
+  if (selectionsEqual(before, after)) return;
+  if (join) s.history.joinNext((entry) => entry.kind === "selection");
+  s.history.push({ kind: "selection", before, after, bytes: selectionBytes(before) + selectionBytes(after) });
+  s.events.emit("history", void 0);
+}
+function followSelection(s, dx, dy, gesture, move) {
+  const sel = s.selection.current;
+  if (!sel) return move();
+  let before = sel;
+  let unwrapped = false;
+  const top = gesture ? s.history.mergeTarget() : void 0;
+  if (top?.kind === "group" && top.entries.length === 2) {
+    const [first, last] = top.entries;
+    if (last.kind === "selection" && last.after === sel && hasGesture(first, gesture)) {
+      s.history.discardNewest();
+      s.history.push(first);
+      before = last.before;
+      unwrapped = true;
+    }
+  }
+  const moved = move();
+  const after = moved ? offsetSelection(sel, dx, dy) : sel;
+  s.selection.set(after);
+  if (moved || unwrapped) recordSelectionMove(s, before, after, true);
+  return moved;
+}
+function hasGesture(entry, gesture) {
+  return gesture !== void 0 && "gesture" in entry && entry.gesture === gesture;
+}
+class SelectionMoveOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  start = null;
+  /**
+   * Whether a document point is inside the current selection (coverage >= 50 %).
+   * @param x - Document x.
+   * @param y - Document y.
+   * @returns `true` if inside.
+   */
+  hit(x, y) {
+    return selectionHit(this.s.selection.current, x, y);
+  }
+  /**
+   * Start an outline drag (commits a floating selection first).
+   * @returns `false` without a selection or while busy.
+   */
+  begin() {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    s.settleFloat();
+    if (!s.selection.current) return false;
+    this.start = s.selection.current;
+    return true;
+  }
+  /**
+   * Show the outline at an offset from the drag start.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   */
+  preview(dx, dy) {
+    if (this.start) this.s.selection.set(offsetSelection(this.start, dx, dy));
+  }
+  /**
+   * End the drag: one `selection` history entry (nothing if it did not move).
+   * @returns `true` if the selection moved.
+   */
+  commit() {
+    const start = this.start;
+    this.start = null;
+    if (!start) return false;
+    const after = this.s.selection.current;
+    if (after === start) return false;
+    recordSelectionMove(this.s, start, after, false);
+    return true;
+  }
+  /** Abort the drag: the outline goes back. */
+  cancel() {
+    if (this.start) this.s.selection.set(this.start);
+    this.start = null;
+  }
+}
+const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
+class ClipboardOps {
+  /**
+   * @param s - Shared editor state.
+   * @param layers - Layer commands (undoable insert + solo rule).
+   * @param paintTargetOff - Turns Quick Mask off (`Editor.setPaintTarget("paint")`).
+   */
+  constructor(s, layers2, paintTargetOff) {
+    this.s = s;
+    this.layers = layers2;
+    this.paintTargetOff = paintTargetOff;
+  }
+  s;
+  layers;
+  paintTargetOff;
+  /** Image px per document px (the frame map scale). */
+  get imageScale() {
+    return documentMap(this.s.doc, this.s.imageSize).scale;
+  }
+  /**
+   * Ctrl+C / Ctrl+Shift+C.
+   * @param merged - Copy what is visible (all layers + the image) instead of the current layer.
+   * @returns Pixels, or `null` (note "Nothing to copy." when empty).
+   */
+  copy(merged) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    s.settleFloat();
+    const layer = merged ? void 0 : this.editLayer();
+    const block = layer ? editBlockNote(s, layer) : null;
+    if (block && block !== LOCKED_LAYER_NOTE) {
+      s.events.emit("note", block);
+      return null;
+    }
+    const clip = merged ? this.copyMerged() : this.copyLayer(layer);
+    if (!clip) s.events.emit("note", NOTHING_TO_COPY_NOTE);
+    return clip;
+  }
+  /**
+   * Ctrl+X: copy the current layer's selected pixels (whole content without
+   * a selection) and clear them, as one undo step.
+   * @returns The copied pixels, or `null` if nothing was cut.
+   */
+  cut() {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return null;
+    s.settleFloat();
+    const layer = this.editLayer();
+    if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+    const area = this.layerArea(layer);
+    const clip = area ? this.copyLayer(layer) : null;
+    if (!clip || !area) {
+      s.events.emit("note", NOTHING_TO_COPY_NOTE);
+      return null;
+    }
+    this.clearArea(layer, area);
+    return clip;
+  }
+  /**
+   * Ctrl+V / drop: a new paint layer holding `source`.
+   * @param source - Decoded image (ImageBitmap, canvas, ...).
+   * @param size - Its pixel size.
+   * @param docPerSource - Document px per source px (`1 / imageScale` for image px).
+   * @param at - Centre point or top-left, document coords.
+   * @returns What happened, or `null` (loading / nothing fits).
+   */
+  paste(source, size, docPerSource, at) {
+    const s = this.s;
+    if (s.loading || size.width <= 0 || size.height <= 0) return null;
+    s.settleFloat();
+    if (s.stroke.active) s.cancelStroke();
+    const full = pasteRect(size, docPerSource, at);
+    const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    if (!rect) return null;
+    const resampled = full.width !== size.width || full.height !== size.height;
+    const surface = createSurface(rect.width, rect.height);
+    surface.ctx.imageSmoothingEnabled = resampled;
+    surface.ctx.imageSmoothingQuality = "high";
+    surface.ctx.drawImage(source, full.x - rect.x, full.y - rect.y, full.width, full.height);
+    const data = surface.ctx.getImageData(0, 0, rect.width, rect.height);
+    releaseSurface(surface);
+    const index = s.target === "mask" ? topPaintIndex(s.doc.layers) : paintInsertIndex(s.doc);
+    if (s.target === "mask") this.paintTargetOff();
+    const layer = createPaintLayer(pastedLayerName(s.doc.layers));
+    const id = this.layers.addWithPixels(layer, index, { x: rect.x, y: rect.y, data });
+    if (!id) return null;
+    const sel = s.selection.current;
+    if (sel) {
+      s.selection.set(null);
+      recordSelectionMove(s, sel, null, true);
+    }
+    return { layerId: id, name: layer.name, cropped, resampled };
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
+  editLayer() {
+    const s = this.s;
+    return activeEditLayer(s.doc, s.target, s.currentMaskId);
+  }
+  /** Document area of a layer copy: the selection extent, or the content bbox. */
+  layerArea(layer) {
+    const s = this.s;
+    const sel = s.selection.current;
+    const area = sel ? selectionExtent(sel, s.store.bounds) : layerContentRect(s, layer.id);
+    return isEmptyRect(area) ? null : area;
+  }
+  copyLayer(layer) {
+    const s = this.s;
+    if (!layer) return null;
+    const area = this.layerArea(layer);
+    const read = area ? s.store.read(layer.id, area) : null;
+    if (!read) return null;
+    const sel = s.selection.current;
+    const coverage = sel ? coverageFor(sel, read.rect) : null;
+    const px = read.data.data;
+    const any = layer.kind === "mask" ? maskToGray(px, coverage) : applyCoverage(px, coverage);
+    if (!any) return null;
+    return layer.kind === "mask" ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
+  }
+  copyMerged() {
+    const s = this.s;
+    const map = documentMap(s.doc, s.imageSize);
+    const image = roundOutRect(imageRectToDoc(map, frameRect(s.imageSize)));
+    const sel = s.selection.current;
+    const area = sel ? selectionExtent(sel, unionRect(image, s.store.bounds)) : image;
+    if (isEmptyRect(area)) return null;
+    if (s.target === "mask") return this.copyMergedMasks(area);
+    const data = readDocRegion(visibleScene(s), area);
+    if (!data) return null;
+    if (!applyCoverage(data.data, sel ? coverageFor(sel, area) : null)) return null;
+    return this.trimmed(data, area);
+  }
+  /**
+   * Copy merged with Quick Mask on: the union of the visible masks' effective
+   * coverage (per-mask invert applied, like the MASK output) as opaque
+   * grayscale -- the same format as a single-mask copy -- within the selection.
+   */
+  copyMergedMasks(area) {
+    const s = this.s;
+    const union = new Uint8Array(area.width * area.height);
+    for (const layer of s.doc.layers) {
+      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
+      const read = s.store.read(layer.id, area);
+      unionMaskCoverage(union, area, read?.rect ?? null, read?.data.data ?? new Uint8ClampedArray(0), layer.invert === true);
+    }
+    const data = new ImageData(area.width, area.height);
+    for (let i = 0; i < union.length; i++) data.data[i * 4 + 3] = union[i];
+    const sel = s.selection.current;
+    if (!maskToGray(data.data, sel ? coverageFor(sel, area) : null)) return null;
+    return this.clip(data, area);
+  }
+  /** Crop to the non-transparent bbox. */
+  trimmed(data, rect) {
+    const local = alphaBounds(data.data, data.width, data.height);
+    if (isEmptyRect(local)) return null;
+    if (local.width === data.width && local.height === data.height) return this.clip(data, rect);
+    const out = new ImageData(local.width, local.height);
+    for (let y = 0; y < local.height; y++) {
+      const src = ((local.y + y) * data.width + local.x) * 4;
+      out.data.set(data.data.subarray(src, src + local.width * 4), y * local.width * 4);
+    }
+    return this.clip(out, { x: rect.x + local.x, y: rect.y + local.y, width: local.width, height: local.height });
+  }
+  clip(data, rect) {
+    return { data, rect: { ...rect }, imageScale: this.imageScale };
+  }
+  /** Clear the selected (or all) pixels of `area` on a layer as one patch. */
+  clearArea(layer, area) {
+    const s = this.s;
+    const before = s.store.read(layer.id, area);
+    if (!before) return;
+    const rect = intersectRect(before.rect, area);
+    const sel = s.selection.current;
+    const coverage = sel ? coverageFor(sel, rect) : new Uint8Array(rect.width * rect.height).fill(255);
+    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
+    eraseCoverage(next.data, { x: 0, y: 0, width: rect.width, height: rect.height }, coverage, rect.width);
+    s.store.write(layer.id, rect.x, rect.y, next);
+    const after = s.store.read(layer.id, rect);
+    if (after) {
+      const bytes = before.data.data.byteLength + after.data.data.byteLength;
+      s.history.push({ kind: "patch", layerId: layer.id, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
+    }
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+  }
+}
+function topPaintIndex(layers2) {
+  for (let i = layers2.length - 1; i >= 0; i--) if (isPaintLike(layers2[i])) return i + 1;
+  const firstMask = layers2.findIndex((l) => l.kind === "mask");
+  return firstMask >= 0 ? firstMask : layers2.length;
+}
 class DocIO {
   /**
    * @param s - Shared editor state.
@@ -8329,35 +9555,6 @@ function imageSize(image) {
     width: typeof sized.width === "number" ? sized.width : 0,
     height: typeof sized.height === "number" ? sized.height : 0
   };
-}
-const DEFAULT_GROWTH = { chunk: 256, capFactor: 3, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const width = Math.max(frame.width, Math.min(Math.round(frame.width * limits.capFactor), limits.maxSide));
-  const height = Math.max(frame.height, Math.min(Math.round(frame.height * limits.capFactor), limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
 }
 const DEFAULT_HISTORY_BYTES = 256 * 1024 * 1024;
 class HistoryStack {
@@ -8600,23 +9797,6 @@ class LayerRuntimeTable {
   copyFrom(other) {
     for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
   }
-}
-function createSurface(width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
-  return { canvas, ctx };
-}
-function releaseSurface(surface) {
-  surface.canvas.width = 0;
-  surface.canvas.height = 0;
-}
-function rebaseSurface(source, from, to) {
-  const next = createSurface(to.width, to.height);
-  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
-  return next;
 }
 class LayerStore {
   surfaces = /* @__PURE__ */ new Map();
@@ -9573,6 +10753,10 @@ class ViewState {
   get current() {
     return this.transform;
   }
+  /** Stage CSS size the current transform was computed for. */
+  get stageSize() {
+    return { ...this.stage };
+  }
   /** On-screen CSS pixels per image pixel (includes graph zoom). */
   get screenScale() {
     return this.transform.scale * this.displayScale;
@@ -9745,10 +10929,10 @@ class EditorState {
    * @param source - Origin of its frame size.
    * @param store - Existing pixels (for clones); a blank store is created otherwise.
    */
-  constructor(doc, source, store) {
+  constructor(doc, source, store2) {
     this.doc = cloneDocument(doc);
     this.frameSource = source;
-    this.store = store ?? new LayerStore(doc.bounds);
+    this.store = store2 ?? new LayerStore(doc.bounds);
     for (const layer of doc.layers) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, layer.file !== null);
@@ -10114,7 +11298,7 @@ function snapAngle(from, to, stepDeg = 15) {
   if (length === 0) return { ...to };
   const step = stepDeg * Math.PI / 180;
   const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-  return { x: from.x + clean$1(Math.cos(angle)) * length, y: from.y + clean$1(Math.sin(angle)) * length };
+  return { x: from.x + clean(Math.cos(angle)) * length, y: from.y + clean(Math.sin(angle)) * length };
 }
 function boxFromDrag(start, current, square, fromCenter) {
   let dx = current.x - start.x;
@@ -10218,7 +11402,7 @@ function pointsRect(points) {
 function padRect(r, pad) {
   return { x: r.x - pad, y: r.y - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
 }
-function clean$1(v) {
+function clean(v) {
   return Math.abs(v) < 1e-12 ? 0 : v;
 }
 function renderShape(ctx, shape, origin, colorOverride) {
@@ -10334,150 +11518,6 @@ function applyLayersEntry(s, entry, forward) {
 function emitLayerEvents(s) {
   s.events.emit("layers", void 0);
   s.events.emit("mask", void 0);
-}
-function clean(n) {
-  return n === 0 ? 0 : n;
-}
-function dragDelta(start, current) {
-  return { x: clean(Math.round(current.x - start.x)), y: clean(Math.round(current.y - start.y)) };
-}
-function nudgeStep(imagePx, mapScale) {
-  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
-  return Math.max(1, Math.round(imagePx / mapScale));
-}
-function alphaBounds(data, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width * 4;
-    let first = -1;
-    for (let x = 0; x < width; x++) {
-      if (data[row + x * 4 + 3]) {
-        first = x;
-        break;
-      }
-    }
-    if (first < 0) continue;
-    let last = first;
-    for (let x = width - 1; x > first; x--) {
-      if (data[row + x * 4 + 3]) {
-        last = x;
-        break;
-      }
-    }
-    if (first < minX) minX = first;
-    if (last > maxX) maxX = last;
-    if (minY === height) minY = y;
-    maxY = y;
-  }
-  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function offsetRect(r, dx, dy) {
-  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
-}
-function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
-  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
-  const target = offsetRect(content, dx, dy);
-  const grown = growBounds(bounds, target, frame, limits);
-  const kind = containsRect(grown, target) ? "translate" : "patch";
-  return { kind, bounds: grown, target, region: unionRect(content, target) };
-}
-function translateStep(entry, forward) {
-  const moved = offsetRect(entry.content, entry.dx, entry.dy);
-  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean(-entry.dx), dy: clean(-entry.dy) };
-}
-function mergeTranslate(entry, dx, dy) {
-  entry.dx = clean(entry.dx + dx);
-  entry.dy = clean(entry.dy + dy);
-}
-const TRANSLATE_ENTRY_BYTES = 128;
-const contentCache = /* @__PURE__ */ new WeakMap();
-function cacheOf(s) {
-  let cache2 = contentCache.get(s);
-  if (!cache2) {
-    cache2 = /* @__PURE__ */ new Map();
-    contentCache.set(s, cache2);
-  }
-  return cache2;
-}
-function layerContentRect(s, layerId) {
-  const cache2 = cacheOf(s);
-  const revision = s.runtime.revision(layerId);
-  const hit = cache2.get(layerId);
-  if (hit && hit.revision === revision) return { ...hit.rect };
-  let rect = { x: 0, y: 0, width: 0, height: 0 };
-  if (s.runtime.get(layerId)?.hasContent) {
-    const bounds = s.store.bounds;
-    const data = s.store.snapshot(layerId);
-    const local = alphaBounds(data.data, data.width, data.height);
-    if (!isEmptyRect(local)) rect = offsetRect(local, bounds.x, bounds.y);
-  }
-  cache2.set(layerId, { revision, rect });
-  return { ...rect };
-}
-function shiftRegion(s, layerId, from, dx, dy) {
-  const bounds = s.store.bounds;
-  const src = intersectRect(from, bounds);
-  if (isEmptyRect(src)) return;
-  const surface = s.store.ensure(layerId);
-  const lx = src.x - bounds.x;
-  const ly = src.y - bounds.y;
-  const tmp = createSurface(src.width, src.height);
-  tmp.ctx.drawImage(surface.canvas, lx, ly, src.width, src.height, 0, 0, src.width, src.height);
-  const ctx = surface.ctx;
-  ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(lx, ly, src.width, src.height);
-  ctx.drawImage(tmp.canvas, lx + dx, ly + dy);
-  ctx.restore();
-  releaseSurface(tmp);
-}
-function translateLayerPixels(s, layerId, dx, dy, gesture) {
-  const content = layerContentRect(s, layerId);
-  const plan = planTranslate(s.store.bounds, content, dx, dy, s.doc.frame);
-  if (plan.kind === "none") return false;
-  s.ensureBounds(plan.target, true);
-  const cache2 = cacheOf(s);
-  if (plan.kind === "translate") {
-    shiftRegion(s, layerId, content, dx, dy);
-    const merge = gesture ? s.history.mergeTarget() : void 0;
-    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
-      mergeTranslate(merge, dx, dy);
-      if (merge.dx === 0 && merge.dy === 0) s.history.discardNewest();
-    } else {
-      const entry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
-      if (gesture) entry.gesture = gesture;
-      s.history.push(entry);
-    }
-    s.runtime.touch(layerId);
-    cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
-    return true;
-  }
-  const region = intersectRect(plan.region, s.store.bounds);
-  const before = s.store.read(layerId, region);
-  if (!before) return false;
-  shiftRegion(s, layerId, content, dx, dy);
-  const after = s.store.read(layerId, before.rect);
-  if (after) {
-    const bytes = before.data.data.byteLength + after.data.data.byteLength;
-    s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
-  }
-  s.runtime.touch(layerId);
-  cache2.delete(layerId);
-  return true;
-}
-function applyTranslateEntry(s, entry, forward) {
-  if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
-  const step = translateStep(entry, forward);
-  s.ensureBounds(step.to, false);
-  shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
-  s.runtime.touch(entry.layerId);
-  cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
 }
 class PaintOps {
   /**
@@ -10671,8 +11711,8 @@ class EditorBase {
    * @param store - Existing pixels (for clones); a blank store is created otherwise.
    * @param colors - Colour state to start from (forks copy their source's).
    */
-  constructor(doc, source, store, colors) {
-    this.s = new EditorState(doc, source, store);
+  constructor(doc, source, store2, colors) {
+    this.s = new EditorState(doc, source, store2);
     this.events = this.s.events;
     this.view = this.s.view;
     this.colors = new ColorState(colors?.current);
@@ -10993,6 +12033,20 @@ class LayerOps {
     return layer.id;
   }
   /**
+   * Insert a prepared paint layer WITH pixels (a paste) at `index` and make
+   * it active, as one undoable add (the pixels live in the entry).
+   * @param layer - New layer (fresh id, not yet in the document).
+   * @param index - Position in `doc.layers`.
+   * @param pixels - Its pixels (document coords, inside the bounds cap).
+   * @returns Its id, or `null` while loading.
+   */
+  addWithPixels(layer, index, pixels) {
+    if (!readyCheck(this.s)) return null;
+    insertLayer(this.s, layer, index, pixels);
+    this.soloNew(layer);
+    return layer.id;
+  }
+  /**
    * Add an empty mask ("Mask N", next palette colour) above the current mask
    * and make it the current mask. The active paint layer is unchanged.
    * @returns New mask id, or `null` while loading or at the limit.
@@ -11182,166 +12236,6 @@ class EditorMaskOps {
    */
   setMaskVisible(visible) {
     this.paint.setMaskVisible(visible);
-  }
-}
-const INSIDE_COVERAGE = 128;
-function liftPixels(src, coverage, cut) {
-  const float = new Uint8ClampedArray(src);
-  const rest = new Uint8ClampedArray(src);
-  const n = Math.min(coverage.length, src.length >> 2);
-  for (let i = 0; i < src.length >> 2; i++) {
-    const c = i < n ? coverage[i] : 0;
-    const p = i * 4 + 3;
-    const a = src[p];
-    float[p] = Math.round(a * c / 255);
-    if (float[p] === 0) {
-      float[p - 3] = 0;
-      float[p - 2] = 0;
-      float[p - 1] = 0;
-    }
-    if (cut) rest[p] = Math.round(a * (255 - c) / 255);
-  }
-  return { float, rest };
-}
-function compositeOver(dst, dstWidth, dstHeight, src, srcWidth, srcHeight, ox, oy, opacity = 1) {
-  const x0 = Math.max(0, ox);
-  const y0 = Math.max(0, oy);
-  const x1 = Math.min(dstWidth, ox + srcWidth);
-  const y1 = Math.min(dstHeight, oy + srcHeight);
-  const k = Math.min(1, Math.max(0, opacity));
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const s = ((y - oy) * srcWidth + (x - ox)) * 4;
-      const sa = src[s + 3] / 255 * k;
-      if (sa <= 0) continue;
-      const d = (y * dstWidth + x) * 4;
-      const da = dst[d + 3] / 255;
-      const oa = sa + da * (1 - sa);
-      for (let c = 0; c < 3; c++) {
-        dst[d + c] = Math.round((src[s + c] * sa + dst[d + c] * da * (1 - sa)) / oa);
-      }
-      dst[d + 3] = Math.round(oa * 255);
-    }
-  }
-}
-function copyPixels(dst, dstRect, src, srcRect) {
-  const x0 = Math.max(dstRect.x, srcRect.x);
-  const y0 = Math.max(dstRect.y, srcRect.y);
-  const x1 = Math.min(dstRect.x + dstRect.width, srcRect.x + srcRect.width);
-  const y1 = Math.min(dstRect.y + dstRect.height, srcRect.y + srcRect.height);
-  if (x1 <= x0) return;
-  for (let y = y0; y < y1; y++) {
-    const s = ((y - srcRect.y) * srcRect.width + (x0 - srcRect.x)) * 4;
-    const d = ((y - dstRect.y) * dstRect.width + (x0 - dstRect.x)) * 4;
-    dst.set(src.subarray(s, s + (x1 - x0) * 4), d);
-  }
-}
-function mergeMaskCoverage(upper, upperInvert, lower, lowerInvert) {
-  for (let p = 0; p < lower.length; p += 4) {
-    const u = upper[p + 3];
-    const l = lower[p + 3];
-    const eu = upperInvert ? 255 - u : u;
-    const el2 = lowerInvert ? 255 - l : l;
-    const union = eu > el2 ? eu : el2;
-    lower[p] = 255;
-    lower[p + 1] = 255;
-    lower[p + 2] = 255;
-    lower[p + 3] = lowerInvert ? 255 - union : union;
-  }
-}
-function offsetSelection(sel, dx, dy) {
-  if (dx === 0 && dy === 0) return sel;
-  return { rect: { ...sel.rect, x: sel.rect.x + dx, y: sel.rect.y + dy }, data: sel.data, outside: sel.outside };
-}
-function selectionHit(sel, x, y) {
-  if (!sel || !Number.isFinite(x) || !Number.isFinite(y)) return false;
-  return coverageAt(sel, Math.floor(x), Math.floor(y)) >= INSIDE_COVERAGE;
-}
-function recordSelectionMove(s, before, after, join) {
-  if (selectionsEqual(before, after)) return;
-  if (join) s.history.joinNext((entry) => entry.kind === "selection");
-  s.history.push({ kind: "selection", before, after, bytes: selectionBytes(before) + selectionBytes(after) });
-  s.events.emit("history", void 0);
-}
-function followSelection(s, dx, dy, gesture, move) {
-  const sel = s.selection.current;
-  if (!sel) return move();
-  let before = sel;
-  let unwrapped = false;
-  const top = gesture ? s.history.mergeTarget() : void 0;
-  if (top?.kind === "group" && top.entries.length === 2) {
-    const [first, last] = top.entries;
-    if (last.kind === "selection" && last.after === sel && hasGesture(first, gesture)) {
-      s.history.discardNewest();
-      s.history.push(first);
-      before = last.before;
-      unwrapped = true;
-    }
-  }
-  const moved = move();
-  const after = moved ? offsetSelection(sel, dx, dy) : sel;
-  s.selection.set(after);
-  if (moved || unwrapped) recordSelectionMove(s, before, after, true);
-  return moved;
-}
-function hasGesture(entry, gesture) {
-  return gesture !== void 0 && "gesture" in entry && entry.gesture === gesture;
-}
-class SelectionMoveOps {
-  /**
-   * @param s - Shared editor state.
-   */
-  constructor(s) {
-    this.s = s;
-  }
-  s;
-  start = null;
-  /**
-   * Whether a document point is inside the current selection (coverage >= 50 %).
-   * @param x - Document x.
-   * @param y - Document y.
-   * @returns `true` if inside.
-   */
-  hit(x, y) {
-    return selectionHit(this.s.selection.current, x, y);
-  }
-  /**
-   * Start an outline drag (commits a floating selection first).
-   * @returns `false` without a selection or while busy.
-   */
-  begin() {
-    const s = this.s;
-    if (s.loading || s.stroke.active) return false;
-    s.settleFloat();
-    if (!s.selection.current) return false;
-    this.start = s.selection.current;
-    return true;
-  }
-  /**
-   * Show the outline at an offset from the drag start.
-   * @param dx - Whole document px.
-   * @param dy - Whole document px.
-   */
-  preview(dx, dy) {
-    if (this.start) this.s.selection.set(offsetSelection(this.start, dx, dy));
-  }
-  /**
-   * End the drag: one `selection` history entry (nothing if it did not move).
-   * @returns `true` if the selection moved.
-   */
-  commit() {
-    const start = this.start;
-    this.start = null;
-    if (!start) return false;
-    const after = this.s.selection.current;
-    if (after === start) return false;
-    recordSelectionMove(this.s, start, after, false);
-    return true;
-  }
-  /** Abort the drag: the outline goes back. */
-  cancel() {
-    if (this.start) this.s.selection.set(this.start);
-    this.start = null;
   }
 }
 const EMPTY_FLOAT_NOTE = "No pixels are selected.";
@@ -11781,44 +12675,6 @@ function blockedNote(s, layer) {
   if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
   return null;
 }
-function sceneFor(input, source) {
-  return source === "background" ? { ...input, layers: [] } : input;
-}
-function drawDocRegion(ctx, input, rect) {
-  const { map, imageSize: imageSize2, bounds } = input;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.globalAlpha = 1;
-  ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(0, 0, rect.width, rect.height);
-  const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize2.width, height: imageSize2.height });
-  const bx = image.x - rect.x;
-  const by = image.y - rect.y;
-  if (input.background.kind === "image") {
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(input.background.image, bx, by, image.width, image.height);
-  } else {
-    ctx.fillStyle = input.background.color;
-    ctx.fillRect(bx, by, image.width, image.height);
-  }
-  for (const layer of input.layers) {
-    if (layer.opacity <= 0) continue;
-    ctx.globalAlpha = layer.opacity;
-    ctx.drawImage(layer.source, bounds.x - rect.x, bounds.y - rect.y);
-  }
-  ctx.globalAlpha = 1;
-}
-function readDocRegion(input, rect, scratch2) {
-  const canvas = scratch2 ?? document.createElement("canvas");
-  if (canvas.width !== rect.width) canvas.width = rect.width;
-  if (canvas.height !== rect.height) canvas.height = rect.height;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  drawDocRegion(ctx, input, rect);
-  const data = ctx.getImageData(0, 0, rect.width, rect.height);
-  if (!scratch2) canvas.width = canvas.height = 0;
-  return data;
-}
 const MAX_DEPTH = 64;
 function growUnder(coverage, layer, width, height, bbox, clip) {
   const under = new Uint8Array(width * height);
@@ -12181,20 +13037,9 @@ class PixelOps {
     const size = s.imageSize;
     return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
   }
+  /** "What the user sees": honours solo (view only), like the stage. */
   compositeInput() {
-    const s = this.s;
-    const layers2 = [];
-    for (const layer of s.doc.layers) {
-      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
-      layers2.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
-    }
-    return {
-      background: s.background,
-      imageSize: s.imageSize,
-      map: documentMap(s.doc, s.imageSize),
-      bounds: s.store.bounds,
-      layers: layers2
-    };
+    return visibleScene(this.s);
   }
 }
 function inside(r, x, y) {
@@ -12917,6 +13762,8 @@ class Editor extends EditorBase {
   float;
   /** Outline-only selection drag (selection tools, plain drag inside). */
   selectionMove;
+  /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
+  clipboard;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -12924,8 +13771,8 @@ class Editor extends EditorBase {
    * @param store - Existing pixels (for clones); a blank store is created otherwise.
    * @param colors - Colour state to start from (forks copy their source's).
    */
-  constructor(doc, source, store, colors) {
-    super(doc, source, store, colors);
+  constructor(doc, source, store2, colors) {
+    super(doc, source, store2, colors);
     this.layerOps = new LayerOps(this.s);
     this.pixelOps = new PixelOps(this.s);
     this.placement = new PlacementOps(this.s);
@@ -12936,6 +13783,7 @@ class Editor extends EditorBase {
     this.regionOps = new RegionOps(this.s);
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
+    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"));
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -13160,12 +14008,12 @@ class Editor extends EditorBase {
   fork(docId) {
     const doc = cloneDocument(this.s.doc);
     doc.docId = docId;
-    const store = this.s.store.clone();
+    const store2 = this.s.store.clone();
     for (const layer of doc.layers) {
       const patch = this.float.savedPatch(layer.id);
-      if (patch) store.write(layer.id, patch.x, patch.y, patch.data);
+      if (patch) store2.write(layer.id, patch.x, patch.y, patch.data);
     }
-    const copy = new Editor(doc, this.s.frameSource, store, this.colors);
+    const copy = new Editor(doc, this.s.frameSource, store2, this.colors);
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;
@@ -15666,7 +16514,7 @@ function installPageGuards() {
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
 const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n';
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\r\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\r\n  cursor: var(--cps-tool-cursor, crosshair);\r\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\r\n  pointer-events: none;\r\n}\r\n\r\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\r\n * transform; the canvas shows the glyphs, the textarea only the caret. */\r\n.cps-text-edit {\r\n  position: absolute;\r\n  left: 0;\r\n  top: 0;\r\n  box-sizing: content-box;\r\n  margin: 0;\r\n  padding: 0;\r\n  border: 0;\r\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\r\n  background: transparent;\r\n  color: transparent;\r\n  resize: none;\r\n  overflow: hidden;\r\n  white-space: pre;\r\n  transform-origin: 0 0;\r\n  cursor: text;\r\n  letter-spacing: normal;\r\n  word-spacing: normal;\r\n  text-indent: 0;\r\n  text-transform: none;\r\n  font-kerning: auto;\r\n  touch-action: auto;\r\n}\r\n\r\n.cps-text-edit::selection {\r\n  background: rgba(80, 140, 255, 0.35);\r\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\r\n.cps-rail-clipboard {\r\n  padding-top: 3px;\r\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\r\n}\r\n\r\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\r\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\r\n  cursor: var(--cps-tool-cursor, crosshair);\r\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\r\n  pointer-events: none;\r\n}\r\n\r\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\r\n * transform; the canvas shows the glyphs, the textarea only the caret. */\r\n.cps-text-edit {\r\n  position: absolute;\r\n  left: 0;\r\n  top: 0;\r\n  box-sizing: content-box;\r\n  margin: 0;\r\n  padding: 0;\r\n  border: 0;\r\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\r\n  background: transparent;\r\n  color: transparent;\r\n  resize: none;\r\n  overflow: hidden;\r\n  white-space: pre;\r\n  transform-origin: 0 0;\r\n  cursor: text;\r\n  letter-spacing: normal;\r\n  word-spacing: normal;\r\n  text-indent: 0;\r\n  text-transform: none;\r\n  font-kerning: auto;\r\n  touch-action: auto;\r\n}\r\n\r\n.cps-text-edit::selection {\r\n  background: rgba(80, 140, 255, 0.35);\r\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
  *

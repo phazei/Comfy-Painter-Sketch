@@ -22,6 +22,7 @@
  *   edit commits a float first (`EditorState.settleFloat`)
  * - `mergeDown.ts`  -- Merge Down ({@link Editor.mergeDown})
  * - `selectionFollow.ts` -- outline-only selection drags ({@link Editor.selectionMove})
+ * - `clipboardOps.ts` -- copy / cut / paste pixels ({@link Editor.clipboard})
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -36,6 +37,7 @@ import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
 import { cloneDocument } from "../document/serialize";
 import type { Point, Rect, Size } from "../geometry/rect";
+import { ClipboardOps } from "./clipboardOps";
 import type { ColorState } from "./colors";
 import type { CompositeLayer, FrameBackground, MaskOverlay } from "./compositor";
 import { EditorBase } from "./editorBase";
@@ -89,6 +91,8 @@ export class Editor extends EditorBase {
   readonly float: FloatOps;
   /** Outline-only selection drag (selection tools, plain drag inside). */
   readonly selectionMove: SelectionMoveOps;
+  /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
+  readonly clipboard: ClipboardOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -111,6 +115,7 @@ export class Editor extends EditorBase {
     this.regionOps = new RegionOps(this.s);
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
+    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"));
   }
 
   // ── Read access ─────────────────────────────────────────────────────────

@@ -25,13 +25,11 @@ import { targetLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { isEmptyRect, rectEquals, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
-import type { CompositeLayer } from "./compositor";
-import { readDocRegion, sceneFor } from "./docComposite";
+import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
 import type { DocCompositeInput, SceneSource } from "./docComposite";
 import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { preparePixelEdit } from "./rasterize";
-import { shownOnStage } from "./solo";
 import { floodFill } from "./floodFill";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import { averageColor, blendCoverage, blendCoverageBehind, hexToRgb, rgbToHex } from "./pixelColor";
@@ -231,21 +229,9 @@ export class PixelOps {
     return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
   }
 
+  /** "What the user sees": honours solo (view only), like the stage. */
   private compositeInput(): DocCompositeInput {
-    const s = this.s;
-    const layers: CompositeLayer[] = [];
-    for (const layer of s.doc.layers) {
-      // "What the user sees": honours solo (view only), like the stage.
-      if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
-      layers.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
-    }
-    return {
-      background: s.background,
-      imageSize: s.imageSize,
-      map: documentMap(s.doc, s.imageSize),
-      bounds: s.store.bounds,
-      layers,
-    };
+    return visibleScene(this.s);
   }
 }
 

@@ -29,12 +29,15 @@ describe("fullscreenKeyPolicy", () => {
     expect(fullscreenKeyPolicy(chord("Enter", { ctrlKey: true, shiftKey: true }))).toBe("pass");
   });
 
+  it("passes Ctrl+V so the browser fires paste (the editor stops the keydown itself)", () => {
+    expect(fullscreenKeyPolicy(chord("v", { ctrlKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("V", { ctrlKey: true, shiftKey: true }))).toBe("pass");
+  });
+
   it("swallows graph-editing keys", () => {
     expect(fullscreenKeyPolicy(chord("Delete"))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("Backspace"))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("c", { ctrlKey: true }))).toBe("swallow");
-    expect(fullscreenKeyPolicy(chord("v", { ctrlKey: true }))).toBe("swallow");
-    expect(fullscreenKeyPolicy(chord("V", { ctrlKey: true, shiftKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("a", { ctrlKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("g", { ctrlKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("r"))).toBe("swallow");

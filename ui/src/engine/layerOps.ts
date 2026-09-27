@@ -30,6 +30,7 @@ import {
 import { copyLayerName } from "../document/layerList";
 import { findMaskLayer } from "../document/masks";
 import type { Layer } from "../document/types";
+import type { LayerPixels } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { captureLayerPixels, releaseRemovedLayers } from "./layerHistory";
 import {
@@ -188,6 +189,21 @@ export class LayerOps {
   addLayer(layer: Layer): string | null {
     if (!readyCheck(this.s)) return null;
     insertLayer(this.s, layer, paintInsertIndex(this.s.doc), null);
+    this.soloNew(layer);
+    return layer.id;
+  }
+
+  /**
+   * Insert a prepared paint layer WITH pixels (a paste) at `index` and make
+   * it active, as one undoable add (the pixels live in the entry).
+   * @param layer - New layer (fresh id, not yet in the document).
+   * @param index - Position in `doc.layers`.
+   * @param pixels - Its pixels (document coords, inside the bounds cap).
+   * @returns Its id, or `null` while loading.
+   */
+  addWithPixels(layer: Layer, index: number, pixels: LayerPixels): string | null {
+    if (!readyCheck(this.s)) return null;
+    insertLayer(this.s, layer, index, pixels);
     this.soloNew(layer);
     return layer.id;
   }
