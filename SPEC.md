@@ -273,7 +273,7 @@ interface OutputOptions {                           // per region, and doc-level
 - Mask rows at the top (M8: 1-7; New mask button, inserted above the current
   mask; drag only among masks): eye, color swatch (picker), invert, overlay
   opacity. Clicking a mask row makes it current and turns Quick Mask on;
-  clicking a paint row turns it off. The current mask has a left bar in its colour; each row has a solo button (Alt+click on the eye also solos). Masks found below paint in a loaded document are moved on top (output
+  clicking a paint row turns it off. The current mask has a left bar in its colour; each row (incl. the background) has a solo button. Masks found below paint in a loaded document are moved on top (output
   unchanged: union).
 - New layer goes above the active paint layer, named "Layer N". The last paint
   layer can't be deleted. Painting on a locked layer shows "Layer is locked."
@@ -572,7 +572,7 @@ Purpose: switch masked areas on/off independently and tell them apart by colour.
 - [x] Undo for add/delete/reorder like paint layers; masks are not tied to paint layers
 - [x] No saved-file contract change (Python `combine_mask_layers` already unions N masks)
 - [x] **Current-mask bar** (replaces the `*`): the current mask row has a thick left bar in the mask's own colour, always (Quick Mask on or off); the normal selected-row highlight adds on top when Quick Mask is on
-- [x] **Solo (view only)**: a small solo button on each paint/text/mask row (not the background) and Alt+click on the eye. Up to one solo paint/text layer AND one solo mask at a time (soloing another row in the same group replaces it; clicking the active solo again ends it). While any solo is set the canvas shows only the background + the soloed layer and/or soloed mask (everything else is hidden, both groups; changed 2026-09-26 after testing). A hidden layer can be soloed (shown while soloed). Eyes are never changed; all other rows get dimmed eyes and the soloed row a highlighted eye/solo button. Not saved, not undoable, no effect on outputs; ends if the layer is deleted. Editing (paint, fill, move, text) a layer the solo hides is refused with "The layer is hidden by solo." (after the eye-hidden note, before locked). Soloing never changes the selection (peek). A layer created while any solo is on (new layer, new mask, duplicate, new text layer) takes over its group's solo
+- [x] **Solo (view only)**: a small solo button on each paint/text/mask row and the background (Alt+click on the eye removed 2026-09-27). Up to one solo paint/text layer AND one solo mask at a time (soloing another row in the same group replaces it; clicking the active solo again ends it). While any solo is set the canvas shows only the background + the soloed layer and/or soloed mask (everything else is hidden, both groups; changed 2026-09-26 after testing). A hidden layer can be soloed (shown while soloed). Eyes are never changed; all other rows get dimmed eyes and the soloed row a highlighted eye/solo button. Not saved, not undoable, no effect on outputs; ends if the layer is deleted. Editing (paint, fill, move, text) a layer the solo hides is refused with "The layer is hidden by solo." (after the eye-hidden note, before locked). Soloing never changes the selection (peek). A layer created while any solo is on (new layer, new mask, duplicate, new text layer) takes over its group's solo
 - [x] **Ctrl+click / Move layer (`V`) auto-select with Quick Mask on** picks the topmost visible mask with coverage under the pointer, makes it the current mask and drags it; with Quick Mask off, unchanged (paint/text only)
 
 ### M9 -- Output regions + output options
@@ -678,6 +678,10 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-27: Merge Down button in the layers footer (Move drawing | New layer, New mask, Duplicate, Merge Down, Delete), disabled when not possible. Alt+click eye = solo removed (solo button only). A paint solo keeps the image per its eye (the background has its own eye).
+
+- 2026-09-27: Background row code done (needs browser check): manifest `backgroundVisible` (written only when false); eye not undoable (same as layer eyes); "background" sample mode still samples the image when hidden; background solo = paint-group solo (reserved id); a paint solo keeps the image as its eye says; node preview still shows the input image.
 
 - 2026-09-27: Move drawing clamp (needs browser check): the maximum paint area always covers the image area + 50 image px per side (drag, nudge, wheel scale, fields, Reset, on load / image-size change with metadata write-back, not undoable). Scale max 20 -> 10 (editor + Python). Fallback when impossible: scale 10, centred. Reset = nearest valid placement (not always identity). Undoing Clear may restore an unclamped placement until the next move / size change.
 

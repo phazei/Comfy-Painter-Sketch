@@ -24,6 +24,7 @@ export function stringifyDocument(doc: PainterDocument): string {
     bounds: { x: doc.bounds.x, y: doc.bounds.y, width: doc.bounds.width, height: doc.bounds.height },
     regions: doc.regions.map(cloneRegion),
     ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
+    ...(doc.backgroundVisible === false ? { backgroundVisible: false } : {}),
     // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
     ...(p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {}),
     activeLayerId: doc.activeLayerId,

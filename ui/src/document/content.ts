@@ -6,12 +6,12 @@ import type { PainterDocument } from "./types";
 
 /**
  * Whether M9 metadata carries user work even with no painted pixels/files.
- * Explicit Main options (even default/inactive fields) count.
+ * Explicit Main options (even default/inactive fields) count, and so does a hidden background.
  * @param doc - Document.
  * @returns Whether output metadata must survive persistence and detach.
  */
 export function hasOutputMetadata(doc: PainterDocument): boolean {
-  return doc.regions.length > 0 || doc.mainOutput !== undefined;
+  return doc.regions.length > 0 || doc.mainOutput !== undefined || doc.backgroundVisible === false;
 }
 
 /**
@@ -34,5 +34,6 @@ export function outputMetadataSignature(doc: PainterDocument): string {
   return JSON.stringify({
     regions: [...doc.regions].sort((a, b) => a.slot - b.slot).map(cloneRegion),
     mainOutput: cloneOutputOptions(doc.mainOutput),
+    backgroundVisible: doc.backgroundVisible !== false,
   });
 }

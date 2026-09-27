@@ -96,6 +96,12 @@ export interface PainterDocument {
   regions: Region[];
   /** Missing = none / black / zero padding. */
   mainOutput?: OutputOptions;
+  /**
+   * Background row eye: `false` = the editor shows transparency and outputs use
+   * the `background` widget colour instead of the input image. Missing = visible
+   * (saved only when `false`).
+   */
+  backgroundVisible?: boolean;
   /** Move tool; `undefined` = identity (saved only when non-identity). */
   placement?: Placement;
   activeLayerId: string;

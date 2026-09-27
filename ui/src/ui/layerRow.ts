@@ -2,10 +2,10 @@
  * One row of the layers panel: thumbnail, name (double-click renames inline:
  * Enter commits, Escape cancels, blur commits), visibility eye and lock.
  * Mask rows add a second line with the colour swatch, an invert toggle and
- * the overlay opacity control; the Background row is static (locked, not
- * selectable). Text layers get a "T" badge on the thumbnail. The current mask
+ * the overlay opacity control; the Background row is locked and not
+ * selectable but has an eye and a solo button like the others. Text layers get a "T" badge on the thumbnail. The current mask
  * has a thick left bar in its own colour; paint/text/mask rows have a small
- * solo button (view only; Alt+click on the eye does the same). Rows are
+ * solo button (view only). Rows are
  * reused across updates (keyed by layer id) so a double-click survives the
  * re-render the first click causes.
  */
@@ -50,7 +50,7 @@ export type SoloMark = "on" | "dimmed" | "off";
 export interface RowActions {
   select(id: string): void;
   toggleVisible(id: string): void;
-  /** Solo / un-solo (solo button, or Alt+click on the eye). */
+  /** Solo / un-solo (solo button). */
   toggleSolo(id: string): void;
   toggleLocked(id: string): void;
   rename(id: string, name: string): void;
@@ -109,13 +109,10 @@ export class LayerRow {
     this.nameEl.className = "cps-layer-name";
     main.append(thumbBox, this.nameEl);
 
-    if (kind !== "background") {
-      this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
-      setIcon(this.soloButton, "solo", 11);
-      // Alt+click on the eye solos (Photoshop); it never toggles the eye then.
-      this.eye = button("cps-layer-eye", (event) => (event.altKey ? actions.toggleSolo(id) : actions.toggleVisible(id)));
-      main.append(this.soloButton, this.eye);
-    }
+    this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
+    setIcon(this.soloButton, "solo", 11);
+    this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
+    main.append(this.soloButton, this.eye);
     this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
     main.appendChild(this.lock);
     this.element.appendChild(main);
@@ -175,7 +172,11 @@ export class LayerRow {
       this.soloButton.classList.toggle("cps-active", solo === "on");
       this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
       this.soloButton.title =
-        solo === "on" ? "End solo (view only)" : "Solo: show only this layer in its group (view only; Alt+click the eye)";
+        solo === "on"
+          ? "End solo (view only)"
+          : this.kind === "background"
+            ? "Solo the background: hide all paint layers (view only)"
+            : "Solo: show only this layer in its group (view only)";
     }
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
@@ -188,7 +189,11 @@ export class LayerRow {
       this.eye.classList.toggle("cps-solo-on", solo === "on");
       this.eye.setAttribute("aria-pressed", String(model.visible));
       this.eye.title =
-        this.kind === "mask"
+        this.kind === "background"
+          ? model.visible
+            ? "Hide background (shows transparency; outputs use the background colour instead of the image)"
+            : "Show background (input image)"
+          : this.kind === "mask"
           ? model.visible
             ? "Hide mask (also excludes it from the MASK output)"
             : "Show mask (hidden masks are excluded from the MASK output)"

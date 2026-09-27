@@ -4,7 +4,7 @@
  * the stage; layers are drawn through the document -> image map (decision 4)
  * into the same integer rect Python places them in, so preview and output
  * agree. Order: neutral surround, transparency checker + background inside
- * the image rect, visible paint layers bottom -> top at their opacity (Normal
+ * the image rect (unless the background eye is off), visible paint layers bottom -> top at their opacity (Normal
  * blend, decision 11), visible mask layers as tinted overlays at their display
  * opacity, then a dim veil over paint outside the image and the image outline.
  *
@@ -61,6 +61,8 @@ export interface CompositeInput {
   /** Paint bounds, document coords. */
   bounds: Rect;
   background: FrameBackground;
+  /** Background eye off (and not soloed): only the checker shows under the paint. */
+  backgroundHidden?: boolean;
   /** Visible layers, bottom -> top, each sized to `bounds`. */
   layers: readonly CompositeLayer[];
   /** Visible mask overlays, drawn above every paint layer. */
@@ -111,7 +113,9 @@ export function composite(input: CompositeInput): void {
   ctx.imageSmoothingEnabled = k < 2;
   ctx.imageSmoothingQuality = "high";
 
-  if (input.background.kind === "image") {
+  if (input.backgroundHidden === true) {
+    // Transparency: the checker drawn above stays visible.
+  } else if (input.background.kind === "image") {
     ctx.drawImage(input.background.image, 0, 0, imageSize.width, imageSize.height);
   } else {
     ctx.fillStyle = input.background.color;

@@ -131,6 +131,10 @@ function validate(data: Record<string, unknown>): ParseResult {
   // Dropped field of the unreleased first M9 pass; regions are image px now.
   if (data["regionsReferenceSize"] !== undefined) repaired = true;
 
+  // Background eye: only `false` hides; anything else non-boolean is repaired to visible.
+  const bgVisible = data["backgroundVisible"];
+  if (bgVisible !== undefined && typeof bgVisible !== "boolean") repaired = true;
+
   const placed = readPlacement(data["placement"]);
   if (placed.repaired) repaired = true;
 
@@ -145,6 +149,7 @@ function validate(data: Record<string, unknown>): ParseResult {
       bounds,
       regions: regions.regions,
       ...(data["mainOutput"] !== undefined ? { mainOutput: readOutputOptions(data["mainOutput"]) } : {}),
+      ...(bgVisible === false ? { backgroundVisible: false } : {}),
       ...(placed.placement ? { placement: placed.placement } : {}),
       activeLayerId,
       layers,

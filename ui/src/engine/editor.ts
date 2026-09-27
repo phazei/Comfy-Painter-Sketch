@@ -48,14 +48,14 @@ import { LayerOps } from "./layerOps";
 import type { LayerStore } from "./layerStore";
 import { EditorMaskOps } from "./editorMaskOps";
 import { FloatOps } from "./floatOps";
-import { mergeDown } from "./mergeDown";
+import { canMergeDown, mergeDown } from "./mergeDown";
 import { SelectionMoveOps } from "./selectionFollow";
 import { LayerMoveOps } from "./moveOps";
 import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
 import { SelectionOps } from "./selectionOps";
 import { TextOps } from "./textOps";
-import { toggleSolo } from "./solo";
+import { BACKGROUND_SOLO_ID, toggleSolo } from "./solo";
 import { createSurface } from "./surface";
 import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
@@ -229,6 +229,11 @@ export class Editor extends EditorBase {
     return mergeDown(this.s);
   }
 
+  /** @returns Whether {@link mergeDown} would merge now (footer button state). */
+  canMergeDown(): boolean {
+    return canMergeDown(this.s);
+  }
+
   /** Current paint bounds (document coords). */
   get bounds(): Rect {
     return this.s.store.bounds;
@@ -264,10 +269,10 @@ export class Editor extends EditorBase {
 
   /**
    * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
-   * @param layerId - Layer id (unknown ids are ignored).
+   * @param layerId - Layer id, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
    */
   toggleSolo(layerId: string): void {
-    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" as const } : this.s.doc.layers.find((l) => l.id === layerId);
     if (layer) this.s.settleFloat();
     if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
   }

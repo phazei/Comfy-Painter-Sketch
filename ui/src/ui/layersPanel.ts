@@ -2,7 +2,8 @@
  * Layers panel (M3.3 + M8, SPEC "### Layers"), mounted into the shell's side
  * panel. Top -> bottom: mask rows (colour swatch, invert, overlay opacity),
  * paint layers, and the static Background row. Header: the opacity of the
- * selected row's layer; footer: New layer / New mask / Duplicate / Delete.
+ * selected row's layer; footer: Move drawing | New layer / New mask /
+ * Duplicate / Merge Down / Delete.
  *
  * Selection follows the paint target: clicking a paint row makes it the
  * active layer and turns Quick Mask off; clicking a mask row makes it the
@@ -14,6 +15,7 @@
 
 import type { Editor } from "../engine/editor";
 import { imageRectToDoc } from "../engine/frameMap";
+import { BACKGROUND_SOLO_ID } from "../engine/solo";
 import { maskDisplayColor } from "../document/masks";
 import { isPaintLike, MAX_MASKS } from "../document/layerList";
 import type { Layer } from "../document/types";
@@ -28,8 +30,8 @@ import type { PopoverHost } from "./popover";
 import type { SidePanel } from "./sidePanel";
 import { RefreshThrottle } from "./thumbnails";
 
-/** Id of the Background row. */
-const BACKGROUND_ID = "\u0000background";
+/** Id of the Background row (also its solo id). */
+const BACKGROUND_ID = BACKGROUND_SOLO_ID;
 
 /** What the panel needs from its host. */
 export interface LayersPanelContext {
@@ -59,6 +61,7 @@ export class LayersPanel {
   private readonly addButton: HTMLButtonElement;
   private readonly addMaskButton: HTMLButtonElement;
   private readonly duplicateButton: HTMLButtonElement;
+  private readonly mergeButton: HTMLButtonElement;
   private readonly deleteButton: HTMLButtonElement;
   private readonly moveDrawingButton: HTMLButtonElement;
   private readonly rows = new Map<string, LayerRow>();
@@ -90,11 +93,12 @@ export class LayersPanel {
     this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
     this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
+    this.mergeButton = footerButton("mergeDown", "Merge Down (Ctrl+E)", () => this.withEditor((e) => e.mergeDown()));
     this.deleteButton = footerButton("trash", "Delete layer", () => this.deleteSelected());
     this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
     const footerDivider = document.createElement("div");
     footerDivider.className = "cps-layers-footer-divider";
-    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.deleteButton);
+    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.mergeButton, this.deleteButton);
     this.element.append(header, this.list, footer);
 
     this.maskColor = new MaskColorPicker(ctx.pickColor);
@@ -183,7 +187,8 @@ export class LayersPanel {
         wanted.push(row);
       }
       const bg = this.rowFor("background", BACKGROUND_ID);
-      bg.update({ id: BACKGROUND_ID, name: "Background", visible: true, locked: true, selected: false, standby: false });
+      const bgSolo = editor.solo.paint === BACKGROUND_ID ? "on" : "off";
+      bg.update({ id: BACKGROUND_ID, name: "Background", visible: doc.backgroundVisible !== false, locked: true, selected: false, standby: false, solo: bgSolo });
       wanted.push(bg);
     }
     const keep = new Set(wanted.map((r) => r.id));
@@ -212,6 +217,7 @@ export class LayersPanel {
     this.addMaskButton.disabled = !canAddMask;
     this.addMaskButton.title = !editor || canAddMask ? "New mask (above the current mask)" : `At most ${MAX_MASKS} masks`;
     this.duplicateButton.disabled = !(editor && paintId && editor.layerOps.canDuplicate(paintId));
+    this.mergeButton.disabled = !editor?.canMergeDown();
     const deletable = !!(editor && target && editor.layerOps.canDelete(target.layerId));
     this.deleteButton.disabled = !deletable;
     this.deleteButton.title = !targeting
@@ -293,7 +299,10 @@ export class LayersPanel {
           e.layerOps.setActiveLayer(id);
           e.setPaintTarget("paint");
         }),
-      toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer(e, id)?.visible)),
+      toggleVisible: (id) =>
+        this.withEditor((e) =>
+          id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer(e, id)?.visible),
+        ),
       // View only: no beforeEdit (a stage drag in progress is not an edit conflict).
       toggleSolo: (id) => this.editor?.toggleSolo(id),
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),

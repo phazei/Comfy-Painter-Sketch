@@ -156,6 +156,21 @@ export class LayerOps {
   }
 
   /**
+   * Show or hide the background (Background row eye). Like layer eyes it is
+   * not undoable; hidden = checkerboard in the editor and the `background`
+   * widget colour instead of the input image in the outputs.
+   * @param visible - Visibility.
+   */
+  setBackgroundVisible(visible: boolean): void {
+    const s = this.s;
+    if ((s.doc.backgroundVisible !== false) === visible) return;
+    s.settleFloat();
+    if (visible) delete s.doc.backgroundVisible;
+    else s.doc.backgroundVisible = false;
+    afterMetaChange(s);
+  }
+
+  /**
    * Lock or unlock a layer (painting on a locked layer is refused).
    * @param layerId - Layer id.
    * @param locked - Lock state.

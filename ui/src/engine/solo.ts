@@ -6,6 +6,12 @@
  * undoable, and ignored by every output path (IMAGE/MASK, uploads): only
  * the display compositor and "what the user sees" sampling use
  * {@link shownOnStage}. The pure resolution lives here so it is testable.
+ *
+ * The Background row can be soloed too ({@link BACKGROUND_SOLO_ID}): it is
+ * the paint-group solo (replaces a paint solo), hides every paint/text layer
+ * and shows the image even when its eye is off. It never ends on its own
+ * (the background cannot be deleted). Paint solos keep the image shown as its
+ * eye says ({@link backgroundShown}).
  */
 
 import type { Layer } from "../document/types";
@@ -39,6 +45,19 @@ export function shownOnStage(layer: Pick<Layer, "id" | "kind" | "visible">, solo
   return solo[soloGroup(layer)] === layer.id;
 }
 
+/** Paint-group solo id of the Background row (never a layer id). */
+export const BACKGROUND_SOLO_ID = "\u0000background";
+
+/**
+ * Whether the background (image / fill) is drawn on the stage.
+ * @param visible - The background eye (`doc.backgroundVisible !== false`).
+ * @param solo - Current solos.
+ * @returns `true` if shown.
+ */
+export function backgroundShown(visible: boolean, solo: Readonly<SoloIds>): boolean {
+  return solo.paint === BACKGROUND_SOLO_ID || visible;
+}
+
 /**
  * Solos after toggling a layer: soloing replaces the group's solo, toggling
  * the active solo ends it.
@@ -60,6 +79,7 @@ export function toggleSolo(solo: Readonly<SoloIds>, layer: Pick<Layer, "id" | "k
 export function pruneSolo(solo: Readonly<SoloIds>, layers: readonly Pick<Layer, "id" | "kind">[]): SoloIds {
   const keep = (group: SoloGroup): string | null => {
     const id = solo[group];
+    if (group === "paint" && id === BACKGROUND_SOLO_ID) return id;
     return id !== null && layers.some((l) => l.id === id && soloGroup(l) === group) ? id : null;
   };
   return { paint: keep("paint"), mask: keep("mask") };

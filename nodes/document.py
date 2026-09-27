@@ -15,6 +15,7 @@ Document model (v1, SPEC.md "Document Model" section):
     regions: Region[]                      -- output regions, image px (M9)
     mainOutput?: OutputOptions             -- independent Main post-processing
     placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
+    backgroundVisible?: bool               -- Background row eye (missing = true)
     activeLayerId: str
     layers: Layer[]                        -- bottom -> top; background NOT included
 
@@ -107,6 +108,7 @@ class Document:
     placement: Placement = IDENTITY_PLACEMENT
     regions: list[Region] = field(default_factory=list)
     main_output: OutputOptions = OutputOptions()
+    background_visible: bool = True
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -252,6 +254,8 @@ def parse_document(raw: str) -> Document | None:
     - Missing ``bounds``: fall back to frame-sized bounds at (0, 0).
     - ``placement`` is lenient (:func:`parse_placement`); missing = identity.
     - Regions/options are additive and tolerant; bad records never discard paint.
+    - ``backgroundVisible`` is strict: only JSON ``false`` hides the input
+      image; missing or any non-boolean value means visible.
 
     Args:
         raw: The ``document`` widget value.
@@ -305,10 +309,16 @@ def parse_document(raw: str) -> Document | None:
 
     placement = parse_placement(doc.get("placement"))
 
+    raw_bg = doc.get("backgroundVisible", True)
+    if not isinstance(raw_bg, bool):
+        log.warning("document: \u0027backgroundVisible\u0027 is not a boolean; using visible")
+        raw_bg = True
+
     return Document(
         frame=frame, bounds=bounds, layers=layers, placement=placement,
         regions=parse_regions(doc.get("regions")),
         main_output=parse_output_options(doc.get("mainOutput")),
+        background_visible=raw_bg,
     )
 
 

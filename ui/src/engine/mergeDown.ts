@@ -38,19 +38,13 @@ export const MERGE_NOTHING_NOTE = "Nothing to merge down into.";
  */
 export function mergeDown(s: EditorState): boolean {
   if (!readyCheck(s)) return false;
-  const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!upper) return false;
-  const index = s.doc.layers.indexOf(upper);
-  const lower = s.doc.layers[index - 1];
-  if (!lower || isPaintLike(lower) !== isPaintLike(upper)) {
-    s.events.emit("note", MERGE_NOTHING_NOTE);
+  const plan = mergePlan(s);
+  if (plan === null) return false;
+  if (typeof plan === "string") {
+    s.events.emit("note", plan);
     return false;
   }
-  const note = editBlockNote(s, upper) ?? editBlockNote(s, lower);
-  if (note) {
-    s.events.emit("note", note);
-    return false;
-  }
+  const { upper, lower, index } = plan;
   const depth = s.history.undoDepth;
   if (preparePixelEdit(s, upper) === "blocked" || preparePixelEdit(s, lower) === "blocked") {
     return false;
@@ -69,6 +63,26 @@ export function mergeDown(s: EditorState): boolean {
   emitLayerEvents(s);
   s.afterEdit();
   return true;
+}
+
+/**
+ * Whether Merge Down would merge now (same checks as {@link mergeDown}, no notes).
+ * @param s - Editor state.
+ * @returns `true` if the current row can merge into the row below.
+ */
+export function canMergeDown(s: EditorState): boolean {
+  const plan = mergePlan(s);
+  return plan !== null && typeof plan !== "string";
+}
+
+/** Rows to merge, a refusal note, or `null` (no current row). */
+function mergePlan(s: EditorState): { upper: Layer; lower: Layer; index: number } | string | null {
+  const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!upper) return null;
+  const index = s.doc.layers.indexOf(upper);
+  const lower = s.doc.layers[index - 1];
+  if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;
+  return editBlockNote(s, upper) ?? editBlockNote(s, lower) ?? { upper, lower, index };
 }
 
 /** Draw `upper` into `lower`; returns the patch entry, or `null` if nothing changed. */

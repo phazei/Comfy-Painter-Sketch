@@ -1017,7 +1017,7 @@ function finite(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 function hasOutputMetadata(doc) {
-  return doc.regions.length > 0 || doc.mainOutput !== void 0;
+  return doc.regions.length > 0 || doc.mainOutput !== void 0 || doc.backgroundVisible === false;
 }
 function hasDocumentContent(doc, hasPaint = false) {
   return hasPaint || doc.layers.some((layer) => layer.file !== null) || hasOutputMetadata(doc);
@@ -1025,7 +1025,8 @@ function hasDocumentContent(doc, hasPaint = false) {
 function outputMetadataSignature(doc) {
   return JSON.stringify({
     regions: [...doc.regions].sort((a, b) => a.slot - b.slot).map(cloneRegion),
-    mainOutput: cloneOutputOptions(doc.mainOutput)
+    mainOutput: cloneOutputOptions(doc.mainOutput),
+    backgroundVisible: doc.backgroundVisible !== false
   });
 }
 const PLACEMENT_MIN_SCALE = 0.05;
@@ -1118,6 +1119,8 @@ function validate(data) {
   const regions = readRegions(data["regions"]);
   if (regions.repaired) repaired = true;
   if (data["regionsReferenceSize"] !== void 0) repaired = true;
+  const bgVisible = data["backgroundVisible"];
+  if (bgVisible !== void 0 && typeof bgVisible !== "boolean") repaired = true;
   const placed = readPlacement(data["placement"]);
   if (placed.repaired) repaired = true;
   return {
@@ -1131,6 +1134,7 @@ function validate(data) {
       bounds,
       regions: regions.regions,
       ...data["mainOutput"] !== void 0 ? { mainOutput: readOutputOptions(data["mainOutput"]) } : {},
+      ...bgVisible === false ? { backgroundVisible: false } : {},
       ...placed.placement ? { placement: placed.placement } : {},
       activeLayerId,
       layers: layers2
@@ -1233,6 +1237,7 @@ function stringifyDocument(doc) {
     bounds: { x: doc.bounds.x, y: doc.bounds.y, width: doc.bounds.width, height: doc.bounds.height },
     regions: doc.regions.map(cloneRegion),
     ...doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {},
+    ...doc.backgroundVisible === false ? { backgroundVisible: false } : {},
     // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
     ...p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {},
     activeLayerId: doc.activeLayerId,
@@ -2391,6 +2396,9 @@ const PATHS = {
   // Isometric layer stack: top sheet (diamond) with a 4-way diagonal move
   // arrow, lower sheet shown as an open chevron underneath.
   moveDrawing: "M12 2.5 21.5 8.5 12 14.5 2.5 8.5zM2.5 13.5V15L12 20.5 21.5 15v-1.5M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
+  // Merge Down: one isometric sheet with a large straight-down arrow whose
+  // tip sits at its centre; the sheet's top edges stop short of the arrowhead.
+  mergeDown: "M8 13.6 2.5 16.5 12 21.5 21.5 16.5 16 13.6M12 2.5v12M6.5 10.5 12 16l5.5-5.5",
   // Selection (M): dashed rectangle.
   marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
   // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc
@@ -2575,6 +2583,56 @@ function ensureMaskLayer(doc, style = () => DEFAULT_MASK_STYLE, currentMaskId) {
 function maskDisplayColor(layer) {
   const color = layer.color;
   return typeof color === "string" && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(color) ? color : DEFAULT_MASK_COLOR;
+}
+function soloGroup(layer) {
+  return layer.kind === "mask" ? "mask" : "paint";
+}
+function shownOnStage(layer, solo) {
+  if (solo.paint === null && solo.mask === null) return layer.visible;
+  return solo[soloGroup(layer)] === layer.id;
+}
+const BACKGROUND_SOLO_ID = "\0background";
+function backgroundShown(visible, solo) {
+  return solo.paint === BACKGROUND_SOLO_ID || visible;
+}
+function toggleSolo(solo, layer) {
+  const group2 = soloGroup(layer);
+  return { ...solo, [group2]: solo[group2] === layer.id ? null : layer.id };
+}
+function pruneSolo(solo, layers2) {
+  const keep = (group2) => {
+    const id = solo[group2];
+    if (group2 === "paint" && id === BACKGROUND_SOLO_ID) return id;
+    return id !== null && layers2.some((l) => l.id === id && soloGroup(l) === group2) ? id : null;
+  };
+  return { paint: keep("paint"), mask: keep("mask") };
+}
+class SoloState {
+  /**
+   * @param onChange - Called after the solos changed.
+   */
+  constructor(onChange) {
+    this.onChange = onChange;
+  }
+  onChange;
+  ids = { paint: null, mask: null };
+  /** Current solos (read-only copy). */
+  get current() {
+    return this.ids;
+  }
+  /**
+   * Replace the solos.
+   * @param next - New solos.
+   */
+  set(next) {
+    if (next.paint === this.ids.paint && next.mask === this.ids.mask) return;
+    this.ids = { ...next };
+    this.onChange();
+  }
+  /** End every solo. */
+  clear() {
+    this.set({ paint: null, mask: null });
+  }
 }
 const PROP_KEYS = ["name", "opacity", "color", "invert"];
 function isPaintLike(layer) {
@@ -2901,12 +2959,10 @@ class LayerRow {
     this.nameEl = document.createElement("span");
     this.nameEl.className = "cps-layer-name";
     main.append(thumbBox, this.nameEl);
-    if (kind !== "background") {
-      this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
-      setIcon(this.soloButton, "solo", 11);
-      this.eye = button("cps-layer-eye", (event) => event.altKey ? actions.toggleSolo(id) : actions.toggleVisible(id));
-      main.append(this.soloButton, this.eye);
-    }
+    this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
+    setIcon(this.soloButton, "solo", 11);
+    this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
+    main.append(this.soloButton, this.eye);
     this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
     main.appendChild(this.lock);
     this.element.appendChild(main);
@@ -2976,7 +3032,7 @@ class LayerRow {
     if (this.soloButton) {
       this.soloButton.classList.toggle("cps-active", solo === "on");
       this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
-      this.soloButton.title = solo === "on" ? "End solo (view only)" : "Solo: show only this layer in its group (view only; Alt+click the eye)";
+      this.soloButton.title = solo === "on" ? "End solo (view only)" : this.kind === "background" ? "Solo the background: hide all paint layers (view only)" : "Solo: show only this layer in its group (view only)";
     }
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
@@ -2988,7 +3044,7 @@ class LayerRow {
       this.eye.classList.toggle("cps-solo-dimmed", solo === "dimmed");
       this.eye.classList.toggle("cps-solo-on", solo === "on");
       this.eye.setAttribute("aria-pressed", String(model.visible));
-      this.eye.title = this.kind === "mask" ? model.visible ? "Hide mask (also excludes it from the MASK output)" : "Show mask (hidden masks are excluded from the MASK output)" : model.visible ? "Hide layer" : "Show layer";
+      this.eye.title = this.kind === "background" ? model.visible ? "Hide background (shows transparency; outputs use the background colour instead of the image)" : "Show background (input image)" : this.kind === "mask" ? model.visible ? "Hide mask (also excludes it from the MASK output)" : "Show mask (hidden masks are excluded from the MASK output)" : model.visible ? "Hide layer" : "Show layer";
     }
     if (this.kind !== "background") {
       const icon = model.locked ? "lock" : "unlock";
@@ -3726,51 +3782,6 @@ class MaskColorPicker {
     this.pick(anchor, { initial, title: "Mask colour", onInput: apply, onCommit: apply });
   }
 }
-function soloGroup(layer) {
-  return layer.kind === "mask" ? "mask" : "paint";
-}
-function shownOnStage(layer, solo) {
-  if (solo.paint === null && solo.mask === null) return layer.visible;
-  return solo[soloGroup(layer)] === layer.id;
-}
-function toggleSolo(solo, layer) {
-  const group2 = soloGroup(layer);
-  return { ...solo, [group2]: solo[group2] === layer.id ? null : layer.id };
-}
-function pruneSolo(solo, layers2) {
-  const keep = (group2) => {
-    const id = solo[group2];
-    return id !== null && layers2.some((l) => l.id === id && soloGroup(l) === group2) ? id : null;
-  };
-  return { paint: keep("paint"), mask: keep("mask") };
-}
-class SoloState {
-  /**
-   * @param onChange - Called after the solos changed.
-   */
-  constructor(onChange) {
-    this.onChange = onChange;
-  }
-  onChange;
-  ids = { paint: null, mask: null };
-  /** Current solos (read-only copy). */
-  get current() {
-    return this.ids;
-  }
-  /**
-   * Replace the solos.
-   * @param next - New solos.
-   */
-  set(next) {
-    if (next.paint === this.ids.paint && next.mask === this.ids.mask) return;
-    this.ids = { ...next };
-    this.onChange();
-  }
-  /** End every solo. */
-  clear() {
-    this.set({ paint: null, mask: null });
-  }
-}
 function soloMark(layer, solo) {
   if (solo.paint === null && solo.mask === null) return "off";
   return solo[soloGroup(layer)] === layer.id ? "on" : "dimmed";
@@ -3816,7 +3827,7 @@ function moveDrawingBtn(onClick) {
   button2.addEventListener("click", onClick);
   return button2;
 }
-const BACKGROUND_ID = "\0background";
+const BACKGROUND_ID = BACKGROUND_SOLO_ID;
 class LayersPanel {
   /**
    * @param ctx - Host services.
@@ -3834,11 +3845,12 @@ class LayersPanel {
     this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
     this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => e.layerOps.duplicate()));
+    this.mergeButton = footerButton("mergeDown", "Merge Down (Ctrl+E)", () => this.withEditor((e) => e.mergeDown()));
     this.deleteButton = footerButton("trash", "Delete layer", () => this.deleteSelected());
     this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
     const footerDivider = document.createElement("div");
     footerDivider.className = "cps-layers-footer-divider";
-    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.deleteButton);
+    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.mergeButton, this.deleteButton);
     this.element.append(header, this.list, footer);
     this.maskColor = new MaskColorPicker(ctx.pickColor);
     this.actions = this.rowActions();
@@ -3855,6 +3867,7 @@ class LayersPanel {
   addButton;
   addMaskButton;
   duplicateButton;
+  mergeButton;
   deleteButton;
   moveDrawingButton;
   rows = /* @__PURE__ */ new Map();
@@ -3939,7 +3952,8 @@ class LayersPanel {
         wanted.push(row);
       }
       const bg = this.rowFor("background", BACKGROUND_ID);
-      bg.update({ id: BACKGROUND_ID, name: "Background", visible: true, locked: true, selected: false, standby: false });
+      const bgSolo = editor.solo.paint === BACKGROUND_ID ? "on" : "off";
+      bg.update({ id: BACKGROUND_ID, name: "Background", visible: doc.backgroundVisible !== false, locked: true, selected: false, standby: false, solo: bgSolo });
       wanted.push(bg);
     }
     const keep = new Set(wanted.map((r) => r.id));
@@ -3967,6 +3981,7 @@ class LayersPanel {
     this.addMaskButton.disabled = !canAddMask2;
     this.addMaskButton.title = !editor || canAddMask2 ? "New mask (above the current mask)" : `At most ${MAX_MASKS} masks`;
     this.duplicateButton.disabled = !(editor && paintId && editor.layerOps.canDuplicate(paintId));
+    this.mergeButton.disabled = !editor?.canMergeDown();
     const deletable = !!(editor && target && editor.layerOps.canDelete(target.layerId));
     this.deleteButton.disabled = !deletable;
     this.deleteButton.title = !targeting ? "Delete layer" : deletable ? "Delete mask" : "The last mask can't be deleted (clear it instead)";
@@ -4032,7 +4047,9 @@ class LayersPanel {
         e.layerOps.setActiveLayer(id);
         e.setPaintTarget("paint");
       }),
-      toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer$1(e, id)?.visible)),
+      toggleVisible: (id) => this.withEditor(
+        (e) => id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer$1(e, id)?.visible)
+      ),
       // View only: no beforeEdit (a stage drag in progress is not an edit conflict).
       toggleSolo: (id) => this.editor?.toggleSolo(id),
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer$1(e, id)?.locked)),
@@ -6981,7 +6998,8 @@ function composite(input) {
   ctx.setTransform(k, 0, 0, k, view.offsetX * pr, view.offsetY * pr);
   ctx.imageSmoothingEnabled = k < 2;
   ctx.imageSmoothingQuality = "high";
-  if (input.background.kind === "image") {
+  if (input.backgroundHidden === true) ;
+  else if (input.background.kind === "image") {
     ctx.drawImage(input.background.image, 0, 0, imageSize2.width, imageSize2.height);
   } else {
     ctx.fillStyle = input.background.color;
@@ -7713,6 +7731,7 @@ class StageView {
       map: editor.frameMap,
       bounds: editor.bounds,
       background: editor.background,
+      backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
       masks: editor.maskOverlays()
     });
@@ -8898,7 +8917,7 @@ function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
   return unionRect(intersectRect(grown, cap), bounds);
 }
 function sceneFor(input, source) {
-  return source === "background" ? { ...input, layers: [] } : input;
+  return source === "background" ? { ...input, layers: [], backgroundHidden: false } : input;
 }
 function visibleScene(s) {
   const layers2 = [];
@@ -8908,6 +8927,7 @@ function visibleScene(s) {
   }
   return {
     background: s.background,
+    backgroundHidden: !backgroundShown(s.doc.backgroundVisible !== false, s.solo.current),
     imageSize: s.imageSize,
     map: documentMap(s.doc, s.imageSize),
     bounds: s.store.bounds,
@@ -8923,7 +8943,8 @@ function drawDocRegion(ctx, input, rect) {
   const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize2.width, height: imageSize2.height });
   const bx = image.x - rect.x;
   const by = image.y - rect.y;
-  if (input.background.kind === "image") {
+  if (input.backgroundHidden === true) ;
+  else if (input.background.kind === "image") {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(input.background.image, bx, by, image.width, image.height);
@@ -12089,6 +12110,20 @@ class LayerOps {
     afterMetaChange(s);
   }
   /**
+   * Show or hide the background (Background row eye). Like layer eyes it is
+   * not undoable; hidden = checkerboard in the editor and the `background`
+   * widget colour instead of the input image in the outputs.
+   * @param visible - Visibility.
+   */
+  setBackgroundVisible(visible) {
+    const s = this.s;
+    if (s.doc.backgroundVisible !== false === visible) return;
+    s.settleFloat();
+    if (visible) delete s.doc.backgroundVisible;
+    else s.doc.backgroundVisible = false;
+    afterMetaChange(s);
+  }
+  /**
    * Lock or unlock a layer (painting on a locked layer is refused).
    * @param layerId - Layer id.
    * @param locked - Lock state.
@@ -12572,19 +12607,13 @@ function release(f) {
 const MERGE_NOTHING_NOTE = "Nothing to merge down into.";
 function mergeDown(s) {
   if (!readyCheck(s)) return false;
-  const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!upper) return false;
-  const index = s.doc.layers.indexOf(upper);
-  const lower = s.doc.layers[index - 1];
-  if (!lower || isPaintLike(lower) !== isPaintLike(upper)) {
-    s.events.emit("note", MERGE_NOTHING_NOTE);
+  const plan = mergePlan(s);
+  if (plan === null) return false;
+  if (typeof plan === "string") {
+    s.events.emit("note", plan);
     return false;
   }
-  const note = editBlockNote(s, upper) ?? editBlockNote(s, lower);
-  if (note) {
-    s.events.emit("note", note);
-    return false;
-  }
+  const { upper, lower, index } = plan;
   const depth = s.history.undoDepth;
   if (preparePixelEdit(s, upper) === "blocked" || preparePixelEdit(s, lower) === "blocked") {
     return false;
@@ -12602,6 +12631,18 @@ function mergeDown(s) {
   emitLayerEvents(s);
   s.afterEdit();
   return true;
+}
+function canMergeDown(s) {
+  const plan = mergePlan(s);
+  return plan !== null && typeof plan !== "string";
+}
+function mergePlan(s) {
+  const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!upper) return null;
+  const index = s.doc.layers.indexOf(upper);
+  const lower = s.doc.layers[index - 1];
+  if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;
+  return editBlockNote(s, upper) ?? editBlockNote(s, lower) ?? { upper, lower, index };
 }
 function mergePixels(s, upper, lower) {
   const bounds = s.store.bounds;
@@ -13937,6 +13978,10 @@ class Editor extends EditorBase {
   mergeDown() {
     return mergeDown(this.s);
   }
+  /** @returns Whether {@link mergeDown} would merge now (footer button state). */
+  canMergeDown() {
+    return canMergeDown(this.s);
+  }
   /** Current paint bounds (document coords). */
   get bounds() {
     return this.s.store.bounds;
@@ -13968,10 +14013,10 @@ class Editor extends EditorBase {
   }
   /**
    * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
-   * @param layerId - Layer id (unknown ids are ignored).
+   * @param layerId - Layer id, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
    */
   toggleSolo(layerId) {
-    const layer = this.s.doc.layers.find((l) => l.id === layerId);
+    const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" } : this.s.doc.layers.find((l) => l.id === layerId);
     if (layer) this.s.settleFloat();
     if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
   }

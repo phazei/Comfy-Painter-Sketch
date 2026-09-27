@@ -17,11 +17,13 @@ import type { CompositeLayer, FrameBackground } from "./compositor";
 import type { EditorState } from "./editorState";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import type { FrameMap } from "./frameMap";
-import { shownOnStage } from "./solo";
+import { backgroundShown, shownOnStage } from "./solo";
 
 /** Scene description in document terms. */
 export interface DocCompositeInput {
   background: FrameBackground;
+  /** Background eye off (and not soloed): transparent under the paint. */
+  backgroundHidden?: boolean;
   /** Size of the image the background is drawn at (image px). */
   imageSize: Size;
   /** Document -> image transform. */
@@ -39,18 +41,20 @@ export type SceneSource = "all" | "background";
  * The scene a sampling tool sees: everything visible (`"all"`), or only the
  * background (`"background"`: the input image, or the `width x height`
  * background-colour frame when no image is connected) -- same placement,
- * no paint layers.
+ * no paint layers. `"background"` still reads the image when the background
+ * eye is off: it is an explicit request for the image, not "what you see".
  * @param input - Full scene.
  * @param source - Scene part.
  * @returns Scene to render (`input` itself for `"all"`).
  */
 export function sceneFor(input: DocCompositeInput, source: SceneSource): DocCompositeInput {
-  return source === "background" ? { ...input, layers: [] } : input;
+  return source === "background" ? { ...input, layers: [], backgroundHidden: false } : input;
 }
 
 /**
  * The scene of an editor as shown on the stage: background + visible paint
- * layers at their opacity, honouring solo (view only). Mask tints excluded.
+ * layers at their opacity, honouring solo (view only) and the background eye.
+ * Mask tints excluded.
  * Shared by sampling (bucket, wand, eyedropper) and copy merged.
  * @param s - Editor state.
  * @returns Scene description.
@@ -63,6 +67,7 @@ export function visibleScene(s: EditorState): DocCompositeInput {
   }
   return {
     background: s.background,
+    backgroundHidden: !backgroundShown(s.doc.backgroundVisible !== false, s.solo.current),
     imageSize: s.imageSize,
     map: documentMap(s.doc, s.imageSize),
     bounds: s.store.bounds,
@@ -87,7 +92,9 @@ export function drawDocRegion(ctx: CanvasRenderingContext2D, input: DocComposite
   const image = imageRectToDoc(map, { x: 0, y: 0, width: imageSize.width, height: imageSize.height });
   const bx = image.x - rect.x;
   const by = image.y - rect.y;
-  if (input.background.kind === "image") {
+  if (input.backgroundHidden === true) {
+    // Transparent under the paint.
+  } else if (input.background.kind === "image") {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(input.background.image, bx, by, image.width, image.height);

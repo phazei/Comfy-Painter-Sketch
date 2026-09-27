@@ -69,5 +69,62 @@ class TestExecuteWithoutImage(unittest.TestCase):
         self.assertEqual(float(image.max()), 0.0)
 
 
+
+class TestBackgroundHidden(unittest.TestCase):
+    """``backgroundVisible: false`` swaps the input image for the fill colour."""
+
+    def test_outputs_use_fill_colour_and_keep_batch(self) -> None:
+        manifest = json.loads(_manifest(8, 4))
+        manifest["backgroundVisible"] = False
+        manifest["regions"] = [{
+            "id": "r1", "slot": 1, "name": "", "visible": True,
+            "rect": {"x": 0, "y": 0, "width": 4, "height": 4},
+        }]
+        layer = torch.zeros(4, 8, 4)
+        layer[:, :2, 0] = 1.0
+        layer[:, :2, 3] = 1.0
+        image = torch.full((2, 4, 8, 3), 0.5)
+        with mock.patch.object(painter_sketch, "load_layer_rgba", return_value=layer):
+            out = PainterSketch.execute(
+                image=image, document=json.dumps(manifest), width=8, height=4, background="#000000",
+            )
+        main = out.result[0]
+        self.assertEqual(tuple(main.shape), (2, 4, 8, 3))
+        self.assertTrue(torch.allclose(main[1, 0, 0], torch.tensor([1.0, 0.0, 0.0])))
+        self.assertEqual(float(main[:, :, 2:].max()), 0.0)
+        region = out.result[2].get(1)
+        self.assertIsNotNone(region)
+        self.assertEqual(float(region.image[:, :, 2:].max()), 0.0)
+
+    def test_main_and_off_image_region_never_show_input(self) -> None:
+        manifest = json.loads(_manifest(8, 4))
+        manifest["backgroundVisible"] = False
+        manifest["regions"] = [{
+            "id": "r1", "slot": 1, "name": "", "visible": True,
+            "rect": {"x": 6, "y": -1, "width": 4, "height": 6},
+        }]
+        layer = torch.zeros(4, 8, 4)
+        with mock.patch.object(painter_sketch, "load_layer_rgba", return_value=layer):
+            out = PainterSketch.execute(
+                image=torch.full((1, 4, 8, 3), 0.5), document=json.dumps(manifest),
+                width=8, height=4, background="#336699",
+            )
+        fill = torch.tensor([0x33, 0x66, 0x99]) / 255
+        self.assertTrue(torch.allclose(out.result[0], fill.expand(1, 4, 8, 3)))
+        region = out.result[2].get(1)
+        self.assertIsNotNone(region)
+        self.assertEqual(tuple(region.image.shape), (1, 6, 4, 3))
+        self.assertTrue(torch.allclose(region.image, fill.expand(1, 6, 4, 3)))
+
+    def test_visible_background_keeps_image(self) -> None:
+        layer = torch.zeros(4, 8, 4)
+        with mock.patch.object(painter_sketch, "load_layer_rgba", return_value=layer):
+            out = PainterSketch.execute(
+                image=torch.full((1, 4, 8, 3), 0.5), document=_manifest(8, 4),
+                width=8, height=4, background="#000000",
+            )
+        self.assertTrue(torch.allclose(out.result[0], torch.full((1, 4, 8, 3), 0.5)))
+
+
 if __name__ == "__main__":
     unittest.main()

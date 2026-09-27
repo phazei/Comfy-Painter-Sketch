@@ -100,6 +100,20 @@ def _make_background(w: int, h: int, hex_color: str) -> torch.Tensor:
 
 # ── Node ─────────────────────────────────────────────────────────────────────
 
+def _fill_like(base_rgb: torch.Tensor, hex_color: str) -> torch.Tensor:
+    """``background`` colour broadcast to the shape of ``base_rgb`` ([B, H, W, 3]).
+
+    Args:
+        base_rgb: Base image batch (shape, dtype and device are copied).
+        hex_color: ``background`` widget colour.
+
+    Returns:
+        A new tensor of the same shape filled with the colour.
+    """
+    color = base_rgb.new_tensor(_hex_to_rgb(hex_color))
+    return color.expand(base_rgb.shape).clone()
+
+
 class PainterSketch(io.ComfyNode):
     """PainterSketch: in-node paint editor that outputs IMAGE + MASK.
 
@@ -222,10 +236,13 @@ class PainterSketch(io.ComfyNode):
             layer_tensors = {
                 layer.id: load_layer_rgba(layer, doc.bounds) for layer in doc.layers
             }
-            out_image, out_mask = run_composite(base_rgb, doc, layer_tensors, invert_mask)
+            # Background eye off: outputs use the ``background`` colour instead
+            # of the input image (same size, batch kept; the preview is unchanged).
+            paint_base = base_rgb if doc.background_visible else _fill_like(base_rgb, background)
+            out_image, out_mask = run_composite(paint_base, doc, layer_tensors, invert_mask)
             main_image, main_mask = apply_output_options(out_image, out_mask, doc.main_output)
             render = viewport_renderer(
-                base_rgb, doc, layer_tensors, invert_mask, _hex_to_rgb(background))
+                paint_base, doc, layer_tensors, invert_mask, _hex_to_rgb(background))
             regions = build_regions(out_image, out_mask, doc, render)
 
         return io.NodeOutput(

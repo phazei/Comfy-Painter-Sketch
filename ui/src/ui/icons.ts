@@ -69,6 +69,11 @@ const PATHS: Readonly<Record<string, string>> = {
     "M2.5 13.5V15L12 20.5 21.5 15v-1.5" +
     "M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4" +
     "M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
+  // Merge Down: one isometric sheet with a large straight-down arrow whose
+  // tip sits at its centre; the sheet's top edges stop short of the arrowhead.
+  mergeDown:
+    "M8 13.6 2.5 16.5 12 21.5 21.5 16.5 16 13.6" +
+    "M12 2.5v12M6.5 10.5 12 16l5.5-5.5",
   // Selection (M): dashed rectangle.
   marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
   // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc

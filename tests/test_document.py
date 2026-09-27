@@ -36,6 +36,22 @@ def _make_doc(**overrides) -> str:
     return json.dumps(base)
 
 
+class TestBackgroundVisible(unittest.TestCase):
+    """``backgroundVisible``: only JSON false hides; everything else is visible."""
+
+    def test_missing_is_visible(self):
+        self.assertTrue(parse_document(_make_doc()).background_visible)
+
+    def test_booleans_are_read(self):
+        self.assertFalse(parse_document(_make_doc(backgroundVisible=False)).background_visible)
+        self.assertTrue(parse_document(_make_doc(backgroundVisible=True)).background_visible)
+
+    def test_non_boolean_is_visible(self):
+        for bad in ("false", 0, None, {}, []):
+            with self.subTest(bad=bad):
+                self.assertTrue(parse_document(_make_doc(backgroundVisible=bad)).background_visible)
+
+
 class TestParseDocumentBasic(unittest.TestCase):
     def test_empty_string_returns_none(self):
         self.assertIsNone(parse_document(""))

@@ -8,6 +8,7 @@
 
 import { composite } from "../engine/compositor";
 import { imageToDoc } from "../engine/frameMap";
+import { backgroundShown } from "../engine/solo";
 import { backingStoreSize, stageToDoc } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
 import { REGION_TOOL_ID } from "../tools/region";
@@ -231,6 +232,7 @@ export class StageView {
       map: editor.frameMap,
       bounds: editor.bounds,
       background: editor.background,
+      backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
       masks: editor.maskOverlays(),
     });
