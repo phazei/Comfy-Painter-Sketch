@@ -161,8 +161,8 @@ class ToastLimiter {
   /**
    * @param now - Clock in ms (injectable for tests).
    */
-  constructor(now = () => Date.now()) {
-    this.now = now;
+  constructor(now2 = () => Date.now()) {
+    this.now = now2;
   }
   now;
   /** Key -> time it was last shown. Insertion order = oldest first. */
@@ -922,11 +922,11 @@ function defaultRegionRect(image) {
   return { x, y, width, height };
 }
 function clampEdges(start, end, min, max) {
-  const low = clamp$2(roundRegionEdge(start), min, max - 1);
-  const high = clamp$2(roundRegionEdge(end), low + 1, max);
+  const low = clamp$1(roundRegionEdge(start), min, max - 1);
+  const high = clamp$1(roundRegionEdge(end), low + 1, max);
   return [low, high];
 }
-function clamp$2(value, min, max) {
+function clamp$1(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 function createRegion(id, slot, rect) {
@@ -1594,19 +1594,19 @@ function droppedImageUrl(data) {
   return imageUrlFromDrop(uris, data.getData("text/html"));
 }
 async function fetchImageBlob(url) {
-  let blob;
+  let blob2;
   try {
     const response = await fetch(url, { credentials: "omit" });
     if (!response.ok) {
       log.warn(`Could not fetch the dragged image (HTTP ${response.status}):`, url);
       return { error: "blocked" };
     }
-    blob = await response.blob();
+    blob2 = await response.blob();
   } catch (error) {
     log.warn("Could not fetch the dragged image (CORS or network):", url, error);
     return { error: "blocked" };
   }
-  return blob.type === "" || blob.type.startsWith("image/") || blob.type === "application/octet-stream" ? { blob } : { error: "not-image" };
+  return blob2.type === "" || blob2.type.startsWith("image/") || blob2.type === "application/octet-stream" ? { blob: blob2 } : { error: "not-image" };
 }
 async function readSystemImage() {
   const clipboard = navigator.clipboard;
@@ -1635,9 +1635,9 @@ function clipspaceImageUrl() {
   }
   return null;
 }
-async function decodeBlob(blob) {
+async function decodeBlob(blob2) {
   try {
-    return await createImageBitmap(blob);
+    return await createImageBitmap(blob2);
   } catch (error) {
     log.warn("Could not decode the pasted image:", error);
     return null;
@@ -1760,8 +1760,8 @@ class ClipboardActions {
     const editor = this.getSession()?.editor;
     if (!editor) return;
     const file = Array.from(event.clipboardData?.items ?? []).find((i) => i.kind === "file" && i.type.startsWith("image/"));
-    const blob = file?.getAsFile() ?? null;
-    void (async () => this.pasteFacts(editor, blob ?? (plainText ? await readSystemImage() : null)))();
+    const blob2 = file?.getAsFile() ?? null;
+    void (async () => this.pasteFacts(editor, blob2 ?? (plainText ? await readSystemImage() : null)))();
   }
   /** Ctrl+V order (`pasteChoice.ts`): decode the system image (if any), choose the source, paste. */
   async pasteFacts(editor, systemBlob, emptyNote = NOTHING_TO_PASTE_NOTE) {
@@ -1817,7 +1817,7 @@ function store(clip) {
   const entry = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false };
   internal = entry;
   const png = new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("PNG encoding failed")), "image/png");
+    canvas.toBlob((blob2) => blob2 ? resolve(blob2) : reject(new Error("PNG encoding failed")), "image/png");
   });
   const release2 = () => {
     canvas.width = canvas.height = 0;
@@ -6228,11 +6228,11 @@ class PopoverHost {
       if (placement === "below" && top + h > rootH) top = box.top - GAP - h;
       if (placement === "above" && top < 0) top = box.bottom + GAP;
     }
-    element.style.left = `${Math.round(clamp$1(left, 0, rootW - w))}px`;
-    element.style.top = `${Math.round(clamp$1(top, 0, rootH - h))}px`;
+    element.style.left = `${Math.round(clamp(left, 0, rootW - w))}px`;
+    element.style.top = `${Math.round(clamp(top, 0, rootH - h))}px`;
   }
 }
-function clamp$1(v, lo, hi) {
+function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(Math.max(lo, hi), v));
 }
 const NARROW_EDITOR_WIDTH = 520;
@@ -7091,114 +7091,647 @@ function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
   };
   return unionRect(intersectRect(grown, cap), bounds);
 }
-const COBWEB_TILE = 384;
+const STEP = 1.7;
+const COBWEB_DEFAULTS = {
+  color: [88, 80, 112],
+  drapeColor: [120, 110, 156],
+  genSize: 600,
+  margin: 700,
+  seedSpacing: 7,
+  step: STEP,
+  join: 5.5,
+  branch: 0.052,
+  maxNodes: 7e4,
+  maxTips: 1400,
+  lineWidth: [1.3, 0.5],
+  drape: { maxAngle: 160, length: Math.round(80 / STEP), start: 0.03, ramp: 0.12 },
+  seed: 1,
+  budgetMs: 6,
+  stepsPerFrame: 2,
+  rasterDelayMs: 120,
+  maxBitmapPixels: 16e6,
+  panPad: 0.5
+};
+function mergeCobwebOptions(base, o = {}) {
+  return { ...base, ...o, drape: { ...base.drape, ...o.drape ?? {} } };
+}
+function genExtent(genSize, aspect) {
+  const gw = aspect >= 1 ? genSize : genSize * aspect;
+  return { gw, gh: gw / aspect };
+}
+const COBWEB_BUCKETS = 24;
+const CELL = 8;
+const KEY_OFFSET = 1 << 14;
+const KEY_STRIDE = 1 << 15;
 function mulberry32(seed) {
-  let a = seed >>> 0;
+  let a = seed | 0;
   return () => {
-    a = a + 1831565813 >>> 0;
-    let t = a;
-    t = Math.imul(t ^ t >>> 15, t | 1);
-    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    a = a + 1831565813 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-function cobwebSegments(size = COBWEB_TILE, seed = 1515) {
-  const rnd = mulberry32(seed);
-  const out = [];
-  const slots = [
-    { cx: 0.27, cy: 0.3, r: 0.22 },
-    { cx: 0.72, cy: 0.62, r: 0.24 },
-    { cx: 0.3, cy: 0.8, r: 0.14 }
-  ];
-  for (const s of slots) {
-    const r = size * s.r * (0.85 + rnd() * 0.15);
-    const margin = 2;
-    const cx = clamp(size * s.cx + (rnd() - 0.5) * size * 0.06, r + margin, size - r - margin);
-    const cy = clamp(size * s.cy + (rnd() - 0.5) * size * 0.06, r + margin, size - r - margin);
-    addWeb(out, cx, cy, r, rnd);
-  }
-  return out;
+function wrapAngle(a) {
+  return Math.atan2(Math.sin(a), Math.cos(a));
 }
-function addWeb(out, cx, cy, radius, rnd) {
-  const spokes = 7 + Math.floor(rnd() * 4);
-  const base = rnd() * Math.PI * 2;
-  const angles = [];
-  const lengths = [];
-  for (let i = 0; i < spokes; i++) {
-    angles.push(base + (i + (rnd() - 0.5) * 0.5) / spokes * Math.PI * 2);
-    lengths.push(radius * (0.8 + rnd() * 0.2));
+const now = () => typeof performance !== "undefined" ? performance.now() : Date.now();
+class CobwebCore {
+  /**
+   * @param o - Options.
+   * @param aspect - Rect width / height.
+   */
+  constructor(o, aspect) {
+    this.o = o;
+    this.rand = mulberry32(o.seed);
+    const { gw, gh } = genExtent(o.genSize, aspect);
+    this.gw = gw;
+    this.gh = gh;
+    this.segs = Array.from({ length: COBWEB_BUCKETS }, () => []);
+    this.seedEdges();
   }
-  for (let i = 0; i < spokes; i++) {
-    const a = angles[i];
-    const l = lengths[i];
-    out.push({ x1: cx, y1: cy, x2: cx + Math.cos(a) * l, y2: cy + Math.sin(a) * l, spoke: true });
+  o;
+  /** Rect width / height in gen units. */
+  gw;
+  gh;
+  /** Per brightness bucket: flat `x1, y1, x2, y2` runs. */
+  segs;
+  drapes = [];
+  /** Growth finished. */
+  done = false;
+  rand;
+  nodes = 0;
+  grid = /* @__PURE__ */ new Map();
+  tips = [];
+  tipId = 0;
+  /**
+   * Grow for up to `ms` milliseconds (`Infinity` = to completion).
+   * @param ms - Time budget.
+   * @returns Whether growth has finished.
+   */
+  grow(ms) {
+    const t0 = now();
+    while (this.tips.length && this.nodes < this.o.maxNodes) {
+      this.step();
+      if (now() - t0 >= ms) break;
+    }
+    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    return this.done;
   }
-  const rings = 4 + Math.floor(rnd() * 3);
-  const SUB = 4;
-  for (let k = 1; k <= rings; k++) {
-    const f = k / (rings + 0.4) * (0.95 + rnd() * 0.05);
-    for (let i = 0; i < spokes; i++) {
-      const j = (i + 1) % spokes;
-      const a0 = angles[i];
-      let a1 = angles[j];
-      if (a1 < a0) a1 += Math.PI * 2;
-      const r0 = lengths[i] * f;
-      const r1 = lengths[j] * f;
-      const sag = 0.12 + rnd() * 0.1;
-      let px = cx + Math.cos(a0) * r0;
-      let py = cy + Math.sin(a0) * r0;
-      for (let t = 1; t <= SUB; t++) {
-        const u = t / SUB;
-        const qx = Math.cos(a0) * r0 * (1 - u) + Math.cos(a1) * r1 * u;
-        const qy = Math.sin(a0) * r0 * (1 - u) + Math.sin(a1) * r1 * u;
-        const pull = 1 - sag * 4 * u * (1 - u);
-        const nx = cx + qx * pull;
-        const ny = cy + qy * pull;
-        out.push({ x1: px, y1: py, x2: nx, y2: ny, spoke: false });
-        px = nx;
-        py = ny;
+  /**
+   * Grow a fixed number of steps (rate-limited animated growth).
+   * @param n - Steps to run.
+   * @returns Whether growth has finished.
+   */
+  growSteps(n) {
+    for (let i = 0; i < n && this.tips.length && this.nodes < this.o.maxNodes; i++) {
+      this.step();
+    }
+    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    return this.done;
+  }
+  /**
+   * Distance from the rect (0 on or inside it).
+   * @param x - Gen x.
+   * @param y - Gen y.
+   * @returns Distance in gen units.
+   */
+  dist(x, y) {
+    const dx = Math.max(-x, 0, x - this.gw);
+    const dy = Math.max(-y, 0, y - this.gh);
+    return Math.hypot(dx, dy);
+  }
+  // ── Setup ─────────────────────────────────────────────────────────────────
+  seedEdges() {
+    const R = this.rand;
+    const W2 = this.gw;
+    const H = this.gh;
+    const per = 2 * (W2 + H);
+    const count = Math.round(per / this.o.seedSpacing);
+    for (let i = 0; i < count; i++) {
+      let t = (i + R() * 0.8) / count * per;
+      let x;
+      let y;
+      let a;
+      if (t < W2) {
+        x = t;
+        y = 0;
+        a = -Math.PI / 2;
+      } else if ((t -= W2) < H) {
+        x = W2;
+        y = t;
+        a = 0;
+      } else if ((t -= H) < W2) {
+        x = W2 - t;
+        y = H;
+        a = Math.PI / 2;
+      } else {
+        t -= W2;
+        x = 0;
+        y = H - t;
+        a = Math.PI;
+      }
+      const n = this.addNode(x, y, 0);
+      const angle = a + (R() - 0.5) * 1.2;
+      this.tips.push({ id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] });
+    }
+  }
+  // ── Mesh ──────────────────────────────────────────────────────────────────
+  key(gx, gy) {
+    return (gx + KEY_OFFSET) * KEY_STRIDE + (gy + KEY_OFFSET);
+  }
+  addNode(x, y, owner) {
+    const n = { x, y, owner };
+    this.nodes++;
+    const k = this.key(Math.trunc(x / CELL), Math.trunc(y / CELL));
+    let cell = this.grid.get(k);
+    if (!cell) {
+      cell = [];
+      this.grid.set(k, cell);
+    }
+    cell.push(n);
+    return n;
+  }
+  /** Nearest foreign node within `join` (not the tip's own or its parent's). */
+  near(x, y, tip) {
+    const gx = Math.trunc(x / CELL);
+    const gy = Math.trunc(y / CELL);
+    let best = null;
+    let bd = this.o.join * this.o.join;
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const cell = this.grid.get(this.key(gx + i, gy + j));
+        if (!cell) continue;
+        for (const n of cell) {
+          if (n.owner <= 0 || n.owner === tip.id || n.owner === tip.parent) continue;
+          const d = (n.x - x) ** 2 + (n.y - y) ** 2;
+          if (d < bd) {
+            bd = d;
+            best = n;
+          }
+        }
+      }
+    }
+    return best;
+  }
+  seg(a, b, d) {
+    const i = Math.min(COBWEB_BUCKETS - 1, Math.trunc(d / this.o.margin * COBWEB_BUCKETS));
+    this.segs[i].push(a.x, a.y, b.x, b.y);
+  }
+  // ── Drapes ────────────────────────────────────────────────────────────────
+  drapeWeight(d) {
+    const { start, ramp } = this.o.drape;
+    const M = this.o.margin;
+    return Math.max(0, Math.min(1, (d - M * start) / (M * ramp)));
+  }
+  /** One arm of a fork ended; when both have, maybe drape it. */
+  endSide(f) {
+    if (++f.ends < 2) return;
+    const n = Math.min(f.a.length, f.b.length);
+    if (n < 4) return;
+    const o = f.o;
+    const A = f.a[n - 1];
+    const B = f.b[n - 1];
+    const ang = Math.abs(wrapAngle(Math.atan2(A.y - o.y, A.x - o.x) - Math.atan2(B.y - o.y, B.x - o.x)));
+    if (ang > this.o.drape.maxAngle * Math.PI / 180) return;
+    const w = this.drapeWeight(this.dist(o.x, o.y));
+    const R = this.rand;
+    if (w <= 0 || R() > w) return;
+    const diag = [];
+    for (let i = 0; i < n; i++) diag.push(R() < 0.5);
+    this.drapes.push({ o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag });
+  }
+  kill(t) {
+    for (const f of t.feeds) this.endSide(f.fork);
+    t.feeds = [];
+  }
+  // ── Step ──────────────────────────────────────────────────────────────────
+  step() {
+    const o = this.o;
+    const R = this.rand;
+    const M = o.margin;
+    const cx = this.gw / 2;
+    const cy = this.gh / 2;
+    const next = [];
+    for (const t of this.tips) {
+      const out = Math.atan2(t.y - cy, t.x - cx);
+      t.a += (R() - 0.5) * 0.45 + t.drift + wrapAngle(out - t.a) * 0.015;
+      const x = t.x + Math.cos(t.a) * o.step;
+      const y = t.y + Math.sin(t.a) * o.step;
+      const inside2 = x > 0 && x < this.gw && y > 0 && y < this.gh;
+      if (inside2 || x < -M || y < -M || x > this.gw + M || y > this.gh + M) {
+        this.kill(t);
+        continue;
+      }
+      const d = this.dist(x, y);
+      t.age++;
+      const hit = t.age > 14 ? this.near(x, y, t) : null;
+      if (hit) {
+        this.seg(t.last, hit, d);
+        if (R() < 0.45) {
+          this.kill(t);
+          continue;
+        }
+      }
+      const n = this.addNode(x, y, t.id);
+      this.seg(t.last, n, d);
+      t.x = x;
+      t.y = y;
+      t.last = n;
+      t.feeds = t.feeds.filter((feed) => {
+        const arm = feed.fork[feed.side];
+        arm.push(n);
+        if (arm.length < feed.fork.L) return true;
+        this.endSide(feed.fork);
+        return false;
+      });
+      if (R() < 15e-4 + d / M * 0.012) {
+        this.kill(t);
+        continue;
+      }
+      next.push(t);
+      if (R() < o.branch) this.fork(t, n, d, next);
+    }
+    if (next.length > o.maxTips) {
+      for (let i = next.length - 1; i > 0; i--) {
+        const j = Math.trunc(R() * (i + 1));
+        const tmp = next[i];
+        next[i] = next[j];
+        next[j] = tmp;
+      }
+      for (const t of next.slice(o.maxTips)) this.kill(t);
+      next.length = o.maxTips;
+    }
+    this.tips = next;
+  }
+  fork(t, n, d, next) {
+    const R = this.rand;
+    const s = R() < 0.5 ? -1 : 1;
+    const L = Math.max(4, Math.round(this.o.drape.length * (0.5 + R()) * (1 + 0.8 * this.drapeWeight(d))));
+    const f = { o: n, a: [], b: [], ends: 0, L };
+    t.feeds.push({ fork: f, side: "a" });
+    const a = t.a + s * (0.35 + R() * 0.7);
+    next.push({ id: ++this.tipId, parent: t.id, x: n.x, y: n.y, a, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [{ fork: f, side: "b" }] });
+  }
+}
+function makeCanvas(w, h) {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas2 = new OffscreenCanvas(w, h);
+    const ctx2 = canvas2.getContext("2d");
+    return ctx2 ? { canvas: canvas2, ctx: ctx2 } : null;
+  }
+  if (typeof document === "undefined") return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  return ctx ? { canvas, ctx } : null;
+}
+class CobwebRaster {
+  /**
+   * @param core - Growth state.
+   * @param pair - Target canvas (sized by {@link CobwebRaster.create}).
+   * @param scale - Device px per gen unit.
+   * @param k - Screen units per gen unit.
+   * @param reg - Covered gen region.
+   */
+  constructor(core, pair, scale, k, reg) {
+    this.core = core;
+    this.reg = reg;
+    this.canvas = pair.canvas;
+    this.ctx = pair.ctx;
+    this.px = 1 / k;
+    this.ctx.setTransform(scale, 0, 0, scale, -reg.x0 * scale, -reg.y0 * scale);
+    this.ctx.lineCap = "round";
+  }
+  core;
+  reg;
+  canvas;
+  ctx;
+  /** One screen px in gen units. */
+  px;
+  drawnSegs = new Array(COBWEB_BUCKETS).fill(0);
+  drawnDrapes = 0;
+  /**
+   * New bitmap at zoom `k` and pixel ratio `pr` covering `reg`, with
+   * everything grown so far drawn.
+   * @param core - Growth state.
+   * @param k - Screen units per gen unit.
+   * @param pr - Device px per screen unit.
+   * @param reg - Gen region.
+   * @returns The raster, or `null` without canvas support.
+   */
+  static create(core, k, pr, reg) {
+    let W2 = (reg.x1 - reg.x0) * k * pr;
+    let H = (reg.y1 - reg.y0) * k * pr;
+    const es = Math.min(1, Math.sqrt(core.o.maxBitmapPixels / Math.max(1, W2 * H)));
+    W2 = Math.max(1, Math.ceil(W2 * es));
+    H = Math.max(1, Math.ceil(H * es));
+    const pair = makeCanvas(W2, H);
+    if (!pair) return null;
+    const raster = new CobwebRaster(core, pair, k * pr * es, k, reg);
+    raster.drawNew();
+    return raster;
+  }
+  /** Draw whatever has grown since the last pass. */
+  drawNew() {
+    const core = this.core;
+    const ctx = this.ctx;
+    if (this.drawnDrapes < core.drapes.length) {
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-over";
+      for (let i = this.drawnDrapes; i < core.drapes.length; i++) this.drawDrape(core.drapes[i]);
+      ctx.restore();
+      this.drawnDrapes = core.drapes.length;
+    }
+    const [c0, c1, c2] = core.o.color;
+    const [lw0, lw1] = core.o.lineWidth;
+    for (let b = 0; b < COBWEB_BUCKETS; b++) {
+      const arr = core.segs[b];
+      const from = this.drawnSegs[b];
+      if (from >= arr.length) continue;
+      const p = new Path2D();
+      for (let i = from; i < arr.length; i += 4) {
+        p.moveTo(arr[i], arr[i + 1]);
+        p.lineTo(arr[i + 2], arr[i + 3]);
+      }
+      const t = (b + 0.5) / COBWEB_BUCKETS;
+      ctx.strokeStyle = `rgba(${c0},${c1},${c2},${0.85 * (1 - t) ** 1.4 + 0.06})`;
+      ctx.lineWidth = (lw0 + (lw1 - lw0) * t) * this.px;
+      ctx.stroke(p);
+      this.drawnSegs[b] = arr.length;
+    }
+  }
+  // ── Drapes ────────────────────────────────────────────────────────────────
+  drawDrape(d) {
+    const ctx = this.ctx;
+    const { o, a, b, alpha, sag, diag } = d;
+    const n = a.length;
+    const [r, g, bl] = this.core.o.drapeColor;
+    const col = (x) => `rgba(${r},${g},${bl},${x})`;
+    const A = a[n - 1];
+    const B = b[n - 1];
+    const across = (p, q, k) => {
+      const mx = (p.x + q.x) / 2;
+      const my = (p.y + q.y) / 2;
+      return [mx + (o.x - mx) * k, my + (o.y - my) * k];
+    };
+    const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, Math.hypot(A.x - o.x, A.y - o.y) + 1);
+    grad.addColorStop(0, col(0.42 * alpha));
+    grad.addColorStop(1, col(0.08 * alpha));
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y);
+    for (let i = 0; i < n; i++) ctx.lineTo(a[i].x, a[i].y);
+    const [qx, qy] = across(A, B, sag);
+    ctx.quadraticCurveTo(qx, qy, B.x, B.y);
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(b[i].x, b[i].y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.lineWidth = 0.55 * this.px;
+    for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) {
+      const p = a[i];
+      const q = b[i];
+      const k = sag * (i / n);
+      const [cx, cy] = across(p, q, k);
+      ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.quadraticCurveTo(cx, cy, q.x, q.y);
+      ctx.stroke();
+      if (i + 3 < n && diag[i]) {
+        const q2 = b[i + 3];
+        const [dx, dy] = across(p, q2, k);
+        ctx.strokeStyle = col(alpha * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.quadraticCurveTo(dx, dy, q2.x, q2.y);
+        ctx.stroke();
       }
     }
   }
 }
-function clamp(v, lo, hi) {
-  return Math.min(hi, Math.max(lo, v));
-}
-const COBWEB_STYLE = {
-  spoke: "rgba(210, 210, 210, 0.10)",
-  thread: "rgba(210, 210, 210, 0.07)"
-};
-const patterns = /* @__PURE__ */ new WeakMap();
-let tileCanvas;
-function cobwebPattern(ctx) {
-  const cached = patterns.get(ctx);
-  if (cached) return cached;
-  if (tileCanvas === void 0) tileCanvas = renderTile();
-  if (!tileCanvas) return null;
-  const pattern = ctx.createPattern(tileCanvas, "repeat");
-  if (pattern) patterns.set(ctx, pattern);
-  return pattern;
-}
-function renderTile() {
-  if (typeof document === "undefined") return null;
-  const tile = document.createElement("canvas");
-  tile.width = tile.height = COBWEB_TILE;
-  const t = tile.getContext("2d");
-  if (!t) return null;
-  const segs = cobwebSegments(COBWEB_TILE);
-  t.lineWidth = 1;
-  t.lineCap = "round";
-  for (const spoke of [true, false]) {
-    t.strokeStyle = spoke ? COBWEB_STYLE.spoke : COBWEB_STYLE.thread;
-    t.beginPath();
-    for (const s of segs) {
-      if (s.spoke !== spoke) continue;
-      t.moveTo(s.x1, s.y1);
-      t.lineTo(s.x2, s.y2);
-    }
-    t.stroke();
+const jsContent = '(function() {\n  "use strict";\n  function genExtent(genSize, aspect) {\n    const gw = aspect >= 1 ? genSize : genSize * aspect;\n    return { gw, gh: gw / aspect };\n  }\n  const COBWEB_BUCKETS = 24;\n  const CELL = 8;\n  const KEY_OFFSET = 1 << 14;\n  const KEY_STRIDE = 1 << 15;\n  function mulberry32(seed) {\n    let a = seed | 0;\n    return () => {\n      a = a + 1831565813 | 0;\n      let t = Math.imul(a ^ a >>> 15, 1 | a);\n      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;\n      return ((t ^ t >>> 14) >>> 0) / 4294967296;\n    };\n  }\n  function wrapAngle(a) {\n    return Math.atan2(Math.sin(a), Math.cos(a));\n  }\n  const now = () => typeof performance !== "undefined" ? performance.now() : Date.now();\n  class CobwebCore {\n    /**\n     * @param o - Options.\n     * @param aspect - Rect width / height.\n     */\n    constructor(o, aspect) {\n      this.o = o;\n      this.rand = mulberry32(o.seed);\n      const { gw, gh } = genExtent(o.genSize, aspect);\n      this.gw = gw;\n      this.gh = gh;\n      this.segs = Array.from({ length: COBWEB_BUCKETS }, () => []);\n      this.seedEdges();\n    }\n    o;\n    /** Rect width / height in gen units. */\n    gw;\n    gh;\n    /** Per brightness bucket: flat `x1, y1, x2, y2` runs. */\n    segs;\n    drapes = [];\n    /** Growth finished. */\n    done = false;\n    rand;\n    nodes = 0;\n    grid = /* @__PURE__ */ new Map();\n    tips = [];\n    tipId = 0;\n    /**\n     * Grow for up to `ms` milliseconds (`Infinity` = to completion).\n     * @param ms - Time budget.\n     * @returns Whether growth has finished.\n     */\n    grow(ms) {\n      const t0 = now();\n      while (this.tips.length && this.nodes < this.o.maxNodes) {\n        this.step();\n        if (now() - t0 >= ms) break;\n      }\n      this.done = !(this.tips.length && this.nodes < this.o.maxNodes);\n      return this.done;\n    }\n    /**\n     * Grow a fixed number of steps (rate-limited animated growth).\n     * @param n - Steps to run.\n     * @returns Whether growth has finished.\n     */\n    growSteps(n) {\n      for (let i = 0; i < n && this.tips.length && this.nodes < this.o.maxNodes; i++) {\n        this.step();\n      }\n      this.done = !(this.tips.length && this.nodes < this.o.maxNodes);\n      return this.done;\n    }\n    /**\n     * Distance from the rect (0 on or inside it).\n     * @param x - Gen x.\n     * @param y - Gen y.\n     * @returns Distance in gen units.\n     */\n    dist(x, y) {\n      const dx = Math.max(-x, 0, x - this.gw);\n      const dy = Math.max(-y, 0, y - this.gh);\n      return Math.hypot(dx, dy);\n    }\n    // ── Setup ─────────────────────────────────────────────────────────────────\n    seedEdges() {\n      const R = this.rand;\n      const W = this.gw;\n      const H = this.gh;\n      const per = 2 * (W + H);\n      const count = Math.round(per / this.o.seedSpacing);\n      for (let i = 0; i < count; i++) {\n        let t = (i + R() * 0.8) / count * per;\n        let x;\n        let y;\n        let a;\n        if (t < W) {\n          x = t;\n          y = 0;\n          a = -Math.PI / 2;\n        } else if ((t -= W) < H) {\n          x = W;\n          y = t;\n          a = 0;\n        } else if ((t -= H) < W) {\n          x = W - t;\n          y = H;\n          a = Math.PI / 2;\n        } else {\n          t -= W;\n          x = 0;\n          y = H - t;\n          a = Math.PI;\n        }\n        const n = this.addNode(x, y, 0);\n        const angle = a + (R() - 0.5) * 1.2;\n        this.tips.push({ id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] });\n      }\n    }\n    // ── Mesh ──────────────────────────────────────────────────────────────────\n    key(gx, gy) {\n      return (gx + KEY_OFFSET) * KEY_STRIDE + (gy + KEY_OFFSET);\n    }\n    addNode(x, y, owner) {\n      const n = { x, y, owner };\n      this.nodes++;\n      const k = this.key(Math.trunc(x / CELL), Math.trunc(y / CELL));\n      let cell = this.grid.get(k);\n      if (!cell) {\n        cell = [];\n        this.grid.set(k, cell);\n      }\n      cell.push(n);\n      return n;\n    }\n    /** Nearest foreign node within `join` (not the tip\'s own or its parent\'s). */\n    near(x, y, tip) {\n      const gx = Math.trunc(x / CELL);\n      const gy = Math.trunc(y / CELL);\n      let best = null;\n      let bd = this.o.join * this.o.join;\n      for (let i = -1; i <= 1; i++) {\n        for (let j = -1; j <= 1; j++) {\n          const cell = this.grid.get(this.key(gx + i, gy + j));\n          if (!cell) continue;\n          for (const n of cell) {\n            if (n.owner <= 0 || n.owner === tip.id || n.owner === tip.parent) continue;\n            const d = (n.x - x) ** 2 + (n.y - y) ** 2;\n            if (d < bd) {\n              bd = d;\n              best = n;\n            }\n          }\n        }\n      }\n      return best;\n    }\n    seg(a, b, d) {\n      const i = Math.min(COBWEB_BUCKETS - 1, Math.trunc(d / this.o.margin * COBWEB_BUCKETS));\n      this.segs[i].push(a.x, a.y, b.x, b.y);\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    drapeWeight(d) {\n      const { start, ramp } = this.o.drape;\n      const M = this.o.margin;\n      return Math.max(0, Math.min(1, (d - M * start) / (M * ramp)));\n    }\n    /** One arm of a fork ended; when both have, maybe drape it. */\n    endSide(f) {\n      if (++f.ends < 2) return;\n      const n = Math.min(f.a.length, f.b.length);\n      if (n < 4) return;\n      const o = f.o;\n      const A = f.a[n - 1];\n      const B = f.b[n - 1];\n      const ang = Math.abs(wrapAngle(Math.atan2(A.y - o.y, A.x - o.x) - Math.atan2(B.y - o.y, B.x - o.x)));\n      if (ang > this.o.drape.maxAngle * Math.PI / 180) return;\n      const w = this.drapeWeight(this.dist(o.x, o.y));\n      const R = this.rand;\n      if (w <= 0 || R() > w) return;\n      const diag = [];\n      for (let i = 0; i < n; i++) diag.push(R() < 0.5);\n      this.drapes.push({ o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag });\n    }\n    kill(t) {\n      for (const f of t.feeds) this.endSide(f.fork);\n      t.feeds = [];\n    }\n    // ── Step ──────────────────────────────────────────────────────────────────\n    step() {\n      const o = this.o;\n      const R = this.rand;\n      const M = o.margin;\n      const cx = this.gw / 2;\n      const cy = this.gh / 2;\n      const next = [];\n      for (const t of this.tips) {\n        const out = Math.atan2(t.y - cy, t.x - cx);\n        t.a += (R() - 0.5) * 0.45 + t.drift + wrapAngle(out - t.a) * 0.015;\n        const x = t.x + Math.cos(t.a) * o.step;\n        const y = t.y + Math.sin(t.a) * o.step;\n        const inside = x > 0 && x < this.gw && y > 0 && y < this.gh;\n        if (inside || x < -M || y < -M || x > this.gw + M || y > this.gh + M) {\n          this.kill(t);\n          continue;\n        }\n        const d = this.dist(x, y);\n        t.age++;\n        const hit = t.age > 14 ? this.near(x, y, t) : null;\n        if (hit) {\n          this.seg(t.last, hit, d);\n          if (R() < 0.45) {\n            this.kill(t);\n            continue;\n          }\n        }\n        const n = this.addNode(x, y, t.id);\n        this.seg(t.last, n, d);\n        t.x = x;\n        t.y = y;\n        t.last = n;\n        t.feeds = t.feeds.filter((feed) => {\n          const arm = feed.fork[feed.side];\n          arm.push(n);\n          if (arm.length < feed.fork.L) return true;\n          this.endSide(feed.fork);\n          return false;\n        });\n        if (R() < 15e-4 + d / M * 0.012) {\n          this.kill(t);\n          continue;\n        }\n        next.push(t);\n        if (R() < o.branch) this.fork(t, n, d, next);\n      }\n      if (next.length > o.maxTips) {\n        for (let i = next.length - 1; i > 0; i--) {\n          const j = Math.trunc(R() * (i + 1));\n          const tmp = next[i];\n          next[i] = next[j];\n          next[j] = tmp;\n        }\n        for (const t of next.slice(o.maxTips)) this.kill(t);\n        next.length = o.maxTips;\n      }\n      this.tips = next;\n    }\n    fork(t, n, d, next) {\n      const R = this.rand;\n      const s = R() < 0.5 ? -1 : 1;\n      const L = Math.max(4, Math.round(this.o.drape.length * (0.5 + R()) * (1 + 0.8 * this.drapeWeight(d))));\n      const f = { o: n, a: [], b: [], ends: 0, L };\n      t.feeds.push({ fork: f, side: "a" });\n      const a = t.a + s * (0.35 + R() * 0.7);\n      next.push({ id: ++this.tipId, parent: t.id, x: n.x, y: n.y, a, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [{ fork: f, side: "b" }] });\n    }\n  }\n  function makeCanvas(w, h) {\n    if (typeof OffscreenCanvas !== "undefined") {\n      const canvas2 = new OffscreenCanvas(w, h);\n      const ctx2 = canvas2.getContext("2d");\n      return ctx2 ? { canvas: canvas2, ctx: ctx2 } : null;\n    }\n    if (typeof document === "undefined") return null;\n    const canvas = document.createElement("canvas");\n    canvas.width = w;\n    canvas.height = h;\n    const ctx = canvas.getContext("2d");\n    return ctx ? { canvas, ctx } : null;\n  }\n  class CobwebRaster {\n    /**\n     * @param core - Growth state.\n     * @param pair - Target canvas (sized by {@link CobwebRaster.create}).\n     * @param scale - Device px per gen unit.\n     * @param k - Screen units per gen unit.\n     * @param reg - Covered gen region.\n     */\n    constructor(core2, pair, scale, k, reg) {\n      this.core = core2;\n      this.reg = reg;\n      this.canvas = pair.canvas;\n      this.ctx = pair.ctx;\n      this.px = 1 / k;\n      this.ctx.setTransform(scale, 0, 0, scale, -reg.x0 * scale, -reg.y0 * scale);\n      this.ctx.lineCap = "round";\n    }\n    core;\n    reg;\n    canvas;\n    ctx;\n    /** One screen px in gen units. */\n    px;\n    drawnSegs = new Array(COBWEB_BUCKETS).fill(0);\n    drawnDrapes = 0;\n    /**\n     * New bitmap at zoom `k` and pixel ratio `pr` covering `reg`, with\n     * everything grown so far drawn.\n     * @param core - Growth state.\n     * @param k - Screen units per gen unit.\n     * @param pr - Device px per screen unit.\n     * @param reg - Gen region.\n     * @returns The raster, or `null` without canvas support.\n     */\n    static create(core2, k, pr, reg) {\n      let W = (reg.x1 - reg.x0) * k * pr;\n      let H = (reg.y1 - reg.y0) * k * pr;\n      const es = Math.min(1, Math.sqrt(core2.o.maxBitmapPixels / Math.max(1, W * H)));\n      W = Math.max(1, Math.ceil(W * es));\n      H = Math.max(1, Math.ceil(H * es));\n      const pair = makeCanvas(W, H);\n      if (!pair) return null;\n      const raster2 = new CobwebRaster(core2, pair, k * pr * es, k, reg);\n      raster2.drawNew();\n      return raster2;\n    }\n    /** Draw whatever has grown since the last pass. */\n    drawNew() {\n      const core2 = this.core;\n      const ctx = this.ctx;\n      if (this.drawnDrapes < core2.drapes.length) {\n        ctx.save();\n        ctx.globalCompositeOperation = "destination-over";\n        for (let i = this.drawnDrapes; i < core2.drapes.length; i++) this.drawDrape(core2.drapes[i]);\n        ctx.restore();\n        this.drawnDrapes = core2.drapes.length;\n      }\n      const [c0, c1, c2] = core2.o.color;\n      const [lw0, lw1] = core2.o.lineWidth;\n      for (let b = 0; b < COBWEB_BUCKETS; b++) {\n        const arr = core2.segs[b];\n        const from = this.drawnSegs[b];\n        if (from >= arr.length) continue;\n        const p = new Path2D();\n        for (let i = from; i < arr.length; i += 4) {\n          p.moveTo(arr[i], arr[i + 1]);\n          p.lineTo(arr[i + 2], arr[i + 3]);\n        }\n        const t = (b + 0.5) / COBWEB_BUCKETS;\n        ctx.strokeStyle = `rgba(${c0},${c1},${c2},${0.85 * (1 - t) ** 1.4 + 0.06})`;\n        ctx.lineWidth = (lw0 + (lw1 - lw0) * t) * this.px;\n        ctx.stroke(p);\n        this.drawnSegs[b] = arr.length;\n      }\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    drawDrape(d) {\n      const ctx = this.ctx;\n      const { o, a, b, alpha, sag, diag } = d;\n      const n = a.length;\n      const [r, g, bl] = this.core.o.drapeColor;\n      const col = (x) => `rgba(${r},${g},${bl},${x})`;\n      const A = a[n - 1];\n      const B = b[n - 1];\n      const across = (p, q, k) => {\n        const mx = (p.x + q.x) / 2;\n        const my = (p.y + q.y) / 2;\n        return [mx + (o.x - mx) * k, my + (o.y - my) * k];\n      };\n      const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, Math.hypot(A.x - o.x, A.y - o.y) + 1);\n      grad.addColorStop(0, col(0.42 * alpha));\n      grad.addColorStop(1, col(0.08 * alpha));\n      ctx.fillStyle = grad;\n      ctx.beginPath();\n      ctx.moveTo(o.x, o.y);\n      for (let i = 0; i < n; i++) ctx.lineTo(a[i].x, a[i].y);\n      const [qx, qy] = across(A, B, sag);\n      ctx.quadraticCurveTo(qx, qy, B.x, B.y);\n      for (let i = n - 1; i >= 0; i--) ctx.lineTo(b[i].x, b[i].y);\n      ctx.closePath();\n      ctx.fill();\n      ctx.lineWidth = 0.55 * this.px;\n      for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) {\n        const p = a[i];\n        const q = b[i];\n        const k = sag * (i / n);\n        const [cx, cy] = across(p, q, k);\n        ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));\n        ctx.beginPath();\n        ctx.moveTo(p.x, p.y);\n        ctx.quadraticCurveTo(cx, cy, q.x, q.y);\n        ctx.stroke();\n        if (i + 3 < n && diag[i]) {\n          const q2 = b[i + 3];\n          const [dx, dy] = across(p, q2, k);\n          ctx.strokeStyle = col(alpha * 0.5);\n          ctx.beginPath();\n          ctx.moveTo(p.x, p.y);\n          ctx.quadraticCurveTo(dx, dy, q2.x, q2.y);\n          ctx.stroke();\n        }\n      }\n    }\n  }\n  const scope = self;\n  let core = null;\n  let raster = null;\n  let gen = 0;\n  let animate = false;\n  let timer;\n  function send() {\n    if (!core || !raster || !(raster.canvas instanceof OffscreenCanvas)) return;\n    const bitmap = raster.canvas.transferToImageBitmap();\n    const ctx = raster.ctx;\n    ctx.save();\n    ctx.setTransform(1, 0, 0, 1, 0, 0);\n    ctx.drawImage(bitmap, 0, 0);\n    ctx.restore();\n    scope.postMessage({ gen, reg: raster.reg, done: core.done, bitmap }, [bitmap]);\n  }\n  function loop() {\n    if (!core) return;\n    const done = animate ? core.growSteps(core.o.stepsPerFrame) : core.grow(Infinity);\n    if (animate || done) {\n      raster?.drawNew();\n      send();\n    }\n    if (!done) timer = setTimeout(loop, animate ? 16 : 0);\n  }\n  scope.onmessage = (event) => {\n    const m = event.data;\n    if (m.type === "start") {\n      clearTimeout(timer);\n      gen = m.gen;\n      animate = m.animate;\n      core = new CobwebCore(m.opts, m.aspect);\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      loop();\n    } else if (m.gen === gen && core) {\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      if (core.done || animate) send();\n    }\n  };\n})();\n';
+const blob = typeof self !== "undefined" && self.Blob && new Blob(["(self.URL || self.webkitURL).revokeObjectURL(self.location.href);", jsContent], { type: "text/javascript;charset=utf-8" });
+function WorkerWrapper(options) {
+  let objURL;
+  try {
+    objURL = blob && (self.URL || self.webkitURL).createObjectURL(blob);
+    if (!objURL) throw "";
+    const worker = new Worker(objURL, {
+      name: options?.name
+    });
+    worker.addEventListener("error", () => {
+      (self.URL || self.webkitURL).revokeObjectURL(objURL);
+    });
+    return worker;
+  } catch (e) {
+    return new Worker(
+      "data:text/javascript;charset=utf-8," + encodeURIComponent(jsContent),
+      {
+        name: options?.name
+      }
+    );
   }
-  return tile;
+}
+function workerSupported() {
+  return typeof Worker !== "undefined" && typeof OffscreenCanvas !== "undefined" && typeof URL !== "undefined" && typeof URL.createObjectURL === "function";
+}
+class CobwebBackdrop {
+  /**
+   * @param onUpdate - Called when the host should redraw.
+   * @param options - Option overrides.
+   * @param useWorker - `false` forces main-thread mode.
+   */
+  constructor(onUpdate, options = {}, useWorker = true) {
+    this.onUpdate = onUpdate;
+    this.o = mergeCobwebOptions(COBWEB_DEFAULTS, options);
+    if (useWorker && workerSupported()) {
+      try {
+        const worker = new WorkerWrapper();
+        worker.onmessage = (e) => this.receive(e.data);
+        worker.onerror = () => this.dropWorker();
+        this.worker = worker;
+      } catch {
+        this.worker = null;
+      }
+    }
+  }
+  onUpdate;
+  o;
+  aspect = null;
+  /** Latest bitmap and the gen region it covers. */
+  img = null;
+  imgReg = null;
+  gen = 0;
+  /** View last asked for. */
+  want = null;
+  animate = false;
+  timer;
+  raf = 0;
+  worker = null;
+  core = null;
+  raster = null;
+  disposed = false;
+  /**
+   * Regrow with a new seed, animated (the web-area click).
+   * @param seed - Seed (random if omitted).
+   */
+  regrow(seed = Math.trunc(Math.random() * 2 ** 31)) {
+    this.o = mergeCobwebOptions(this.o, { seed });
+    this.restart(true);
+  }
+  /** Stop timers, terminate the worker, drop bitmaps. Idempotent. */
+  dispose() {
+    this.disposed = true;
+    this.gen++;
+    clearTimeout(this.timer);
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.worker?.terminate();
+    this.worker = null;
+    this.closeImg();
+    this.core = null;
+    this.raster = null;
+  }
+  /**
+   * Draw the web around `rect`.
+   * @param ctx - Target context (any transform; units = "screen" units).
+   * @param rect - The rect the web grows from, in ctx units.
+   * @param pixelRatio - Device px per ctx unit.
+   * @param vp - Visible area in ctx units.
+   */
+  draw(ctx, rect, pixelRatio, vp) {
+    if (this.disposed || !(rect.w > 0 && rect.h > 0)) return;
+    const aspect = rect.w / rect.h;
+    const M = this.o.margin;
+    const { gw, gh } = genExtent(this.o.genSize, aspect);
+    const k = rect.w / gw;
+    const vis = {
+      x0: Math.max(-M, (vp.x - rect.x) / k),
+      y0: Math.max(-M, (vp.y - rect.y) / k),
+      x1: Math.min(gw + M, (vp.x + vp.w - rect.x) / k),
+      y1: Math.min(gh + M, (vp.y + vp.h - rect.y) / k)
+    };
+    if (vis.x1 <= vis.x0 || vis.y1 <= vis.y0) return;
+    this.track(aspect, k, pixelRatio, vis, gw, gh);
+    const img = this.img;
+    const r = this.imgReg;
+    if (!img || !r) return;
+    const dx = rect.x + r.x0 * k;
+    const dy = rect.y + r.y0 * k;
+    const dw = (r.x1 - r.x0) * k;
+    const dh = (r.y1 - r.y0) * k;
+    const x0 = Math.max(dx, vp.x);
+    const y0 = Math.max(dy, vp.y);
+    const x1 = Math.min(dx + dw, vp.x + vp.w);
+    const y1 = Math.min(dy + dh, vp.y + vp.h);
+    if (x1 <= x0 || y1 <= y0) return;
+    const sx = img.width / dw;
+    const sy = img.height / dh;
+    ctx.drawImage(img, (x0 - dx) * sx, (y0 - dy) * sy, (x1 - x0) * sx, (y1 - y0) * sy, x0, y0, x1 - x0, y1 - y0);
+  }
+  // ── View tracking ─────────────────────────────────────────────────────────
+  /** New aspect -> regrow (not animated); zoom / uncovered pan -> re-raster later. */
+  track(aspect, k, pr, vis, gw, gh) {
+    const padded = () => {
+      const M = this.o.margin;
+      const px = (vis.x1 - vis.x0) * this.o.panPad;
+      const py = (vis.y1 - vis.y0) * this.o.panPad;
+      return { x0: Math.max(-M, vis.x0 - px), y0: Math.max(-M, vis.y0 - py), x1: Math.min(gw + M, vis.x1 + px), y1: Math.min(gh + M, vis.y1 + py) };
+    };
+    const w = this.want;
+    if (this.aspect === null || !w || Math.abs(aspect / this.aspect - 1) > 1e-3) {
+      this.aspect = aspect;
+      this.want = { k, pr, reg: padded() };
+      this.restart(false);
+      return;
+    }
+    const zoomed = Math.abs(k / w.k - 1) > 0.01 || pr !== w.pr;
+    const covered = vis.x0 >= w.reg.x0 && vis.y0 >= w.reg.y0 && vis.x1 <= w.reg.x1 && vis.y1 <= w.reg.y1;
+    if (!zoomed && covered) return;
+    this.want = { k, pr, reg: padded() };
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.view(), zoomed ? this.o.rasterDelayMs : 16);
+  }
+  // ── Growth ────────────────────────────────────────────────────────────────
+  restart(animate) {
+    const want = this.want;
+    if (this.disposed || this.aspect === null || !want) return;
+    this.animate = animate;
+    const gen = ++this.gen;
+    clearTimeout(this.timer);
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    if (!animate) this.closeImg();
+    if (this.worker) {
+      this.post({ type: "start", gen, opts: this.o, aspect: this.aspect, animate, ...want });
+      return;
+    }
+    const core = new CobwebCore(this.o, this.aspect);
+    this.core = core;
+    this.raster = CobwebRaster.create(core, want.k, want.pr, want.reg);
+    const tick = () => {
+      this.raf = 0;
+      if (gen !== this.gen) return;
+      const done = animate ? core.growSteps(this.o.stepsPerFrame) : core.grow(this.o.budgetMs * 2);
+      if ((animate || done) && this.raster) {
+        this.raster.drawNew();
+        this.showMain();
+      }
+      if (!done) this.raf = requestAnimationFrame(tick);
+    };
+    this.raf = requestAnimationFrame(tick);
+  }
+  view() {
+    const want = this.want;
+    if (!want || this.disposed) return;
+    if (this.worker) {
+      this.post({ type: "view", gen: this.gen, ...want });
+      return;
+    }
+    if (!this.core) return;
+    this.raster = CobwebRaster.create(this.core, want.k, want.pr, want.reg);
+    if (this.core.done || this.animate) this.showMain();
+  }
+  /** Main-thread mode: show the live raster canvas. */
+  showMain() {
+    if (!this.raster) return;
+    if (this.img !== this.raster.canvas) this.closeImg();
+    this.img = this.raster.canvas;
+    this.imgReg = this.raster.reg;
+    this.onUpdate();
+  }
+  // ── Worker ────────────────────────────────────────────────────────────────
+  post(message) {
+    try {
+      this.worker?.postMessage(message);
+    } catch {
+      this.dropWorker();
+    }
+  }
+  receive(m) {
+    if (this.disposed || m.gen !== this.gen) {
+      m.bitmap.close();
+      return;
+    }
+    this.closeImg();
+    this.img = m.bitmap;
+    this.imgReg = m.reg;
+    this.onUpdate();
+  }
+  /** Worker failed (e.g. Blob workers blocked): continue on the main thread. */
+  dropWorker() {
+    this.worker?.terminate();
+    this.worker = null;
+    console.warn("[PainterSketch] cobweb worker unavailable; growing on the main thread");
+    this.restart(this.animate);
+  }
+  closeImg() {
+    const img = this.img;
+    if (img && typeof ImageBitmap !== "undefined" && img instanceof ImageBitmap) img.close();
+    this.img = null;
+    this.imgReg = null;
+  }
 }
 const STAGE_STYLE = {
   surround: "#1e1e1e",
@@ -7220,7 +7753,7 @@ function composite(input) {
   ctx.fillStyle = STAGE_STYLE.surround;
   ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
   const capScreen = input.paintArea ? capStageRect(input, input.paintArea) : null;
-  if (capScreen) drawCobwebs(ctx, capScreen);
+  if (capScreen && input.paintArea && input.cobweb) drawCobwebs(ctx, capScreen, capExact(input, input.paintArea), input.cobweb, pr);
   const imageRect = frameRect(imageSize2);
   const paintRect = docRectToImage(map, bounds);
   const frameScreen = scaleRect(docRectToStage(view, imageRect), pr);
@@ -7290,22 +7823,27 @@ function composite(input) {
   ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
   if (capScreen) drawCapBorder(ctx, capScreen);
 }
+function capExact(input, cap) {
+  return scaleRect(docRectToStage(input.view, layerPlacement(input.map, cap)), input.pixelRatio);
+}
 function capStageRect(input, cap) {
-  const r = scaleRect(docRectToStage(input.view, layerPlacement(input.map, cap)), input.pixelRatio);
+  const r = capExact(input, cap);
   const x0 = Math.round(r.x);
   const y0 = Math.round(r.y);
   return { x: x0, y: y0, width: Math.round(r.x + r.width) - x0, height: Math.round(r.y + r.height) - y0 };
 }
-function drawCobwebs(ctx, cap) {
+function drawCobwebs(ctx, cap, exact, web, pr) {
   const { width, height } = ctx.canvas;
   if (cap.x <= 0 && cap.y <= 0 && cap.x + cap.width >= width && cap.y + cap.height >= height) return;
-  const pattern = cobwebPattern(ctx);
-  if (!pattern) return;
-  ctx.fillStyle = pattern;
+  ctx.save();
   ctx.beginPath();
   ctx.rect(0, 0, width, height);
   ctx.rect(cap.x, cap.y, cap.width, cap.height);
-  ctx.fill("evenodd");
+  ctx.clip("evenodd");
+  ctx.setTransform(pr, 0, 0, pr, 0, 0);
+  const rect = { x: exact.x / pr, y: exact.y / pr, w: exact.width / pr, h: exact.height / pr };
+  web.draw(ctx, rect, pr, { x: 0, y: 0, w: width / pr, h: height / pr });
+  ctx.restore();
 }
 function drawCapBorder(ctx, cap) {
   ctx.lineWidth = 1;
@@ -7803,6 +8341,61 @@ function drawHandles(ctx, view, rect, pixelRatio, px) {
     ctx.strokeRect(at.x - half, at.y - half, 2 * half, 2 * half);
   }
 }
+const CLICK_SLOP = 4;
+const CLICK_MS = 500;
+function isPlainClick(down, up) {
+  return Math.hypot(up.x - down.x, up.y - down.y) <= CLICK_SLOP && up.t - down.t <= CLICK_MS;
+}
+class WebClick {
+  /**
+   * @param stage - Stage element.
+   * @param onWeb - Whether a stage CSS point lies on the web (outside the cap).
+   * @param onClick - Called on a plain click on the web.
+   */
+  constructor(stage, onWeb, onClick) {
+    this.stage = stage;
+    this.onWeb = onWeb;
+    this.onClick = onClick;
+    const opts = { signal: this.controller.signal, passive: true, capture: true };
+    stage.addEventListener("pointerdown", (e) => this.down(e), opts);
+    stage.addEventListener("pointerup", (e) => this.up(e), opts);
+    stage.addEventListener("pointercancel", () => this.press = null, opts);
+  }
+  stage;
+  onWeb;
+  onClick;
+  press = null;
+  controller = new AbortController();
+  /** Remove listeners. */
+  dispose() {
+    this.controller.abort();
+  }
+  down(e) {
+    this.press = null;
+    const panning = this.stage.classList.contains("cps-pan-ready") || this.stage.classList.contains("cps-panning");
+    if (e.button !== 0 || !e.isPrimary || panning || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    this.press = { id: e.pointerId, x: e.clientX, y: e.clientY, t: e.timeStamp };
+  }
+  up(e) {
+    const press = this.press;
+    this.press = null;
+    if (!press || press.id !== e.pointerId || e.button !== 0) return;
+    const scale = this.cssScale();
+    const down = { x: press.x / scale, y: press.y / scale, t: press.t };
+    if (!isPlainClick(down, { x: e.clientX / scale, y: e.clientY / scale, t: e.timeStamp })) return;
+    if (this.onWeb(this.toStage(press.x, press.y)) && this.onWeb(this.toStage(e.clientX, e.clientY))) this.onClick();
+  }
+  /** Screen px per stage CSS px (graph zoom). */
+  cssScale() {
+    const rect = this.stage.getBoundingClientRect();
+    return this.stage.clientWidth > 0 && rect.width > 0 ? rect.width / this.stage.clientWidth : 1;
+  }
+  toStage(clientX, clientY) {
+    const rect = this.stage.getBoundingClientRect();
+    const s = this.cssScale();
+    return { x: (clientX - rect.left) / s, y: (clientY - rect.top) / s };
+  }
+}
 const NOTE_MS = 5e3;
 class StageView {
   /**
@@ -7827,6 +8420,7 @@ class StageView {
     this.note.className = "cps-note";
     this.note.hidden = true;
     stage.append(this.canvas, this.overlay, this.note);
+    this.webClick = new WebClick(stage, (p) => this.onWeb(p), () => this.cobweb.regrow());
   }
   stage;
   session;
@@ -7859,6 +8453,11 @@ class StageView {
   badge = null;
   /** Move cursor kind (cut / copy / outline / move; kept fixed during a drag). */
   moveKind = null;
+  /** Web around the maximum paint area (one per stage / editor instance). */
+  cobweb = new CobwebBackdrop(() => this.requestRender());
+  webClick;
+  /** Maximum paint area in stage CSS px at the last render. */
+  capCss = null;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered = null;
   /** Whether the stage is attached and has a non-zero layout size. */
@@ -7960,6 +8559,8 @@ class StageView {
     if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
     if (this.noteTimer !== null) clearTimeout(this.noteTimer);
     this.ants.dispose();
+    this.webClick.dispose();
+    this.cobweb.dispose();
     this.canvas.width = this.canvas.height = 0;
     this.overlay.width = this.overlay.height = 0;
   }
@@ -7970,6 +8571,13 @@ class StageView {
     if (!this.hover || !editor.selection.active) return false;
     const doc = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover));
     return editor.selectionMove.hit(doc.x, doc.y);
+  }
+  /** Whether a stage CSS point is on the web (inside the stage, outside the cap). */
+  onWeb(p) {
+    const cap = this.capCss;
+    const size = this.stageSize();
+    if (!cap || p.x < 0 || p.y < 0 || p.x > size.width || p.y > size.height) return false;
+    return p.x < cap.x || p.y < cap.y || p.x > cap.x + cap.width || p.y > cap.y + cap.height;
   }
   stageSize() {
     return { width: this.stage.clientWidth, height: this.stage.clientHeight };
@@ -7983,6 +8591,8 @@ class StageView {
     if (!this.ctx || !session || !this.isVisible()) return;
     this.syncBackingStore();
     const { editor } = session;
+    const paintArea = boundsCap(editor.doc.frame);
+    this.capCss = docRectToStage(editor.view.current, layerPlacement(editor.frameMap, paintArea));
     composite({
       ctx: this.ctx,
       cssSize: this.stageSize(),
@@ -7995,7 +8605,8 @@ class StageView {
       backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
       masks: editor.maskOverlays(),
-      paintArea: boundsCap(editor.doc.frame)
+      paintArea,
+      cobweb: this.cobweb
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
@@ -13493,10 +14104,10 @@ function translatePlacement(p, frame, image, dx, dy) {
 }
 function scalePlacementAt(p, frame, image, factor, anchor) {
   const base = frameMap(frame, image);
-  const now = frameMap(frame, image, p);
+  const now2 = frameMap(frame, image, p);
   const k = clampPlacementScale(p.scale * factor);
-  const docX = (anchor.x - now.offsetX) / now.scale;
-  const docY = (anchor.y - now.offsetY) / now.scale;
+  const docX = (anchor.x - now2.offsetX) / now2.scale;
+  const docY = (anchor.y - now2.offsetY) / now2.scale;
   const s = base.scale;
   return {
     x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
@@ -15074,8 +15685,8 @@ class LassoTool {
   /**
    * @param now - Clock in ms (double-click detection; injectable for tests).
    */
-  constructor(now = () => performance.now()) {
-    this.now = now;
+  constructor(now2 = () => performance.now()) {
+    this.now = now2;
   }
   now;
   id = "lasso";
@@ -16492,14 +17103,14 @@ class LayerUploader {
     const canvas = this.editor.savedLayerCanvas(layer.id);
     if (isCanvasEmpty(canvas)) return null;
     const currentFile = layer.file;
-    const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error) => {
+    const { blob: blob2, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error) => {
       log.warn(`encoding layer "${layer.name}" (${canvas.width}x${canvas.height}) failed:`, error);
       throw new EncodeError(layer.name);
     });
     const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
     if (currentFile === expected || this.knownFiles.has(expected)) return expected;
-    return uploadImage(blob, name);
+    return uploadImage(blob2, name);
   }
 }
 function isCanvasEmpty(canvas) {
@@ -16509,9 +17120,9 @@ function isCanvasEmpty(canvas) {
   for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
   return true;
 }
-async function uploadImage(blob, name) {
+async function uploadImage(blob2, name) {
   const body = new FormData();
-  body.append("image", blob, name);
+  body.append("image", blob2, name);
   body.append("type", "input");
   body.append("subfolder", DOCUMENT_SUBFOLDER);
   body.append("overwrite", "true");

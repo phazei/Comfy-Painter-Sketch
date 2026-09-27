@@ -2,16 +2,18 @@
  * Stage rendering: display canvas (compositor output), overlay canvas (brush
  * ring, loupe, selection marching ants via `marchingAnts.ts`, output regions
  * via `regionOverlay.ts`) and the transient note, inside the shell's stage element. Redraws
- * are rAF-coalesced. Backing-store size follows stage CSS size x device
+ * are rAF-coalesced. Owns this stage's cobweb backdrop (grown around the
+ * maximum paint area; a plain click on it regrows it, `webClick.ts`). Backing-store size follows stage CSS size x device
  * pixel ratio x graph zoom (never cached: re-read on every sync).
  */
 
 import { boundsCap } from "../engine/bounds";
+import { CobwebBackdrop } from "../engine/cobweb/cobwebBackdrop";
 import { composite } from "../engine/compositor";
-import { imageToDoc } from "../engine/frameMap";
+import { imageToDoc, layerPlacement } from "../engine/frameMap";
 import { backgroundShown } from "../engine/solo";
-import { backingStoreSize, stageToDoc } from "../engine/viewport";
-import type { Point, Size } from "../geometry/rect";
+import { backingStoreSize, docRectToStage, stageToDoc } from "../engine/viewport";
+import type { Point, Rect, Size } from "../geometry/rect";
 import { REGION_TOOL_ID } from "../tools/region";
 import type { Tool } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
@@ -22,6 +24,7 @@ import { moveCursorCss, moveCursorKind } from "./moveCursors";
 import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
+import { WebClick } from "./webClick";
 
 /** How long transient notes stay visible. */
 const NOTE_MS = 5000;
@@ -59,6 +62,11 @@ export class StageView {
   private badge: CursorBadge | null = null;
   /** Move cursor kind (cut / copy / outline / move; kept fixed during a drag). */
   private moveKind: MoveCursorKind | null = null;
+  /** Web around the maximum paint area (one per stage / editor instance). */
+  private readonly cobweb = new CobwebBackdrop(() => this.requestRender());
+  private readonly webClick: WebClick;
+  /** Maximum paint area in stage CSS px at the last render. */
+  private capCss: Rect | null = null;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered: (() => void) | null = null;
 
@@ -85,6 +93,7 @@ export class StageView {
     this.note.className = "cps-note";
     this.note.hidden = true;
     stage.append(this.canvas, this.overlay, this.note);
+    this.webClick = new WebClick(stage, (p) => this.onWeb(p), () => this.cobweb.regrow());
   }
 
   /** Whether the stage is attached and has a non-zero layout size. */
@@ -196,6 +205,8 @@ export class StageView {
     if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
     if (this.noteTimer !== null) clearTimeout(this.noteTimer);
     this.ants.dispose();
+    this.webClick.dispose();
+    this.cobweb.dispose();
     this.canvas.width = this.canvas.height = 0;
     this.overlay.width = this.overlay.height = 0;
   }
@@ -208,6 +219,14 @@ export class StageView {
     if (!this.hover || !editor.selection.active) return false;
     const doc = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover));
     return editor.selectionMove.hit(doc.x, doc.y);
+  }
+
+  /** Whether a stage CSS point is on the web (inside the stage, outside the cap). */
+  private onWeb(p: Point): boolean {
+    const cap = this.capCss;
+    const size = this.stageSize();
+    if (!cap || p.x < 0 || p.y < 0 || p.x > size.width || p.y > size.height) return false;
+    return p.x < cap.x || p.y < cap.y || p.x > cap.x + cap.width || p.y > cap.y + cap.height;
   }
 
   private stageSize(): Size {
@@ -224,6 +243,8 @@ export class StageView {
     if (!this.ctx || !session || !this.isVisible()) return;
     this.syncBackingStore();
     const { editor } = session;
+    const paintArea = boundsCap(editor.doc.frame);
+    this.capCss = docRectToStage(editor.view.current, layerPlacement(editor.frameMap, paintArea));
     composite({
       ctx: this.ctx,
       cssSize: this.stageSize(),
@@ -236,7 +257,8 @@ export class StageView {
       backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
       layers: editor.compositeLayers(),
       masks: editor.maskOverlays(),
-      paintArea: boundsCap(editor.doc.frame),
+      paintArea,
+      cobweb: this.cobweb,
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.drawOverlay();
