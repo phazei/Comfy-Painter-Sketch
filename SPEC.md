@@ -473,7 +473,31 @@ text is rasterized (prompt). No Merge Visible, no multi-select (repeat Ctrl+E).
 - Idea for M12, not M10: pulling an image from another node = the "Copy from input N"
   inputs (no auto-disconnecting "drop" input).
 
-## Milestones
+### Background row + drawing resolution (post-M10) -- agreed design (2026-09-27)
+**Background row** (do first)
+- Eye and solo on the background row (it stays unselectable and uneditable).
+- Eye off: the editor shows transparency (checkerboard) instead of the image; the
+  `IMAGE` output (Main and regions) uses the `background` widget colour instead of the
+  input image (the eye affects outputs, like other layers). Saved in the manifest as an
+  additive field (missing = visible). Copy merged then excludes the image.
+- Solo on the background: view only, never outputs (same rules as other solos: one
+  paint-group solo; soloing the background hides all paint layers; masks unaffected
+  unless a mask is soloed too).
+
+**Drawing resolution** (after the background row)
+- Minimum frame: when a document's frame is set from an image, scale it
+  proportionally so its short side is at least 1024 px, but the boost never makes the
+  long side exceed 4096 (images already >= 1024 on the short side are unchanged).
+  Editor and Python agree through the saved frame (Python just reads it).
+- Mismatch notice: when the current image needs more than 1.5x the frame's resolution
+  (fit scale > 1.5), the options bar shows "Drawing grid W px -- image W px (N.Nx)"
+  with a **Match image resolution** button (visible regardless of tool), the Move
+  drawing icon turns red, and a one-time toast per document session points to it.
+- Match image resolution: resamples every paint and mask layer once so the frame
+  becomes what it would have been from this image (incl. the minimum rule); the drawing
+  stays where it is on screen (placement folded in); text layers re-render from
+  `textData`. Upscale only. Not undoable: a confirm explains it clears the undo
+  history, then history is cleared.
 
 ### M0 -- Scaffold
 - [x] Python package: `__init__.py` (`WEB_DIRECTORY`, `comfy_entrypoint`), `nodes/`, V3 node stub with the contract above (smoke-tested in the ComfyUI venv)
@@ -654,6 +678,8 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-27: Move drawing clamp (needs browser check): the maximum paint area always covers the image area + 50 image px per side (drag, nudge, wheel scale, fields, Reset, on load / image-size change with metadata write-back, not undoable). Scale max 20 -> 10 (editor + Python). Fallback when impossible: scale 10, centred. Reset = nearest valid placement (not always identity). Undoing Clear may restore an unclamped placement until the next move / size change.
 
 - 2026-09-26: M10 complete (browser-verified). Terminology: the "image area" = the current image rectangle on the stage (where pastes centre). Empty-paste notes phrased alike: "The clipboard has no image -- nothing to paste." / "Clipspace has no image -- nothing to paste." Next: background row (eye + solo), then M11.
 

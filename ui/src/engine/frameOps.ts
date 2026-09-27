@@ -10,6 +10,7 @@ import type { Size } from "../geometry/rect";
 import type { FrameBackground } from "./compositor";
 import type { DocSnapshot, FrameSource } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { clampStoredPlacement } from "./placementClamp";
 import { applyOutputs, captureOutputs, outputsKey } from "./regionHistory";
 
 /**
@@ -36,7 +37,23 @@ export class FrameOps {
     const after = this.s.imageSize;
     // Output cards show image-px sizes and field bounds (regions never rescale).
     if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", undefined);
+    if (imageSize) this.clampPlacement();
     this.s.events.emit("render", undefined);
+  }
+
+  /**
+   * Clamp the stored placement to the paint-area rule for the current image
+   * (load and image-size changes). A change is written back as a normal
+   * metadata change (`change`, no history: placement is not undoable).
+   */
+  private clampPlacement(): void {
+    const s = this.s;
+    const next = clampStoredPlacement(s.doc.placement, s.doc.frame, s.imageSize);
+    if (!next.changed) return;
+    if (next.placement) s.doc.placement = next.placement;
+    else delete s.doc.placement;
+    s.events.emit("placement", undefined);
+    s.events.emit("change", undefined);
   }
 
   /**

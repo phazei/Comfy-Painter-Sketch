@@ -7,13 +7,15 @@
  * paint. A committed change emits `change` (widget value update; nothing is
  * dirty, so nothing uploads); live drag updates only redraw. Clear resets
  * the placement as part of its own (undoable) snapshot (`frameOps.ts`).
+ * Every change is clamped to the paint-area rule (`placementClamp.ts`).
  */
 
 import { IDENTITY_PLACEMENT, isIdentityPlacement, normalizePlacement } from "../document/placement";
 import type { Placement } from "../document/types";
 import type { Point } from "../geometry/rect";
 import type { EditorState } from "./editorState";
-import { placementImageOffset, scalePlacementAt, translatePlacement } from "./placementMath";
+import { clampPlacement, clampedScaleAt } from "./placementClamp";
+import { placementImageOffset, translatePlacement } from "./placementMath";
 
 /**
  * Placement commands over a shared {@link EditorState}.
@@ -48,7 +50,7 @@ export class PlacementOps {
    */
   set(next: Readonly<Placement>, commit = true): void {
     const s = this.s;
-    const p = normalizePlacement(next);
+    const p = clampPlacement(normalizePlacement(next), s.doc.frame, s.imageSize);
     const before = s.doc.placement;
     const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
     if (!same) {
@@ -84,10 +86,10 @@ export class PlacementOps {
    */
   scaleAt(factor: number, anchor: Point, commit = true): void {
     const s = this.s;
-    this.set(scalePlacementAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
+    this.set(clampedScaleAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
   }
 
-  /** Back to identity ("Reset position"). */
+  /** Back to identity, clamped to the paint-area rule ("Reset position"). */
   reset(): void {
     this.set(IDENTITY_PLACEMENT);
   }

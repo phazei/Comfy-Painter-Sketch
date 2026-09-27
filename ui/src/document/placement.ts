@@ -12,7 +12,7 @@ import type { Placement } from "./types";
 export const PLACEMENT_MIN_SCALE = 0.05;
 
 /** Largest placement scale. */
-export const PLACEMENT_MAX_SCALE = 20;
+export const PLACEMENT_MAX_SCALE = 10;
 
 /** No move, no scale. */
 export const IDENTITY_PLACEMENT: Readonly<Placement> = Object.freeze({ x: 0, y: 0, scale: 1 });

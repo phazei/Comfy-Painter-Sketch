@@ -49,7 +49,7 @@ _OFFSET_MAX = FRAME_MAX * 4
 PLACEMENT_MIN_SCALE = 0.05
 """Smallest Move-tool scale (SPEC "Saved-file contract", Placement)."""
 
-PLACEMENT_MAX_SCALE = 20.0
+PLACEMENT_MAX_SCALE = 10.0
 """Largest Move-tool scale."""
 
 
@@ -170,7 +170,7 @@ def parse_placement(raw: object) -> Placement:
     """Leniently validate the optional 'placement' object (never fails).
 
     Missing / non-object -> identity; non-finite fields fall back to their
-    identity value; ``scale`` is clamped to [0.05, 20]. Mirrors
+    identity value; ``scale`` is clamped to [0.05, 10]. Mirrors
     ``ui/src/document/placement.ts``.
 
     Args:

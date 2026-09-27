@@ -1029,7 +1029,7 @@ function outputMetadataSignature(doc) {
   });
 }
 const PLACEMENT_MIN_SCALE = 0.05;
-const PLACEMENT_MAX_SCALE = 20;
+const PLACEMENT_MAX_SCALE = 10;
 const IDENTITY_PLACEMENT = Object.freeze({ x: 0, y: 0, scale: 1 });
 function clampPlacementScale(scale) {
   if (!Number.isFinite(scale)) return 1;
@@ -11007,6 +11007,81 @@ class EditorState {
     this.events.emit("render", void 0);
   }
 }
+const WHEEL_SCALE_STEP = 1.05;
+const MAX_WHEEL_DELTA = 300;
+function fitScale(frame, image) {
+  return frameMap(frame, image).scale;
+}
+function translatePlacement(p, frame, image, dx, dy) {
+  const s = fitScale(frame, image);
+  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
+}
+function scalePlacementAt(p, frame, image, factor, anchor) {
+  const base = frameMap(frame, image);
+  const now = frameMap(frame, image, p);
+  const k = clampPlacementScale(p.scale * factor);
+  const docX = (anchor.x - now.offsetX) / now.scale;
+  const docY = (anchor.y - now.offsetY) / now.scale;
+  const s = base.scale;
+  return {
+    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
+    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
+    scale: k
+  };
+}
+function wheelScaleFactor(deltaPx) {
+  if (!Number.isFinite(deltaPx)) return 1;
+  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
+  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
+}
+function placementImageOffset(p, frame, image) {
+  const s = fitScale(frame, image);
+  return { x: p.x * s, y: p.y * s };
+}
+function imageOffsetToPlacement(imagePx, frame, image) {
+  return imagePx / fitScale(frame, image);
+}
+const PLACEMENT_MARGIN = 50;
+function validSizes(frame, image) {
+  return [frame.width, frame.height, image.width, image.height].every((v) => Number.isFinite(v) && v > 0);
+}
+function clampShift(t, lo, hi, mid) {
+  if (lo > hi) return mid;
+  return Math.min(hi, Math.max(lo, t));
+}
+function placementScaleRange(frame, image) {
+  const max = PLACEMENT_MAX_SCALE;
+  if (!validSizes(frame, image)) return { min: PLACEMENT_MIN_SCALE, max, feasible: true };
+  const cap = docRectToImage(frameMap(frame, image), boundsCap(frame));
+  const m2 = 2 * PLACEMENT_MARGIN;
+  const min = Math.max(PLACEMENT_MIN_SCALE, (image.width + m2) / cap.width, (image.height + m2) / cap.height);
+  return { min, max, feasible: min <= max };
+}
+function clampPlacement(p, frame, image) {
+  const n = normalizePlacement(p);
+  if (!validSizes(frame, image)) return n;
+  const range = placementScaleRange(frame, image);
+  const scale = range.feasible ? Math.min(range.max, Math.max(range.min, n.scale)) : range.max;
+  const s = frameMap(frame, image).scale;
+  const cap = docRectToImage(frameMap(frame, image, { x: 0, y: 0, scale }), boundsCap(frame));
+  const m = PLACEMENT_MARGIN;
+  const tx = clampShift(n.x * s, image.width + m - (cap.x + cap.width), -m - cap.x, (image.width - cap.width) / 2 - cap.x);
+  const ty = clampShift(n.y * s, image.height + m - (cap.y + cap.height), -m - cap.y, (image.height - cap.height) / 2 - cap.y);
+  return { x: tx === n.x * s ? n.x : tx / s, y: ty === n.y * s ? n.y : ty / s, scale };
+}
+function clampedScaleAt(p, frame, image, factor, anchor) {
+  const range = placementScaleRange(frame, image);
+  const current = p.scale > 0 && Number.isFinite(p.scale) ? p.scale : 1;
+  const wanted = current * (Number.isFinite(factor) && factor > 0 ? factor : 1);
+  const k = range.feasible ? Math.min(range.max, Math.max(range.min, wanted)) : range.max;
+  return clampPlacement(scalePlacementAt({ ...p, scale: current }, frame, image, k / current, anchor), frame, image);
+}
+function clampStoredPlacement(placement, frame, image) {
+  const before = placement ?? { x: 0, y: 0, scale: 1 };
+  const next = clampPlacement(before, frame, image);
+  const changed = next.x !== before.x || next.y !== before.y || next.scale !== before.scale;
+  return { placement: isIdentityPlacement(next) ? void 0 : next, changed };
+}
 function captureOutputs(s) {
   const snapshot = { regions: s.doc.regions.map(cloneRegion), selected: s.selectedRegionId };
   if (s.doc.mainOutput) snapshot.main = cloneOutputOptions(s.doc.mainOutput);
@@ -11044,7 +11119,22 @@ class FrameOps {
     this.s.syncViewFrame();
     const after = this.s.imageSize;
     if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", void 0);
+    if (imageSize2) this.clampPlacement();
     this.s.events.emit("render", void 0);
+  }
+  /**
+   * Clamp the stored placement to the paint-area rule for the current image
+   * (load and image-size changes). A change is written back as a normal
+   * metadata change (`change`, no history: placement is not undoable).
+   */
+  clampPlacement() {
+    const s = this.s;
+    const next = clampStoredPlacement(s.doc.placement, s.doc.frame, s.imageSize);
+    if (!next.changed) return;
+    if (next.placement) s.doc.placement = next.placement;
+    else delete s.doc.placement;
+    s.events.emit("placement", void 0);
+    s.events.emit("change", void 0);
   }
   /**
    * A new current-image size arrived (upstream image, or the widgets while
@@ -13045,40 +13135,6 @@ class PixelOps {
 function inside(r, x, y) {
   return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
 }
-const WHEEL_SCALE_STEP = 1.05;
-const MAX_WHEEL_DELTA = 300;
-function fitScale(frame, image) {
-  return frameMap(frame, image).scale;
-}
-function translatePlacement(p, frame, image, dx, dy) {
-  const s = fitScale(frame, image);
-  return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
-}
-function scalePlacementAt(p, frame, image, factor, anchor) {
-  const base = frameMap(frame, image);
-  const now = frameMap(frame, image, p);
-  const k = clampPlacementScale(p.scale * factor);
-  const docX = (anchor.x - now.offsetX) / now.scale;
-  const docY = (anchor.y - now.offsetY) / now.scale;
-  const s = base.scale;
-  return {
-    x: (anchor.x - base.offsetX) / s - frame.width / 2 * (1 - k) - k * docX,
-    y: (anchor.y - base.offsetY) / s - frame.height / 2 * (1 - k) - k * docY,
-    scale: k
-  };
-}
-function wheelScaleFactor(deltaPx) {
-  if (!Number.isFinite(deltaPx)) return 1;
-  const d = Math.max(-MAX_WHEEL_DELTA, Math.min(MAX_WHEEL_DELTA, deltaPx));
-  return Math.pow(WHEEL_SCALE_STEP, -d / 100);
-}
-function placementImageOffset(p, frame, image) {
-  const s = fitScale(frame, image);
-  return { x: p.x * s, y: p.y * s };
-}
-function imageOffsetToPlacement(imagePx, frame, image) {
-  return imagePx / fitScale(frame, image);
-}
 class PlacementOps {
   /**
    * @param s - Shared editor state.
@@ -13108,7 +13164,7 @@ class PlacementOps {
    */
   set(next, commit = true) {
     const s = this.s;
-    const p = normalizePlacement(next);
+    const p = clampPlacement(normalizePlacement(next), s.doc.frame, s.imageSize);
     const before = s.doc.placement;
     const same = before ? before.x === p.x && before.y === p.y && before.scale === p.scale : isIdentityPlacement(p);
     if (!same) {
@@ -13141,9 +13197,9 @@ class PlacementOps {
    */
   scaleAt(factor, anchor, commit = true) {
     const s = this.s;
-    this.set(scalePlacementAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
+    this.set(clampedScaleAt(this.current, s.doc.frame, s.imageSize, factor, anchor), commit);
   }
-  /** Back to identity ("Reset position"). */
+  /** Back to identity, clamped to the paint-area rule ("Reset position"). */
   reset() {
     this.set(IDENTITY_PLACEMENT);
   }
@@ -14758,7 +14814,7 @@ const OFFSET_LIMIT = 16384;
 const DESCRIPTORS$1 = [
   { kind: "number", key: "x", label: "X", title: "Horizontal offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
   { kind: "number", key: "y", label: "Y", title: "Vertical offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
-  { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 2e3, step: 0.1, unit: "%", scale: 100, curve: "pow" },
+  { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 1e3, step: 0.1, unit: "%", scale: 100, curve: "pow" },
   { kind: "button", key: "reset", label: "Reset position", title: "Put the drawing back where it was painted", group: "reset" }
 ];
 const ARROWS$1 = {

@@ -38,10 +38,10 @@ describe("placement interaction math", () => {
   });
 
   it("clamps the scale and still keeps the anchor", () => {
-    const next = scalePlacementAt({ x: 0, y: 0, scale: 19 }, frame, image, 2, { x: 10, y: 10 });
-    expect(next.scale).toBe(20);
+    const next = scalePlacementAt({ x: 0, y: 0, scale: 9 }, frame, image, 2, { x: 10, y: 10 });
+    expect(next.scale).toBe(10);
     const map = frameMap(frame, image, next);
-    const prev = frameMap(frame, image, { x: 0, y: 0, scale: 19 });
+    const prev = frameMap(frame, image, { x: 0, y: 0, scale: 9 });
     const doc = { x: (10 - prev.offsetX) / prev.scale, y: (10 - prev.offsetY) / prev.scale };
     expect(docToImage(map, doc).x).toBeCloseTo(10, 9);
   });

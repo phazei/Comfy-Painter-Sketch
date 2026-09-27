@@ -14,8 +14,8 @@ describe("readPlacement (lenient, mirrors nodes/document.py)", () => {
     expect(readPlacement({ x: 10.5, y: -5, scale: 1.5 })).toEqual({ placement: { x: 10.5, y: -5, scale: 1.5 }, repaired: false });
   });
 
-  it("clamps scale to [0.05, 20] and replaces non-finite / wrong-typed fields", () => {
-    expect(readPlacement({ x: 0, y: 0, scale: 100 }).placement?.scale).toBe(20);
+  it("clamps scale to [0.05, 10] and replaces non-finite / wrong-typed fields", () => {
+    expect(readPlacement({ x: 0, y: 0, scale: 100 }).placement?.scale).toBe(10);
     expect(readPlacement({ x: 1, y: 0, scale: 0 }).placement?.scale).toBe(0.05);
     expect(readPlacement({ x: "3", y: Number.NaN, scale: 2 })).toEqual({ placement: { x: 0, y: 0, scale: 2 }, repaired: true });
     expect(readPlacement({ x: 0, y: 0, scale: null })).toEqual({ placement: undefined, repaired: true });

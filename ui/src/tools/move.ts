@@ -32,7 +32,7 @@ const OFFSET_LIMIT = 16384;
 const DESCRIPTORS: readonly OptionDescriptor[] = [
   { kind: "number", key: "x", label: "X", title: "Horizontal offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
   { kind: "number", key: "y", label: "Y", title: "Vertical offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
-  { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 2000, step: 0.1, unit: "%", scale: 100, curve: "pow" },
+  { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 1000, step: 0.1, unit: "%", scale: 100, curve: "pow" },
   { kind: "button", key: "reset", label: "Reset position", title: "Put the drawing back where it was painted", group: "reset" },
 ];
 

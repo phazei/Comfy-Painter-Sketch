@@ -68,7 +68,7 @@ class TestParsePlacement(unittest.TestCase):
         self.assertEqual(doc.placement, Placement(10.5, -5.0, 1.5))
 
     def test_scale_clamped(self):
-        self.assertEqual(parse_placement({"scale": 100}).scale, 20.0)
+        self.assertEqual(parse_placement({"scale": 100}).scale, 10.0)
         self.assertEqual(parse_placement({"scale": 0}).scale, 0.05)
         self.assertEqual(parse_placement({"scale": -3}).scale, 0.05)
 
