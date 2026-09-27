@@ -7,6 +7,9 @@
  * The document's `activeLayerId` always names a paint-like layer (the layer
  * strokes go to outside Quick Mask); the mask is selected through the paint
  * target instead (`Editor.setPaintTarget`).
+ *
+ * Internal helpers (record, insert, setProps, …) live in
+ * {@link ./layerOpsHelpers | layerOpsHelpers.ts}.
  */
 
 import { soloGroup } from "./solo";
@@ -22,25 +25,21 @@ import {
   nextLayerName,
   nextMaskName,
   paintInsertIndex,
-  propsDiffer,
-  propsEqual,
-  readProps,
   resolveMove,
-  writeProps,
 } from "../document/layerList";
-import type { LayerChange, LayerProps } from "../document/layerList";
 import { copyLayerName } from "../document/layerList";
 import { findMaskLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import type { LayerPixels } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { captureLayerPixels, releaseRemovedLayers } from "./layerHistory";
 import {
-  captureLayerPixels,
-  changesBytes,
-  emitLayerEvents,
-  installLayerPixels,
-  releaseRemovedLayers,
-} from "./layerHistory";
+  afterMetaChange,
+  findLayer,
+  insertLayer,
+  readyCheck,
+  recordLayerChange,
+  setLayerProps,
+} from "./layerOpsHelpers";
 import { pickLayer, pickMask } from "./layerPick";
 
 /**
@@ -130,7 +129,7 @@ export class LayerOps {
    */
   setActiveLayer(layerId: string): boolean {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
     if (s.stroke.active) s.cancelStroke();
     s.doc.activeLayerId = layerId;
@@ -146,11 +145,11 @@ export class LayerOps {
    */
   setVisible(layerId: string, visible: boolean): void {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || layer.visible === visible) return;
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
-    this.afterMeta();
+    afterMetaChange(s);
   }
 
   /**
@@ -160,11 +159,11 @@ export class LayerOps {
    */
   setLocked(layerId: string, locked: boolean): void {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || layer.locked === locked) return;
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.locked = locked;
-    this.afterMeta();
+    afterMetaChange(s);
   }
 
   // ── Structural (undoable) ───────────────────────────────────────────────
@@ -184,8 +183,8 @@ export class LayerOps {
    * @returns Its id, or `null` while loading.
    */
   addLayer(layer: Layer): string | null {
-    if (!this.ready()) return null;
-    this.insert(layer, paintInsertIndex(this.s.doc), null);
+    if (!readyCheck(this.s)) return null;
+    insertLayer(this.s, layer, paintInsertIndex(this.s.doc), null);
     this.soloNew(layer);
     return layer.id;
   }
@@ -197,12 +196,12 @@ export class LayerOps {
    */
   addMask(): string | null {
     const s = this.s;
-    if (!this.ready() || !canAddMask(s.doc.layers)) return null;
+    if (!readyCheck(s) || !canAddMask(s.doc.layers)) return null;
     const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
     const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
     const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
     s.currentMaskId = layer.id;
-    this.insert(layer, index, null, false);
+    insertLayer(s, layer, index, null, false);
     this.soloNew(layer);
     return layer.id;
   }
@@ -215,26 +214,14 @@ export class LayerOps {
    */
   duplicate(layerId: string = this.s.doc.activeLayerId): string | null {
     const s = this.s;
-    if (!this.ready() || !this.canDuplicate(layerId)) return null;
+    if (!readyCheck(s) || !this.canDuplicate(layerId)) return null;
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const source = s.doc.layers[index];
     if (!source) return null;
     const layer: Layer = { ...source, id: createId(8), name: copyLayerName(source.name, s.doc.layers) };
-    this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    insertLayer(s, layer, index + 1, captureLayerPixels(s, source.id));
     this.soloNew(layer);
     return layer.id;
-  }
-
-  /**
-   * While any solo is on, a new layer takes over its group's solo, so what
-   * you just made is visible and editable (a new text layer would otherwise
-   * be hidden while typing).
-   * @param layer - Newly inserted layer.
-   */
-  private soloNew(layer: Layer): void {
-    const solo = this.s.solo.current;
-    if (solo.paint === null && solo.mask === null) return;
-    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
   }
 
   /**
@@ -245,7 +232,7 @@ export class LayerOps {
    */
   remove(layerId: string = this.s.doc.activeLayerId): boolean {
     const s = this.s;
-    if (!this.ready() || !this.canDelete(layerId)) return false;
+    if (!readyCheck(s) || !this.canDelete(layerId)) return false;
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const layer = s.doc.layers[index];
     if (!layer) return false;
@@ -256,7 +243,7 @@ export class LayerOps {
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
     if (s.currentMaskId === layerId) s.currentMaskId = null;
-    this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
+    recordLayerChange(s, [{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }
 
@@ -270,13 +257,13 @@ export class LayerOps {
    */
   move(layerId: string, targetId: string, above: boolean): boolean {
     const s = this.s;
-    if (!this.ready()) return false;
+    if (!readyCheck(s)) return false;
     const move = resolveMove(s.doc.layers, layerId, targetId, above);
     if (!move) return false;
     const [layer] = s.doc.layers.splice(move.from, 1);
     if (!layer) return false;
     s.doc.layers.splice(move.to, 0, layer);
-    this.record([{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
+    recordLayerChange(s, [{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
     return true;
   }
 
@@ -289,7 +276,7 @@ export class LayerOps {
   rename(layerId: string, name: string): boolean {
     const trimmed = name.trim().slice(0, 100);
     if (!trimmed) return false;
-    return this.setProps(layerId, { name: trimmed });
+    return setLayerProps(this.s, layerId, { name: trimmed });
   }
 
   /**
@@ -301,7 +288,7 @@ export class LayerOps {
    */
   setOpacity(layerId: string, opacity: number, gesture?: string): boolean {
     if (!Number.isFinite(opacity)) return false;
-    return this.setProps(layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
+    return setLayerProps(this.s, layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
   }
 
   /**
@@ -312,8 +299,8 @@ export class LayerOps {
    * @returns `true` if changed.
    */
   setMaskColor(layerId: string, color: string, gesture?: string): boolean {
-    if (this.find(layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
-    return this.setProps(layerId, { color: color.toLowerCase() }, gesture);
+    if (findLayer(this.s, layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
+    return setLayerProps(this.s, layerId, { color: color.toLowerCase() }, gesture);
   }
 
   /**
@@ -323,79 +310,21 @@ export class LayerOps {
    * @returns `true` if changed.
    */
   setMaskInvert(layerId: string, invert: boolean): boolean {
-    if (this.find(layerId)?.kind !== "mask") return false;
-    return this.setProps(layerId, { invert });
+    if (findLayer(this.s, layerId)?.kind !== "mask") return false;
+    return setLayerProps(this.s, layerId, { invert });
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  private find(layerId: string): Layer | undefined {
-    return this.s.doc.layers.find((l) => l.id === layerId);
+  /**
+   * While any solo is on, a new layer takes over its group's solo so what
+   * you just made is visible and editable (a new text layer would otherwise
+   * be hidden while typing).
+   * @param layer - Newly inserted layer.
+   */
+  private soloNew(layer: Layer): void {
+    const solo = this.s.solo.current;
+    if (solo.paint === null && solo.mask === null) return;
+    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
   }
-
-  /** Structural edits wait for restores and cancel a running stroke. */
-  private ready(): boolean {
-    const s = this.s;
-    if (s.loading) return false;
-    if (s.stroke.active) s.cancelStroke();
-    return true;
-  }
-
-  private insert(layer: Layer, index: number, pixels: LayerPixels | null, activate = true): void {
-    const s = this.s;
-    const activeBefore = s.doc.activeLayerId;
-    s.doc.layers.splice(index, 0, layer);
-    installLayerPixels(s, layer.id, pixels);
-    if (activate) s.doc.activeLayerId = layer.id;
-    this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
-  }
-
-  private setProps(layerId: string, props: LayerProps, gesture?: string): boolean {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || s.loading || !propsDiffer(layer, props)) return false;
-    const merge = gesture ? s.history.mergeTarget() : undefined;
-    const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : undefined;
-    if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
-      Object.assign(change.after, props);
-      writeProps(layer, props);
-      // The gesture came back to where it started (picker Esc, scrub back):
-      // drop the entry so no empty undo step remains. A later edit in the
-      // same gesture simply starts a new entry.
-      if (merge?.kind === "layers" && merge.changes.length === 1 && propsEqual(change.before, change.after)) s.history.discardNewest();
-      this.afterMeta(true);
-      return true;
-    }
-    const before = readProps(layer, props);
-    writeProps(layer, props);
-    this.record([{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
-    return true;
-  }
-
-  private record(changes: LayerChange<LayerPixels>[], activeBefore: string, gesture?: string): void {
-    const s = this.s;
-    s.history.push({
-      kind: "layers",
-      changes,
-      activeBefore,
-      activeAfter: s.doc.activeLayerId,
-      bytes: changesBytes(changes),
-      ...(gesture ? { gesture } : {}),
-    });
-    this.afterMeta(true);
-  }
-
-  /** Events after a metadata change (`history` too when it was recorded). */
-  private afterMeta(history = false): void {
-    const s = this.s;
-    if (history) s.events.emit("history", undefined);
-    emitLayerEvents(s);
-    s.events.emit("change", undefined);
-    s.events.emit("render", undefined);
-  }
-}
-
-function sameKeys(a: LayerProps, b: LayerProps): boolean {
-  const ka = Object.keys(a).sort().join();
-  return ka === Object.keys(b).sort().join();
 }

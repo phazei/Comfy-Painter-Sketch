@@ -40,6 +40,23 @@
   border-left: 1px solid var(--cps-border);
 }
 
+/* Outputs button, then a rule and some space before the side-panel toggle.
+   The rule is a pseudo-element so the button keeps its normal shape. */
+.cps-bar-trailing > .cps-outputs-button {
+  position: relative;
+  margin-right: 9px;
+}
+
+.cps-bar-trailing > .cps-outputs-button::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  right: -7px;
+  border-right: 1px solid var(--cps-border);
+  pointer-events: none;
+}
+
 .cps-bar-scroller {
   flex: 1 1 auto;
   display: flex;

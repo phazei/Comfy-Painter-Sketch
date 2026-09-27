@@ -3,6 +3,8 @@
  */
 
 import { isIdentityPlacement } from "./placement";
+import { cloneOutputOptions } from "./outputOptions";
+import { cloneRegion } from "./regions";
 import { serializeTextData } from "./textData";
 import type { Layer, PainterDocument } from "./types";
 
@@ -20,11 +22,8 @@ export function stringifyDocument(doc: PainterDocument): string {
     docId: doc.docId,
     frame: { width: doc.frame.width, height: doc.frame.height },
     bounds: { x: doc.bounds.x, y: doc.bounds.y, width: doc.bounds.width, height: doc.bounds.height },
-    regions: doc.regions.map((r) => ({
-      id: r.id,
-      index: r.index,
-      rect: { x: r.rect.x, y: r.rect.y, width: r.rect.width, height: r.rect.height },
-    })),
+    regions: doc.regions.map(cloneRegion),
+    ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
     ...(p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {}),
     activeLayerId: doc.activeLayerId,
@@ -60,7 +59,8 @@ export function cloneDocument(doc: PainterDocument): PainterDocument {
     ...doc,
     frame: { ...doc.frame },
     bounds: { ...doc.bounds },
-    regions: doc.regions.map((r) => ({ ...r, rect: { ...r.rect } })),
+    regions: doc.regions.map(cloneRegion),
+    ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     ...(doc.placement ? { placement: { ...doc.placement } } : {}),
     layers: doc.layers.map((l) => ({ ...l, ...(l.textData ? { textData: { ...l.textData } } : {}) })),
   };

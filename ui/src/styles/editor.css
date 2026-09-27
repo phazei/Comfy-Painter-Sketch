@@ -8,7 +8,7 @@
 .cps-root {
   --cps-rail-width: 36px;
   --cps-bar-height: 28px;
-  --cps-panel-width: 180px;
+  --cps-panel-width: 216px;
   --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);
   --cps-surface: var(--comfy-menu-bg, #353535);
   --cps-input-bg: var(--comfy-input-bg, #222);

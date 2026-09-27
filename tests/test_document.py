@@ -17,7 +17,7 @@ if _REPO not in sys.path:
 
 from nodes.document import (
     Bounds, Document, Frame, Layer,
-    _FRAME_MAX, _BOUNDS_MAX,
+    FRAME_MAX,
     parse_document, frame_size,
 )
 
@@ -71,12 +71,15 @@ class TestParseDocumentBasic(unittest.TestCase):
 
 
 class TestFrameValidation(unittest.TestCase):
-    def test_frame_max_ok(self):
-        doc = parse_document(_make_doc(frame={"width": _FRAME_MAX, "height": _FRAME_MAX}))
-        self.assertIsNotNone(doc)
+    def test_frame_max_matches_editor(self):
+        """The editor's MAX_DOCUMENT_SIDE is 16384; Python accepts the same frames."""
+        self.assertEqual(FRAME_MAX, 16384)
+        doc = parse_document(_make_doc(frame={"width": 16384, "height": 12000},
+                                       bounds={"x": 0, "y": 0, "width": 16384, "height": 12000}))
+        self.assertEqual(doc.frame, Frame(16384, 12000))
 
     def test_frame_exceed_max_returns_none(self):
-        doc = parse_document(_make_doc(frame={"width": _FRAME_MAX + 1, "height": 100}))
+        doc = parse_document(_make_doc(frame={"width": FRAME_MAX + 1, "height": 100}))
         self.assertIsNone(doc)
 
     def test_frame_zero_returns_none(self):
@@ -100,11 +103,18 @@ class TestBoundsValidation(unittest.TestCase):
 
     def test_bounds_exceed_cap_falls_back(self):
         doc = parse_document(_make_doc(
-            bounds={"x": 0, "y": 0, "width": _BOUNDS_MAX + 1, "height": 100}
+            bounds={"x": 0, "y": 0, "width": FRAME_MAX + 1, "height": 100}
         ))
         # Falls back to frame-sized bounds
         self.assertIsNotNone(doc)
         self.assertEqual(doc.bounds, Bounds(0, 0, 100, 200))
+
+    def test_bounds_offset_cap_matches_editor(self):
+        """|x|, |y| up to 4 * 16384 are accepted (editor isInt); beyond falls back."""
+        ok = parse_document(_make_doc(bounds={"x": -65536, "y": 0, "width": 200, "height": 300}))
+        self.assertEqual(ok.bounds.x, -65536)
+        bad = parse_document(_make_doc(bounds={"x": -65537, "y": 0, "width": 200, "height": 300}))
+        self.assertEqual(bad.bounds, Bounds(0, 0, 100, 200))
 
     def test_bounds_zero_width_falls_back(self):
         doc = parse_document(_make_doc(bounds={"x": 0, "y": 0, "width": 0, "height": 100}))
@@ -173,6 +183,22 @@ class TestLayerParsing(unittest.TestCase):
     def test_invert_true_preserved(self):
         doc = parse_document(_make_doc(layers=[self._layer(kind="mask", invert=True)]))
         self.assertTrue(doc.layers[0].invert)
+
+    def test_non_boolean_invert_ignored(self):
+        """Like the editor (parse.ts readLayer), only a real boolean inverts."""
+        for value in (1, "true", "yes", [1], {"a": 1}, None):
+            with self.subTest(value=value):
+                doc = parse_document(_make_doc(layers=[self._layer(kind="mask", invert=value)]))
+                self.assertFalse(doc.layers[0].invert)
+
+    def test_non_numeric_opacity_defaults_to_one(self):
+        """Like the editor's clamp01: bool, string, null, NaN, inf -> 1."""
+        for value in (True, False, "0.5", None, [0.5], float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                doc = parse_document(_make_doc(layers=[self._layer(opacity=value)]))
+                self.assertEqual(doc.layers[0].opacity, 1.0)
+        doc = parse_document(_make_doc(layers=[self._layer(opacity=0)]))
+        self.assertEqual(doc.layers[0].opacity, 0.0)
 
     def test_layer_missing_id_skipped(self):
         l = self._layer()

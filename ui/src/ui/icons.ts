@@ -7,6 +7,8 @@
 
 /** Path data (24x24 viewBox) per icon name. */
 const PATHS: Readonly<Record<string, string>> = {
+  // Output regions (Outputs button): box with a "1" and corner handles.
+  region: "M4 4h16v16H4zM8 9l3-2v10M8 17h6M2 2h4v4H2zM18 18h4v4h-4z",
   brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
   eraser: "M7 20h11M4.5 14.5l8-8 6 6-7.5 7.5H9.5z",
   // Tipped paint can with a drip.

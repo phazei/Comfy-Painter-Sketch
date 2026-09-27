@@ -9,8 +9,9 @@
  * host, `pick-color` and `fullscreen` events, root element).
  *
  * Rail/options-bar sync (tool changes, mask state, history) is delegated to
- * {@link HostSync} (`hostSync.ts`), which owns those five sub-components
- * (rail, swatches, options bar, selection actions, layers panel).
+ * {@link HostSync} (`hostSync.ts`), which owns those sub-components
+ * (rail, swatches, options bar, selection actions, layers and outputs
+ * panels) and region mode (Outputs tab <-> region tool).
  *
  * M3.2: handles `pick-color` from the shell by opening the custom
  * {@link openColorPicker} popover; sets `request.handled = true` to suppress
@@ -78,7 +79,7 @@ export class EditorHost {
   readonly input: StageInput;
 
   private readonly view: StageView;
-  /** Rail/options-bar sync layer (owns rail, swatches, options bar, selection actions, layers). */
+  /** Rail/options-bar sync layer (owns rail, swatches, options bar, selection actions, side panels). */
   private readonly sync: HostSync;
   /** Text tool's in-canvas `<textarea>` + rasterize prompt. */
   private readonly textOverlay: TextOverlay;
@@ -120,7 +121,6 @@ export class EditorHost {
       () => this.keyboard.reclaimFocus(),
       this.shell,
     );
-    this.shell.sidePanel.content.replaceChildren(this.sync.layers.element);
 
     // ── M3.2: wire the colour picker ──────────────────────────────────────
     this.shell.events.on("pick-color", (request) => {
@@ -158,7 +158,13 @@ export class EditorHost {
               cancelDrag: () => this.input.cancel(),
               cancelToolDrag: () => this.input.cancelToolDrag(),
               fullscreen: () => this.shell.events.emit("fullscreen", undefined),
-              closePopover: () => this.shell.popoverHost.close(),
+              toggleOutputs: () => this.sync.toggleOutputs(),
+              closePopover: () => {
+                if (!this.shell.popoverHost.isOpen) return false;
+                // Esc reverts an open output colour picker session.
+                this.session?.editor.regionOps.cancel();
+                return this.shell.popoverHost.close();
+              },
               exitFullscreen: () => {
                 if (!this.fullscreen.isOpen) return false;
                 this.fullscreen.exit();

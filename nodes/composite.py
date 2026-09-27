@@ -97,8 +97,14 @@ def _place_layer(
     s: float,
     ox: float,
     oy: float,
+    origin: tuple[int, int] = (0, 0),
 ) -> torch.Tensor:
     """Scale and place one RGBA layer tensor onto a W x H canvas.
+
+    The canvas normally is the image itself; ``origin`` moves it to cover image
+    px ``[origin, origin + (W, H))`` instead (output regions that extend past
+    the image). The layer rect is rounded in image coordinates first, then
+    shifted, so a viewport shows exactly the same pixels as the full image.
 
     The layer is scaled by ``s`` (bilinear when s != 1, otherwise kept as-is
     when s is 1.0 *and* offsets are integer-aligned).  The result is a
@@ -111,6 +117,7 @@ def _place_layer(
         W, H:   Output canvas size in pixels.
         s:      Uniform scale factor.
         ox, oy: Fractional pixel offset from (origin to frame top-left).
+        origin: Image px of the canvas top-left (integer).
 
     Returns:
         ``[H, W, 4]`` placed layer tensor.
@@ -136,8 +143,8 @@ def _place_layer(
         dst_w, dst_h = lw, lh
 
     # Integer destination rect
-    x0 = round(dst_x)
-    y0 = round(dst_y)
+    x0 = round(dst_x) - origin[0]
+    y0 = round(dst_y) - origin[1]
     x1 = x0 + int(dst_w)
     y1 = y0 + int(dst_h)
 
@@ -169,6 +176,8 @@ def composite_paint_layers(
     bounds: Bounds,
     frame: Frame,
     placement: Placement = IDENTITY_PLACEMENT,
+    image_size: tuple[int, int] | None = None,
+    origin: tuple[int, int] = (0, 0),
 ) -> torch.Tensor:
     """Composite visible paint/text layers over a base image batch.
 
@@ -176,18 +185,22 @@ def composite_paint_layers(
     broadcast over the full batch without a Python loop.
 
     Args:
-        base_rgb:      ``[B, H, W, 3]`` float32 base image.
+        base_rgb:      ``[B, H, W, 3]`` float32 base canvas.
         layers:        All layers from the document (in bottom-to-top order).
         layer_tensors: Map from layer id to ``[lh, lw, 4]`` RGBA tensor or None.
         bounds:        Document bounds (used for placement calculation).
         frame:         Document frame size.
         placement:     Move-tool placement (default identity).
+        image_size:    ``(W, H)`` of the run-time image the frame maps onto;
+                       default = the canvas size (canvas is the image).
+        origin:        Image px of the canvas top-left (viewport canvases).
 
     Returns:
-        ``[B, H, W, 3]`` float32 composited image.
+        ``[B, H, W, 3]`` float32 composited canvas.
     """
     B, H, W = base_rgb.shape[:3]
-    s, ox, oy = _layout(W, H, frame, placement)
+    iw, ih = image_size or (W, H)
+    s, ox, oy = _layout(iw, ih, frame, placement)
 
     out = base_rgb.clone()
 
@@ -200,7 +213,7 @@ def composite_paint_layers(
         if rgba is None:
             continue
 
-        placed = _place_layer(rgba, bounds, W, H, s, ox, oy)  # [H, W, 4]
+        placed = _place_layer(rgba, bounds, W, H, s, ox, oy, origin)  # [H, W, 4]
 
         layer_rgb = placed[:, :, :3]   # [H, W, 3]
         layer_a   = placed[:, :, 3:4]  # [H, W, 1]  -- straight alpha
@@ -223,6 +236,8 @@ def combine_mask_layers(
     H: int,
     invert_mask: bool,
     placement: Placement = IDENTITY_PLACEMENT,
+    image_size: tuple[int, int] | None = None,
+    origin: tuple[int, int] = (0, 0),
 ) -> torch.Tensor:
     """Build the final MASK tensor from visible mask layers.
 
@@ -244,11 +259,14 @@ def combine_mask_layers(
         W, H:          Output canvas size.
         invert_mask:   Node-level invert flag.
         placement:     Move-tool placement (default identity).
+        image_size:    ``(W, H)`` of the run-time image; default = canvas size.
+        origin:        Image px of the canvas top-left (viewport canvases).
 
     Returns:
         ``[H, W]`` float32 mask in [0, 1].
     """
-    s, ox, oy = _layout(W, H, frame, placement)
+    iw, ih = image_size or (W, H)
+    s, ox, oy = _layout(iw, ih, frame, placement)
 
     combined = torch.zeros((H, W), dtype=torch.float32)
     has_mask = False
@@ -265,7 +283,7 @@ def combine_mask_layers(
             # Empty mask layer; a per-layer invert of zeros = ones (full mask)
             placed_a = torch.zeros((H, W), dtype=torch.float32)
         else:
-            placed = _place_layer(rgba, bounds, W, H, s, ox, oy)  # [H, W, 4]
+            placed = _place_layer(rgba, bounds, W, H, s, ox, oy, origin)  # [H, W, 4]
             placed_a = placed[:, :, 3]  # alpha channel
 
         if layer.invert:
@@ -290,15 +308,24 @@ def run_composite(
     doc: Document,
     layer_tensors: dict[str, torch.Tensor | None],
     invert_mask: bool,
+    image_size: tuple[int, int] | None = None,
+    origin: tuple[int, int] = (0, 0),
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Composite all layers and produce (IMAGE, MASK) for the given base image.
+    """Composite all layers and produce (IMAGE, MASK) for the given base canvas.
+
+    With the defaults the canvas is the run-time image. Output regions that
+    extend past the image pass a viewport instead: ``base_rgb`` covers image px
+    ``[origin, origin + canvas size)`` and ``image_size`` is the real image size
+    that the document frame maps onto.
 
     Args:
-        base_rgb:      ``[B, H, W, 3]`` float32 base image (0-1).
+        base_rgb:      ``[B, H, W, 3]`` float32 base canvas (0-1).
         doc:           Validated :class:`~document.Document`.
         layer_tensors: Map from layer id to ``[lh, lw, 4]`` RGBA tensor or None,
                        as returned by :func:`~layers.load_layer_rgba`.
         invert_mask:   Node-level invert_mask widget value.
+        image_size:    ``(W, H)`` of the run-time image; default = canvas size.
+        origin:        Image px of the canvas top-left.
 
     Returns:
         ``(IMAGE [B,H,W,3], MASK [B,H,W])`` float32 tensors.
@@ -306,11 +333,13 @@ def run_composite(
     B, H, W = base_rgb.shape[:3]
 
     image = composite_paint_layers(
-        base_rgb, doc.layers, layer_tensors, doc.bounds, doc.frame, doc.placement
+        base_rgb, doc.layers, layer_tensors, doc.bounds, doc.frame, doc.placement,
+        image_size, origin,
     )
 
     mask_hw = combine_mask_layers(
-        doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask, doc.placement
+        doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask, doc.placement,
+        image_size, origin,
     )
     # Broadcast mask to batch
     mask = mask_hw.unsqueeze(0).expand(B, -1, -1)

@@ -12,7 +12,8 @@ Document model (v1, SPEC.md "Document Model" section):
     version: 1
     frame:  {width, height}               -- integer pixel dims of the image frame
     bounds: {x, y, width, height}         -- paint area in frame coords (may extend outside)
-    regions: []                            -- reserved
+    regions: Region[]                      -- output regions, image px (M9)
+    mainOutput?: OutputOptions             -- independent Main post-processing
     placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
     activeLayerId: str
     layers: Layer[]                        -- bottom -> top; background NOT included
@@ -22,10 +23,10 @@ Layer model:
     kind           -- "paint" | "text" | "mask"   ("text" treated as paint by Python)
     visible        -- bool
     locked         -- bool (read-only by Python; doesn't affect compositing)
-    opacity        -- 0-1 float (clamped on parse)
+    opacity        -- 0-1 float (clamped; non-numeric/bool/non-finite -> 1)
     blendMode      -- "normal" only in v1
     file           -- "painter-sketch/<name>.<webp|png> [input]" or null
-    invert         -- bool, mask layers only (default False)
+    invert         -- bool, mask layers only (non-boolean -> False)
 """
 
 import json
@@ -33,16 +34,17 @@ import logging
 import math
 from dataclasses import dataclass, field
 
+from .document_regions import OutputOptions, Region, parse_output_options, parse_regions
+
 log = logging.getLogger("paintersketch.document")
 
 # ── Size caps ─────────────────────────────────────────────────────────────────
 
-_FRAME_MAX = 8192
-"""Maximum frame dimension (matches node widget max)."""
+FRAME_MAX = 16384
+"""Maximum frame / bounds side (`MAX_DOCUMENT_SIDE` in ui/src/document/parse.ts)."""
 
-# bounds may extend up to 3x the frame max in each direction so off-frame paint
-# that was created at a larger document size is tolerated without crashing.
-_BOUNDS_MAX = _FRAME_MAX * 3
+_OFFSET_MAX = FRAME_MAX * 4
+"""Largest `|bounds.x|` / `|bounds.y|` (the editor's `isInt` cap)."""
 
 PLACEMENT_MIN_SCALE = 0.05
 """Smallest Move-tool scale (SPEC "Saved-file contract", Placement)."""
@@ -103,6 +105,8 @@ class Document:
     bounds: Bounds
     layers: list[Layer] = field(default_factory=list)
     placement: Placement = IDENTITY_PLACEMENT
+    regions: list[Region] = field(default_factory=list)
+    main_output: OutputOptions = OutputOptions()
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -128,8 +132,8 @@ def _parse_frame(raw: dict) -> Frame | None:
     if w <= 0 or h <= 0:
         log.warning("document: frame dimensions must be positive (%d x %d)", w, h)
         return None
-    if w > _FRAME_MAX or h > _FRAME_MAX:
-        log.warning("document: frame %d x %d exceeds max %d", w, h, _FRAME_MAX)
+    if w > FRAME_MAX or h > FRAME_MAX:
+        log.warning("document: frame %d x %d exceeds max %d", w, h, FRAME_MAX)
         return None
     return Frame(width=w, height=h)
 
@@ -148,8 +152,8 @@ def _parse_bounds(raw: dict) -> Bounds | None:
     if w <= 0 or h <= 0:
         log.warning("document: bounds dimensions must be positive (%d x %d)", w, h)
         return None
-    if abs(x) > _BOUNDS_MAX or abs(y) > _BOUNDS_MAX or w > _BOUNDS_MAX or h > _BOUNDS_MAX:
-        log.warning("document: bounds (%d,%d,%d,%d) exceed sane cap %d", x, y, w, h, _BOUNDS_MAX)
+    if abs(x) > _OFFSET_MAX or abs(y) > _OFFSET_MAX or w > FRAME_MAX or h > FRAME_MAX:
+        log.warning("document: bounds (%d,%d,%d,%d) exceed caps", x, y, w, h)
         return None
     return Bounds(x=x, y=y, width=w, height=h)
 
@@ -205,10 +209,8 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
     if not isinstance(visible, bool):
         visible = True  # default visible
 
-    opacity = raw.get("opacity", 1.0)
-    if not isinstance(opacity, (int, float)):
-        opacity = 1.0
-    opacity = float(max(0.0, min(1.0, opacity)))
+    # Same as the editor's clamp01: bools, strings and NaN/inf fall back to 1.
+    opacity = max(0.0, min(1.0, _finite(raw.get("opacity"), 1.0)))
 
     file_val = raw.get("file")
     if file_val is not None and not isinstance(file_val, str):
@@ -217,9 +219,10 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
     if isinstance(file_val, str) and not file_val.strip():
         file_val = None
 
+    # Same as the editor: only a real boolean counts ("yes" / 1 -> False).
     invert = raw.get("invert", False)
     if not isinstance(invert, bool):
-        invert = bool(invert)
+        invert = False
 
     return Layer(
         id=layer_id,
@@ -242,12 +245,13 @@ def parse_document(raw: str) -> Document | None:
 
     Validation rules:
     - Must be valid JSON, a top-level object, and ``version == 1``.
-    - ``frame`` must have positive int dimensions <= 8192.
-    - ``bounds`` must have positive int size; x/y/size must stay within ±24576.
+    - ``frame`` must have positive int dimensions <= 16384.
+    - ``bounds`` must have positive int size <= 16384 and ``|x|, |y| <= 65536``.
     - Unknown layer kinds are skipped with a warning.  ``"text"`` is kept
       (rasterised by the frontend before saving, so Python sees it as paint).
     - Missing ``bounds``: fall back to frame-sized bounds at (0, 0).
     - ``placement`` is lenient (:func:`parse_placement`); missing = identity.
+    - Regions/options are additive and tolerant; bad records never discard paint.
 
     Args:
         raw: The ``document`` widget value.
@@ -301,7 +305,11 @@ def parse_document(raw: str) -> Document | None:
 
     placement = parse_placement(doc.get("placement"))
 
-    return Document(frame=frame, bounds=bounds, layers=layers, placement=placement)
+    return Document(
+        frame=frame, bounds=bounds, layers=layers, placement=placement,
+        regions=parse_regions(doc.get("regions")),
+        main_output=parse_output_options(doc.get("mainOutput")),
+    )
 
 
 def frame_size(doc: Document | None) -> tuple[int, int] | None:

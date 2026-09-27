@@ -33,6 +33,12 @@ export class ViewState {
     return this.transform;
   }
 
+  /** On-screen CSS pixels per image pixel (includes graph zoom). */
+  get screenScale(): number { return this.transform.scale * this.displayScale; }
+
+  /** On-screen CSS pixels per local stage pixel. */
+  get graphScale(): number { return this.displayScale; }
+
   /** Whether the view follows "fit to stage". */
   get isFitting(): boolean {
     return this.fitting;

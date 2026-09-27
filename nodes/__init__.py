@@ -8,7 +8,8 @@ Adding a new node: import it here and append it to ``ALL_NODES``.
 """
 
 from .painter_sketch import PainterSketch
+from .painter_sketch_regions import PainterSketchRegions
 
-ALL_NODES: list = [PainterSketch]
+ALL_NODES: list = [PainterSketch, PainterSketchRegions]
 
-__all__ = ["ALL_NODES", "PainterSketch"]
+__all__ = ["ALL_NODES", "PainterSketch", "PainterSketchRegions"]

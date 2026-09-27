@@ -43,6 +43,8 @@ export interface ShellEvents {
   fullscreen: undefined;
   /** Colour swatch clicked (see {@link ColorPickRequest}). */
   "pick-color": ColorPickRequest;
+  /** Outputs button (or `O`): toggle region mode on the Outputs tab; HostSync handles it. */
+  outputs: undefined;
 }
 
 /** Left rail regions. */
@@ -61,7 +63,7 @@ export interface BarRegions {
   leading: HTMLDivElement;
   /** Tool options; scrolls horizontally, never wraps. */
   scroller: HTMLDivElement;
-  /** Fixed right area (side panel toggle). */
+  /** Fixed right area (Outputs button + side panel toggle). */
   trailing: HTMLDivElement;
 }
 
@@ -83,6 +85,8 @@ export class EditorShell {
   readonly popoverHost: PopoverHost;
   readonly events = new Emitter<ShellEvents>();
   private readonly panelButton: HTMLButtonElement;
+  /** Opens the side panel on the Outputs tab (region mode); next to the panel toggle. */
+  readonly outputsButton: HTMLButtonElement;
   private readonly resizeObserver: ResizeObserver;
   private nativeInput: HTMLInputElement | null = null;
   private nativeApply: ((hex: string) => void) | null = null;
@@ -103,7 +107,15 @@ export class EditorShell {
     this.panelButton.className = "cps-icon-button";
     setIcon(this.panelButton, "panel", 18);
     this.panelButton.addEventListener("click", () => this.sidePanel.toggle());
-    this.bar.trailing.appendChild(this.panelButton);
+    this.outputsButton = document.createElement("button");
+    this.outputsButton.type = "button";
+    this.outputsButton.className = "cps-icon-button cps-outputs-button";
+    this.outputsButton.title = "Output regions (O)";
+    this.outputsButton.setAttribute("aria-label", this.outputsButton.title);
+    this.outputsButton.setAttribute("aria-pressed", "false");
+    setIcon(this.outputsButton, "region", 18);
+    this.outputsButton.addEventListener("click", () => this.events.emit("outputs", undefined));
+    this.bar.trailing.append(this.outputsButton, this.panelButton);
     this.bar.element.append(this.bar.leading, this.bar.scroller, this.bar.trailing);
 
     this.stage = div("cps-stage");
@@ -168,7 +180,7 @@ export class EditorShell {
     const open = !this.sidePanel.collapsed;
     this.panelButton.classList.toggle("cps-active", open);
     this.panelButton.setAttribute("aria-pressed", String(open));
-    this.panelButton.title = open ? "Hide layers panel" : "Show layers panel";
+    this.panelButton.title = open ? "Hide side panel" : "Show side panel";
   }
 
   /** Fallback picker until M3.2: a hidden native `<input type=color>`. */

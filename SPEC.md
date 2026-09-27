@@ -105,7 +105,7 @@ interface PainterDocument {
   docId: string                                     // stable frontend identity (live-session key); Python ignores it
   frame: { width: number; height: number }         // image frame the paint was made on
   bounds: { x: number; y: number; width: number; height: number } // paint area, frame coords
-  regions: Region[]                                 // reserved, always [] in v1 (decision 3)
+  regions: Region[]                                 // M9, up to 6 stable output slots
   placement?: { x: number; y: number; scale: number } // Move tool; default identity
   mainOutput?: OutputOptions                        // M9; default applyMask 'none'
   activeLayerId: string
@@ -125,21 +125,22 @@ interface Region {                                  // M9 Output Regions
   id: string
   slot: number                                      // 1..6, stable: = output pair number, never renumbered
   name: string                                      // user label shown on the output dots ("" = "region N")
-  rect: { x: number; y: number; width: number; height: number } // IMAGE px (not doc px): fixed to the image
+  rect: { x: number; y: number; width: number; height: number } // current-image px from the top-left, never rescaled; may extend outside the image
   visible: boolean                                  // overlay display only; outputs always produced
   output: OutputOptions
 }
 interface OutputOptions {                           // per region, and doc-level `mainOutput` for IMAGE/MASK
-  applyMask: 'none' | 'fill' | 'crop'               // fill = paint masked area with `fillColor`; crop = trim to mask bbox
+  applyMask: 'none' | 'fill' | 'crop' | 'border'    // fill = paint masked area with `fillColor`; crop = trim to mask bbox; border = pad (M9 addendum)
   fillColor: string                                 // '#rrggbb'
   cropPadding: number                               // px around the mask bbox for 'crop'
+  borderSize?: number; borderColor?: string; borderMask?: boolean // 'border': 64 / '#ffffff' / true
 }
 ```
 
 ### Saved-file contract (frontend writes, Python reads)
 
 - **Widget value** = `JSON.stringify(PainterDocument)`, or `""` for an empty document.
-- **Coordinates:** everything is in *frame* pixels. `bounds` is the paint area and
+- **Coordinates:** paint is in *frame* pixels; M9 regions are in current-image pixels (see "Output regions"). `bounds` is the paint area and
   may extend past the frame (negative `x`/`y`, larger size) but always contains
   it. Initially `bounds = {x:0, y:0, width:frame.width, height:frame.height}`;
   it grows in 256 px chunks while painting off-frame, capped at 3x the frame per
@@ -231,6 +232,7 @@ interface OutputOptions {                           // per region, and doc-level
 | Rectangle / Ellipse | U (Shift+U) | stroke / fill / both, stroke width. Shift = square/circle |
 | Text | T | font, size, color, bold/italic, alignment |
 | Quick Mask target | Q | toggle painting on mask vs. paint layer |
+| Output regions (Outputs tab) | O (toggle) | region mode: draw / move / resize; Shift-drag = new region; click empty = Main. Button next to the side-panel toggle |
 
 ### Selection (applies to all selection tools)
 - Shift = add, Alt = subtract, Shift+Alt = intersect (Photoshop modifiers), fixed
@@ -333,33 +335,98 @@ wrapping, type-mask text, searchable installed-font picker.
 Planned order after M7a: M8 -> M9 -> M10 -> M11 -> M12, then M7b release polish.
 Details per milestone are in the Milestones section.
 
-### Output regions: implementation notes (M9)
-- V3 has no concrete dynamic-output type (check core again first). Plan: declare
-  the maximum in the schema -- `IMAGE`, `MASK`, then 6 pairs `IMAGE 1`/`MASK 1` ...
-  `IMAGE 6`/`MASK 6` (14 outputs) -- and let the frontend show only the pairs in use.
-- **Output links are positional.** Never `removeOutput` a middle slot: the next
-  slot shifts into its index and ComfyUI would send the wrong region downstream.
-  Region *n* always uses output pair *n* (stable, never renumbered; a new region
-  takes the lowest free slot). The node shows pairs up to the highest slot in use;
-  unused pairs below it stay but are greyed/labelled "(unused)" -- unless the
-  M9 agent verifies a way to hide a slot *without removing it* in both renderers.
-- Output labels come from region names (`face` / `face mask`; default
-  `region N` / `region N mask`), set via the slot `label`, saved in the workflow.
-  Nodes 2.0: re-splice `node.outputs` after label changes (AGENTS.md).
-- Python: an unused slot returns a 1x1 black image / zero mask (or
-  `ExecutionBlocker` if something is linked to an unused slot -- decide in M9).
-  - Reference: rgthree Power Puter (`D:\AITools\rgthree-comfy`,
-    `py/power_puter.py`, `src_web/comfyui/power_puter.ts`) does truly dynamic
-    outputs, but via V1: `RETURN_TYPES = ByPassTypeTuple(("*",))` (a tuple that
-    returns `"*"` for any out-of-range index, `py/utils.py:169`) so validation
-    accepts any output index; the frontend adds/removes slots with
-    `addOutput`/`removeOutput` driven by a widget value, and `execute` returns a
-    tuple of that length. V3 builds `RETURN_TYPES` from the schema, so this does
-    not carry over as-is; don't drop to V1 for it.
-  - Its `stabilize()` shows a Nodes 2.0 gotcha worth reusing: after mutating
-    output slots, re-splice `node.outputs` in place so the Vue renderer notices
-    (see `AGENTS.md`).
+### Output regions (M9) -- agreed design (2026-09-26, rev. 2)
+An overnight first pass (another model, plan not reviewed) built 14 dynamic outputs on
+the main node, proportional region scaling and wire-disconnect rules. After testing,
+the user and coordinator replaced that design with the one below. Do not bring back
+dynamic output slots on the main node.
 
+**Nodes**
+- `PainterSketch` outputs `IMAGE`, `MASK`, `regions` (custom type `PS_REGIONS`).
+  Keeps the node compact: 14 sockets were ~500 px tall and every added region made
+  the node jump.
+- New helper node **`PainterSketch Regions`** (category `image`): one required input
+  `regions` (`PS_REGIONS`), always exactly 12 outputs `IMAGE 1`/`MASK 1` ...
+  `IMAGE 6`/`MASK 6`. Sockets never appear, disappear or disconnect.
+  - Output labels follow region names (`face` / `face mask`); an empty slot is
+    labelled `region N (missing)`. Labels update without running: the helper's
+    frontend follows its input link to the PainterSketch node and reads the
+    document. Unresolvable links (reroute / subgraph boundary) fall back to
+    `region N` labels; execution is unaffected.
+  - An empty slot returns `ExecutionBlocker(None)` for that pair only: its downstream
+    branch silently doesn't run (a feature; document it in README and the node
+    description). Main and filled slots run normally.
+  - Several helpers may hang off one node.
+- `PS_REGIONS` value: a small Python object carrying, per slot 1..6, either the
+  processed IMAGE/MASK tensors or "empty". Computed once in the main node.
+
+**Slots and cards**
+- Six fixed slots. The Outputs tab always shows **Main + six slot cards**: a filled
+  slot is a full card, an empty slot is a one-line `+ Region N` row. Clicking it
+  creates a centred default region in that slot; drawing on the canvas fills the
+  lowest empty slot. `x` empties the slot (collapses to `+ Region N`). Card N
+  always feeds helper pair N; refilling a slot sends the new region down the same
+  wires (intentional and visible). No reordering (a "move to slot" action could
+  come later).
+- Card layout: row 1 eye, title, delete (icons from `ui/icons.ts`); row 2 X / Y / W / H
+  (current image px, scrub labels, one undo step per field session); row 3 mask mode
+  dropdown with colour swatch (Fill) or padding (Crop) inline. The title works like
+  layer rows: shows `N · name`; double-click edits just the name, pre-filled with the
+  default `Region N`; trimmed on commit, empty = default. No separate Name field.
+- Main card: fixed title `Main`, read-only size, options row.
+
+**Geometry**
+- Regions are stored in **image px from the top-left** and never rescaled: not on
+  input image changes, not on width/height widget changes. Move drawing doesn't move
+  them. (`regionsReferenceSize` is dropped; nothing was released.)
+- Regions may extend partly or fully outside the image, clamped to the paint area
+  (one image size beyond each edge, the 3x paint cap). Edge rule (editor and Python):
+  `floor(clamp(v, -W, 2W) + 0.5)` per edge (y with H), then at least 1x1. New
+  regions from `+ Region N` are centred at half the image size. Outside the image a region
+  outputs the `background` widget colour plus any paint and mask coverage that lies
+  there; Python composites the needed extended area.
+
+**Region mode (Outputs tab)**
+- Opening the Outputs tab = region mode (draw / move / resize on the canvas);
+  choosing any other tool switches back to the Layers tab. No separate rail tool
+  and no "Draw region" button.
+- A rail button next to the side-panel toggle (top) opens the panel on Outputs (for
+  a collapsed panel); shortcut **O**.
+- Shift-drag always draws a new region (even starting inside one); plain drag inside
+  a region moves it. Clicking empty canvas selects Main. Selected Main = image border
+  highlighted; selected region = highlighted with handles.
+- Outside region mode, regions are subdued: thin, dashed, translucent, small number
+  label, no handles, no selection highlight.
+
+**Output options** (per output, Main + each region): None / Fill (colour) / Crop to
+mask (+ padding). Applied to the final mask (per-layer invert -> union -> node
+`invert_mask`); each output starts from the one composite; Main's options never
+affect regions. Fill blends `image*(1-mask)+color*mask`, MASK unchanged. Crop uses
+mask > 0 plus padding, clamped to that output; empty mask = uncropped. Batches kept.
+**Add border** (2026-09-26): pads the output by `borderSize` px on all four sides
+(current image px, default 64) with `borderColor` (default `#ffffff`); MASK is padded
+to the same size, the border area white (1) when `borderMask` is on (default: marks the
+border for outpainting, like core "Pad Image for Outpainting"), black (0) when off.
+Applied after region slicing, to the one composite like the other modes. UI: the
+dropdown label is **Modify** with None / Fill mask / Crop to mask / Add border; Add
+border shows width, colour swatch and a "Mask border" checkbox inline. Manifest keeps
+`applyMask` as the field name; new value `'border'` and fields `borderSize`,
+`borderColor`, `borderMask` (missing = defaults; older readers ignore them).
+
+**Persistence / behaviour**
+- Additive v1 manifest fields (`regions`, `mainOutput`); legacy `{id,index,rect}` maps
+  `slot = index + 1`; bad region records are skipped individually. Region-only and
+  options-only documents count as edited (save, queue, sessions, reload).
+- Region edits are undoable metadata steps (no pixel snapshots); Clear removes
+  regions and resets Main options inside its undo step. Selecting a region is not a
+  document edit. Solo never affects outputs.
+- Side panel tabs: Layers | Outputs. The Outputs button sits next to the side-panel
+  toggle (options bar, top right); O / the button again returns to Layers and the
+  last tool.
+- Parity fixes (editor and Python must read a manifest the same way): Python frame
+  cap raised to 16384 (as the editor); the editor skips a single malformed layer with
+  a toast instead of dropping the document (as Python); Python ignores non-boolean
+  `invert` and non-numeric `opacity` (as the editor).
 ## Milestones
 
 ### M0 -- Scaffold
@@ -439,16 +506,17 @@ Purpose: switch masked areas on/off independently and tell them apart by colour.
 - [x] **Ctrl+click / Move layer (`V`) auto-select with Quick Mask on** picks the topmost visible mask with coverage under the pointer, makes it the current mask and drags it; with Quick Mask off, unchanged (paint/text only)
 
 ### M9 -- Output regions + output options
-- [ ] Region tool: draw numbered rectangles (max 6) anywhere on the image; move/resize with handles; overlap allowed; exact X/Y/W/H fields
-- [ ] Regions are in **image px**, fixed to the image (Move drawing doesn't move them); on an upstream size change, scale them proportionally with the image and clamp
-- [ ] Stable slots: region *n* <-> output pair *n*, never renumbered; new region = lowest free slot (see "Output regions: implementation notes")
-- [ ] User-editable region name = output labels (`name` / `name mask`)
-- [ ] Region outputs: `IMAGE n` = composited image cropped to the rect; `MASK n` = union of visible masks cropped to the rect
-- [ ] Output options per output (Main + each region): apply mask **None / Fill (color) / Crop to mask (+ padding px)**. Crop trims to the mask's bbox + padding (clamped to the output), which changes that output's size; empty mask with Crop = uncropped
-- [ ] Side panel tabs **Layers | Outputs**: Outputs lists Main (always) + regions (number, name, size fields, visibility, options, delete)
-- [ ] Regions and options saved in the document (`regions`, `mainOutput`); Python applies them; undoable edits
-- [ ] Batch: each output is a batch like `IMAGE`
-
+Design: "Output regions (M9) -- agreed design". First pass (dynamic sockets) replaced.
+- [x] Main node outputs `IMAGE`, `MASK`, `regions`; helper `PainterSketch Regions` with 12 fixed outputs, live labels, empty slot = silent block
+- [x] Regions in image px from top-left, never rescaled; may extend outside the image (background colour + off-image paint/mask)
+- [x] Outputs tab = region mode (other tools -> Layers tab); rail button by the panel toggle, shortcut O; draw / move / resize, Shift-drag = new region, empty click = Main
+- [x] Six fixed slot cards (`+ Region N` when empty), layer-style titles (double-click rename), icon set, X/Y/W/H, options row
+- [x] Subdued overlay outside region mode; Main selection highlights the image border
+- [x] Output options per output (Main + regions): None / Fill (colour) / Crop to mask (+ padding)
+- [x] Add border option (width, colour, "Mask border" checkbox); dropdown renamed "Modify", Fill -> "Fill mask"
+- [x] Saved in the document, undoable, Python applies them; batches kept
+- [x] Parity fixes (frame cap, lenient bad layer in the editor, strict invert/opacity in Python)
+- [x] Code/doc style brought to the project standard (section headers, TSDoc, no dense one-liners, no duplicated helpers)
 ### M10 -- Floating selections + clipboard
 - [ ] Move layer tool inside a selection drags the selected pixels as a floating piece; Alt+drag duplicates; commit on deselect / tool switch / Enter; Esc cancels
 - [ ] Ctrl+C / Ctrl+X / Ctrl+V inside the editor (only while it owns the keyboard -- white rail edge); paste = new layer, floating, at the view centre
@@ -472,11 +540,12 @@ Purpose: switch masked areas on/off independently and tell them apart by colour.
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
-- M0-M6, M7a and M8 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
+- M0-M6, M7a, M8 and M9 (incl. Add border) are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: split `engine/layerOps.ts` (401 lines) before it grows, then M9 (output regions: present a plan to the user before building), then M10-M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
+- Next: M10 (floating selections + clipboard; present a plan to the user before building -- M9's unreviewed overnight plan had to be redone), then M11, M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
+- M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
 - Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
 
 #### Brush engine (2026-09-25/26, after M7a)
@@ -538,6 +607,16 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-26: Add border output option landed (browser-verified): width 1..4096 (default 64), colour (default white), "Mask border" (default on = white border in MASK, ComfyUI convention: white = area to change). Dropdown renamed "Modify"; "Fill" shown as "Fill mask".
+
+- 2026-09-26: M9 done (browser-verified). Subdued outline opacity 60% -> 30% (two-tone dashes read stronger), outlined region numbers. Rename `nodes/output_regions.py` -> `output_processing.py` (it processes Main too); naming rule output vs region added to AGENTS.md.
+
+- 2026-09-26: M9 browser-verified except the last tweaks: side panel 180 -> 216 px, number fields without spin arrows, two-tone (black/white) dashes for the subdued overlay, rule + spacing between the Outputs button and the panel toggle.
+
+- 2026-09-26: M9 rev. 2 code landed (needs browser check): main node IMAGE/MASK/regions (`PS_REGIONS` = `PainterRegions`, 6 slots); helper `PainterSketch Regions` (12 fixed outputs, labels via `widget/regionsNode.ts` on a document-change event, no polling); dynamic socket code removed; pixel-fixed regions clamped to the 3x area, off-image = background colour + off-frame paint/mask; editor skips a malformed layer with one toast, duplicate layer ids get a fresh id; Python frame cap 16384, strict invert/opacity. Region mode = Outputs tab (hidden region tool), shortcut O; six slot cards; subdued overlay. Selecting is not a document edit.
+
+- 2026-09-26: M9 redesigned with the user after testing the overnight first pass: main node IMAGE/MASK/regions + helper node with 12 fixed, never-disconnecting outputs; six fixed slot cards; pixel-fixed regions that may extend outside the image; Outputs tab = region mode (shortcut O); subdued overlay outside it; parity fixes. The first-pass contract section was replaced.
 
 - 2026-09-26: M8 fully browser-verified (incl. solo). Duplicate naming changed to Photoshop's "copy N" (no growing names).
 

@@ -1,0 +1,226 @@
+/* Side panel tabs (Layers / Outputs) and the Outputs tab cards (M9).
+   Titles, rename field, eye/delete buttons reuse the layer row classes
+   (`cps-layer-name`, `cps-layer-rename`, `cps-layer-button`). */
+
+/* ── Tabs ─────────────────────────────────────────────────────────────── */
+
+.cps-side-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.cps-side-tabs {
+  display: flex;
+  flex: none;
+  border-bottom: 1px solid var(--cps-border);
+}
+
+.cps-side-tabs button {
+  flex: 1;
+  padding: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-side-tabs button.cps-active {
+  color: var(--cps-fg);
+  background: var(--cps-active-bg);
+  box-shadow: inset 0 -2px var(--cps-accent);
+}
+
+.cps-side-content > .cps-layers,
+.cps-outputs {
+  flex: 1;
+  min-height: 0;
+}
+
+.cps-side-content > [hidden],
+.cps-outputs [hidden] {
+  display: none !important;
+}
+
+/* ── Outputs list ─────────────────────────────────────────────────────── */
+
+.cps-outputs {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.cps-outputs-list {
+  overflow-y: auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.cps-outputs-hint {
+  flex: none;
+  padding: 5px 6px;
+  color: var(--cps-fg-muted);
+  line-height: 1.35;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────── */
+
+.cps-output-card {
+  padding: 3px 4px 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  border-left: 2px solid transparent;
+  user-select: none;
+}
+
+.cps-output-card:hover {
+  background: var(--cps-hover);
+}
+
+.cps-output-card.cps-selected {
+  background: var(--cps-active-bg);
+  border-left-color: var(--cps-accent);
+}
+
+.cps-output-header {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 22px;
+}
+
+.cps-output-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.cps-output-card.cps-hidden-layer .cps-output-title {
+  opacity: 0.55;
+}
+
+.cps-output-size {
+  flex: none;
+  color: var(--cps-fg-muted);
+}
+
+.cps-output-empty {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 3px 6px;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  background: transparent;
+  color: var(--cps-fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cps-output-empty:hover {
+  background: var(--cps-hover);
+  color: var(--cps-fg);
+}
+
+/* ── Fields ───────────────────────────────────────────────────────────── */
+
+.cps-output-geometry {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0 4px;
+}
+
+.cps-output-field {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  margin: 2px 0;
+}
+
+.cps-output-field > span,
+.cps-output-label {
+  flex: none;
+  color: var(--cps-fg-muted);
+}
+
+.cps-output-scrub {
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+/* Number fields: no spin arrows, so 4-5 digit sizes fit (scrub the label instead). */
+.cps-output-card input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.cps-output-card input[type="number"]::-webkit-inner-spin-button,
+.cps-output-card input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.cps-output-card input,
+.cps-output-card select {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  padding: 2px 3px;
+  font: inherit;
+  color: var(--cps-fg);
+  background: var(--cps-input-bg);
+  border: 1px solid var(--cps-border);
+  border-radius: 3px;
+}
+
+.cps-output-card input:focus {
+  outline: 1px solid var(--cps-accent);
+}
+
+.cps-output-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.cps-output-options .cps-output-field {
+  flex: 0 1 70px;
+  margin: 0;
+}
+
+.cps-output-swatch {
+  flex: none;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--cps-fg-muted);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.cps-output-options .cps-output-mode {
+  min-width: 0;
+}
+
+.cps-output-check {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  color: var(--cps-fg-muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cps-output-check > input {
+  margin: 0;
+}
+
+.cps-output-check[hidden] {
+  display: none;
+}

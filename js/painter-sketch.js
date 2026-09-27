@@ -110,6 +110,10 @@ function invalidDocumentMessage(reason) {
   const hint = reason.startsWith("unsupported document version") ? " It was probably saved by a newer PainterSketch; update the node." : "";
   return `Could not read the saved painting (${reason}); showing an empty canvas.${hint} The saved data is kept in the workflow unless you paint on this node.`;
 }
+function skippedLayersMessage(count) {
+  const what = count === 1 ? "1 layer entry" : `${count} layer entries`;
+  return `The saved painting has ${what} that could not be read; loaded the rest (details in the console).`;
+}
 const MAX_NAMES = 3;
 function nameList(problems) {
   const names = problems.slice(0, MAX_NAMES).map((p) => `"${p.name}"`);
@@ -252,7 +256,7 @@ Warning: ${fileCount(skipped)} in the workflows folders could not be scanned (to
   }
   return text;
 }
-function isRecord$1(value) {
+function isRecord$2(value) {
   return typeof value === "object" && value !== null;
 }
 function scanValue(value, into) {
@@ -269,22 +273,22 @@ function scanValue(value, into) {
 }
 function scanOpenWorkflows(into) {
   const manager = app.extensionManager;
-  const store = isRecord$1(manager) ? manager["workflow"] : void 0;
-  const open = isRecord$1(store) ? store["openWorkflows"] : void 0;
+  const store = isRecord$2(manager) ? manager["workflow"] : void 0;
+  const open = isRecord$2(store) ? store["openWorkflows"] : void 0;
   if (!Array.isArray(open)) return;
   for (const workflow of open) {
-    if (!isRecord$1(workflow)) continue;
+    if (!isRecord$2(workflow)) continue;
     scanValue(workflow["content"], into);
     scanValue(workflow["originalContent"], into);
     const tracker = workflow["changeTracker"];
-    if (!isRecord$1(tracker)) continue;
+    if (!isRecord$2(tracker)) continue;
     for (const key of ["activeState", "initialState", "undoQueue", "redoQueue"]) scanValue(tracker[key], into);
   }
 }
 function scanCurrentGraph(into) {
   const root = app;
-  const graph = isRecord$1(root) ? root["graph"] : void 0;
-  if (!isRecord$1(graph) || typeof graph["serialize"] !== "function") return;
+  const graph = isRecord$2(root) ? root["graph"] : void 0;
+  if (!isRecord$2(graph) || typeof graph["serialize"] !== "function") return;
   try {
     scanValue(graph["serialize"].call(graph), into);
   } catch {
@@ -434,6 +438,12 @@ function roundOutRect(r) {
 }
 function rectEquals(a, b) {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+function rectContainsPoint(rect, p) {
+  return p.x >= rect.x && p.y >= rect.y && p.x <= rect.x + rect.width && p.y <= rect.y + rect.height;
 }
 function frameRect(frame) {
   return { x: 0, y: 0, width: frame.width, height: frame.height };
@@ -778,6 +788,7 @@ const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
 const DOM_WIDGET_TYPE = "paintersketch";
 const INPUT_NAMES = {
   image: "image",
+  document: "document",
   width: "width",
   height: "height",
   background: "background"
@@ -820,6 +831,202 @@ function readPressureDefaults() {
 }
 function readSampleDefaults() {
   return sampleDefaultsFrom(safeRead);
+}
+const MAX_BORDER_SIZE = 4096;
+const DEFAULT_OUTPUT_OPTIONS = Object.freeze({
+  applyMask: "none",
+  fillColor: "#000000",
+  cropPadding: 0,
+  borderSize: 64,
+  borderColor: "#ffffff",
+  borderMask: true
+});
+function readColor(value, fallback) {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : fallback;
+}
+function readMode$1(value) {
+  return value === "fill" || value === "crop" || value === "border" ? value : "none";
+}
+function readBorderSize(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_OUTPUT_OPTIONS.borderSize;
+  return Math.min(MAX_BORDER_SIZE, Math.max(1, Math.floor(value)));
+}
+function readOutputOptions(value) {
+  const record = typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
+  const padding = record["cropPadding"];
+  const borderMask = record["borderMask"];
+  return {
+    applyMask: readMode$1(record["applyMask"]),
+    fillColor: readColor(record["fillColor"], DEFAULT_OUTPUT_OPTIONS.fillColor),
+    cropPadding: typeof padding === "number" && Number.isFinite(padding) ? Math.min(Number.MAX_SAFE_INTEGER, Math.max(0, Math.floor(padding))) : 0,
+    borderSize: readBorderSize(record["borderSize"]),
+    borderColor: readColor(record["borderColor"], DEFAULT_OUTPUT_OPTIONS.borderColor),
+    borderMask: typeof borderMask === "boolean" ? borderMask : DEFAULT_OUTPUT_OPTIONS.borderMask
+  };
+}
+function cloneOutputOptions(options = DEFAULT_OUTPUT_OPTIONS) {
+  return {
+    applyMask: options.applyMask,
+    fillColor: options.fillColor,
+    cropPadding: options.cropPadding,
+    borderSize: options.borderSize ?? DEFAULT_OUTPUT_OPTIONS.borderSize,
+    borderColor: options.borderColor ?? DEFAULT_OUTPUT_OPTIONS.borderColor,
+    borderMask: options.borderMask ?? DEFAULT_OUTPUT_OPTIONS.borderMask
+  };
+}
+function outputOptionsEqual(a, b) {
+  return a.applyMask === b.applyMask && a.fillColor === b.fillColor && a.cropPadding === b.cropPadding && a.borderSize === b.borderSize && a.borderColor === b.borderColor && a.borderMask === b.borderMask;
+}
+const MAX_REGIONS = 6;
+const DEFAULT_REGION_FRACTION = 0.5;
+function isRegionSlot(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_REGIONS;
+}
+function nextRegionSlot(regions) {
+  const used = new Set(regions.map((region) => region.slot));
+  for (let slot = 1; slot <= MAX_REGIONS; slot++) {
+    if (!used.has(slot)) return slot;
+  }
+  return null;
+}
+function defaultRegionName(slot) {
+  return `Region ${slot}`;
+}
+function commitRegionName(input, slot) {
+  const name = input.trim();
+  return name || defaultRegionName(slot);
+}
+function regionName(region) {
+  return commitRegionName(region.name, region.slot);
+}
+function regionSlotLabel(region) {
+  return `${region.slot} · ${regionName(region)}`;
+}
+function roundRegionEdge(value) {
+  return Math.floor(value + 0.5);
+}
+function regionArea(image) {
+  return { x: -image.width, y: -image.height, width: 3 * image.width, height: 3 * image.height };
+}
+function clampRegionRect(rect, image) {
+  const area = regionArea(image);
+  const [x, right] = clampEdges(rect.x, rect.x + rect.width, area.x, area.x + area.width);
+  const [y, bottom] = clampEdges(rect.y, rect.y + rect.height, area.y, area.y + area.height);
+  return { x, y, width: right - x, height: bottom - y };
+}
+function defaultRegionRect(image) {
+  const width = Math.max(1, roundRegionEdge(image.width * DEFAULT_REGION_FRACTION));
+  const height = Math.max(1, roundRegionEdge(image.height * DEFAULT_REGION_FRACTION));
+  const x = Math.floor((image.width - width) / 2);
+  const y = Math.floor((image.height - height) / 2);
+  return { x, y, width, height };
+}
+function clampEdges(start, end, min, max) {
+  const low = clamp$1(roundRegionEdge(start), min, max - 1);
+  const high = clamp$1(roundRegionEdge(end), low + 1, max);
+  return [low, high];
+}
+function clamp$1(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+function createRegion(id, slot, rect) {
+  return {
+    id,
+    slot,
+    name: defaultRegionName(slot),
+    rect: { ...rect },
+    visible: true,
+    output: cloneOutputOptions()
+  };
+}
+function cloneRegion(region) {
+  const { x, y, width, height } = region.rect;
+  return {
+    id: region.id,
+    slot: region.slot,
+    name: region.name,
+    rect: { x, y, width, height },
+    visible: region.visible,
+    output: cloneOutputOptions(region.output)
+  };
+}
+function readRegions(value) {
+  if (value === void 0) return { regions: [], repaired: false };
+  if (!Array.isArray(value)) return { regions: [], repaired: true };
+  const regions = [];
+  const ids = /* @__PURE__ */ new Set();
+  const slots = /* @__PURE__ */ new Set();
+  let repaired = false;
+  for (const entry of value) {
+    const region = isRecord$1(entry) ? readRegion(entry) : null;
+    if (!region || ids.has(region.id) || slots.has(region.slot)) {
+      repaired = true;
+      continue;
+    }
+    if (entry["slot"] === void 0 || !sameRect(entry["rect"], region.rect)) repaired = true;
+    ids.add(region.id);
+    slots.add(region.slot);
+    regions.push(region);
+  }
+  return { regions, repaired };
+}
+function readRegionRect(value) {
+  if (!isRecord$1(value)) return null;
+  const { x, y, width, height } = value;
+  if (!finite(x) || !finite(y) || !finite(width) || !finite(height)) return null;
+  const right = x + width;
+  const bottom = y + height;
+  if (!Number.isFinite(right) || !Number.isFinite(bottom)) return null;
+  const left = roundRegionEdge(x);
+  const top = roundRegionEdge(y);
+  const w = roundRegionEdge(right) - left;
+  const h = roundRegionEdge(bottom) - top;
+  if (w < 1 || h < 1) return null;
+  return { x: left, y: top, width: w, height: h };
+}
+function readRegion(entry) {
+  const id = entry["id"];
+  if (typeof id !== "string" || !id.trim()) return null;
+  const slot = entry["slot"] === void 0 ? legacySlot(entry["index"]) : entry["slot"];
+  if (!isRegionSlot(slot)) return null;
+  const rect = readRegionRect(entry["rect"]);
+  if (!rect) return null;
+  const name = entry["name"];
+  const visible = entry["visible"];
+  return {
+    id,
+    slot,
+    name: typeof name === "string" ? name : "",
+    rect,
+    visible: typeof visible === "boolean" ? visible : true,
+    output: readOutputOptions(entry["output"])
+  };
+}
+function legacySlot(index) {
+  if (typeof index !== "number" || !Number.isInteger(index)) return null;
+  return index + 1;
+}
+function sameRect(raw, rect) {
+  if (!isRecord$1(raw)) return false;
+  return raw["x"] === rect.x && raw["y"] === rect.y && raw["width"] === rect.width && raw["height"] === rect.height;
+}
+function isRecord$1(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function finite(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+function hasOutputMetadata(doc) {
+  return doc.regions.length > 0 || doc.mainOutput !== void 0;
+}
+function hasDocumentContent(doc, hasPaint = false) {
+  return hasPaint || doc.layers.some((layer) => layer.file !== null) || hasOutputMetadata(doc);
+}
+function outputMetadataSignature(doc) {
+  return JSON.stringify({
+    regions: [...doc.regions].sort((a, b) => a.slot - b.slot).map(cloneRegion),
+    mainOutput: cloneOutputOptions(doc.mainOutput)
+  });
 }
 const PLACEMENT_MIN_SCALE = 0.05;
 const PLACEMENT_MAX_SCALE = 20;
@@ -885,15 +1092,9 @@ function validate(data) {
   }
   const rawLayers = data["layers"];
   if (!Array.isArray(rawLayers)) return { status: "invalid", reason: "layers is not an array" };
-  const layers2 = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const entry of rawLayers) {
-    const layer = readLayer(entry);
-    if (!layer) return { status: "invalid", reason: "invalid layer entry" };
-    if (seen.has(layer.id)) return { status: "invalid", reason: `duplicate layer id ${layer.id}` };
-    seen.add(layer.id);
-    layers2.push(layer);
-  }
+  const read = readLayers(rawLayers);
+  const { layers: layers2, seen, skippedLayers } = read;
+  if (read.repaired) repaired = true;
   if (!layers2.some((l) => l.kind === "paint")) {
     layers2.unshift(createPaintLayer("Layer 1"));
     repaired = true;
@@ -915,18 +1116,21 @@ function validate(data) {
     repaired = true;
   }
   const regions = readRegions(data["regions"]);
-  if (!regions) repaired = true;
+  if (regions.repaired) repaired = true;
+  if (data["regionsReferenceSize"] !== void 0) repaired = true;
   const placed = readPlacement(data["placement"]);
   if (placed.repaired) repaired = true;
   return {
     status: "ok",
     repaired,
+    ...skippedLayers ? { skippedLayers } : {},
     document: {
       version: DOCUMENT_VERSION,
       docId,
       frame,
       bounds,
-      regions: regions ?? [],
+      regions: regions.regions,
+      ...data["mainOutput"] !== void 0 ? { mainOutput: readOutputOptions(data["mainOutput"]) } : {},
       ...placed.placement ? { placement: placed.placement } : {},
       activeLayerId,
       layers: layers2
@@ -934,14 +1138,41 @@ function validate(data) {
   };
 }
 const LAYER_KINDS = /* @__PURE__ */ new Set(["paint", "text", "mask"]);
+function readLayers(rawLayers) {
+  const layers2 = [];
+  const seen = /* @__PURE__ */ new Set();
+  let skippedLayers = 0;
+  let repaired = false;
+  rawLayers.forEach((entry, index) => {
+    const layer = readLayer(entry);
+    if (!layer) {
+      log.warn(`layer[${index}] is malformed; skipping it`, entry);
+      skippedLayers++;
+      repaired = true;
+      return;
+    }
+    if (seen.has(layer.id)) {
+      const id = createId();
+      log.warn(`layer[${index}] repeats id ${layer.id}; loading it as ${id}`);
+      layer.id = id;
+      repaired = true;
+    }
+    seen.add(layer.id);
+    layers2.push(layer);
+  });
+  return { layers: layers2, seen, skippedLayers, repaired };
+}
 function readLayer(value) {
   if (!isRecord(value)) return null;
   const id = value["id"];
   const kind = value["kind"];
   if (typeof id !== "string" || !id) return null;
   if (typeof kind !== "string" || !LAYER_KINDS.has(kind)) return null;
-  const file = value["file"];
-  if (file !== null && file !== void 0 && (typeof file !== "string" || !file.trim())) return null;
+  let file = value["file"];
+  if (file !== null && file !== void 0 && (typeof file !== "string" || !file.trim())) {
+    log.warn(`layer ${id} has an invalid file reference; loading it empty`);
+    file = null;
+  }
   const layer = {
     id,
     name: typeof value["name"] === "string" ? value["name"] : id,
@@ -964,20 +1195,6 @@ function readLayer(value) {
     }
   }
   return layer;
-}
-function readRegions(value) {
-  if (value === void 0) return null;
-  if (!Array.isArray(value)) return null;
-  const regions = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) return null;
-    const rect = readRect(entry["rect"]);
-    const id = entry["id"];
-    const index = entry["index"];
-    if (!rect || typeof id !== "string" || typeof index !== "number" || !Number.isInteger(index)) return null;
-    regions.push({ id, index, rect });
-  }
-  return regions;
 }
 function readSize(value) {
   if (!isRecord(value)) return null;
@@ -1014,11 +1231,8 @@ function stringifyDocument(doc) {
     docId: doc.docId,
     frame: { width: doc.frame.width, height: doc.frame.height },
     bounds: { x: doc.bounds.x, y: doc.bounds.y, width: doc.bounds.width, height: doc.bounds.height },
-    regions: doc.regions.map((r) => ({
-      id: r.id,
-      index: r.index,
-      rect: { x: r.rect.x, y: r.rect.y, width: r.rect.width, height: r.rect.height }
-    })),
+    regions: doc.regions.map(cloneRegion),
+    ...doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {},
     // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
     ...p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {},
     activeLayerId: doc.activeLayerId,
@@ -1046,7 +1260,8 @@ function cloneDocument(doc) {
     ...doc,
     frame: { ...doc.frame },
     bounds: { ...doc.bounds },
-    regions: doc.regions.map((r) => ({ ...r, rect: { ...r.rect } })),
+    regions: doc.regions.map(cloneRegion),
+    ...doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {},
     ...doc.placement ? { placement: { ...doc.placement } } : {},
     layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
   };
@@ -1464,6 +1679,7 @@ function openColorPicker(host, anchor, opts) {
       } else if (escaped) {
         opts.onInput(initial);
       }
+      opts.onClose?.(escaped);
     }
   });
   handle.element.addEventListener(
@@ -1478,6 +1694,8 @@ function openColorPicker(host, anchor, opts) {
   return handle;
 }
 const PATHS = {
+  // Output regions (Outputs button): box with a "1" and corner handles.
+  region: "M4 4h16v16H4zM8 9l3-2v10M8 17h6M2 2h4v4H2zM18 18h4v4h-4z",
   brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
   eraser: "M7 20h11M4.5 14.5l8-8 6 6-7.5 7.5H9.5z",
   // Tipped paint can with a drip.
@@ -1916,6 +2134,38 @@ function applyLayerChange(layers2, change, forward) {
     }
   }
 }
+const MAX_NAME_LENGTH = 100;
+function startInlineRename(host, initial, finish) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "cps-layer-rename";
+  input.value = initial;
+  input.spellcheck = false;
+  input.maxLength = MAX_NAME_LENGTH;
+  host.replaceChildren(input);
+  let done = false;
+  const end = (commit) => {
+    if (done) return;
+    done = true;
+    finish(commit ? input.value : null);
+  };
+  input.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      end(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      end(false);
+    }
+  });
+  input.addEventListener("blur", () => end(true));
+  input.addEventListener("pointerdown", (event) => event.stopPropagation());
+  input.addEventListener("click", (event) => event.stopPropagation());
+  input.focus({ preventScroll: true });
+  input.select();
+  return input;
+}
 const THUMB_BOX = 36;
 const THUMB_MIN_INTERVAL_MS = 150;
 function thumbSize(size, box = THUMB_BOX) {
@@ -2170,40 +2420,13 @@ class LayerRow {
   /** Begin inline renaming. */
   startRename() {
     if (this.editor || this.kind === "background") return;
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "cps-layer-rename";
-    input.value = this.model?.name ?? "";
-    input.spellcheck = false;
-    input.maxLength = 100;
-    this.editor = input;
-    this.nameEl.replaceChildren(input);
     this.actions.renaming(true);
-    let done = false;
-    const finish = (commit) => {
-      if (done) return;
-      done = true;
-      const value = input.value;
+    this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
       this.nameEl.textContent = this.model?.name ?? "";
-      if (commit) this.actions.rename(this.id, value);
+      if (value !== null) this.actions.rename(this.id, value);
       this.actions.renaming(false);
-    };
-    input.addEventListener("keydown", (event) => {
-      event.stopPropagation();
-      if (event.key === "Enter") {
-        event.preventDefault();
-        finish(true);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        finish(false);
-      }
     });
-    input.addEventListener("blur", () => finish(true));
-    input.addEventListener("pointerdown", (event) => event.stopPropagation());
-    input.addEventListener("click", (event) => event.stopPropagation());
-    input.focus({ preventScroll: true });
-    input.select();
   }
 }
 function button(className, onClick) {
@@ -3220,15 +3443,15 @@ class LayersPanel {
         e.layerOps.setActiveLayer(id);
         e.setPaintTarget("paint");
       }),
-      toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer(e, id)?.visible)),
+      toggleVisible: (id) => this.withEditor((e) => e.layerOps.setVisible(id, !findLayer$1(e, id)?.visible)),
       // View only: no beforeEdit (a stage drag in progress is not an edit conflict).
       toggleSolo: (id) => this.editor?.toggleSolo(id),
-      toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
+      toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer$1(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
-      toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
+      toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer$1(e, id)?.invert !== true)),
       pickColor: (id, anchor) => {
         const editor = this.editor;
-        const layer = editor && findLayer(editor, id);
+        const layer = editor && findLayer$1(editor, id);
         if (editor && layer) this.maskColor.open(anchor, { editor, layerId: id }, maskDisplayColor(layer));
       },
       renaming: (active) => {
@@ -3272,10 +3495,10 @@ class LayersPanel {
   }
   targetFor(id) {
     const editor = this.editor;
-    return editor && findLayer(editor, id) ? { editor, layerId: id } : null;
+    return editor && findLayer$1(editor, id) ? { editor, layerId: id } : null;
   }
 }
-function findLayer(editor, id) {
+function findLayer$1(editor, id) {
   return editor.doc.layers.find((l) => l.id === id);
 }
 function groupControl(group2, descriptors, ctx) {
@@ -3747,6 +3970,667 @@ function railButton(icon, title, onClick) {
   setIcon(button2, icon);
   return button2;
 }
+const REGION_HANDLES = [
+  { x: -1, y: -1 },
+  { x: 1, y: -1 },
+  { x: 1, y: 1 },
+  { x: -1, y: 1 },
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 }
+];
+function regionHandlePoint(rect, handle) {
+  return {
+    x: rect.x + (handle.x + 1) * rect.width / 2,
+    y: rect.y + (handle.y + 1) * rect.height / 2
+  };
+}
+function hitRegionHandle(rect, p, tolerance) {
+  const hit = REGION_HANDLES.find((handle) => {
+    const at = regionHandlePoint(rect, handle);
+    return Math.abs(p.x - at.x) <= tolerance && Math.abs(p.y - at.y) <= tolerance;
+  });
+  return hit ?? null;
+}
+function insideRegion(rect, p) {
+  return rectContainsPoint(rect, p);
+}
+function drawRegionRect(start, end, image) {
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const rect = { x, y, width: Math.max(start.x, end.x) - x, height: Math.max(start.y, end.y) - y };
+  return clampRegionRect(rect, image);
+}
+function dragRegionRect(rect, delta, image, handle) {
+  const dx = roundRegionEdge(delta.x);
+  const dy = roundRegionEdge(delta.y);
+  if (!handle) return moveRect(rect, dx, dy, image);
+  let left = rect.x;
+  let top = rect.y;
+  let right = rect.x + rect.width;
+  let bottom = rect.y + rect.height;
+  if (handle.x < 0) left = Math.min(left + dx, right - 1);
+  if (handle.x > 0) right = Math.max(right + dx, left + 1);
+  if (handle.y < 0) top = Math.min(top + dy, bottom - 1);
+  if (handle.y > 0) bottom = Math.max(bottom + dy, top + 1);
+  return clampRegionRect({ x: left, y: top, width: right - left, height: bottom - top }, image);
+}
+function moveRect(rect, dx, dy, image) {
+  const area = regionArea(image);
+  const x = clampNumber(rect.x + dx, area.x, area.x + area.width - rect.width);
+  const y = clampNumber(rect.y + dy, area.y, area.y + area.height - rect.height);
+  return clampRegionRect({ x, y, width: rect.width, height: rect.height }, image);
+}
+function regionFieldBounds(rect, field, image) {
+  const area = regionArea(image);
+  const right = area.x + area.width;
+  const bottom = area.y + area.height;
+  if (field === "x") return { min: area.x, max: right - rect.width };
+  if (field === "y") return { min: area.y, max: bottom - rect.height };
+  if (field === "width") return { min: 1, max: right - rect.x };
+  return { min: 1, max: bottom - rect.y };
+}
+const SCRUB_PX_PER_STEP = 2;
+const SCRUB_SHIFT_FACTOR = 10;
+function outputField(options) {
+  const element = document.createElement("label");
+  element.className = "cps-output-field";
+  const label = document.createElement("span");
+  label.textContent = options.label;
+  const input = document.createElement("input");
+  input.type = options.bounds ? "number" : "text";
+  input.step = "1";
+  input.spellcheck = false;
+  input.setAttribute("aria-label", options.title ?? options.label);
+  element.append(label, input);
+  let editing = false;
+  let scrub = null;
+  let releaseCapture = null;
+  const refresh = () => {
+    if (!editing || scrub) input.value = String(options.read());
+    if (!options.bounds) return;
+    const bounds = options.bounds();
+    input.min = String(bounds.min);
+    input.max = String(bounds.max);
+  };
+  const begin = () => {
+    if (editing) return;
+    options.beforeEdit();
+    editing = options.ops.begin();
+  };
+  const end = (cancel) => {
+    scrub?.abort();
+    scrub = null;
+    releaseCapture?.();
+    releaseCapture = null;
+    if (!editing) return;
+    editing = false;
+    if (cancel) options.ops.cancel();
+    else options.ops.commit();
+    refresh();
+  };
+  const typedValueValid = () => {
+    if (!options.bounds) return true;
+    return input.value !== "" && Number.isFinite(input.valueAsNumber);
+  };
+  input.addEventListener("focus", begin);
+  input.addEventListener("input", () => {
+    begin();
+    if (editing && typedValueValid()) options.write(input.value);
+  });
+  input.addEventListener("blur", () => {
+    end(false);
+    options.releaseFocus();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" && event.key !== "Enter") return;
+    event.preventDefault();
+    event.stopPropagation();
+    end(event.key === "Escape");
+    input.blur();
+  });
+  if (options.bounds) {
+    label.className = "cps-output-scrub";
+    label.title = `${options.title ?? options.label}: drag to scrub (Shift = x10), Esc reverts`;
+    label.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      input.focus({ preventScroll: true });
+      begin();
+      if (editing) startScrub2(event);
+    });
+  }
+  function startScrub2(event) {
+    const start = Number(options.read());
+    const x0 = event.clientX;
+    const id = event.pointerId;
+    label.setPointerCapture(id);
+    scrub = new AbortController();
+    releaseCapture = () => {
+      if (label.hasPointerCapture(id)) label.releasePointerCapture(id);
+    };
+    const { signal } = scrub;
+    label.addEventListener(
+      "pointermove",
+      (e) => {
+        const bounds = options.bounds?.();
+        if (e.pointerId !== id || !bounds) return;
+        const steps = Math.trunc((e.clientX - x0) / SCRUB_PX_PER_STEP);
+        const step = e.shiftKey ? SCRUB_SHIFT_FACTOR : 1;
+        options.write(String(clampNumber(start + steps * step, bounds.min, bounds.max)));
+        refresh();
+      },
+      { signal }
+    );
+    const finish = (e) => {
+      if (e.pointerId !== id) return;
+      end(e.type !== "pointerup");
+      input.blur();
+    };
+    label.addEventListener("pointerup", finish, { signal });
+    label.addEventListener("pointercancel", finish, { signal });
+    label.addEventListener("lostpointercapture", finish, { signal });
+  }
+  refresh();
+  return { element, input, refresh, dispose: () => end(true) };
+}
+const MODES = [
+  ["none", "None"],
+  ["fill", "Fill mask"],
+  ["crop", "Crop to mask"],
+  ["border", "Add border"]
+];
+function readMode(value) {
+  return value === "none" || value === "fill" || value === "crop" || value === "border" ? value : null;
+}
+class OutputOptionsRow {
+  /**
+   * @param id - Region id, or null for Main.
+   * @param ctx - Card services.
+   */
+  constructor(id, ctx) {
+    this.id = id;
+    this.ctx = ctx;
+    const ops = ctx.editor.regionOps;
+    this.element.className = "cps-output-options";
+    this.mode.className = "cps-output-mode";
+    this.mode.title = "Modify this output";
+    this.mode.setAttribute("aria-label", this.mode.title);
+    for (const [value, text] of MODES) {
+      const option2 = document.createElement("option");
+      option2.value = value;
+      option2.textContent = text;
+      this.mode.append(option2);
+    }
+    this.mode.addEventListener("change", () => {
+      const mode = readMode(this.mode.value);
+      if (!mode) return;
+      ctx.beforeEdit();
+      ops.setOptions(id, { applyMask: mode });
+    });
+    this.swatch.type = "button";
+    this.swatch.className = "cps-output-swatch";
+    this.swatch.addEventListener("click", () => this.pickColor());
+    this.padding = outputField({
+      label: "Pad",
+      title: "Crop padding (output px)",
+      ops,
+      beforeEdit: ctx.beforeEdit,
+      releaseFocus: ctx.releaseFocus,
+      read: () => ops.options(id).cropPadding,
+      bounds: () => ({ min: 0, max: Number.MAX_SAFE_INTEGER }),
+      write: (value) => ops.setOptions(id, { cropPadding: Number(value) })
+    });
+    this.borderSize = outputField({
+      label: "W",
+      title: `Border width per side (output px, 1..${MAX_BORDER_SIZE})`,
+      ops,
+      beforeEdit: ctx.beforeEdit,
+      releaseFocus: ctx.releaseFocus,
+      read: () => ops.options(id).borderSize,
+      bounds: () => ({ min: 1, max: MAX_BORDER_SIZE }),
+      write: (value) => ops.setOptions(id, { borderSize: Number(value) })
+    });
+    this.borderMaskBox.type = "checkbox";
+    this.borderMaskBox.addEventListener("change", () => {
+      ctx.beforeEdit();
+      ops.setOptions(id, { borderMask: this.borderMaskBox.checked });
+    });
+    this.borderMask.className = "cps-output-check";
+    this.borderMask.title = "Border area white in the MASK (for outpainting)";
+    const checkText = document.createElement("span");
+    checkText.textContent = "Mask border";
+    this.borderMask.append(this.borderMaskBox, checkText);
+    const label = document.createElement("span");
+    label.className = "cps-output-label";
+    label.textContent = "Modify";
+    this.element.append(
+      label,
+      this.mode,
+      this.padding.element,
+      this.borderSize.element,
+      this.swatch,
+      this.borderMask
+    );
+    this.refresh();
+  }
+  id;
+  ctx;
+  element = document.createElement("div");
+  mode = document.createElement("select");
+  swatch = document.createElement("button");
+  padding;
+  borderSize;
+  borderMask = document.createElement("label");
+  borderMaskBox = document.createElement("input");
+  /** Show the current options (fields being edited keep their text). */
+  refresh() {
+    const options = this.ctx.editor.regionOps.options(this.id);
+    this.mode.value = options.applyMask;
+    const border = options.applyMask === "border";
+    this.swatch.hidden = options.applyMask !== "fill" && !border;
+    this.swatch.style.backgroundColor = border ? options.borderColor : options.fillColor;
+    this.swatch.title = border ? "Border colour (output only)" : "Fill colour (output only)";
+    this.swatch.setAttribute("aria-label", this.swatch.title);
+    this.padding.element.hidden = options.applyMask !== "crop";
+    this.padding.refresh();
+    this.borderSize.element.hidden = !border;
+    this.borderSize.refresh();
+    this.borderMask.hidden = !border;
+    this.borderMaskBox.checked = options.borderMask;
+  }
+  /** Close the picker / revert open sessions. */
+  dispose() {
+    this.ctx.popovers.closeAnchoredIn(this.element);
+    this.padding.dispose();
+    this.borderSize.dispose();
+  }
+  /** Fill / border colour picker: one session = one undo step; Esc reverts. */
+  pickColor() {
+    const { popovers, editor } = this.ctx;
+    const ops = editor.regionOps;
+    this.ctx.beforeEdit();
+    popovers.close();
+    const border = ops.options(this.id).applyMask === "border";
+    if (!ops.begin()) return;
+    const options = ops.options(this.id);
+    openColorPicker(popovers, this.swatch, {
+      initial: border ? options.borderColor : options.fillColor,
+      title: border ? "Border colour" : "Fill colour",
+      onInput: (hex) => {
+        if (!ops.active) return;
+        ops.setOptions(this.id, border ? { borderColor: hex } : { fillColor: hex });
+      },
+      onClose: (cancelled) => {
+        if (cancelled) ops.cancel();
+        else ops.commit();
+      }
+    });
+  }
+}
+const RECT_FIELDS = [
+  ["x", "X", "Left edge (image px)"],
+  ["y", "Y", "Top edge (image px)"],
+  ["width", "W", "Width (image px)"],
+  ["height", "H", "Height (image px)"]
+];
+function cardElement(ctx, id) {
+  const element = document.createElement("section");
+  element.className = "cps-output-card";
+  element.addEventListener("pointerdown", (event) => {
+    if (isControl(event.target)) return;
+    ctx.editor.regionOps.select(id);
+  });
+  element.addEventListener("focusin", () => ctx.editor.regionOps.select(id));
+  return element;
+}
+function iconButton(className, icon, onClick) {
+  const button2 = document.createElement("button");
+  button2.type = "button";
+  button2.className = `cps-icon-button cps-layer-button ${className}`;
+  setIcon(button2, icon, 14);
+  button2.addEventListener("click", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    onClick();
+  });
+  return button2;
+}
+class RegionCard {
+  /**
+   * @param id - Region id.
+   * @param ctx - Card services.
+   */
+  constructor(id, ctx) {
+    this.id = id;
+    this.ctx = ctx;
+    const ops = ctx.editor.regionOps;
+    this.element = cardElement(ctx, id);
+    const header = document.createElement("div");
+    header.className = "cps-output-header";
+    this.eye = iconButton("cps-layer-eye", "eye", () => {
+      ctx.beforeEdit();
+      ops.setVisible(id, !(this.region()?.visible ?? true));
+    });
+    this.title.className = "cps-layer-name cps-output-title";
+    this.title.addEventListener("dblclick", (event) => {
+      event.stopPropagation();
+      this.startRename();
+    });
+    const remove = iconButton("cps-output-delete", "trash", () => {
+      ctx.beforeEdit();
+      ops.remove(id);
+    });
+    remove.title = "Delete region (empties the slot)";
+    remove.setAttribute("aria-label", remove.title);
+    header.append(this.eye, this.title, remove);
+    const geometry = document.createElement("div");
+    geometry.className = "cps-output-geometry";
+    for (const [key, label, title] of RECT_FIELDS) {
+      const field = this.rectField(key, label, title);
+      this.fields.push(field);
+      geometry.append(field.element);
+    }
+    this.options = new OutputOptionsRow(id, ctx);
+    this.element.append(header, geometry, this.options.element);
+    this.refresh();
+  }
+  id;
+  ctx;
+  element;
+  eye;
+  title = document.createElement("span");
+  fields = [];
+  options;
+  renaming = false;
+  eyeIcon = "";
+  /** Show the region's current state. */
+  refresh() {
+    const region = this.region();
+    if (!region) return;
+    const selected = this.ctx.editor.regionOps.selectedId === this.id;
+    this.element.classList.toggle("cps-selected", selected);
+    this.element.classList.toggle("cps-hidden-layer", !region.visible);
+    if (!this.renaming) this.title.textContent = regionSlotLabel(region);
+    this.title.title = `Output pair ${region.slot} (double-click to rename)`;
+    const icon = region.visible ? "eye" : "eyeOff";
+    if (icon !== this.eyeIcon) setIcon(this.eye, icon, 14);
+    this.eyeIcon = icon;
+    this.eye.classList.toggle("cps-off", !region.visible);
+    this.eye.title = region.visible ? "Hide outline (output unaffected)" : "Show outline";
+    this.eye.setAttribute("aria-label", this.eye.title);
+    this.eye.setAttribute("aria-pressed", String(region.visible));
+    for (const field of this.fields) field.refresh();
+    this.options.refresh();
+  }
+  /** Revert open sessions and remove the element. */
+  dispose() {
+    for (const field of this.fields) field.dispose();
+    this.options.dispose();
+    this.element.remove();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  region() {
+    return this.ctx.editor.doc.regions.find((region) => region.id === this.id);
+  }
+  /** Inline rename of just the name, pre-filled with the effective name. */
+  startRename() {
+    const region = this.region();
+    if (this.renaming || !region) return;
+    this.renaming = true;
+    startInlineRename(this.title, regionName(region), (value) => {
+      this.renaming = false;
+      if (value !== null) {
+        this.ctx.beforeEdit();
+        this.ctx.editor.regionOps.rename(this.id, value);
+      }
+      this.refresh();
+      this.ctx.releaseFocus();
+    });
+  }
+  /** One X / Y / W / H field, clamped to the paint area. */
+  rectField(key, label, title) {
+    const { editor } = this.ctx;
+    const ops = editor.regionOps;
+    const bounds = () => {
+      const rect = ops.imageRect(this.id);
+      return rect ? regionFieldBounds(rect, key, editor.imageSize) : { min: 0, max: 0 };
+    };
+    return outputField({
+      label,
+      title,
+      ops,
+      beforeEdit: this.ctx.beforeEdit,
+      releaseFocus: this.ctx.releaseFocus,
+      read: () => ops.imageRect(this.id)?.[key] ?? 0,
+      bounds,
+      write: (value) => {
+        const rect = ops.imageRect(this.id);
+        if (!rect) return;
+        const { min, max } = bounds();
+        ops.setRect(this.id, { ...rect, [key]: clampNumber(Math.round(Number(value)), min, max) });
+      }
+    });
+  }
+}
+class MainCard {
+  /**
+   * @param ctx - Card services.
+   */
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.element = cardElement(ctx, null);
+    this.element.classList.add("cps-output-main");
+    const header = document.createElement("div");
+    header.className = "cps-output-header";
+    const title = document.createElement("span");
+    title.className = "cps-layer-name cps-output-title";
+    title.textContent = "Main";
+    this.size.className = "cps-output-size";
+    this.size.title = "Output size (current image px)";
+    header.append(title, this.size);
+    this.options = new OutputOptionsRow(null, ctx);
+    this.element.append(header, this.options.element);
+    this.refresh();
+  }
+  ctx;
+  element;
+  size = document.createElement("span");
+  options;
+  /** Show selection, size and options. */
+  refresh() {
+    const { editor } = this.ctx;
+    this.element.classList.toggle("cps-selected", editor.regionOps.selectedId === null);
+    this.size.textContent = `${editor.imageSize.width} x ${editor.imageSize.height}`;
+    this.options.refresh();
+  }
+  /** Revert open sessions and remove the element. */
+  dispose() {
+    this.options.dispose();
+    this.element.remove();
+  }
+}
+class OutputsPanel {
+  /**
+   * @param ctx - Host services.
+   */
+  constructor(ctx) {
+    this.ctx = ctx;
+    this.element.className = "cps-outputs";
+    this.list.className = "cps-outputs-list";
+    const hint = document.createElement("div");
+    hint.className = "cps-outputs-hint";
+    hint.textContent = "Drag on the image to add a region; Shift-drag starts a new one inside another.";
+    for (let slot = 1; slot <= MAX_REGIONS; slot++) this.slots.push(this.slotView(slot));
+    this.list.append(...this.slots.map((view) => view.element));
+    this.element.append(this.list, hint);
+  }
+  ctx;
+  element = document.createElement("div");
+  list = document.createElement("div");
+  slots = [];
+  main = null;
+  editor = null;
+  unbind = [];
+  /**
+   * Bind to an editor (or none).
+   * @param editor - Session editor, or null on detach.
+   */
+  setEditor(editor) {
+    for (const off of this.unbind) off();
+    this.unbind = [];
+    this.main?.dispose();
+    this.main = null;
+    for (const view of this.slots) this.setCard(view, null);
+    this.editor = editor;
+    if (!editor) return;
+    const ctx = { ...this.ctx, editor };
+    this.main = new MainCard(ctx);
+    this.list.prepend(this.main.element);
+    this.unbind.push(editor.events.on("outputs", () => this.sync()));
+    this.sync();
+  }
+  /** Unbind and remove. */
+  dispose() {
+    this.setEditor(null);
+    this.element.remove();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** Bring every card up to date; a slot's card is replaced only when its region changes. */
+  sync() {
+    const editor = this.editor;
+    if (!editor) return;
+    this.main?.refresh();
+    for (const view of this.slots) {
+      const region = editor.regionOps.inSlot(view.slot);
+      if (!region) {
+        this.setCard(view, null);
+        continue;
+      }
+      if (view.card?.id !== region.id) this.setCard(view, new RegionCard(region.id, { ...this.ctx, editor }));
+      view.card?.refresh();
+    }
+  }
+  /** Swap a slot between its empty row and a card. */
+  setCard(view, card) {
+    if (view.card === card) return;
+    view.card?.dispose();
+    view.card = card;
+    view.empty.hidden = card !== null;
+    if (card) view.element.append(card.element);
+  }
+  /** Wrapper + `+ Region N` row of one slot. */
+  slotView(slot) {
+    const element = document.createElement("div");
+    element.className = "cps-output-slot";
+    const empty = document.createElement("button");
+    empty.type = "button";
+    empty.className = "cps-output-empty";
+    empty.title = `Add a centred region in slot ${slot}`;
+    const icon = document.createElement("span");
+    setIcon(icon, "plus", 12);
+    const text = document.createElement("span");
+    text.textContent = defaultRegionName(slot);
+    empty.append(icon, text);
+    empty.addEventListener("click", () => {
+      this.ctx.beforeEdit();
+      this.editor?.regionOps.addDefault(slot);
+    });
+    element.append(empty);
+    return { slot, element, empty, card: null };
+  }
+}
+const REGION_TOOL_ID = "region";
+const CLICK_SLOP_PX$2 = 3;
+const HANDLE_HIT_PX = 6;
+const FULL_NOTE = "All 6 region slots are used. Delete a region to draw another.";
+function grabAt(editor, p) {
+  const ops = editor.regionOps;
+  const regions = editor.doc.regions.filter((region) => region.visible);
+  const selected = regions.find((region) => region.id === ops.selectedId);
+  if (selected) {
+    const tolerance = HANDLE_HIT_PX / editor.view.screenScale;
+    const handle = hitRegionHandle(selected.rect, p, tolerance);
+    if (handle) return { mode: "resize", id: selected.id, rect: { ...selected.rect }, handle };
+    if (insideRegion(selected.rect, p)) return { mode: "move", id: selected.id, rect: { ...selected.rect }, handle: null };
+  }
+  const top = [...regions].reverse().find((region) => insideRegion(region.rect, p));
+  return top ? { mode: "move", id: top.id, rect: { ...top.rect }, handle: null } : null;
+}
+function createRegionTool() {
+  let drag = null;
+  const update = (editor, sample) => {
+    if (!drag) return;
+    const ops = editor.regionOps;
+    const p = docToImage(editor.frameMap, sample);
+    const delta = { x: p.x - drag.start.x, y: p.y - drag.start.y };
+    if (!drag.moved) {
+      if (Math.hypot(delta.x, delta.y) * editor.view.screenScale < CLICK_SLOP_PX$2) return;
+      drag.moved = true;
+      if (drag.mode === "draw" && !ops.canAdd()) {
+        editor.events.emit("note", FULL_NOTE);
+        return;
+      }
+      if (!ops.begin()) {
+        drag = null;
+        return;
+      }
+    }
+    if (drag.mode !== "draw" && drag.id && drag.rect) {
+      ops.setRect(drag.id, dragRegionRect(drag.rect, delta, editor.imageSize, drag.handle));
+      return;
+    }
+    if (!ops.active) return;
+    const rect = drawRegionRect(drag.start, p, editor.imageSize);
+    if (drag.id) ops.setRect(drag.id, rect);
+    else drag.id = ops.add(rect);
+  };
+  return {
+    id: REGION_TOOL_ID,
+    label: "Regions",
+    shortcut: "",
+    icon: "region",
+    options: null,
+    rail: false,
+    ctrlMove: false,
+    cursor: () => ({ kind: "icon", icon: "crosshair" }),
+    onPointerDown(editor, samples) {
+      const sample = samples[0];
+      if (!sample) return;
+      const start = docToImage(editor.frameMap, sample);
+      const grab = sample.shiftKey ? null : grabAt(editor, start);
+      if (grab?.id) editor.regionOps.select(grab.id);
+      drag = { start, moved: false, ...grab ?? { mode: "draw", id: null, rect: null, handle: null } };
+    },
+    onPointerMove(editor, samples) {
+      const sample = samples.at(-1);
+      if (sample) update(editor, sample);
+    },
+    onPointerUp(editor, sample) {
+      if (!drag) return;
+      update(editor, sample);
+      const { moved, mode } = drag;
+      drag = null;
+      if (moved) editor.regionOps.commit();
+      else if (mode === "draw") editor.regionOps.select(null);
+    },
+    onCancel(editor) {
+      if (drag) editor.regionOps.cancel();
+      drag = null;
+    },
+    pending: () => drag !== null
+  };
+}
+const LAYERS_TAB = "layers";
+const OUTPUTS_TAB = "outputs";
+function tabForTool(toolId) {
+  return toolId === REGION_TOOL_ID ? OUTPUTS_TAB : LAYERS_TAB;
+}
+function toolForTab(tab, activeId, lastRailId) {
+  if (tab === OUTPUTS_TAB) return activeId === REGION_TOOL_ID ? null : REGION_TOOL_ID;
+  return activeId === REGION_TOOL_ID ? lastRailId : null;
+}
 class HostSync {
   /**
    * @param getSession - Returns the currently active session (or null).
@@ -3801,6 +4685,17 @@ class HostSync {
       releaseFocus,
       toggleMoveDrawing: () => this.toggleMoveDrawing()
     });
+    this.outputs = new OutputsPanel({
+      popovers: shell.popoverHost,
+      beforeEdit: () => this.onCancelDrag(),
+      releaseFocus
+    });
+    shell.sidePanel.setTabs([
+      { id: LAYERS_TAB, label: "Layers", panel: this.layers.element },
+      { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element }
+    ]);
+    shell.sidePanel.events.on("tab", (tab) => this.tabChanged(tab));
+    shell.events.on("outputs", () => this.toggleOutputs());
   }
   getSession;
   onOptionsChanged;
@@ -3816,6 +4711,8 @@ class HostSync {
   selectionActions;
   /** Layers panel (owned here; side panel content set by EditorHost). */
   layers;
+  /** Output metadata panel, bound alongside Layers. */
+  outputs;
   /**
    * Last active rail tool per registry (restored when "Move drawing" is
    * toggled off). Keyed by registry so a host showing another session (tab
@@ -3831,6 +4728,7 @@ class HostSync {
    */
   bindEditor(editor) {
     this.layers.setEditor(editor);
+    this.outputs.setEditor(editor);
     this.selectionActions.setEditor(editor);
   }
   /** Sync rail, options bar and cursor when the active tool changes. */
@@ -3839,6 +4737,10 @@ class HostSync {
     if (!session) return;
     const active = session.tools.active;
     if (active.rail !== false) this.lastRailTool.set(session.tools, active.id);
+    const regionMode = active.id === REGION_TOOL_ID;
+    this.shell.sidePanel.showTab(tabForTool(active.id));
+    this.shell.outputsButton.classList.toggle("cps-active", regionMode);
+    this.shell.outputsButton.setAttribute("aria-pressed", String(regionMode));
     this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
     this.optionsBar.bind(session.tools.active.options);
     this.syncMoveMode();
@@ -3863,6 +4765,23 @@ class HostSync {
       tools.setActive("move");
     }
     this.syncTools();
+  }
+  /**
+   * Outputs button / `O`: open the side panel on the Outputs tab (region
+   * mode); when region mode is already showing, go back to Layers.
+   */
+  toggleOutputs() {
+    const session = this.getSession();
+    if (!session) return;
+    const panel = this.shell.sidePanel;
+    this.onCancelDrag();
+    if (session.tools.active.id === REGION_TOOL_ID && !panel.collapsed) {
+      panel.showTab(LAYERS_TAB);
+      return;
+    }
+    panel.setCollapsed(false);
+    panel.showTab(OUTPUTS_TAB);
+    session.tools.setActive(REGION_TOOL_ID);
   }
   /** Sync the Quick Mask rail button + badge + root class. */
   syncMask() {
@@ -3891,8 +4810,19 @@ class HostSync {
   /** Dispose components that need it. */
   dispose() {
     this.layers.dispose();
+    this.outputs.dispose();
   }
   // ── Private helpers ───────────────────────────────────────────────────────
+  /** The visible side-panel tab changed: enter or leave region mode. */
+  tabChanged(tab) {
+    const tools = this.getSession()?.tools;
+    if (!tools) return;
+    const fallback = this.lastRailTool.get(tools) ?? tools.railTools()[0]?.id ?? "";
+    const next = toolForTab(tab, tools.active.id, fallback);
+    if (next === null) return;
+    this.onCancelDrag();
+    tools.setActive(next);
+  }
   /** Sync the "Move drawing" button on the layers panel. */
   syncMoveMode() {
     const active = this.getSession()?.tools.active;
@@ -3902,7 +4832,7 @@ class HostSync {
   confirmClear() {
     const editor = this.getSession()?.editor;
     if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint? This can be undone.")) return;
+    if (!window.confirm("Clear all paint, regions and output options? This can be undone.")) return;
     this.onCancelDrag();
     editor.clear();
   }
@@ -4498,6 +5428,8 @@ class SidePanel {
   events = new Emitter();
   state = INITIAL_PANEL_STATE;
   shown;
+  tabs = [];
+  currentTab = "";
   constructor() {
     this.element = document.createElement("div");
     this.element.className = "cps-side";
@@ -4514,6 +5446,50 @@ class SidePanel {
   /** Whether the panel is collapsed. */
   get collapsed() {
     return !this.shown;
+  }
+  /** Id of the visible tab ("" before {@link SidePanel.setTabs}). */
+  get activeTab() {
+    return this.currentTab;
+  }
+  // ── Tabs ────────────────────────────────────────────────────────────────
+  /**
+   * Install named tab panels (mounted once; hidden rather than recreated).
+   * The first tab is shown.
+   * @param panels - Tabs in order.
+   */
+  setTabs(panels) {
+    const bar = document.createElement("div");
+    bar.className = "cps-side-tabs";
+    bar.setAttribute("role", "tablist");
+    this.tabs = panels.map(({ id, label, panel }) => {
+      const button2 = document.createElement("button");
+      button2.type = "button";
+      button2.textContent = label;
+      button2.setAttribute("role", "tab");
+      button2.addEventListener("click", () => this.showTab(id));
+      panel.setAttribute("role", "tabpanel");
+      bar.append(button2);
+      return { id, button: button2, panel };
+    });
+    this.content.replaceChildren(bar, ...panels.map((p) => p.panel));
+    this.currentTab = "";
+    this.showTab(panels[0]?.id ?? "");
+  }
+  /**
+   * Reveal a tab (the choice survives collapse and fullscreen). Emits `tab`
+   * when the visible tab changes.
+   * @param id - Tab id.
+   */
+  showTab(id) {
+    for (const tab of this.tabs) {
+      const active = tab.id === id;
+      tab.panel.hidden = !active;
+      tab.button.classList.toggle("cps-active", active);
+      tab.button.setAttribute("aria-selected", String(active));
+    }
+    if (id === this.currentTab) return;
+    this.currentTab = id;
+    this.events.emit("tab", id);
   }
   /**
    * Collapse or expand (counts as an explicit choice until the editor
@@ -4573,6 +5549,8 @@ class EditorShell {
   popoverHost;
   events = new Emitter();
   panelButton;
+  /** Opens the side panel on the Outputs tab (region mode); next to the panel toggle. */
+  outputsButton;
   resizeObserver;
   nativeInput = null;
   nativeApply = null;
@@ -4591,7 +5569,15 @@ class EditorShell {
     this.panelButton.className = "cps-icon-button";
     setIcon(this.panelButton, "panel", 18);
     this.panelButton.addEventListener("click", () => this.sidePanel.toggle());
-    this.bar.trailing.appendChild(this.panelButton);
+    this.outputsButton = document.createElement("button");
+    this.outputsButton.type = "button";
+    this.outputsButton.className = "cps-icon-button cps-outputs-button";
+    this.outputsButton.title = "Output regions (O)";
+    this.outputsButton.setAttribute("aria-label", this.outputsButton.title);
+    this.outputsButton.setAttribute("aria-pressed", "false");
+    setIcon(this.outputsButton, "region", 18);
+    this.outputsButton.addEventListener("click", () => this.events.emit("outputs", void 0));
+    this.bar.trailing.append(this.outputsButton, this.panelButton);
     this.bar.element.append(this.bar.leading, this.bar.scroller, this.bar.trailing);
     this.stage = div("cps-stage");
     this.stage.tabIndex = -1;
@@ -4649,7 +5635,7 @@ class EditorShell {
     const open = !this.sidePanel.collapsed;
     this.panelButton.classList.toggle("cps-active", open);
     this.panelButton.setAttribute("aria-pressed", String(open));
-    this.panelButton.title = open ? "Hide layers panel" : "Show layers panel";
+    this.panelButton.title = open ? "Hide side panel" : "Show side panel";
   }
   /** Fallback picker until M3.2: a hidden native `<input type=color>`. */
   nativeColorPick(current, apply) {
@@ -4763,6 +5749,10 @@ function handleShortcut(event, session, effects) {
       return true;
     case "f":
       effects.fullscreen();
+      return true;
+    case "o":
+      if (!effects.toggleOutputs) return false;
+      effects.toggleOutputs();
       return true;
   }
   const tool = tools.byShortcut(key);
@@ -5697,6 +6687,110 @@ function shapePath(shape) {
   }
   return path;
 }
+const SELECTED_COLOR = "#62d5ff";
+const HANDLE_PX = 6;
+function regionOutlineStyle(regionMode, selected) {
+  if (!regionMode) {
+    return { lineWidth: 1, dash: [4, 4], alpha: 0.3, color: "#ffffff", halo: false, labelPx: 9, badge: false, handles: false };
+  }
+  return {
+    lineWidth: selected ? 2 : 1,
+    dash: [],
+    alpha: 1,
+    color: selected ? SELECTED_COLOR : "#ffffff",
+    halo: true,
+    labelPx: 12,
+    badge: true,
+    handles: selected
+  };
+}
+function highlightMainBorder(regionMode, selectedId) {
+  return regionMode && selectedId === null;
+}
+function drawRegionOverlay(ctx, editor, pixelRatio, regionMode) {
+  const view = editor.view.current;
+  const px = pixelRatio / editor.view.graphScale;
+  const selectedId = editor.regionOps.selectedId;
+  ctx.save();
+  if (highlightMainBorder(regionMode, selectedId)) {
+    strokeOutline(ctx, backingRect(view, frameRect(editor.imageSize), pixelRatio), regionOutlineStyle(true, true), px);
+  }
+  const regions = editor.doc.regions.filter((region) => region.visible);
+  regions.sort((a, b) => Number(a.id === selectedId) - Number(b.id === selectedId));
+  for (const region of regions) {
+    const style = regionOutlineStyle(regionMode, region.id === selectedId);
+    const box = backingRect(view, region.rect, pixelRatio);
+    strokeOutline(ctx, box, style, px);
+    drawLabel(ctx, box, String(region.slot), style, px);
+    if (style.handles) drawHandles(ctx, view, region.rect, pixelRatio, px);
+  }
+  ctx.restore();
+}
+function backingRect(view, rect, pixelRatio) {
+  const stage = docRectToStage(view, rect);
+  return {
+    x: stage.x * pixelRatio,
+    y: stage.y * pixelRatio,
+    width: stage.width * pixelRatio,
+    height: stage.height * pixelRatio
+  };
+}
+function strokeOutline(ctx, box, style, px) {
+  ctx.globalAlpha = style.alpha;
+  ctx.setLineDash(style.dash.map((d) => d * px));
+  if (style.halo) {
+    ctx.strokeStyle = "#111111";
+    ctx.lineWidth = (style.lineWidth + 2) * px;
+    ctx.strokeRect(box.x, box.y, box.width, box.height);
+  }
+  if (style.dash.length > 0) {
+    const period = style.dash.reduce((sum, d) => sum + d, 0) * px;
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = style.lineWidth * px;
+    ctx.lineDashOffset = period / 2;
+    ctx.strokeRect(box.x, box.y, box.width, box.height);
+    ctx.lineDashOffset = 0;
+  }
+  ctx.strokeStyle = style.color;
+  ctx.lineWidth = style.lineWidth * px;
+  ctx.strokeRect(box.x, box.y, box.width, box.height);
+  ctx.setLineDash([]);
+}
+function drawLabel(ctx, box, text, style, px) {
+  ctx.globalAlpha = style.alpha;
+  ctx.font = `bold ${style.labelPx * px}px sans-serif`;
+  ctx.textBaseline = "top";
+  const inset = 2 * px;
+  if (style.badge) {
+    const side = (style.labelPx + 5) * px;
+    ctx.fillStyle = style.color;
+    ctx.fillRect(box.x + inset, box.y + inset, side, side);
+    ctx.fillStyle = "#111111";
+    ctx.fillText(text, box.x + inset + 4 * px, box.y + inset + 2 * px);
+    return;
+  }
+  const x = box.x + inset + px;
+  const y = box.y + inset;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3 * px;
+  ctx.strokeStyle = "#000000";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = style.color;
+  ctx.fillText(text, x, y);
+}
+function drawHandles(ctx, view, rect, pixelRatio, px) {
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = px;
+  const half = HANDLE_PX / 2 * px;
+  for (const handle of REGION_HANDLES) {
+    const p = regionHandlePoint(rect, handle);
+    const at = backingRect(view, { x: p.x, y: p.y, width: 0, height: 0 }, pixelRatio);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(at.x - half, at.y - half, 2 * half, 2 * half);
+    ctx.strokeStyle = "#111111";
+    ctx.strokeRect(at.x - half, at.y - half, 2 * half, 2 * half);
+  }
+}
 const NOTE_MS = 5e3;
 class StageView {
   /**
@@ -5898,6 +6992,7 @@ class StageView {
     const pr = this.pixelRatio;
     const overlay = tool?.overlay?.() ?? null;
     if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
+    if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {
@@ -6198,7 +7293,6 @@ class EditorHost {
       () => this.keyboard.reclaimFocus(),
       this.shell
     );
-    this.shell.sidePanel.content.replaceChildren(this.sync.layers.element);
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
       if (!colors) return;
@@ -6231,7 +7325,12 @@ class EditorHost {
         cancelDrag: () => this.input.cancel(),
         cancelToolDrag: () => this.input.cancelToolDrag(),
         fullscreen: () => this.shell.events.emit("fullscreen", void 0),
-        closePopover: () => this.shell.popoverHost.close(),
+        toggleOutputs: () => this.sync.toggleOutputs(),
+        closePopover: () => {
+          if (!this.shell.popoverHost.isOpen) return false;
+          this.session?.editor.regionOps.cancel();
+          return this.shell.popoverHost.close();
+        },
         exitFullscreen: () => {
           if (!this.fullscreen.isOpen) return false;
           this.fullscreen.exit();
@@ -6264,7 +7363,7 @@ class EditorHost {
   /** Pointer/wheel router (the isolation guard forwards to it). */
   input;
   view;
-  /** Rail/options-bar sync layer (owns rail, swatches, options bar, selection actions, layers). */
+  /** Rail/options-bar sync layer (owns rail, swatches, options bar, selection actions, side panels). */
   sync;
   /** Text tool's in-canvas `<textarea>` + rasterize prompt. */
   textOverlay;
@@ -6955,6 +8054,16 @@ function takeHandoff(key) {
   const handoff = offers.get(key);
   offers.delete(key);
   return handoff;
+}
+const listeners = /* @__PURE__ */ new Set();
+function onDocumentChange(listener) {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+function emitDocumentChange(node) {
+  for (const listener of listeners) listener(node);
 }
 const DEFAULT_TIMERS = {
   set: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -8378,6 +9487,14 @@ class ViewState {
   get current() {
     return this.transform;
   }
+  /** On-screen CSS pixels per image pixel (includes graph zoom). */
+  get screenScale() {
+    return this.transform.scale * this.displayScale;
+  }
+  /** On-screen CSS pixels per local stage pixel. */
+  get graphScale() {
+    return this.displayScale;
+  }
   /** Whether the view follows "fit to stage". */
   get isFitting() {
     return this.fitting;
@@ -8504,6 +9621,8 @@ class EditorState {
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId = null;
+  /** Selected output row/region (session-only). */
+  selectedRegionId = null;
   /** Layer the current stroke paints into. */
   strokeLayerId = null;
   /** Largest dab diameter of the current stroke, document px. */
@@ -8608,6 +9727,21 @@ class EditorState {
     this.events.emit("render", void 0);
   }
 }
+function captureOutputs(s) {
+  const snapshot = { regions: s.doc.regions.map(cloneRegion), selected: s.selectedRegionId };
+  if (s.doc.mainOutput) snapshot.main = cloneOutputOptions(s.doc.mainOutput);
+  return snapshot;
+}
+function applyOutputs(s, value) {
+  s.doc.regions = value?.regions.map(cloneRegion) ?? [];
+  if (value?.main) s.doc.mainOutput = cloneOutputOptions(value.main);
+  else delete s.doc.mainOutput;
+  s.selectedRegionId = value?.selected ?? null;
+  s.events.emit("outputs", void 0);
+}
+function outputsKey(value) {
+  return JSON.stringify({ regions: value.regions, main: cloneOutputOptions(value.main) });
+}
 class FrameOps {
   /**
    * @param s - Shared editor state.
@@ -8624,9 +9758,12 @@ class FrameOps {
    *   image connected). `null` = show `doc.frame`.
    */
   setBackground(background, imageSize2) {
+    const before = this.s.imageSize;
     this.s.background = background;
     this.s.backgroundSize = imageSize2 ? { ...imageSize2 } : null;
     this.s.syncViewFrame();
+    const after = this.s.imageSize;
+    if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", void 0);
     this.s.events.emit("render", void 0);
   }
   /**
@@ -8702,6 +9839,7 @@ class FrameOps {
    */
   applySnapshot(state) {
     const s = this.s;
+    applyOutputs(s, state.outputs);
     s.doc.frame = { ...state.frame };
     s.doc.bounds = { ...state.bounds };
     if (state.placement) s.doc.placement = { ...state.placement };
@@ -8735,11 +9873,11 @@ class FrameOps {
       if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
     }
     const placement = s.doc.placement ? { ...s.doc.placement } : void 0;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...placement ? { placement } : {}, pixels, text };
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...placement ? { placement } : {}, pixels, text, outputs: captureOutputs(s) };
   }
 }
 function snapshotBytes(state) {
-  let bytes = 0;
+  let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
   return bytes;
 }
@@ -9389,6 +10527,10 @@ class PaintOps {
       s.lastStrokeEnd = null;
       return;
     }
+    if (entry.kind === "outputs") {
+      applyOutputs(s, entry[side]);
+      return;
+    }
     if (entry.kind === "layers") {
       applyLayersEntry(s, entry, side === "after");
       return;
@@ -9545,6 +10687,61 @@ class EditorBase {
     this.s.cancelStroke();
   }
 }
+function findLayer(s, layerId) {
+  return s.doc.layers.find((l) => l.id === layerId);
+}
+function readyCheck(s) {
+  if (s.loading) return false;
+  if (s.stroke.active) s.cancelStroke();
+  return true;
+}
+function insertLayer(s, layer, index, pixels, activate = true) {
+  const activeBefore = s.doc.activeLayerId;
+  s.doc.layers.splice(index, 0, layer);
+  installLayerPixels(s, layer.id, pixels);
+  if (activate) s.doc.activeLayerId = layer.id;
+  recordLayerChange(s, [{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
+}
+function setLayerProps(s, layerId, props, gesture) {
+  const layer = findLayer(s, layerId);
+  if (!layer || s.loading || !propsDiffer(layer, props)) return false;
+  const merge = gesture ? s.history.mergeTarget() : void 0;
+  const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
+  if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
+    Object.assign(change.after, props);
+    writeProps(layer, props);
+    if (merge?.kind === "layers" && merge.changes.length === 1 && propsEqual(change.before, change.after)) {
+      s.history.discardNewest();
+    }
+    afterMetaChange(s, true);
+    return true;
+  }
+  const before = readProps(layer, props);
+  writeProps(layer, props);
+  recordLayerChange(s, [{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
+  return true;
+}
+function recordLayerChange(s, changes, activeBefore, gesture) {
+  s.history.push({
+    kind: "layers",
+    changes,
+    activeBefore,
+    activeAfter: s.doc.activeLayerId,
+    bytes: changesBytes(changes),
+    ...gesture ? { gesture } : {}
+  });
+  afterMetaChange(s, true);
+}
+function afterMetaChange(s, history = false) {
+  if (history) s.events.emit("history", void 0);
+  emitLayerEvents(s);
+  s.events.emit("change", void 0);
+  s.events.emit("render", void 0);
+}
+function sameKeys(a, b) {
+  const ka = Object.keys(a).sort().join();
+  return ka === Object.keys(b).sort().join();
+}
 const PICK_ALPHA_THRESHOLD = 10;
 function pickLayer(layers2, alphaAt, threshold = PICK_ALPHA_THRESHOLD) {
   for (let i = layers2.length - 1; i >= 0; i--) {
@@ -9640,7 +10837,7 @@ class LayerOps {
    */
   setActiveLayer(layerId) {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
     if (s.stroke.active) s.cancelStroke();
     s.doc.activeLayerId = layerId;
@@ -9655,11 +10852,11 @@ class LayerOps {
    */
   setVisible(layerId, visible) {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || layer.visible === visible) return;
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
-    this.afterMeta();
+    afterMetaChange(s);
   }
   /**
    * Lock or unlock a layer (painting on a locked layer is refused).
@@ -9668,11 +10865,11 @@ class LayerOps {
    */
   setLocked(layerId, locked) {
     const s = this.s;
-    const layer = this.find(layerId);
+    const layer = findLayer(s, layerId);
     if (!layer || layer.locked === locked) return;
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.locked = locked;
-    this.afterMeta();
+    afterMetaChange(s);
   }
   // ── Structural (undoable) ───────────────────────────────────────────────
   /**
@@ -9689,8 +10886,8 @@ class LayerOps {
    * @returns Its id, or `null` while loading.
    */
   addLayer(layer) {
-    if (!this.ready()) return null;
-    this.insert(layer, paintInsertIndex(this.s.doc), null);
+    if (!readyCheck(this.s)) return null;
+    insertLayer(this.s, layer, paintInsertIndex(this.s.doc), null);
     this.soloNew(layer);
     return layer.id;
   }
@@ -9701,12 +10898,12 @@ class LayerOps {
    */
   addMask() {
     const s = this.s;
-    if (!this.ready() || !canAddMask(s.doc.layers)) return null;
+    if (!readyCheck(s) || !canAddMask(s.doc.layers)) return null;
     const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
     const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
     const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
     s.currentMaskId = layer.id;
-    this.insert(layer, index, null, false);
+    insertLayer(s, layer, index, null, false);
     this.soloNew(layer);
     return layer.id;
   }
@@ -9718,25 +10915,14 @@ class LayerOps {
    */
   duplicate(layerId = this.s.doc.activeLayerId) {
     const s = this.s;
-    if (!this.ready() || !this.canDuplicate(layerId)) return null;
+    if (!readyCheck(s) || !this.canDuplicate(layerId)) return null;
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const source = s.doc.layers[index];
     if (!source) return null;
     const layer = { ...source, id: createId(8), name: copyLayerName(source.name, s.doc.layers) };
-    this.insert(layer, index + 1, captureLayerPixels(s, source.id));
+    insertLayer(s, layer, index + 1, captureLayerPixels(s, source.id));
     this.soloNew(layer);
     return layer.id;
-  }
-  /**
-   * While any solo is on, a new layer takes over its group's solo, so what
-   * you just made is visible and editable (a new text layer would otherwise
-   * be hidden while typing).
-   * @param layer - Newly inserted layer.
-   */
-  soloNew(layer) {
-    const solo = this.s.solo.current;
-    if (solo.paint === null && solo.mask === null) return;
-    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
   }
   /**
    * Delete a paint layer or mask (not the last of its kind). The pixels stay
@@ -9746,7 +10932,7 @@ class LayerOps {
    */
   remove(layerId = this.s.doc.activeLayerId) {
     const s = this.s;
-    if (!this.ready() || !this.canDelete(layerId)) return false;
+    if (!readyCheck(s) || !this.canDelete(layerId)) return false;
     const index = s.doc.layers.findIndex((l) => l.id === layerId);
     const layer = s.doc.layers[index];
     if (!layer) return false;
@@ -9757,7 +10943,7 @@ class LayerOps {
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
     if (s.currentMaskId === layerId) s.currentMaskId = null;
-    this.record([{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
+    recordLayerChange(s, [{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }
   /**
@@ -9770,13 +10956,13 @@ class LayerOps {
    */
   move(layerId, targetId, above) {
     const s = this.s;
-    if (!this.ready()) return false;
+    if (!readyCheck(s)) return false;
     const move = resolveMove(s.doc.layers, layerId, targetId, above);
     if (!move) return false;
     const [layer] = s.doc.layers.splice(move.from, 1);
     if (!layer) return false;
     s.doc.layers.splice(move.to, 0, layer);
-    this.record([{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
+    recordLayerChange(s, [{ op: "move", id: layerId, ...move }], s.doc.activeLayerId);
     return true;
   }
   /**
@@ -9788,7 +10974,7 @@ class LayerOps {
   rename(layerId, name) {
     const trimmed = name.trim().slice(0, 100);
     if (!trimmed) return false;
-    return this.setProps(layerId, { name: trimmed });
+    return setLayerProps(this.s, layerId, { name: trimmed });
   }
   /**
    * Layer opacity (paint: composite opacity; mask: overlay display only).
@@ -9799,7 +10985,7 @@ class LayerOps {
    */
   setOpacity(layerId, opacity, gesture) {
     if (!Number.isFinite(opacity)) return false;
-    return this.setProps(layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
+    return setLayerProps(this.s, layerId, { opacity: Math.min(1, Math.max(0, opacity)) }, gesture);
   }
   /**
    * Mask display colour.
@@ -9809,8 +10995,8 @@ class LayerOps {
    * @returns `true` if changed.
    */
   setMaskColor(layerId, color, gesture) {
-    if (this.find(layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
-    return this.setProps(layerId, { color: color.toLowerCase() }, gesture);
+    if (findLayer(this.s, layerId)?.kind !== "mask" || !/^#[0-9a-f]{6}$/i.test(color)) return false;
+    return setLayerProps(this.s, layerId, { color: color.toLowerCase() }, gesture);
   }
   /**
    * Per-mask invert (applied before the union, decision 5).
@@ -9819,70 +11005,21 @@ class LayerOps {
    * @returns `true` if changed.
    */
   setMaskInvert(layerId, invert) {
-    if (this.find(layerId)?.kind !== "mask") return false;
-    return this.setProps(layerId, { invert });
+    if (findLayer(this.s, layerId)?.kind !== "mask") return false;
+    return setLayerProps(this.s, layerId, { invert });
   }
   // ── Internals ───────────────────────────────────────────────────────────
-  find(layerId) {
-    return this.s.doc.layers.find((l) => l.id === layerId);
+  /**
+   * While any solo is on, a new layer takes over its group's solo so what
+   * you just made is visible and editable (a new text layer would otherwise
+   * be hidden while typing).
+   * @param layer - Newly inserted layer.
+   */
+  soloNew(layer) {
+    const solo = this.s.solo.current;
+    if (solo.paint === null && solo.mask === null) return;
+    this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
   }
-  /** Structural edits wait for restores and cancel a running stroke. */
-  ready() {
-    const s = this.s;
-    if (s.loading) return false;
-    if (s.stroke.active) s.cancelStroke();
-    return true;
-  }
-  insert(layer, index, pixels, activate = true) {
-    const s = this.s;
-    const activeBefore = s.doc.activeLayerId;
-    s.doc.layers.splice(index, 0, layer);
-    installLayerPixels(s, layer.id, pixels);
-    if (activate) s.doc.activeLayerId = layer.id;
-    this.record([{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
-  }
-  setProps(layerId, props, gesture) {
-    const s = this.s;
-    const layer = this.find(layerId);
-    if (!layer || s.loading || !propsDiffer(layer, props)) return false;
-    const merge = gesture ? s.history.mergeTarget() : void 0;
-    const change = merge?.kind === "layers" && merge.gesture === gesture ? merge.changes[0] : void 0;
-    if (change?.op === "props" && change.id === layerId && sameKeys(change.after, props)) {
-      Object.assign(change.after, props);
-      writeProps(layer, props);
-      if (merge?.kind === "layers" && merge.changes.length === 1 && propsEqual(change.before, change.after)) s.history.discardNewest();
-      this.afterMeta(true);
-      return true;
-    }
-    const before = readProps(layer, props);
-    writeProps(layer, props);
-    this.record([{ op: "props", id: layerId, before, after: { ...props } }], s.doc.activeLayerId, gesture);
-    return true;
-  }
-  record(changes, activeBefore, gesture) {
-    const s = this.s;
-    s.history.push({
-      kind: "layers",
-      changes,
-      activeBefore,
-      activeAfter: s.doc.activeLayerId,
-      bytes: changesBytes(changes),
-      ...gesture ? { gesture } : {}
-    });
-    this.afterMeta(true);
-  }
-  /** Events after a metadata change (`history` too when it was recorded). */
-  afterMeta(history = false) {
-    const s = this.s;
-    if (history) s.events.emit("history", void 0);
-    emitLayerEvents(s);
-    s.events.emit("change", void 0);
-    s.events.emit("render", void 0);
-  }
-}
-function sameKeys(a, b) {
-  const ka = Object.keys(a).sort().join();
-  return ka === Object.keys(b).sort().join();
 }
 class EditorMaskOps {
   /**
@@ -10937,6 +12074,242 @@ class TextOps {
     return false;
   }
 }
+const ENTRY_OVERHEAD_BYTES = 128;
+class RegionOps {
+  /**
+   * @param s - Shared editor state.
+   */
+  constructor(s) {
+    this.s = s;
+  }
+  s;
+  /** Snapshot taken by {@link begin}; null while no gesture is open. */
+  before = null;
+  /** The open gesture has changed the document at least once. */
+  touched = false;
+  // ── Read access ─────────────────────────────────────────────────────────
+  /** Selected region id; null = Main (also when the stored id no longer exists). */
+  get selectedId() {
+    const id = this.s.selectedRegionId;
+    return id !== null && this.find(id) ? id : null;
+  }
+  /** Whether a field, picker or drag gesture is open. */
+  get active() {
+    return this.before !== null;
+  }
+  /**
+   * Whether another region can be created.
+   * @returns `true` while a slot is empty.
+   */
+  canAdd() {
+    return nextRegionSlot(this.s.doc.regions) !== null;
+  }
+  /**
+   * Region in a slot.
+   * @param slot - Slot 1..6.
+   * @returns The region, or undefined for an empty slot.
+   */
+  inSlot(slot) {
+    return this.s.doc.regions.find((region) => region.slot === slot);
+  }
+  /**
+   * Current rect of a region.
+   * @param id - Region id.
+   * @returns A copy of its rect (image px), or null.
+   */
+  imageRect(id) {
+    const region = this.find(id);
+    return region ? { ...region.rect } : null;
+  }
+  /**
+   * Output options of Main or a region.
+   * @param id - Region id, or null for Main.
+   * @returns Independent copy (defaults when absent).
+   */
+  options(id) {
+    const source = id === null ? this.s.doc.mainOutput : this.find(id)?.output;
+    return cloneOutputOptions(source);
+  }
+  // ── Selection (not a document edit) ─────────────────────────────────────
+  /**
+   * Select a region or Main. Emits `outputs` + `render`, never `change`.
+   * @param id - Region id, or null for Main (unknown ids select Main).
+   */
+  select(id) {
+    const next = id !== null && this.find(id) ? id : null;
+    if (next === this.selectedId) return;
+    this.s.selectedRegionId = next;
+    this.s.events.emit("outputs", void 0);
+    this.s.events.emit("render", void 0);
+  }
+  // ── Transactions ────────────────────────────────────────────────────────
+  /**
+   * Open a gesture; repeated calls join the open one.
+   * @returns Whether editing is allowed (not while loading or stroking).
+   */
+  begin() {
+    if (this.s.loading || this.s.stroke.active) return false;
+    if (!this.before) {
+      this.before = captureOutputs(this.s);
+      this.touched = false;
+    }
+    return true;
+  }
+  /**
+   * Close the gesture as one undo step. A gesture that ends where it started
+   * leaves no step (redo survives) and restores optional-field presence.
+   * @returns Whether an undo step was pushed.
+   */
+  commit() {
+    const before = this.before;
+    const touched = this.touched;
+    this.before = null;
+    this.touched = false;
+    if (!before || !touched) return false;
+    const after = captureOutputs(this.s);
+    const beforeKey = outputsKey(before);
+    const afterKey = outputsKey(after);
+    if (beforeKey === afterKey) {
+      this.restore(before);
+      return false;
+    }
+    const bytes = ENTRY_OVERHEAD_BYTES + 2 * (beforeKey.length + afterKey.length);
+    this.s.history.push({ kind: "outputs", before, after, bytes });
+    this.s.afterEdit();
+    return true;
+  }
+  /** Revert the open gesture without touching undo/redo. Keeps the current selection. */
+  cancel() {
+    const before = this.before;
+    const touched = this.touched;
+    this.before = null;
+    this.touched = false;
+    if (before && touched) this.restore(before);
+  }
+  // ── Edits ───────────────────────────────────────────────────────────────
+  /**
+   * Create a region in the lowest empty slot (or a given one) and select it.
+   * @param rect - Rect in image px (clamped to the paint area).
+   * @param slot - Empty slot to fill; default = lowest empty slot.
+   * @returns New region id, or null (no empty slot, slot taken, bad rect).
+   */
+  add(rect, slot = nextRegionSlot(this.s.doc.regions)) {
+    if (slot === null || !isRegionSlot(slot) || this.inSlot(slot) || !validRect(rect)) return null;
+    const id = crypto.randomUUID();
+    const region = createRegion(id, slot, clampRegionRect(rect, this.s.imageSize));
+    this.edit(() => {
+      this.s.doc.regions.push(region);
+      this.s.selectedRegionId = id;
+    });
+    return id;
+  }
+  /**
+   * Fill an empty slot with the centred default rect (`+ Region N` row).
+   * @param slot - Slot 1..6.
+   * @returns New region id, or null if the slot is taken.
+   */
+  addDefault(slot) {
+    return this.add(defaultRegionRect(this.s.imageSize), slot);
+  }
+  /**
+   * Empty a region's slot; other slots keep their numbers.
+   * @param id - Region id.
+   */
+  remove(id) {
+    if (!this.find(id)) return;
+    this.edit(() => {
+      this.s.doc.regions = this.s.doc.regions.filter((region) => region.id !== id);
+      if (this.s.selectedRegionId === id) this.s.selectedRegionId = null;
+    });
+  }
+  /**
+   * Set a region's rect.
+   * @param id - Region id.
+   * @param rect - Rect in image px (clamped to the paint area).
+   */
+  setRect(id, rect) {
+    const region = this.find(id);
+    if (!region || !validRect(rect)) return;
+    const next = clampRegionRect(rect, this.s.imageSize);
+    if (rectEquals(next, region.rect)) return;
+    this.edit(() => {
+      region.rect = next;
+    });
+  }
+  /**
+   * Rename a region.
+   * @param id - Region id.
+   * @param input - Typed name (trimmed; empty = `Region N`).
+   */
+  rename(id, input) {
+    const region = this.find(id);
+    if (!region) return;
+    const name = commitRegionName(input, region.slot);
+    if (region.name === name) return;
+    this.edit(() => {
+      region.name = name;
+    });
+  }
+  /**
+   * Show or hide a region's overlay (execution is unaffected).
+   * @param id - Region id.
+   * @param visible - New visibility.
+   */
+  setVisible(id, visible) {
+    const region = this.find(id);
+    if (!region || region.visible === visible) return;
+    this.edit(() => {
+      region.visible = visible;
+    });
+  }
+  /**
+   * Change output options of Main or a region.
+   * @param id - Region id, or null for Main.
+   * @param patch - Changed options (normalized).
+   */
+  setOptions(id, patch) {
+    const region = id === null ? null : this.find(id);
+    if (id !== null && !region) return;
+    const old = this.options(id);
+    const next = readOutputOptions({ ...old, ...patch });
+    if (outputOptionsEqual(old, next)) return;
+    this.edit(() => {
+      if (region) region.output = next;
+      else this.s.doc.mainOutput = next;
+    });
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  find(id) {
+    return this.s.doc.regions.find((region) => region.id === id);
+  }
+  /**
+   * Apply one mutation inside the open gesture, or as its own one-step
+   * gesture when none is open.
+   */
+  edit(mutate) {
+    const own = !this.active;
+    if (!this.begin()) return;
+    mutate();
+    this.touched = true;
+    this.s.events.emit("outputs", void 0);
+    this.s.events.emit("change", void 0);
+    this.s.events.emit("render", void 0);
+    if (own) this.commit();
+  }
+  /** Put the document back to a snapshot, keeping the live selection when it still exists. */
+  restore(snapshot) {
+    const selected = this.s.selectedRegionId;
+    applyOutputs(this.s, snapshot);
+    const kept = selected !== null && this.find(selected) ? selected : snapshot.selected;
+    this.s.selectedRegionId = kept;
+    this.s.events.emit("change", void 0);
+    this.s.events.emit("render", void 0);
+  }
+}
+function validRect(rect) {
+  const finite2 = [rect.x, rect.y, rect.width, rect.height].every(Number.isFinite);
+  return finite2 && !isEmptyRect(rect);
+}
 class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   layerOps;
@@ -10950,6 +12323,8 @@ class Editor extends EditorBase {
   selection;
   /** Text tool: create / edit / commit text layers (M6b). */
   text;
+  /** Region rectangles, output options and metadata gesture transactions. */
+  regionOps;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -10966,6 +12341,7 @@ class Editor extends EditorBase {
     this.selection = new SelectionOps(this.s);
     this.maskOps = new EditorMaskOps(this.s, this.paint);
     this.text = new TextOps(this.s, this.layerOps);
+    this.regionOps = new RegionOps(this.s);
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -11120,12 +12496,22 @@ class Editor extends EditorBase {
   // ── Undo / redo ─────────────────────────────────────────────────────────
   /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
   undo() {
+    if (this.regionOps.active) {
+      this.regionOps.cancel();
+      return;
+    }
     if (!this.text.editing || this.text.commit()) this.paint.undo();
   }
   /** Redo the last undone operation (an open text edit is committed first). */
   redo() {
+    this.regionOps.cancel();
     this.text.commit();
     this.paint.redo();
+  }
+  /** Clear paint and output metadata in the existing single Clear history step. */
+  clear() {
+    this.regionOps.cancel();
+    super.clear();
   }
   // ── Cloning / teardown ──────────────────────────────────────────────────
   /**
@@ -12624,7 +14010,7 @@ class ToolRegistry {
    */
   byShortcut(key) {
     for (const tool of this.tools.values()) {
-      if (tool.rail === false) continue;
+      if (tool.rail === false || !tool.shortcut) continue;
       if (tool.shortcut !== key) continue;
       const group2 = this.groups.groupOf(tool.id);
       return group2 && this.tools.get(this.groups.currentOf(group2.id) ?? "") || tool;
@@ -12699,7 +14085,8 @@ function createDefaultTools(editor, pressure = PRESSURE_DEFAULTS, samples = SAMP
       moveLayer,
       ...createMarqueeTools(),
       createLassoTool(),
-      createMagicWandTool(samples.wand)
+      createMagicWandTool(samples.wand),
+      createRegionTool()
     ],
     [SHAPE_GROUP, MARQUEE_GROUP]
   );
@@ -13023,10 +14410,11 @@ function findSession(docId) {
   return sessions.get(docId);
 }
 function fileSignature(doc) {
-  return `${doc.frame.width}x${doc.frame.height}|${doc.layers.map((l) => `${l.id}=${l.file ?? ""}`).join(",")}`;
+  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc)]);
 }
 function sessionMatches(session, doc) {
-  return session.recentSignatures.includes(fileSignature(doc));
+  const signature = fileSignature(doc);
+  return outputMetadataSignature(session.editor.doc) === outputMetadataSignature(doc) && (signature === fileSignature(session.editor.doc) || session.recentSignatures.includes(signature));
 }
 function attachSession(session, owner) {
   session.owner = owner;
@@ -13098,7 +14486,8 @@ function sessionForManifest(doc, owner, handoff) {
   }
 }
 function releaseOrDetach(session, owner) {
-  if (!session.editor.hasPaint && !session.editor.dirty) releaseSession(session.docId);
+  if (!session.alive || session.owner !== owner) return;
+  if (!hasDocumentContent(session.editor.doc, session.editor.hasPaint) && !session.editor.dirty) releaseSession(session.docId);
   else {
     session.uploader.flushQuietly();
     detachSession(session, owner);
@@ -13206,7 +14595,7 @@ class PainterSketchController {
     return createSession(createEmptyDocument(this.frame.fallbackFrame().size, void 0, readFirstMaskStyle()), "widgets");
   }
   // ── Widget value ────────────────────────────────────────────────────────
-  /** @returns The manifest string (`""` = never painted). */
+  /** @returns The manifest string (`""` = untouched). */
   getValue() {
     return this.valueCache;
   }
@@ -13221,6 +14610,9 @@ class PainterSketchController {
     const parsed = parseDocument(value);
     if (parsed.status === "ok") {
       this.unreadableValue = null;
+      if (parsed.skippedLayers) {
+        notify("warn", skippedLayersMessage(parsed.skippedLayers), { key: "skipped-layers" });
+      }
       const existing = findSession(parsed.document.docId);
       const session = sessionForManifest(parsed.document, this, this.handoff);
       const handedOff = session === this.handoff;
@@ -13240,7 +14632,7 @@ class PainterSketchController {
     const handoff = this.handoff?.alive && this.handoff.owner === null ? this.handoff : null;
     this.handoff = null;
     const choice = chooseForEmpty(parsed.status, {
-      hasPaint: this.session?.editor.hasPaint ?? false,
+      hasPaint: this.session ? hasDocumentContent(this.session.editor.doc, this.session.editor.hasPaint) : false,
       handoff: handoff !== null
     });
     if (choice === "adopt" && handoff) this.attach(handoff);
@@ -13256,6 +14648,7 @@ class PainterSketchController {
     const session = this.session;
     if (!session) return this.valueCache;
     await flushForQueue(session);
+    this.syncValue();
     return this.valueCache;
   }
   // ── Lifecycle (called from node hooks) ──────────────────────────────────
@@ -13309,6 +14702,7 @@ class PainterSketchController {
     if (this.disposed) return;
     const key = handoffKey(this.node);
     const session = this.session;
+    this.syncValue();
     this.disposed = true;
     this.loader.dispose();
     this.watcher.stop();
@@ -13376,11 +14770,13 @@ class PainterSketchController {
   syncValue() {
     const editor = this.session?.editor;
     if (!editor) return false;
-    const untouched = !editor.hasPaint && editor.doc.layers.every((l) => l.file === null);
+    const untouched = !hasDocumentContent(editor.doc, editor.hasPaint);
     const previous = this.valueCache;
     if (!untouched) this.unreadableValue = null;
     this.valueCache = untouched ? this.unreadableValue ?? "" : stringifyDocument(editor.doc);
-    return this.valueCache !== previous;
+    const changed = this.valueCache !== previous;
+    if (changed) emitDocumentChange(this.node);
+    return changed;
   }
   // ── Background + content ────────────────────────────────────────────────
   /**
@@ -13501,8 +14897,8 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
-const controlsCss = "/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n";
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 180px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\r\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\r\n  cursor: var(--cps-tool-cursor, crosshair);\r\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\r\n  pointer-events: none;\r\n}\r\n\r\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\r\n * transform; the canvas shows the glyphs, the textarea only the caret. */\r\n.cps-text-edit {\r\n  position: absolute;\r\n  left: 0;\r\n  top: 0;\r\n  box-sizing: content-box;\r\n  margin: 0;\r\n  padding: 0;\r\n  border: 0;\r\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\r\n  background: transparent;\r\n  color: transparent;\r\n  resize: none;\r\n  overflow: hidden;\r\n  white-space: pre;\r\n  transform-origin: 0 0;\r\n  cursor: text;\r\n  letter-spacing: normal;\r\n  word-spacing: normal;\r\n  text-indent: 0;\r\n  text-transform: none;\r\n  font-kerning: auto;\r\n  touch-action: auto;\r\n}\r\n\r\n.cps-text-edit::selection {\r\n  background: rgba(80, 140, 255, 0.35);\r\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
+const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n';
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\r\n}\r\n\r\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\r\n.cps-root.cps-has-keys .cps-rail {\r\n  box-shadow: inset 2px 0 0 #fff;\r\n}\r\n\r\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\r\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\r\n  cursor: var(--cps-tool-cursor, crosshair);\r\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\r\n  pointer-events: none;\r\n}\r\n\r\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\r\n * transform; the canvas shows the glyphs, the textarea only the caret. */\r\n.cps-text-edit {\r\n  position: absolute;\r\n  left: 0;\r\n  top: 0;\r\n  box-sizing: content-box;\r\n  margin: 0;\r\n  padding: 0;\r\n  border: 0;\r\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\r\n  background: transparent;\r\n  color: transparent;\r\n  resize: none;\r\n  overflow: hidden;\r\n  white-space: pre;\r\n  transform-origin: 0 0;\r\n  cursor: text;\r\n  letter-spacing: normal;\r\n  word-spacing: normal;\r\n  text-indent: 0;\r\n  text-transform: none;\r\n  font-kerning: auto;\r\n  touch-action: auto;\r\n}\r\n\r\n.cps-text-edit::selection {\r\n  background: rgba(80, 140, 255, 0.35);\r\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\r\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
  *
@@ -13881,6 +15277,7 @@ const layersCss = `/*
 }
 `;
 const toolGroupsCss = "/* ── Tool group slot + flyout (ui/toolGroupSlot.ts) ─────────────────────── */\n\n.cps-rail-grouped {\n  position: relative;\n}\n\n/* Photoshop's corner triangle: this slot holds more tools. */\n.cps-rail-corner {\n  position: absolute;\n  right: 2px;\n  bottom: 2px;\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid currentColor;\n  opacity: 0.7;\n  pointer-events: none;\n}\n\n.cps-tool-flyout {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 120px;\n}\n\n.cps-tool-flyout-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 3px 6px;\n  border: 1px solid transparent;\n  border-radius: 3px;\n  background: transparent;\n  color: var(--cps-fg);\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-tool-flyout-item:hover {\n  background: var(--cps-hover);\n}\n\n.cps-tool-flyout-item.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-tool-flyout-key {\n  margin-left: auto;\n  color: var(--cps-fg-muted);\n}\n";
+const outputsCss = '/* Side panel tabs (Layers / Outputs) and the Outputs tab cards (M9).\n   Titles, rename field, eye/delete buttons reuse the layer row classes\n   (`cps-layer-name`, `cps-layer-rename`, `cps-layer-button`). */\n\n/* ── Tabs ─────────────────────────────────────────────────────────────── */\n\n.cps-side-content {\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n}\n\n.cps-side-tabs {\n  display: flex;\n  flex: none;\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-side-tabs button {\n  flex: 1;\n  padding: 5px;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-side-tabs button.cps-active {\n  color: var(--cps-fg);\n  background: var(--cps-active-bg);\n  box-shadow: inset 0 -2px var(--cps-accent);\n}\n\n.cps-side-content > .cps-layers,\n.cps-outputs {\n  flex: 1;\n  min-height: 0;\n}\n\n.cps-side-content > [hidden],\n.cps-outputs [hidden] {\n  display: none !important;\n}\n\n/* ── Outputs list ─────────────────────────────────────────────────────── */\n\n.cps-outputs {\n  display: flex;\n  flex-direction: column;\n  font-size: 11px;\n  overflow: hidden;\n}\n\n.cps-outputs-list {\n  overflow-y: auto;\n  min-height: 0;\n  overscroll-behavior: contain;\n}\n\n.cps-outputs-hint {\n  flex: none;\n  padding: 5px 6px;\n  color: var(--cps-fg-muted);\n  line-height: 1.35;\n}\n\n/* ── Cards ────────────────────────────────────────────────────────────── */\n\n.cps-output-card {\n  padding: 3px 4px 4px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  border-left: 2px solid transparent;\n  user-select: none;\n}\n\n.cps-output-card:hover {\n  background: var(--cps-hover);\n}\n\n.cps-output-card.cps-selected {\n  background: var(--cps-active-bg);\n  border-left-color: var(--cps-accent);\n}\n\n.cps-output-header {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  min-height: 22px;\n}\n\n.cps-output-title {\n  flex: 1;\n  min-width: 0;\n}\n\n.cps-output-card.cps-hidden-layer .cps-output-title {\n  opacity: 0.55;\n}\n\n.cps-output-size {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-empty {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  width: 100%;\n  padding: 3px 6px;\n  border: 0;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-output-empty:hover {\n  background: var(--cps-hover);\n  color: var(--cps-fg);\n}\n\n/* ── Fields ───────────────────────────────────────────────────────────── */\n\n.cps-output-geometry {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 0 4px;\n}\n\n.cps-output-field {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n  min-width: 0;\n  margin: 2px 0;\n}\n\n.cps-output-field > span,\n.cps-output-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-scrub {\n  cursor: ew-resize;\n  touch-action: none;\n  user-select: none;\n}\n\n/* Number fields: no spin arrows, so 4-5 digit sizes fit (scrub the label instead). */\n.cps-output-card input[type="number"] {\n  appearance: textfield;\n  -moz-appearance: textfield;\n}\n\n.cps-output-card input[type="number"]::-webkit-inner-spin-button,\n.cps-output-card input[type="number"]::-webkit-outer-spin-button {\n  -webkit-appearance: none;\n  margin: 0;\n}\n\n.cps-output-card input,\n.cps-output-card select {\n  flex: 1;\n  min-width: 0;\n  width: 100%;\n  padding: 2px 3px;\n  font: inherit;\n  color: var(--cps-fg);\n  background: var(--cps-input-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n}\n\n.cps-output-card input:focus {\n  outline: 1px solid var(--cps-accent);\n}\n\n.cps-output-options {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px;\n  margin-top: 2px;\n}\n\n.cps-output-options .cps-output-field {\n  flex: 0 1 70px;\n  margin: 0;\n}\n\n.cps-output-swatch {\n  flex: none;\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid var(--cps-fg-muted);\n  border-radius: 3px;\n  cursor: pointer;\n}\n\n.cps-output-options .cps-output-mode {\n  min-width: 0;\n}\n\n.cps-output-check {\n  display: inline-flex;\n  flex: none;\n  align-items: center;\n  gap: 2px;\n  color: var(--cps-fg-muted);\n  white-space: nowrap;\n  cursor: pointer;\n}\n\n.cps-output-check > input {\n  margin: 0;\n}\n\n.cps-output-check[hidden] {\n  display: none;\n}\n';
 const STYLE_ELEMENT_ID = "cps-styles";
 function injectStyles() {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;
@@ -13891,7 +15288,8 @@ ${controlsCss}
 ${colorPickerCss}
 ${layersCss}
 ${fullscreenCss}
-${toolGroupsCss}`;
+${toolGroupsCss}
+${outputsCss}`;
   document.head.appendChild(style);
 }
 function createPainterSketchWidget(node, inputName, inputData) {
@@ -13910,15 +15308,97 @@ function createPainterSketchWidget(node, inputName, inputData) {
   widget.serializeValue = () => controller.serialize();
   return { widget };
 }
+const REGION_OUTPUT_COUNT = 2 * MAX_REGIONS;
+function regionSlotLabels(slot, source) {
+  if (source === null) return [`region ${slot}`, `region ${slot} mask`];
+  const region = source.find((r) => r.slot === slot);
+  if (!region) return [`region ${slot} (missing)`, `region ${slot} mask (missing)`];
+  const name = regionName(region);
+  return [name, `${name} mask`];
+}
+function regionOutputLabels(source) {
+  const labels = [];
+  for (let slot = 1; slot <= MAX_REGIONS; slot++) {
+    labels.push(...regionSlotLabels(slot, source));
+  }
+  return labels;
+}
+const REGIONS_NODE_NAME = "PainterSketchRegions";
+const REGIONS_INPUT_NAME = "regions";
+const helpers = /* @__PURE__ */ new Set();
+function readRegionSource(helper) {
+  if (!helper.graph) return null;
+  const index = (helper.inputs ?? []).findIndex((input) => input.name === REGIONS_INPUT_NAME);
+  if (index < 0) return null;
+  const source = helper.getInputNode(index);
+  if (!source || !isPainterSketch(source)) return null;
+  const widget = source.widgets?.find((w) => w.name === INPUT_NAMES.document);
+  if (!widget) return null;
+  const parsed = parseDocument(widget.value);
+  if (parsed.status === "empty") return [];
+  if (parsed.status === "invalid") return null;
+  return parsed.document.regions;
+}
+function isPainterSketch(node) {
+  return node.comfyClass === NODE_NAME || node.type === NODE_NAME;
+}
+function updateRegionsNode(helper) {
+  const outputs = helper.outputs;
+  if (!outputs) return false;
+  const labels = regionOutputLabels(readRegionSource(helper));
+  const count = Math.min(outputs.length, REGION_OUTPUT_COUNT);
+  let changed = false;
+  for (let i = 0; i < count; i++) {
+    const output = outputs[i];
+    const label = labels[i];
+    if (!output || label === void 0 || output.label === label) continue;
+    output.label = label;
+    changed = true;
+  }
+  if (!changed) return false;
+  outputs.splice(0, outputs.length, ...outputs);
+  helper.setDirtyCanvas?.(true, true);
+  return true;
+}
+function refreshRegionsNodes() {
+  for (const helper of helpers) updateRegionsNode(helper);
+}
+function handleDocumentChange(source) {
+  for (const helper of helpers) {
+    if (helper.graph && helper.graph === source.graph) updateRegionsNode(helper);
+  }
+}
+let unsubscribe = null;
+function installRegionsNodeHooks(nodeType) {
+  unsubscribe ??= onDocumentChange(handleDocumentChange);
+  const proto = nodeType.prototype;
+  const onAdded = proto.onAdded;
+  proto.onAdded = function(graph) {
+    onAdded?.call(this, graph);
+    helpers.add(this);
+    updateRegionsNode(this);
+  };
+  const onConnectionsChange = proto.onConnectionsChange;
+  proto.onConnectionsChange = function(...args) {
+    onConnectionsChange?.apply(this, args);
+    updateRegionsNode(this);
+  };
+  const onRemoved = proto.onRemoved;
+  proto.onRemoved = function() {
+    onRemoved?.call(this);
+    helpers.delete(this);
+  };
+}
 installPageGuards();
 app.registerExtension({
   name: EXTENSION_NAME,
   settings: SETTINGS,
+  afterConfigureGraph: refreshRegionsNodes,
   getCustomWidgets: () => ({
     [WIDGET_SPEC_TYPE]: (node, inputName, inputData) => createPainterSketchWidget(node, inputName, inputData)
   }),
   beforeRegisterNodeDef(nodeType, nodeData) {
-    if (nodeData.name !== NODE_NAME) return;
-    installNodeHooks(nodeType);
+    if (nodeData.name === NODE_NAME) installNodeHooks(nodeType);
+    else if (nodeData.name === REGIONS_NODE_NAME) installRegionsNodeHooks(nodeType);
   }
 });

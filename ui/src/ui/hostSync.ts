@@ -1,17 +1,18 @@
 /**
  * Rail/options-bar sync layer for {@link EditorHost}.
  *
- * {@link HostSync} owns the five components that form the toolbar chrome
- * (tool rail, FG/BG swatches, options bar, selection actions, layers panel)
- * and every private sync method that keeps them up to date when the session,
- * tool, mask state or history changes.
+ * {@link HostSync} owns the components that form the toolbar chrome (tool
+ * rail, FG/BG swatches, options bar, selection actions, layers and outputs
+ * panels) and every private sync method that keeps them up to date when the
+ * session, tool, mask state or history changes.
  *
  * Construction: built once by `EditorHost`.
  * Sync calls: the host calls the methods below whenever editor events fire.
  * Disposal: the host calls {@link HostSync.dispose} when it tears down.
  *
- * Extracted from `editorHost.ts` (M3.x refactor) so that file stays < 380
- * lines; no behaviour changed.
+ * Region mode (M9, `regionMode.ts`): the Outputs tab and the region tool
+ * follow each other -- opening the tab activates the tool, any other tool
+ * shows the Layers tab. The Outputs button / `O` toggles it.
  */
 
 import { readFirstMaskStyle } from "../defaults/readDefaults";
@@ -26,6 +27,9 @@ import { SelectionActions } from "./selectionActions";
 import type { EditorShell } from "./shell";
 import { SwatchWidget } from "./swatches";
 import { ToolRail } from "./toolRail";
+import { OutputsPanel } from "./outputsPanel";
+import { LAYERS_TAB, OUTPUTS_TAB, tabForTool, toolForTab } from "./regionMode";
+import { REGION_TOOL_ID } from "../tools/region";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HostSync
@@ -45,6 +49,8 @@ export class HostSync {
   readonly selectionActions: SelectionActions;
   /** Layers panel (owned here; side panel content set by EditorHost). */
   readonly layers: LayersPanel;
+  /** Output metadata panel, bound alongside Layers. */
+  readonly outputs: OutputsPanel;
 
   /**
    * Last active rail tool per registry (restored when "Move drawing" is
@@ -112,6 +118,17 @@ export class HostSync {
       releaseFocus,
       toggleMoveDrawing: () => this.toggleMoveDrawing(),
     });
+    this.outputs = new OutputsPanel({
+      popovers: shell.popoverHost,
+      beforeEdit: () => this.onCancelDrag(),
+      releaseFocus,
+    });
+    shell.sidePanel.setTabs([
+      { id: LAYERS_TAB, label: "Layers", panel: this.layers.element },
+      { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element },
+    ]);
+    shell.sidePanel.events.on("tab", (tab) => this.tabChanged(tab));
+    shell.events.on("outputs", () => this.toggleOutputs());
   }
 
   // ── Sync called by EditorHost ─────────────────────────────────────────────
@@ -123,6 +140,7 @@ export class HostSync {
    */
   bindEditor(editor: Editor | null): void {
     this.layers.setEditor(editor);
+    this.outputs.setEditor(editor);
     this.selectionActions.setEditor(editor);
   }
 
@@ -133,6 +151,10 @@ export class HostSync {
 
     const active = session.tools.active;
     if (active.rail !== false) this.lastRailTool.set(session.tools, active.id);
+    const regionMode = active.id === REGION_TOOL_ID;
+    this.shell.sidePanel.showTab(tabForTool(active.id));
+    this.shell.outputsButton.classList.toggle("cps-active", regionMode);
+    this.shell.outputsButton.setAttribute("aria-pressed", String(regionMode));
     this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
     this.optionsBar.bind(session.tools.active.options);
     this.syncMoveMode();
@@ -158,6 +180,24 @@ export class HostSync {
       tools.setActive("move");
     }
     this.syncTools();
+  }
+
+  /**
+   * Outputs button / `O`: open the side panel on the Outputs tab (region
+   * mode); when region mode is already showing, go back to Layers.
+   */
+  toggleOutputs(): void {
+    const session = this.getSession();
+    if (!session) return;
+    const panel = this.shell.sidePanel;
+    this.onCancelDrag();
+    if (session.tools.active.id === REGION_TOOL_ID && !panel.collapsed) {
+      panel.showTab(LAYERS_TAB);
+      return;
+    }
+    panel.setCollapsed(false);
+    panel.showTab(OUTPUTS_TAB);
+    session.tools.setActive(REGION_TOOL_ID);
   }
 
   /** Sync the Quick Mask rail button + badge + root class. */
@@ -191,9 +231,21 @@ export class HostSync {
   /** Dispose components that need it. */
   dispose(): void {
     this.layers.dispose();
+    this.outputs.dispose();
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
+
+  /** The visible side-panel tab changed: enter or leave region mode. */
+  private tabChanged(tab: string): void {
+    const tools = this.getSession()?.tools;
+    if (!tools) return;
+    const fallback = this.lastRailTool.get(tools) ?? tools.railTools()[0]?.id ?? "";
+    const next = toolForTab(tab, tools.active.id, fallback);
+    if (next === null) return;
+    this.onCancelDrag();
+    tools.setActive(next);
+  }
 
   /** Sync the "Move drawing" button on the layers panel. */
   private syncMoveMode(): void {
@@ -205,7 +257,7 @@ export class HostSync {
   private confirmClear(): void {
     const editor = this.getSession()?.editor;
     if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint? This can be undone.")) return;
+    if (!window.confirm("Clear all paint, regions and output options? This can be undone.")) return;
     this.onCancelDrag();
     editor.clear();
   }

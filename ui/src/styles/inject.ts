@@ -10,6 +10,7 @@ import editorCss from "./editor.css?inline";
 import fullscreenCss from "./fullscreen.css?inline";
 import layersCss from "./layers.css?inline";
 import toolGroupsCss from "./toolGroups.css?inline";
+import outputsCss from "./outputs.css?inline";
 
 const STYLE_ELEMENT_ID = "cps-styles";
 
@@ -20,6 +21,6 @@ export function injectStyles(): void {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;
   const style = document.createElement("style");
   style.id = STYLE_ELEMENT_ID;
-  style.textContent = `${editorCss}\n${controlsCss}\n${colorPickerCss}\n${layersCss}\n${fullscreenCss}\n${toolGroupsCss}`;
+  style.textContent = `${editorCss}\n${controlsCss}\n${colorPickerCss}\n${layersCss}\n${fullscreenCss}\n${toolGroupsCss}\n${outputsCss}`;
   document.head.appendChild(style);
 }

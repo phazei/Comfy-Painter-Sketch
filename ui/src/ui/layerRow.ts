@@ -12,6 +12,7 @@
 
 import type { OptionControl } from "./optionControls";
 import { setIcon } from "./icons";
+import { startInlineRename } from "./inlineRename";
 import { Thumbnail } from "./thumbnails";
 
 /** Kind of row. */
@@ -215,40 +216,13 @@ export class LayerRow {
   /** Begin inline renaming. */
   startRename(): void {
     if (this.editor || this.kind === "background") return;
-    const input = document.createElement("input");
-    input.type = "text";
-    input.className = "cps-layer-rename";
-    input.value = this.model?.name ?? "";
-    input.spellcheck = false;
-    input.maxLength = 100;
-    this.editor = input;
-    this.nameEl.replaceChildren(input);
     this.actions.renaming(true);
-    let done = false;
-    const finish = (commit: boolean): void => {
-      if (done) return;
-      done = true;
-      const value = input.value;
+    this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
       this.nameEl.textContent = this.model?.name ?? "";
-      if (commit) this.actions.rename(this.id, value);
+      if (value !== null) this.actions.rename(this.id, value);
       this.actions.renaming(false);
-    };
-    input.addEventListener("keydown", (event) => {
-      event.stopPropagation();
-      if (event.key === "Enter") {
-        event.preventDefault();
-        finish(true);
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        finish(false);
-      }
     });
-    input.addEventListener("blur", () => finish(true));
-    input.addEventListener("pointerdown", (event) => event.stopPropagation());
-    input.addEventListener("click", (event) => event.stopPropagation());
-    input.focus({ preventScroll: true });
-    input.select();
   }
 }
 

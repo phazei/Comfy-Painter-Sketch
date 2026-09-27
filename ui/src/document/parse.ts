@@ -2,9 +2,11 @@
  * Parse, migrate and validate a stored document value. Every load path goes
  * through {@link parseDocument}; it never throws.
  *
- * Structure (frame, bounds, layers array) is validated strictly; optional or
- * cosmetic fields are normalized leniently (defaults filled, bad values
- * replaced) so a slightly odd manifest still loads.
+ * Structure (frame, bounds, layers array) is validated strictly; a single
+ * malformed layer or region record is skipped (as Python does, so editor and
+ * output agree); optional or cosmetic fields are normalized leniently
+ * (defaults filled, bad values replaced) so a slightly odd manifest still loads.
+ * Parsing never toasts: callers report `skippedLayers`.
  */
 
 import { containsRect, frameRect } from "../geometry/rect";
@@ -13,8 +15,10 @@ import { createId, createPaintLayer } from "./create";
 import { log } from "../log";
 import { readPlacement } from "./placement";
 import { readTextData } from "./textData";
+import { readOutputOptions } from "./outputOptions";
+import { readRegions } from "./regions";
 import { DOCUMENT_VERSION } from "./types";
-import type { Layer, LayerKind, PainterDocument, Region } from "./types";
+import type { Layer, LayerKind, PainterDocument } from "./types";
 
 /** Largest accepted frame/bounds side in pixels. */
 export const MAX_DOCUMENT_SIDE = 16384;
@@ -22,7 +26,13 @@ export const MAX_DOCUMENT_SIDE = 16384;
 /** Outcome of {@link parseDocument}. */
 export type ParseResult =
   | { status: "empty" }
-  | { status: "ok"; document: PainterDocument; repaired: boolean }
+  | {
+      status: "ok";
+      document: PainterDocument;
+      repaired: boolean;
+      /** Malformed layer entries that were dropped; absent when none. */
+      skippedLayers?: number;
+    }
   | { status: "invalid"; reason: string };
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -88,15 +98,9 @@ function validate(data: Record<string, unknown>): ParseResult {
 
   const rawLayers = data["layers"];
   if (!Array.isArray(rawLayers)) return { status: "invalid", reason: "layers is not an array" };
-  const layers: Layer[] = [];
-  const seen = new Set<string>();
-  for (const entry of rawLayers) {
-    const layer = readLayer(entry);
-    if (!layer) return { status: "invalid", reason: "invalid layer entry" };
-    if (seen.has(layer.id)) return { status: "invalid", reason: `duplicate layer id ${layer.id}` };
-    seen.add(layer.id);
-    layers.push(layer);
-  }
+  const read = readLayers(rawLayers);
+  const { layers, seen, skippedLayers } = read;
+  if (read.repaired) repaired = true;
   if (!layers.some((l) => l.kind === "paint")) {
     layers.unshift(createPaintLayer("Layer 1"));
     repaired = true;
@@ -123,7 +127,9 @@ function validate(data: Record<string, unknown>): ParseResult {
   }
 
   const regions = readRegions(data["regions"]);
-  if (!regions) repaired = true;
+  if (regions.repaired) repaired = true;
+  // Dropped field of the unreleased first M9 pass; regions are image px now.
+  if (data["regionsReferenceSize"] !== undefined) repaired = true;
 
   const placed = readPlacement(data["placement"]);
   if (placed.repaired) repaired = true;
@@ -131,12 +137,14 @@ function validate(data: Record<string, unknown>): ParseResult {
   return {
     status: "ok",
     repaired,
+    ...(skippedLayers ? { skippedLayers } : {}),
     document: {
       version: DOCUMENT_VERSION,
       docId: docId as string,
       frame,
       bounds,
-      regions: regions ?? [],
+      regions: regions.regions,
+      ...(data["mainOutput"] !== undefined ? { mainOutput: readOutputOptions(data["mainOutput"]) } : {}),
       ...(placed.placement ? { placement: placed.placement } : {}),
       activeLayerId,
       layers,
@@ -144,7 +152,51 @@ function validate(data: Record<string, unknown>): ParseResult {
   };
 }
 
+// ── Layers ────────────────────────────────────────────────────────────────────
+
 const LAYER_KINDS: ReadonlySet<string> = new Set<LayerKind>(["paint", "text", "mask"]);
+
+/** Layers read leniently: see {@link readLayers}. */
+interface ReadLayersResult {
+  layers: Layer[];
+  seen: Set<string>;
+  /** Count of skipped entries; 0 when none. */
+  skippedLayers: number;
+  repaired: boolean;
+}
+
+/**
+ * Read the layer array like Python does: an entry that is not an object, has
+ * no id or an unknown kind is skipped (logged) instead of rejecting the
+ * document. A duplicate id gets a fresh id, so its pixels still load (Python
+ * composites every entry).
+ * @param rawLayers - Saved `layers` array.
+ * @returns Valid layers, their ids, the skip count and a repair flag.
+ */
+function readLayers(rawLayers: readonly unknown[]): ReadLayersResult {
+  const layers: Layer[] = [];
+  const seen = new Set<string>();
+  let skippedLayers = 0;
+  let repaired = false;
+  rawLayers.forEach((entry, index) => {
+    const layer = readLayer(entry);
+    if (!layer) {
+      log.warn(`layer[${index}] is malformed; skipping it`, entry);
+      skippedLayers++;
+      repaired = true;
+      return;
+    }
+    if (seen.has(layer.id)) {
+      const id = createId();
+      log.warn(`layer[${index}] repeats id ${layer.id}; loading it as ${id}`);
+      layer.id = id;
+      repaired = true;
+    }
+    seen.add(layer.id);
+    layers.push(layer);
+  });
+  return { layers, seen, skippedLayers, repaired };
+}
 
 function readLayer(value: unknown): Layer | null {
   if (!isRecord(value)) return null;
@@ -152,8 +204,12 @@ function readLayer(value: unknown): Layer | null {
   const kind = value["kind"];
   if (typeof id !== "string" || !id) return null;
   if (typeof kind !== "string" || !LAYER_KINDS.has(kind)) return null;
-  const file = value["file"];
-  if (file !== null && file !== undefined && (typeof file !== "string" || !file.trim())) return null;
+  let file = value["file"];
+  if (file !== null && file !== undefined && (typeof file !== "string" || !file.trim())) {
+    // As Python: an unusable file reference means an empty layer.
+    log.warn(`layer ${id} has an invalid file reference; loading it empty`);
+    file = null;
+  }
 
   const layer: Layer = {
     id,
@@ -178,21 +234,6 @@ function readLayer(value: unknown): Layer | null {
     }
   }
   return layer;
-}
-
-function readRegions(value: unknown): Region[] | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value)) return null;
-  const regions: Region[] = [];
-  for (const entry of value) {
-    if (!isRecord(entry)) return null;
-    const rect = readRect(entry["rect"]);
-    const id = entry["id"];
-    const index = entry["index"];
-    if (!rect || typeof id !== "string" || typeof index !== "number" || !Number.isInteger(index)) return null;
-    regions.push({ id, index, rect });
-  }
-  return regions;
 }
 
 function readSize(value: unknown): Size | null {
@@ -230,4 +271,3 @@ function clamp01(value: unknown, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(1, Math.max(0, value));
 }
-

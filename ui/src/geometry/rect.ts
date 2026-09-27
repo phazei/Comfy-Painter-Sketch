@@ -100,6 +100,27 @@ export function rectEquals(a: Rect, b: Rect): boolean {
 }
 
 /**
+ * Clamp a number into a closed range (`min` wins when `min > max`).
+ * @param value - Value to clamp.
+ * @param min - Lower bound.
+ * @param max - Upper bound.
+ * @returns `value` limited to `[min, max]`.
+ */
+export function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Whether a point lies inside a rect (edges included).
+ * @param rect - Rect to test.
+ * @param p - Point.
+ * @returns `true` if `p` is on or inside `rect`.
+ */
+export function rectContainsPoint(rect: Rect, p: Point): boolean {
+  return p.x >= rect.x && p.y >= rect.y && p.x <= rect.x + rect.width && p.y <= rect.y + rect.height;
+}
+
+/**
  * Rect covering a frame at the origin.
  * @param frame - Frame size.
  * @returns `{x:0, y:0, ...frame}`.

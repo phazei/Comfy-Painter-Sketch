@@ -68,16 +68,44 @@ describe("parseDocument", () => {
         layers: [],
       }).status,
     ).toBe("invalid");
-    expect(
-      parseDocument({
-        version: 1,
-        frame: { width: 10, height: 10 },
-        layers: [
-          { id: "a", kind: "paint" },
-          { id: "a", kind: "paint" },
-        ],
-      }).status,
-    ).toBe("invalid");
+  });
+
+  it("skips a malformed layer instead of rejecting the document (as Python)", () => {
+    const result = parseDocument({
+      version: 1,
+      frame: { width: 10, height: 10 },
+      layers: [
+        { id: "a", kind: "paint", file: "painter-sketch/a.webp [input]" },
+        null,
+        { id: "b", kind: "sparkles" },
+        { kind: "paint" },
+        { id: "m", kind: "mask", file: 7 },
+      ],
+    });
+    if (result.status !== "ok") throw new Error("expected ok");
+    expect(result.repaired).toBe(true);
+    expect(result.skippedLayers).toBe(3);
+    expect(result.document.layers.map((l) => [l.id, l.file])).toEqual([
+      ["a", "painter-sketch/a.webp [input]"],
+      ["m", null],
+    ]);
+  });
+
+  it("keeps a duplicate-id layer under a fresh id", () => {
+    const result = parseDocument({
+      version: 1,
+      frame: { width: 10, height: 10 },
+      layers: [
+        { id: "a", kind: "paint", file: "painter-sketch/1.webp [input]" },
+        { id: "a", kind: "paint", file: "painter-sketch/2.webp [input]" },
+      ],
+    });
+    if (result.status !== "ok") throw new Error("expected ok");
+    expect(result.skippedLayers).toBeUndefined();
+    const [first, second] = result.document.layers;
+    expect(first?.id).toBe("a");
+    expect(second?.id).not.toBe("a");
+    expect(second?.file).toBe("painter-sketch/2.webp [input]");
   });
 
   it("repairs missing optional fields", () => {

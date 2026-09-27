@@ -26,6 +26,7 @@ import { applyTranslateEntry } from "./layerTranslate";
 import { preparePixelEdit } from "./rasterize";
 import { applyTextEntry } from "./textLayer";
 import type { StrokeStyle } from "./stroke";
+import { applyOutputs } from "./regionHistory";
 
 /**
  * Paint target, stroke and history operations over a shared {@link EditorState}.
@@ -183,6 +184,10 @@ export class PaintOps {
     if (entry.kind === "clear") {
       this.frames.applySnapshot(side === "before" ? entry.before : entry.after);
       s.lastStrokeEnd = null;
+      return;
+    }
+    if (entry.kind === "outputs") {
+      applyOutputs(s, entry[side]);
       return;
     }
     if (entry.kind === "layers") {

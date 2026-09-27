@@ -184,6 +184,16 @@ export function invalidDocumentMessage(reason: string): string {
   );
 }
 
+/**
+ * Toast text for layer entries `parseDocument` skipped (the rest loaded).
+ * @param count - Number of skipped entries (>= 1).
+ * @returns Message.
+ */
+export function skippedLayersMessage(count: number): string {
+  const what = count === 1 ? "1 layer entry" : `${count} layer entries`;
+  return `The saved painting has ${what} that could not be read; loaded the rest (details in the console).`;
+}
+
 // ── Restore ───────────────────────────────────────────────────────────────────
 
 /** One layer that did not restore cleanly. */

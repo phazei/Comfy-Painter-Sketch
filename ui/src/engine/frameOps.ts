@@ -10,6 +10,7 @@ import type { Size } from "../geometry/rect";
 import type { FrameBackground } from "./compositor";
 import type { DocSnapshot, FrameSource } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { applyOutputs, captureOutputs, outputsKey } from "./regionHistory";
 
 /**
  * Background, frame and Clear handling over a shared {@link EditorState}.
@@ -28,9 +29,13 @@ export class FrameOps {
    *   image connected). `null` = show `doc.frame`.
    */
   setBackground(background: FrameBackground, imageSize: Size | null): void {
+    const before = this.s.imageSize;
     this.s.background = background;
     this.s.backgroundSize = imageSize ? { ...imageSize } : null;
     this.s.syncViewFrame();
+    const after = this.s.imageSize;
+    // Output cards show image-px sizes and field bounds (regions never rescale).
+    if (before.width !== after.width || before.height !== after.height) this.s.events.emit("outputs", undefined);
     this.s.events.emit("render", undefined);
   }
 
@@ -110,6 +115,7 @@ export class FrameOps {
    */
   applySnapshot(state: DocSnapshot): void {
     const s = this.s;
+    applyOutputs(s, state.outputs);
     s.doc.frame = { ...state.frame };
     s.doc.bounds = { ...state.bounds };
     if (state.placement) s.doc.placement = { ...state.placement };
@@ -145,12 +151,12 @@ export class FrameOps {
       if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
     }
     const placement = s.doc.placement ? { ...s.doc.placement } : undefined;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text };
+    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text, outputs: captureOutputs(s) };
   }
 }
 
 function snapshotBytes(state: DocSnapshot): number {
-  let bytes = 0;
+  let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
   return bytes;
 }

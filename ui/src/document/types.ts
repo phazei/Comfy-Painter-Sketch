@@ -1,7 +1,7 @@
 /**
  * PainterDocument v1: the versioned layer manifest stored (as JSON) in the
  * node's `document` widget. Shapes follow SPEC.md "Document Model (v1 sketch)"
- * and "Saved-file contract". All coordinates are frame pixels.
+ * and "Saved-file contract". Paint uses frame pixels; regions use current-image pixels.
  */
 
 import type { Rect, Size } from "../geometry/rect";
@@ -41,11 +41,32 @@ export interface Layer {
   textData?: TextData;
 }
 
-/** Future output region (reserved; always `[]` in v1). */
+/** Independent processing of Main or one region, after region slicing. */
+export interface OutputOptions {
+  applyMask: "none" | "fill" | "crop" | "border";
+  /** Opaque `#rrggbb`. */
+  fillColor: string;
+  /** Nonnegative integer pixels in the current output. */
+  cropPadding: number;
+  /** Integer px added on all four sides by `border` (1..MAX_BORDER_SIZE). */
+  borderSize: number;
+  /** Opaque `#rrggbb` border colour. */
+  borderColor: string;
+  /** Border area in the MASK: true = 1 (outpainting), false = 0. */
+  borderMask: boolean;
+}
+
+/** Stable output pair, independent of paint placement and overlay visibility. */
 export interface Region {
   id: string;
-  index: number;
+  /** 1..6; holes are never renumbered. */
+  slot: number;
+  /** Blank (older documents) means `Region N`; see `regionName`. */
+  name: string;
+  /** Integer image px from the top-left; never rescaled. May extend outside the image. */
   rect: Rect;
+  visible: boolean;
+  output: OutputOptions;
 }
 
 /**
@@ -71,7 +92,10 @@ export interface PainterDocument {
   frame: Size;
   /** Paint area in frame coords; always contains the frame rect. */
   bounds: Rect;
+  /** Output regions (M9), at most one per slot. */
   regions: Region[];
+  /** Missing = none / black / zero padding. */
+  mainOutput?: OutputOptions;
   /** Move tool; `undefined` = identity (saved only when non-identity). */
   placement?: Placement;
   activeLayerId: string;

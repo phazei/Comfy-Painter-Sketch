@@ -7,6 +7,7 @@ import type { LayerChange } from "../document/layerList";
 import type { LayerKind, Placement, TextData } from "../document/types";
 import type { Rect, Size } from "../geometry/rect";
 import type { Selection } from "./selection";
+import type { OutputMetadata } from "./regionHistory";
 
 /** Where the document frame size came from. */
 export type FrameSource = "widgets" | "image" | "document";
@@ -32,6 +33,8 @@ export interface DocSnapshot {
   pixels: Map<string, ImageData> | null;
   /** Text layers' data (layers not listed are paint; Clear turns text layers into paint). */
   text?: ReadonlyMap<string, TextData>;
+  /** Region geometry/reference and Main processing (no pixels). */
+  outputs?: OutputMetadata;
 }
 
 /** Whole-layer pixels kept by a structural entry (document coords). */
@@ -119,6 +122,7 @@ export type HistoryEntry =
   | TranslateEntry
   | TextEntry
   | GroupEntry
+  | { kind: "outputs"; before: OutputMetadata; after: OutputMetadata; bytes: number }
   /** Selection change (new / all / deselect / invert); no pixels. */
   | { kind: "selection"; before: Selection | null; after: Selection | null; bytes: number };
 
@@ -156,6 +160,8 @@ export interface EditorEvents {
   text: undefined;
   /** Solo (view only) changed (`Editor.solo`). */
   solo: undefined;
+  /** Output metadata or selected output changed. */
+  outputs: undefined;
 }
 
 /** Note shown when painting on a locked layer. */

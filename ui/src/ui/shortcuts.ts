@@ -13,6 +13,7 @@
  * | Q | Quick Mask |
  * | X / D | swap / reset FG-BG colours |
  * | F | toggle fullscreen (shell `fullscreen` event) |
+ * | O | Outputs tab / region mode (toggle) |
  * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
  * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
  * | Shift+group key | cycle the group (Shift+U shapes) |
@@ -36,6 +37,8 @@ export interface ShortcutEffects {
   cancelToolDrag?(): boolean;
   /** Fullscreen requested. */
   fullscreen(): void;
+  /** `O`: open the Outputs tab (region mode), or leave it. */
+  toggleOutputs?(): void;
   /** Close an open popover. @returns `true` if one was open. */
   closePopover(): boolean;
   /** Leave fullscreen. @returns `true` if the editor was fullscreen. */
@@ -116,6 +119,10 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
       return true;
     case "f":
       effects.fullscreen();
+      return true;
+    case "o":
+      if (!effects.toggleOutputs) return false;
+      effects.toggleOutputs();
       return true;
   }
   const tool = tools.byShortcut(key);

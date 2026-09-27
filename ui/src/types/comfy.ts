@@ -93,6 +93,13 @@ export interface INodeInputSlot {
   link: number | null;
 }
 
+/** An output slot (subset). `label` is displayed (and saved) instead of `name`. */
+export interface INodeOutputSlot {
+  name: string;
+  type: string;
+  label?: string;
+}
+
 /** A graph or subgraph (subset). */
 export interface LGraph {
   id: string;
@@ -120,6 +127,8 @@ export interface LGraphNode {
   comfyClass?: string;
   graph: LGraph | null;
   inputs: INodeInputSlot[];
+  outputs?: INodeOutputSlot[];
+  setDirtyCanvas?(foreground: boolean, background?: boolean): void;
   widgets?: IBaseWidget[];
   size: [number, number];
   /** Frontend-only nodes (legacy Reroute, Primitive, ...). */
@@ -216,6 +225,7 @@ export interface ComfyExtension {
   name: string;
   /** Settings-panel entries registered with the extension. */
   settings?: SettingParams[];
+  afterConfigureGraph?(): void;
   getCustomWidgets?(app: ComfyApp): Record<string, CustomWidgetConstructor>;
   beforeRegisterNodeDef?(
     nodeType: LGraphNodeConstructor,

@@ -1,6 +1,6 @@
 /**
- * Right side panel of the editor shell (~180 px, collapsible). M3.3 mounts
- * the layers panel into {@link SidePanel.content}. Collapse follows
+ * Right side panel of the editor shell (~180 px, collapsible) with tabs
+ * (Layers / Outputs, {@link SidePanel.setTabs}; `tab` event on change). Collapse follows
  * `sidePanelState.ts`: automatic by editor width, user toggle wins until the
  * next size-class change.
  */
@@ -14,6 +14,8 @@ export interface SidePanelEvents {
   [key: string]: unknown;
   /** Collapsed state changed (payload = collapsed). */
   collapse: boolean;
+  /** Visible tab changed (payload = tab id). */
+  tab: string;
 }
 
 /**
@@ -27,6 +29,8 @@ export class SidePanel {
   readonly events = new Emitter<SidePanelEvents>();
   private state: Readonly<PanelState> = INITIAL_PANEL_STATE;
   private shown: boolean;
+  private tabs: Array<{ id: string; button: HTMLButtonElement; panel: HTMLElement }> = [];
+  private currentTab = "";
 
   constructor() {
     this.element = document.createElement("div");
@@ -45,6 +49,54 @@ export class SidePanel {
   /** Whether the panel is collapsed. */
   get collapsed(): boolean {
     return !this.shown;
+  }
+
+  /** Id of the visible tab ("" before {@link SidePanel.setTabs}). */
+  get activeTab(): string {
+    return this.currentTab;
+  }
+
+  // ── Tabs ────────────────────────────────────────────────────────────────
+
+  /**
+   * Install named tab panels (mounted once; hidden rather than recreated).
+   * The first tab is shown.
+   * @param panels - Tabs in order.
+   */
+  setTabs(panels: ReadonlyArray<{ id: string; label: string; panel: HTMLElement }>): void {
+    const bar = document.createElement("div");
+    bar.className = "cps-side-tabs";
+    bar.setAttribute("role", "tablist");
+    this.tabs = panels.map(({ id, label, panel }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.setAttribute("role", "tab");
+      button.addEventListener("click", () => this.showTab(id));
+      panel.setAttribute("role", "tabpanel");
+      bar.append(button);
+      return { id, button, panel };
+    });
+    this.content.replaceChildren(bar, ...panels.map((p) => p.panel));
+    this.currentTab = "";
+    this.showTab(panels[0]?.id ?? "");
+  }
+
+  /**
+   * Reveal a tab (the choice survives collapse and fullscreen). Emits `tab`
+   * when the visible tab changes.
+   * @param id - Tab id.
+   */
+  showTab(id: string): void {
+    for (const tab of this.tabs) {
+      const active = tab.id === id;
+      tab.panel.hidden = !active;
+      tab.button.classList.toggle("cps-active", active);
+      tab.button.setAttribute("aria-selected", String(active));
+    }
+    if (id === this.currentTab) return;
+    this.currentTab = id;
+    this.events.emit("tab", id);
   }
 
   /**

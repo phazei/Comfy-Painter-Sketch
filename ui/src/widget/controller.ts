@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Per-node controller: connects one PainterSketch node instance to an editor
  * session and its DOM host. It orchestrates focused collaborators:
  * `backgroundLoader.ts` (image source resolution + loading, refresh
@@ -6,7 +6,7 @@
  * widgets) and `uploadScheduler.ts` (upload timing, Ctrl+S, graph-sync
  * captures).
  *
- * - Widget value: `""` for a never-painted document, else the manifest JSON
+ * - Widget value: `""` for an untouched document, else the manifest JSON
  *   of the attached session (file refs = last successful uploads). Updated on
  *   every document change so tab switches / workflow saves capture it.
  *   Value changes ComfyUI can't observe (edits, finished upload batches)
@@ -26,6 +26,7 @@ import { app } from "@comfy/scripts/app.js";
 
 import { readFirstMaskStyle } from "../defaults/readDefaults";
 import { createEmptyDocument } from "../document/create";
+import { hasDocumentContent } from "../document/content";
 import { parseDocument } from "../document/parse";
 import { stringifyDocument } from "../document/serialize";
 import type { LGraphNode, NodeExecutionOutput } from "../types/comfy";
@@ -38,7 +39,8 @@ import type { EventIsolation } from "./eventIsolation";
 import { FrameSync } from "./frameSync";
 import { handoffKey, offerHandoff, takeHandoff } from "./handoff";
 import type { NodeHandoff } from "./handoff";
-import { invalidDocumentMessage } from "./failures";
+import { invalidDocumentMessage, skippedLayersMessage } from "./failures";
+import { emitDocumentChange } from "./documentEvents";
 import { EDIT_SYNC_DELAY_MS, requestGraphSync } from "./graphSync";
 import { isInputConnected } from "./imageSource";
 import { releaseOrDetach, sessionForManifest } from "./sessionAttach";
@@ -123,7 +125,7 @@ export class PainterSketchController {
 
   // ── Widget value ────────────────────────────────────────────────────────
 
-  /** @returns The manifest string (`""` = never painted). */
+  /** @returns The manifest string (`""` = untouched). */
   getValue(): string {
     return this.valueCache;
   }
@@ -139,6 +141,9 @@ export class PainterSketchController {
     const parsed = parseDocument(value);
     if (parsed.status === "ok") {
       this.unreadableValue = null;
+      if (parsed.skippedLayers) {
+        notify("warn", skippedLayersMessage(parsed.skippedLayers), { key: "skipped-layers" });
+      }
       const existing = findSession(parsed.document.docId);
       const session = sessionForManifest(parsed.document, this, this.handoff);
       const handedOff = session === this.handoff;
@@ -164,7 +169,7 @@ export class PainterSketchController {
     const handoff = this.handoff?.alive && this.handoff.owner === null ? this.handoff : null;
     this.handoff = null;
     const choice = chooseForEmpty(parsed.status, {
-      hasPaint: this.session?.editor.hasPaint ?? false,
+      hasPaint: this.session ? hasDocumentContent(this.session.editor.doc, this.session.editor.hasPaint) : false,
       handoff: handoff !== null,
     });
     if (choice === "adopt" && handoff) this.attach(handoff);
@@ -181,6 +186,7 @@ export class PainterSketchController {
     const session = this.session;
     if (!session) return this.valueCache;
     await flushForQueue(session);
+    this.syncValue();
     return this.valueCache;
   }
 
@@ -243,6 +249,7 @@ export class PainterSketchController {
     if (this.disposed) return;
     const key = handoffKey(this.node);
     const session = this.session;
+    this.syncValue();
     this.disposed = true;
     this.loader.dispose();
     this.watcher.stop();
@@ -317,11 +324,13 @@ export class PainterSketchController {
   private syncValue(): boolean {
     const editor = this.session?.editor;
     if (!editor) return false;
-    const untouched = !editor.hasPaint && editor.doc.layers.every((l) => l.file === null);
+    const untouched = !hasDocumentContent(editor.doc, editor.hasPaint);
     const previous = this.valueCache;
     if (!untouched) this.unreadableValue = null;
     this.valueCache = untouched ? (this.unreadableValue ?? "") : stringifyDocument(editor.doc);
-    return this.valueCache !== previous;
+    const changed = this.valueCache !== previous;
+    if (changed) emitDocumentChange(this.node);
+    return changed;
   }
 
   // ── Background + content ────────────────────────────────────────────────

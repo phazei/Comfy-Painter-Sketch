@@ -48,6 +48,7 @@ import { SelectionOps } from "./selectionOps";
 import { TextOps } from "./textOps";
 import { toggleSolo } from "./solo";
 import type { SoloIds } from "./solo";
+import { RegionOps } from "./regionOps";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
 export type { LayerOps } from "./layerOps";
@@ -74,6 +75,8 @@ export class Editor extends EditorBase {
   readonly selection: SelectionOps;
   /** Text tool: create / edit / commit text layers (M6b). */
   readonly text: TextOps;
+  /** Region rectangles, output options and metadata gesture transactions. */
+  readonly regionOps: RegionOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -93,6 +96,7 @@ export class Editor extends EditorBase {
     this.selection = new SelectionOps(this.s);
     this.maskOps = new EditorMaskOps(this.s, this.paint);
     this.text = new TextOps(this.s, this.layerOps);
+    this.regionOps = new RegionOps(this.s);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -259,10 +263,16 @@ export class Editor extends EditorBase {
   // ── Undo / redo ─────────────────────────────────────────────────────────
 
   /** Undo the last operation; with a text edit open: commit it, then undo it (a no-op edit just closes). */
-  undo(): void { if (!this.text.editing || this.text.commit()) this.paint.undo(); }
+  undo(): void {
+    if (this.regionOps.active) { this.regionOps.cancel(); return; }
+    if (!this.text.editing || this.text.commit()) this.paint.undo();
+  }
 
   /** Redo the last undone operation (an open text edit is committed first). */
-  redo(): void { this.text.commit(); this.paint.redo(); }
+  redo(): void { this.regionOps.cancel(); this.text.commit(); this.paint.redo(); }
+
+  /** Clear paint and output metadata in the existing single Clear history step. */
+  override clear(): void { this.regionOps.cancel(); super.clear(); }
 
   // ── Cloning / teardown ──────────────────────────────────────────────────
 

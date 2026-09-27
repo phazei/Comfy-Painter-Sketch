@@ -19,6 +19,7 @@ import { createMoveTool } from "./move";
 import { createMoveLayerTool } from "./moveLayer";
 import { SHAPE_GROUP, createShapeTools } from "./shapeTools";
 import { createTextTool } from "./text";
+import { createRegionTool } from "./region";
 import { ToolGroupState } from "./toolGroups";
 import type { ToolGroupSpec } from "./toolGroups";
 import type { Tool } from "./types";
@@ -95,7 +96,7 @@ export class ToolRegistry {
    */
   byShortcut(key: string): Tool | undefined {
     for (const tool of this.tools.values()) {
-      if (tool.rail === false) continue;
+      if (tool.rail === false || !tool.shortcut) continue;
       if (tool.shortcut !== key) continue;
       // Group keys pick the group's last-used tool.
       const group = this.groups.groupOf(tool.id);
@@ -201,6 +202,7 @@ export function createDefaultTools(
       ...createMarqueeTools(),
       createLassoTool(),
       createMagicWandTool(samples.wand),
+      createRegionTool(),
     ],
     [SHAPE_GROUP, MARQUEE_GROUP],
   );

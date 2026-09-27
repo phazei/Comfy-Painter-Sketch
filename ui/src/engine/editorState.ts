@@ -62,6 +62,8 @@ export class EditorState {
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId: string | null = null;
+  /** Selected output row/region (session-only). */
+  selectedRegionId: string | null = null;
   /** Layer the current stroke paints into. */
   strokeLayerId: string | null = null;
   /** Largest dab diameter of the current stroke, document px. */

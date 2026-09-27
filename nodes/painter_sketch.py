@@ -2,7 +2,7 @@
 nodes/painter_sketch.py -- PainterSketch V3 ComfyUI node.
 
 Accepts an optional base IMAGE plus the JSON layer-document widget; returns
-IMAGE (composited) and MASK tensors.  All paint editing lives in the frontend;
+IMAGE, MASK and `regions` (`PS_REGIONS`, split by PainterSketch Regions). All paint editing lives in the frontend;
 Python resolves saved layer images (WebP/PNG), composites them, and handles fingerprinting.
 
 Execution flow:
@@ -13,7 +13,8 @@ Execution flow:
     4. Load each layer file -> RGBA tensor (via :mod:`layers`).
     5. Composite paint/text layers over the base -> IMAGE (via :mod:`composite`).
     6. Combine mask layers -> MASK (via :mod:`composite`).
-    7. Return NodeOutput with UI preview of the first input frame.
+    7. Apply Main's output options; build the region slots from the same
+       composite (:mod:output_processing); preview the first input frame.
 
 UI preview (SPEC.md Node Contract & AGENTS.md "Getting the Input Image"):
     We preview the *first input frame* (or plain background when no image is
@@ -35,8 +36,12 @@ from comfy_api.latest import io, UI
 import folder_paths
 
 from .composite import run_composite
-from .document import parse_document
+from .document import FRAME_MAX, parse_document
 from .layers import load_layer_rgba
+from .output_processing import (
+    EMPTY_REGIONS, apply_output_options, build_regions, viewport_renderer,
+)
+from .painter_sketch_regions import PSRegions
 
 log = logging.getLogger("paintersketch.painter_sketch")
 
@@ -132,7 +137,7 @@ class PainterSketch(io.ComfyNode):
                     "width",
                     default=1024,
                     min=64,
-                    max=8192,
+                    max=FRAME_MAX,
                     step=8,
                     tooltip="Canvas width when no image is connected.",
                 ),
@@ -140,14 +145,14 @@ class PainterSketch(io.ComfyNode):
                     "height",
                     default=1024,
                     min=64,
-                    max=8192,
+                    max=FRAME_MAX,
                     step=8,
                     tooltip="Canvas height when no image is connected.",
                 ),
                 io.Color.Input(
                     "background",
                     default="#ffffff",
-                    tooltip="Background fill colour used when no image is connected.",
+                    tooltip="Background colour when no image is connected; also fills output regions outside the image.",
                 ),
                 io.Boolean.Input(
                     "invert_mask",
@@ -158,6 +163,10 @@ class PainterSketch(io.ComfyNode):
             outputs=[
                 io.Image.Output("IMAGE"),
                 io.Mask.Output("MASK"),
+                PSRegions.Output(
+                    "regions",
+                    tooltip="Output regions; connect to PainterSketch Regions.",
+                ),
             ],
         )
 
@@ -172,7 +181,7 @@ class PainterSketch(io.ComfyNode):
         invert_mask: bool = False,
         image: torch.Tensor | None = None,
     ) -> io.NodeOutput:
-        """Composite layers and return IMAGE + MASK.
+        """Composite once, then build Main and the region slots from that composite.
 
         Args:
             document:     JSON manifest string from the editor widget.
@@ -183,9 +192,9 @@ class PainterSketch(io.ComfyNode):
             image:        Optional ``[B, H, W, C]`` float32 input batch.
 
         Returns:
-            NodeOutput with ``(IMAGE [B,H,W,3], MASK [B,H,W])`` and a UI preview
-            of the first *input* frame (pre-composite), so the editor can use it
-            as its locked background layer.
+            `(IMAGE, MASK, regions)`; `regions` is a
+            :class:~output_processing.PainterRegions. UI previews the first
+            *input* frame, regardless of any output's fill/crop settings.
         """
         # ── 1. Base image ─────────────────────────────────────────────────────
         # No image: the width/height widgets ARE the current image; the
@@ -205,18 +214,24 @@ class PainterSketch(io.ComfyNode):
         if doc is None:
             # No valid document: pass image through, emit zero mask.
             fill = 1.0 if invert_mask else 0.0
-            mask = torch.full((B, H, W), fill, dtype=torch.float32)
-            return io.NodeOutput(base_rgb, mask, ui=UI.PreviewImage(preview_frame, cls=cls))
+            out_image = base_rgb
+            out_mask = torch.full((B, H, W), fill, dtype=torch.float32, device=base_rgb.device)
+            main_image, main_mask, regions = out_image, out_mask, EMPTY_REGIONS
+        else:
+            # ── 3. Load layer files and composite once ────────────────────────
+            layer_tensors = {
+                layer.id: load_layer_rgba(layer, doc.bounds) for layer in doc.layers
+            }
+            out_image, out_mask = run_composite(base_rgb, doc, layer_tensors, invert_mask)
+            main_image, main_mask = apply_output_options(out_image, out_mask, doc.main_output)
+            render = viewport_renderer(
+                base_rgb, doc, layer_tensors, invert_mask, _hex_to_rgb(background))
+            regions = build_regions(out_image, out_mask, doc, render)
 
-        # ── 3. Load layer files ───────────────────────────────────────────────
-        layer_tensors: dict = {}
-        for layer in doc.layers:
-            layer_tensors[layer.id] = load_layer_rgba(layer, doc.bounds)
-
-        # ── 4. Composite ──────────────────────────────────────────────────────
-        out_image, out_mask = run_composite(base_rgb, doc, layer_tensors, invert_mask)
-
-        return io.NodeOutput(out_image, out_mask, ui=UI.PreviewImage(preview_frame, cls=cls))
+        return io.NodeOutput(
+            main_image, main_mask, regions,
+            ui=UI.PreviewImage(preview_frame, cls=cls),
+        )
 
     @classmethod
     @override

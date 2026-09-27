@@ -54,6 +54,8 @@ export interface ColorPickerOptions {
    * @param hex - Committed colour.
    */
   onCommit?: (hex: string) => void;
+  /** Called on every close, including an unchanged colour or Escape (metadata transactions). */
+  onClose?: (cancelled: boolean) => void;
 }
 
 /**
@@ -235,6 +237,7 @@ export function openColorPicker(
         // Esc = revert to initial
         opts.onInput(initial);
       }
+      opts.onClose?.(escaped);
     },
   });
 

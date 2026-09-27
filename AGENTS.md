@@ -146,6 +146,7 @@ ui/src/
     stroke.ts             -- per-stroke buffer + preview, committed at opacity
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
     solo.ts               -- view-only solo (one layer + one mask); display only, never outputs
+    regionOps.ts          -- output regions: add/remove/edit, metadata undo (M9)
   tools/                  -- one file per tool implementing a common Tool interface
     brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
     marquee.ts lasso.ts magicWand.ts ...
@@ -155,6 +156,12 @@ ui/src/
   styles/                 -- CSS (injected by main.ts)
 ```
 
+- **Naming: output vs region.** An *output* is anything with its own result and
+  mask options: Main or a region (`outputOptions`, the Outputs tab, output cards,
+  `nodes/output_processing.py`). A *region* is the rectangle itself: slots,
+  geometry, drawing, overlay, the `PainterSketch Regions` helper (`regions.ts`,
+  `regionOps`, `regionOverlay`, `document_regions.py`). Main is an output, not a
+  region.
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
 - **The brush model is measured, not designed** (SPEC "Brush engine"): the tip
@@ -167,7 +174,8 @@ ui/src/
   group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
   tool makes Alt-at-pointer-down a temporary eyedropper. Rail tools also get
   Ctrl = temporary Move layer with auto-select (`ctrlMove`, default on; off for
-  Move layer, Text, hidden tools). Precedence: Ctrl > Alt > active tool; resolved
+  Move layer, Text, hidden tools such as Move drawing and the region tool behind
+  the Outputs tab). Precedence: Ctrl > Alt > active tool; resolved
   at pointer-down, locked for the drag. Modifier tracking is observe-only.
 - Optional Tool hooks: `onWheel` (Move scale-while-dragging), `onKey` (arrow
   nudges), `pending()` / `onHover()` (lasso polygon in progress). Descriptor kinds
@@ -398,9 +406,12 @@ width/height/background widgets.
   sees as `UNIQUE_ID`), locator ID (`"<uuid>:<localId>"`).
 
 ### Silent ExecutionBlocker in V3 Nodes
-If we ever need to block downstream silently: `io.NodeOutput(ExecutionBlocker(None))`
-as a positional result. `io.NodeOutput(block_execution=...)` treats `None` as
-"no block".
+Used by the `PainterSketch Regions` helper for empty slots: return
+`ExecutionBlocker(None)` as that output's positional result (per output, not the
+whole node). `io.NodeOutput(block_execution=...)` treats `None` as "no block".
+Import it from `comfy_execution.graph_utils`: `comfy_execution.graph` imports
+ComfyUI's top-level `nodes`, which clashes with our `nodes/` package (circular
+import in tests).
 
 ### Image Loading
 - `node_helpers.pillow()` retries PIL ops with `LOAD_TRUNCATED_IMAGES = True`.

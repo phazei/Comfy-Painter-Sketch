@@ -1,6 +1,7 @@
 /**
  * Stage rendering: display canvas (compositor output), overlay canvas (brush
- * ring, loupe, selection marching ants via `marchingAnts.ts`) and the transient note, inside the shell's stage element. Redraws
+ * ring, loupe, selection marching ants via `marchingAnts.ts`, output regions
+ * via `regionOverlay.ts`) and the transient note, inside the shell's stage element. Redraws
  * are rAF-coalesced. Backing-store size follows stage CSS size x device
  * pixel ratio x graph zoom (never cached: re-read on every sync).
  */
@@ -8,12 +9,14 @@
 import { composite } from "../engine/compositor";
 import { backingStoreSize } from "../engine/viewport";
 import type { Point, Size } from "../geometry/rect";
+import { REGION_TOOL_ID } from "../tools/region";
 import type { Tool } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
 import { cssCursor, cursorBadge } from "./cursors";
 import type { CursorBadge } from "./cursors";
 import { drawLoupe } from "./loupe";
 import { MarchingAnts } from "./marchingAnts";
+import { drawRegionOverlay } from "./regionOverlay";
 
 /** How long transient notes stay visible. */
 const NOTE_MS = 5000;
@@ -238,6 +241,7 @@ export class StageView {
     const overlay = tool?.overlay?.() ?? null;
     // Marching ants (selection + in-progress marquee) are drawn regardless of hover.
     if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
+    if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {

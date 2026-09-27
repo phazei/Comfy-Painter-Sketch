@@ -16,6 +16,7 @@
  */
 
 import { readFirstMaskStyle, readPressureDefaults, readSampleDefaults } from "../defaults/readDefaults";
+import { outputMetadataSignature } from "../document/content";
 import type { PainterDocument } from "../document/types";
 import { Editor } from "../engine/editor";
 import type { FrameSource } from "../engine/editor";
@@ -100,12 +101,12 @@ export function findSession(docId: string): EditorSession | undefined {
 }
 
 /**
- * Identity of a manifest's saved state: frame + per-layer files.
+ * Identity of a manifest's saved state: frame + per-layer files + output metadata.
  * @param doc - Document.
  * @returns Signature string.
  */
-export function fileSignature(doc: Pick<PainterDocument, "frame" | "layers">): string {
-  return `${doc.frame.width}x${doc.frame.height}|${doc.layers.map((l) => `${l.id}=${l.file ?? ""}`).join(",")}`;
+export function fileSignature(doc: PainterDocument): string {
+  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc)]);
 }
 
 /**
@@ -114,7 +115,9 @@ export function fileSignature(doc: Pick<PainterDocument, "frame" | "layers">): s
  * The last few signatures are accepted because an upload may finish between
  * the frontend capturing the widget value and the node being recreated.
  * An older manifest (reopening a file after discarding changes) does not
- * match and is restored from its files instead -- except for a session handed
+ * match and is restored from its files instead. Output metadata must match the
+ * current state: older region/options edits are not upload races, even if their
+ * file references match. The exception is a session handed
  * off by a node re-created in the same task (graph undo/redo, see
  * `attachDecision.ts` / `handoff.ts`), which is always kept.
  *
@@ -123,7 +126,9 @@ export function fileSignature(doc: Pick<PainterDocument, "frame" | "layers">): s
  * @returns `true` if the session may be reused for this manifest.
  */
 export function sessionMatches(session: EditorSession, doc: PainterDocument): boolean {
-  return session.recentSignatures.includes(fileSignature(doc));
+  const signature = fileSignature(doc);
+  return outputMetadataSignature(session.editor.doc) === outputMetadataSignature(doc)
+    && (signature === fileSignature(session.editor.doc) || session.recentSignatures.includes(signature));
 }
 
 /**
