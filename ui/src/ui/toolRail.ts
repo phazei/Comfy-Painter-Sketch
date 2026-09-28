@@ -43,7 +43,8 @@ export interface ToolRailActions {
  */
 export class ToolRail {
   private readonly toolButtons = new Map<string, HTMLButtonElement>();
-  private readonly toolBox: HTMLDivElement;
+  /** Tool buttons group (the Images panel closes on presses here). */
+  readonly toolBox: HTMLDivElement;
   private readonly undoButton: HTMLButtonElement;
   private readonly redoButton: HTMLButtonElement;
   private readonly quickMaskButton: HTMLButtonElement;
@@ -94,6 +95,14 @@ export class ToolRail {
       this.fullscreenButton,
     );
     container.append(this.toolBox, maskGroup, spacer, clipboardGroup, actionGroup);
+  }
+
+  /**
+   * Add a button to the clipboard group, after Paste (M12 Images button).
+   * @param element - Button element.
+   */
+  appendClipboardButton(element: HTMLElement): void {
+    this.pasteButton.element.after(element);
   }
 
   /** Stop the Paste button's long-press timer and close its menu. */

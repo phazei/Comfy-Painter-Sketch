@@ -81,6 +81,13 @@ vi.mock("./frameSync", () => ({
   },
 }));
 vi.mock("./imageSource", () => ({ isInputConnected: () => true }));
+vi.mock("./layerSourceWatch", () => ({
+  LayerSourceWatch: class {
+    history = null;
+    setExecuted(): void {}
+    refresh(): void {}
+  },
+}));
 vi.mock("./graphSync", () => ({ requestGraphSync: vi.fn(), EDIT_SYNC_DELAY_MS: 0, UPLOAD_SYNC_DELAY_MS: 0 }));
 vi.mock("./comfyApi", () => ({ executeCommand: vi.fn(), SAVE_WORKFLOW_COMMAND: "save" }));
 vi.mock("./toast", () => ({ notify: vi.fn() }));

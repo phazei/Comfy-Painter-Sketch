@@ -95,6 +95,8 @@ const PATHS: Readonly<Record<string, string>> = {
   close: "M6 6l12 12M18 6 6 18",
   // "Selection to mask": dashed square with the Quick Mask circle.
   selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
+  // Image sources (M12): stacked pictures (mountain + sun in the front frame).
+  images: "M7 3h14v12M3 7h14v14H3zM3 18l4.5-5 3.5 4 2-2 4 4.5M12.5 10.5a1 1 0 1 0 0 .01",
 };
 
 /** Glyph for unknown icon names. */

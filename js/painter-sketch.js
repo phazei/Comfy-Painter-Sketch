@@ -803,6 +803,8 @@ const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
 const DOM_WIDGET_TYPE = "paintersketch";
 const INPUT_NAMES = {
   image: "image",
+  /** M12: optional image offered in the Images panel. */
+  layerSource: "layer_source",
   document: "document",
   width: "width",
   height: "height",
@@ -1286,6 +1288,78 @@ function cloneDocument(doc) {
     layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
   };
 }
+const PASTED_LAYER_NAME = "Pasted";
+function applyCoverage(rgba, coverage) {
+  let any = false;
+  const n = rgba.length >> 2;
+  for (let i = 0; i < n; i++) {
+    const p = i * 4 + 3;
+    const c = coverage ? coverage[i] ?? 0 : 255;
+    const a = c === 255 ? rgba[p] : Math.round(rgba[p] * c / 255);
+    rgba[p] = a;
+    if (a === 0) {
+      rgba[p - 3] = 0;
+      rgba[p - 2] = 0;
+      rgba[p - 1] = 0;
+    } else {
+      any = true;
+    }
+  }
+  return any;
+}
+function maskToGray(rgba, coverage) {
+  let any = false;
+  const n = rgba.length >> 2;
+  for (let i = 0; i < n; i++) {
+    const p = i * 4;
+    const c = coverage ? coverage[i] ?? 0 : 255;
+    const v = Math.round(rgba[p + 3] * c / 255);
+    rgba[p] = v;
+    rgba[p + 1] = v;
+    rgba[p + 2] = v;
+    rgba[p + 3] = 255;
+    if (v > 0) any = true;
+  }
+  return any;
+}
+function unionMaskCoverage(union, area, read, rgba, invert2) {
+  for (let y = 0; y < area.height; y++) {
+    const ry = area.y + y - (read?.y ?? 0);
+    for (let x = 0; x < area.width; x++) {
+      const rx = area.x + x - (read?.x ?? 0);
+      const inside2 = read !== null && rx >= 0 && ry >= 0 && rx < read.width && ry < read.height;
+      const a = inside2 ? rgba[(ry * read.width + rx) * 4 + 3] : 0;
+      const v = invert2 ? 255 - a : a;
+      const i = y * area.width + x;
+      if (v > union[i]) union[i] = v;
+    }
+  }
+}
+function pasteRect(source, docPerSource, at) {
+  const k = Number.isFinite(docPerSource) && docPerSource > 0 ? docPerSource : 1;
+  const width = Math.max(1, Math.round(source.width * k));
+  const height = Math.max(1, Math.round(source.height * k));
+  if ("topLeft" in at) return { x: Math.round(at.topLeft.x), y: Math.round(at.topLeft.y), width, height };
+  return { x: Math.round(at.centre.x - width / 2), y: Math.round(at.centre.y - height / 2), width, height };
+}
+function cropToCap(rect, cap) {
+  const kept = intersectRect(rect, cap);
+  if (isEmptyRect(kept)) return { rect: null, cropped: true };
+  return { rect: kept, cropped: kept.width !== rect.width || kept.height !== rect.height };
+}
+function pastedLayerName(layers2) {
+  const taken = new Set(layers2.map((l) => l.name.trim()));
+  if (!taken.has(PASTED_LAYER_NAME)) return PASTED_LAYER_NAME;
+  let n = 2;
+  while (taken.has(`${PASTED_LAYER_NAME} ${n}`)) n++;
+  return `${PASTED_LAYER_NAME} ${n}`;
+}
+function imageLayerName(layers2) {
+  const taken = new Set(layers2.map((l) => l.name.trim()));
+  let n = 1;
+  while (taken.has(`Image ${n}`)) n++;
+  return `Image ${n}`;
+}
 const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
 function frameMap(frame, image, placement) {
   const { width: fw, height: fh } = frame;
@@ -1344,75 +1418,6 @@ function layerPlacement(map, bounds) {
     width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
     height: Math.max(1, roundHalfEven(bounds.height * map.scale))
   };
-}
-const PASTED_LAYER_NAME = "Pasted";
-function applyCoverage(rgba, coverage) {
-  let any = false;
-  const n = rgba.length >> 2;
-  for (let i = 0; i < n; i++) {
-    const p = i * 4 + 3;
-    const c = coverage ? coverage[i] ?? 0 : 255;
-    const a = c === 255 ? rgba[p] : Math.round(rgba[p] * c / 255);
-    rgba[p] = a;
-    if (a === 0) {
-      rgba[p - 3] = 0;
-      rgba[p - 2] = 0;
-      rgba[p - 1] = 0;
-    } else {
-      any = true;
-    }
-  }
-  return any;
-}
-function maskToGray(rgba, coverage) {
-  let any = false;
-  const n = rgba.length >> 2;
-  for (let i = 0; i < n; i++) {
-    const p = i * 4;
-    const c = coverage ? coverage[i] ?? 0 : 255;
-    const v = Math.round(rgba[p + 3] * c / 255);
-    rgba[p] = v;
-    rgba[p + 1] = v;
-    rgba[p + 2] = v;
-    rgba[p + 3] = 255;
-    if (v > 0) any = true;
-  }
-  return any;
-}
-function unionMaskCoverage(union, area, read, rgba, invert2) {
-  for (let y = 0; y < area.height; y++) {
-    const ry = area.y + y - (read?.y ?? 0);
-    for (let x = 0; x < area.width; x++) {
-      const rx = area.x + x - (read?.x ?? 0);
-      const inside2 = read !== null && rx >= 0 && ry >= 0 && rx < read.width && ry < read.height;
-      const a = inside2 ? rgba[(ry * read.width + rx) * 4 + 3] : 0;
-      const v = invert2 ? 255 - a : a;
-      const i = y * area.width + x;
-      if (v > union[i]) union[i] = v;
-    }
-  }
-}
-function imageCentreDoc(imageSize2, map) {
-  return imageToDoc(map, { x: imageSize2.width / 2, y: imageSize2.height / 2 });
-}
-function pasteRect(source, docPerSource, at) {
-  const k = Number.isFinite(docPerSource) && docPerSource > 0 ? docPerSource : 1;
-  const width = Math.max(1, Math.round(source.width * k));
-  const height = Math.max(1, Math.round(source.height * k));
-  if ("topLeft" in at) return { x: Math.round(at.topLeft.x), y: Math.round(at.topLeft.y), width, height };
-  return { x: Math.round(at.centre.x - width / 2), y: Math.round(at.centre.y - height / 2), width, height };
-}
-function cropToCap(rect, cap) {
-  const kept = intersectRect(rect, cap);
-  if (isEmptyRect(kept)) return { rect: null, cropped: true };
-  return { rect: kept, cropped: kept.width !== rect.width || kept.height !== rect.height };
-}
-function pastedLayerName(layers2) {
-  const taken = new Set(layers2.map((l) => l.name.trim()));
-  if (!taken.has(PASTED_LAYER_NAME)) return PASTED_LAYER_NAME;
-  let n = 2;
-  while (taken.has(`${PASTED_LAYER_NAME} ${n}`)) n++;
-  return `${PASTED_LAYER_NAME} ${n}`;
 }
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 64;
@@ -1507,6 +1512,45 @@ function backingStoreSize(cssSize, devicePixelRatio, displayScale = 1, maxSide =
 }
 function finitePositive(value) {
   return Number.isFinite(value) && value > 0 ? value : 0;
+}
+const EPS = 1e-6;
+function clampIntoArea(topLeft, size, area) {
+  const axis = (v, len, lo, span) => {
+    if (len > span) return Math.round(lo + (span - len) / 2);
+    const min = Math.ceil(lo - EPS);
+    const max = Math.floor(lo + span - len + EPS);
+    return Math.min(Math.max(Math.round(v), min), Math.max(min, max)) + 0;
+  };
+  return { x: axis(topLeft.x, size.width, area.x, area.width), y: axis(topLeft.y, size.height, area.y, area.height) };
+}
+function pasteTopLeft(size, ctx) {
+  const centreOn = (r) => ({ x: r.x + r.width / 2 - size.width / 2, y: r.y + r.height / 2 - size.height / 2 });
+  let at;
+  if (ctx.selection) at = centreOn(ctx.selection);
+  else if (ctx.original) at = ctx.original;
+  else if (!ctx.view || contains(ctx.view, ctx.imageArea)) at = centreOn(ctx.imageArea);
+  else at = centreOn(ctx.view);
+  return clampIntoArea(at, size, ctx.imageArea);
+}
+function imageAreaDoc(imageSize2, map) {
+  return imageRectToDoc(map, frameRect(imageSize2));
+}
+function viewRectDoc(view, stage, map) {
+  if (!(stage.width > 0 && stage.height > 0 && view.scale > 0)) return null;
+  const r = { x: -view.offsetX / view.scale, y: -view.offsetY / view.scale, width: stage.width / view.scale, height: stage.height / view.scale };
+  return imageRectToDoc(map, r);
+}
+function selectionBox(sel, imageArea) {
+  if (!sel) return null;
+  if (sel.outside > 0 || sel.rect.width <= 0 || sel.rect.height <= 0) return imageArea;
+  return sel.rect;
+}
+function pasteContext(e, original) {
+  const imageArea = imageAreaDoc(e.imageSize, e.map);
+  return { selection: selectionBox(e.selection, imageArea), original, imageArea, view: viewRectDoc(e.view, e.stage, e.map) };
+}
+function contains(outer, inner) {
+  return inner.x >= outer.x - EPS && inner.y >= outer.y - EPS && inner.x + inner.width <= outer.x + outer.width + EPS && inner.y + inner.height <= outer.y + outer.height + EPS;
 }
 function choosePasteSource(f) {
   if (f.systemImage) return f.systemIsOurs && f.internal ? "internal" : "system";
@@ -1695,13 +1739,15 @@ class ClipboardActions {
    * @param merged - Copy merged (what is visible, incl. the image).
    */
   copy(merged) {
-    const clip = this.getSession()?.editor.clipboard.copy(merged);
-    if (clip) store(clip);
+    const editor = this.getSession()?.editor;
+    const clip = editor?.clipboard.copy(merged);
+    if (editor && clip) store(clip, editor);
   }
   /** Ctrl+X / Cut button. */
   cut() {
-    const clip = this.getSession()?.editor.clipboard.cut();
-    if (clip) store(clip);
+    const editor = this.getSession()?.editor;
+    const clip = editor?.clipboard.cut();
+    if (editor && clip) store(clip, editor);
   }
   /**
    * Ctrl+V keydown (editor owns the keyboard; also Ctrl+Shift+V without an
@@ -1792,7 +1838,7 @@ class ClipboardActions {
     const kind = choosePasteSource(facts);
     if (kind !== "system") bitmap?.close();
     if (kind === "system" && bitmap) return this.place(editor, foreignImage(bitmap), false);
-    if (kind === "internal" && internal) return this.place(editor, internalImage(internal.clip), false);
+    if (kind === "internal" && internal) return this.place(editor, internalImage(internal.clip), false, void 0, internal.from === editor);
     if (kind === "clipspace") return this.pasteClipspace(editor);
     editor.events.emit("note", emptyNote);
   }
@@ -1803,16 +1849,25 @@ class ClipboardActions {
     if (image) return this.place(editor, foreignImage(image), false);
     editor.events.emit("note", CLIPSPACE_EMPTY_NOTE);
   }
-  /** Paste one decoded image as a new layer; toasts when cropped. */
-  place(editor, image, inPlace, centre) {
+  /** Paste one decoded image as a new layer (in Free Transform when it reaches past the paint area). */
+  place(editor, image, inPlace, dropAt, ownDoc = false) {
     const map = editor.frameMap;
     const docPerSource = image.imagePerSource / map.scale;
-    const at = inPlace && image.topLeft ? { topLeft: image.topLeft } : { centre: centre ?? imageCentreDoc(editor.imageSize, map) };
-    const result = editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
-    image.release();
-    if (result?.cropped) {
-      notify("warn", "The pasted image is larger than the paint area and was cropped.", { key: "paste-cropped" });
+    const size = pasteRect({ width: image.width, height: image.height }, docPerSource, { topLeft: { x: 0, y: 0 } });
+    let at;
+    if (inPlace && image.topLeft) at = { topLeft: image.topLeft };
+    else if (dropAt) {
+      const want = { x: dropAt.x - size.width / 2, y: dropAt.y - size.height / 2 };
+      at = { topLeft: clampIntoArea(want, size, imageAreaDoc(editor.imageSize, map)) };
+    } else {
+      const ctx = pasteContext(
+        { selection: editor.selection.current, view: editor.view.current, stage: editor.view.stageSize, map, imageSize: editor.imageSize },
+        ownDoc ? image.topLeft : null
+      );
+      at = { topLeft: pasteTopLeft(size, ctx) };
     }
+    editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
+    image.release();
   }
   toStage(client) {
     const rect = this.stage.getBoundingClientRect();
@@ -1824,12 +1879,12 @@ class ClipboardActions {
     return imageToDoc(editor.frameMap, stageToDoc(editor.view.current, stagePoint));
   }
 }
-function store(clip) {
+function store(clip, from) {
   const canvas = document.createElement("canvas");
   canvas.width = clip.data.width;
   canvas.height = clip.data.height;
   canvas.getContext("2d")?.putImageData(clip.data, 0, 0);
-  const entry = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false };
+  const entry = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false, from };
   internal = entry;
   const png = new Promise((resolve, reject) => {
     canvas.toBlob((blob2) => blob2 ? resolve(blob2) : reject(new Error("PNG encoding failed")), "image/png");
@@ -1864,6 +1919,282 @@ function internalImage(clip) {
 }
 function foreignImage(bitmap) {
   return { source: bitmap, width: bitmap.width, height: bitmap.height, imagePerSource: 1, topLeft: null, release: () => bitmap.close() };
+}
+const PATHS = {
+  // Output regions (Outputs button): box with a "1" and corner handles.
+  region: "M4 4h16v16H4zM8 9l3-2v10M8 17h6M2 2h4v4H2zM18 18h4v4h-4z",
+  brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
+  eraser: "M7 20h11M4.5 14.5l8-8 6 6-7.5 7.5H9.5z",
+  // Tipped paint can with a drip.
+  bucket: "M11 3 3.5 10.5a1.5 1.5 0 0 0 0 2.1l5.9 5.9a1.5 1.5 0 0 0 2.1 0L19 11zM6 2l3 3M4 11h14M21 17c0 1.5-.8 2.5-1.8 2.5s-1.7-1-1.7-2.5c0-1 1.7-3 1.7-3s1.8 2 1.8 3",
+  // Pipette, tip at bottom-left.
+  eyedropper: "M3 21l2-.5L15 10.5M3 21l.5-2L13.5 9M12 7.5l4.5 4.5M14.5 10l4.2-4.2a2 2 0 0 0-2.8-2.8L11.7 7.2",
+  // Photoshop's Quick Mask: a rectangle with a circle in it.
+  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
+  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
+  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
+  // Clipboard (M10b): two sheets (copy), scissors (cut), clipboard board (paste).
+  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
+  cut: "M6 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6M6 14a3 3 0 1 0 0 6a3 3 0 1 0 0-6M8.5 8.5 20 20M8.5 15.5 20 4",
+  paste: "M8 4H5v17h14V4h-3M9 2h6v4H9zM9 11h6M9 15h6",
+  // Paste from the ComfyUI clipspace: the paste board (bottom-right corner
+  // left open) with a small "C" badge there.
+  pasteClipspace: "M8 4H5v17h9M16 4h3v9M9 2h6v4H9zM9 11h6M9 15h3M22 15.9A3 3 0 1 0 22 20.1",
+  // Frame corners around the image: "fit to view".
+  fit: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9z",
+  clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
+  fullscreen: "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7",
+  // Arrows pointing inwards: "exit fullscreen".
+  exitFullscreen: "M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7",
+  panel: "M4 5h16v14H4zM15 5v14",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
+  eyeOff: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M4 4l16 16",
+  // Curved double arrow (Photoshop's "switch colors").
+  swap: "M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3",
+  // Layers panel.
+  lock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
+  unlock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 6.8-1.2",
+  plus: "M12 5v14M5 12h14",
+  // Solo (view only): a ring with a centre dot ("only this one").
+  solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
+  // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
+  maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
+  duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
+  trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
+  // Half-filled circle outline: "invert".
+  invert: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 4v16M12 8h4M12 12h6M12 16h4",
+  // Tablet pen, nib at bottom-left, with a pressure stroke: "pen pressure".
+  stylus: "M17 3l4 4L9 19l-5 1 1-5zM14 6l4 4M5 15l4 4M13 21c2-1.5 4-1.5 6 0",
+  // Shape tools (U).
+  line: "M5 19 19 5",
+  arrow: "M5 19 19 5M11 5h8v8",
+  rectangle: "M4 6h16v12H4z",
+  ellipse: "M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7z",
+  // Text tool (T): a serif "T" (also the text-layer badge in the layers panel).
+  text: "M5 7.5V5h14v2.5M12 5v14M9 19h6",
+  // Move tool (V): four-way arrow.
+  move: "M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3",
+  // Move drawing: back sheet (down-left, partially hidden) + front sheet (up-right),
+  // small four-way arrow centred on the front sheet.
+  // Isometric layer stack: top sheet (diamond) with a 4-way diagonal move
+  // arrow, lower sheet shown as an open chevron underneath.
+  moveDrawing: "M12 2.5 21.5 8.5 12 14.5 2.5 8.5zM2.5 13.5V15L12 20.5 21.5 15v-1.5M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
+  // Merge Down: one isometric sheet with a large straight-down arrow whose
+  // tip sits at its centre; the sheet's top edges stop short of the arrowhead.
+  mergeDown: "M8 13.6 2.5 16.5 12 21.5 21.5 16.5 16 13.6M12 2.5v12M6.5 10.5 12 16l5.5-5.5",
+  // Selection (M): dashed rectangle.
+  marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
+  // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc
+  // length with ~3.6 px gaps, so the gaps stay open under the round caps
+  // (like the rectangle marquee's dashes).
+  marqueeEllipse: "M20.4 10.9A8.5 6.5 0 0 1 20.4 13.2M18.5 16.2A8.5 6.5 0 0 1 16.6 17.5M13.1 18.4A8.5 6.5 0 0 1 10.8 18.4M7.4 17.5A8.5 6.5 0 0 1 5.5 16.2M3.6 13.1A8.5 6.5 0 0 1 3.6 10.8M5.5 7.8A8.5 6.5 0 0 1 7.4 6.5M10.9 5.6A8.5 6.5 0 0 1 13.2 5.6M16.6 6.5A8.5 6.5 0 0 1 18.5 7.8",
+  // Lasso (L): rope loop with a knot and a dangling tail.
+  lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
+  // Magic wand (W): diagonal stick with a sparkle at its tip.
+  magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
+  // Free Transform (M11): box with corner handles and a rotate arc; flips = mirrored
+  // triangles about a dashed axis; commit tick; cancel cross.
+  transform: "M6 6h12v12H6zM4 4h4v4H4zM16 4h4v4h-4zM16 16h4v4h-4zM4 16h4v4H4zM14 2.5a9 9 0 0 1 7.5 7.5",
+  flipH: "M12 3v2M12 8v2M12 13v2M12 18v3M9 6 3 18h6zM15 6l6 12h-6z",
+  flipV: "M3 12h2M8 12h2M13 12h2M18 12h3M6 9 18 3v6zM6 15l12 6v-6z",
+  check: "M5 12.5 10 17.5 19 7",
+  close: "M6 6l12 12M18 6 6 18",
+  // "Selection to mask": dashed square with the Quick Mask circle.
+  selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
+  // Image sources (M12): stacked pictures (mountain + sun in the front frame).
+  images: "M7 3h14v12M3 7h14v14H3zM3 18l4.5-5 3.5 4 2-2 4 4.5M12.5 10.5a1 1 0 1 0 0 .01"
+};
+const FALLBACK = "M5 5h14v14H5z";
+function iconPath(name) {
+  return PATHS[name] ?? FALLBACK;
+}
+function iconSvg(name, size = 20) {
+  const d = PATHS[name] ?? FALLBACK;
+  return `<svg class="cps-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
+}
+function setIcon(element, name, size = 20) {
+  element.innerHTML = iconSvg(name, size);
+}
+const INSET = 4;
+class ImagesPanel {
+  /**
+   * @param options - History, popover host, layout elements, callbacks.
+   */
+  constructor(options) {
+    this.options = options;
+    const button2 = document.createElement("button");
+    button2.type = "button";
+    button2.className = "cps-rail-button cps-images-button";
+    button2.title = "Images from the layer_source input (insert as a new layer)";
+    button2.setAttribute("aria-label", button2.title);
+    button2.setAttribute("aria-haspopup", "dialog");
+    setIcon(button2, "images");
+    this.badge = document.createElement("span");
+    this.badge.className = "cps-images-badge";
+    button2.appendChild(this.badge);
+    button2.addEventListener("click", () => this.toggle());
+    this.button = button2;
+    this.list = document.createElement("div");
+    this.list.className = "cps-images-list";
+    this.list.setAttribute("role", "listbox");
+    const content = document.createElement("div");
+    content.className = "cps-images-panel";
+    content.appendChild(this.list);
+    this.panel = document.createElement("div");
+    this.panel.className = "cps-popover cps-images-popover";
+    this.panel.appendChild(content);
+    const { signal } = this.abort;
+    const closeOnPress = () => this.close();
+    options.stage.addEventListener("pointerdown", closeOnPress, { capture: true, signal });
+    options.toolBox.addEventListener("pointerdown", closeOnPress, { capture: true, signal });
+    this.unlisten = options.history?.onChange((change) => this.changed(change)) ?? (() => void 0);
+    this.sync();
+  }
+  options;
+  button;
+  badge;
+  list;
+  panel;
+  open = false;
+  unlisten;
+  abort = new AbortController();
+  resize = new ResizeObserver(() => this.place());
+  /** Whether the panel is open. */
+  get isOpen() {
+    return this.open;
+  }
+  /**
+   * Keydown from the editor's keyboard scope, before any other handler.
+   * @param event - Key event.
+   * @returns `true` if consumed (Esc while open).
+   */
+  handleKey(event) {
+    if (!this.open || event.key !== "Escape") return false;
+    this.close();
+    return true;
+  }
+  /** Close the panel (idempotent). */
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    this.resize.disconnect();
+    this.panel.remove();
+    this.button.classList.remove("cps-active");
+  }
+  /** Close and stop listening. */
+  dispose() {
+    this.close();
+    this.unlisten();
+    this.abort.abort();
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  get entries() {
+    return this.options.history?.entries ?? [];
+  }
+  toggle() {
+    if (this.open) {
+      this.close();
+      return;
+    }
+    this.options.beforeOpen();
+    this.show();
+  }
+  /** Open (no-op when open or empty). */
+  show() {
+    if (this.open || this.entries.length === 0) return;
+    this.open = true;
+    this.render();
+    this.options.popovers.element.appendChild(this.panel);
+    this.button.classList.add("cps-active");
+    this.list.scrollTop = 0;
+    this.place();
+    this.resize.observe(this.options.stage);
+  }
+  changed(change) {
+    this.sync();
+    if (change === "new") this.show();
+  }
+  /** Badge, disabled state, and the open list. */
+  sync() {
+    const count = this.entries.length;
+    this.badge.textContent = count > 0 ? String(count) : "";
+    this.badge.hidden = count === 0;
+    this.button.disabled = count === 0;
+    if (!this.open) return;
+    if (count === 0) this.close();
+    else this.render();
+  }
+  render() {
+    this.list.replaceChildren(
+      ...this.entries.map((entry, i) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "cps-images-item";
+        item.setAttribute("role", "option");
+        const label = entry.name ? `${entry.name} -- ` : i === 0 ? "Newest -- " : "";
+        item.title = label ? `${label}click to insert as a new layer` : "Click to insert as a new layer";
+        const img = document.createElement("img");
+        img.className = "cps-images-thumb";
+        img.alt = "";
+        img.decoding = "async";
+        img.draggable = false;
+        img.src = entry.url;
+        item.appendChild(img);
+        item.addEventListener("click", () => this.options.pick(entry));
+        return item;
+      })
+    );
+  }
+  /** Over the left edge of the stage, at most the stage height (root-local CSS px; the root may be CSS-scaled). */
+  place() {
+    if (!this.open) return;
+    const element = this.panel;
+    const root = this.options.root;
+    const r = root.getBoundingClientRect();
+    const s = this.options.stage.getBoundingClientRect();
+    const scale = root.offsetWidth > 0 && r.width > 0 ? r.width / root.offsetWidth : 1;
+    const left = (s.left - r.left) / scale - root.clientLeft + INSET;
+    const top = (s.top - r.top) / scale - root.clientTop + INSET;
+    element.style.left = `${Math.round(left)}px`;
+    element.style.top = `${Math.round(top)}px`;
+    element.style.maxHeight = `${Math.max(40, Math.round(s.height / scale - 2 * INSET))}px`;
+  }
+}
+const MAX_SOURCE_SIDE = 8192;
+const SOURCE_LOAD_FAILED_NOTE = "Could not load the image.";
+function cappedSourceSize(size, max = MAX_SOURCE_SIDE) {
+  const long = Math.max(size.width, size.height);
+  if (long <= max) return { width: size.width, height: size.height };
+  const k = max / long;
+  return { width: Math.max(1, Math.round(size.width * k)), height: Math.max(1, Math.round(size.height * k)) };
+}
+async function insertSourceUrl(editor, url, current, name) {
+  const bitmap = await decodeUrl(url);
+  if (!bitmap) {
+    log.warn("Could not load the image source:", url);
+    editor.events.emit("note", SOURCE_LOAD_FAILED_NOTE);
+    return false;
+  }
+  try {
+    if (current() !== editor) return false;
+    const size = cappedSourceSize({ width: bitmap.width, height: bitmap.height });
+    const canvas = document.createElement("canvas");
+    canvas.width = size.width;
+    canvas.height = size.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(bitmap, 0, 0, size.width, size.height);
+    const pixels = ctx.getImageData(0, 0, size.width, size.height);
+    canvas.width = canvas.height = 0;
+    if (size.width !== bitmap.width) {
+      editor.events.emit("note", `Image reduced to ${size.width} x ${size.height} px (max ${MAX_SOURCE_SIDE} px per side).`);
+    }
+    return editor.insert.insert(pixels, name);
+  } finally {
+    bitmap.close();
+  }
 }
 function hexToRgb$1(hex) {
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
@@ -2351,99 +2682,6 @@ async function pasteDrop(actions, files, url, point, note) {
     return;
   }
   if (!await actions.pasteDropped([result.blob], point)) note(DRAG_NOT_IMAGE_NOTE);
-}
-const PATHS = {
-  // Output regions (Outputs button): box with a "1" and corner handles.
-  region: "M4 4h16v16H4zM8 9l3-2v10M8 17h6M2 2h4v4H2zM18 18h4v4h-4z",
-  brush: "M4 20c2 0 4-1 4-3a2 2 0 1 0-4 0M8 17 19 6a2 2 0 0 0-3-3L5 14",
-  eraser: "M7 20h11M4.5 14.5l8-8 6 6-7.5 7.5H9.5z",
-  // Tipped paint can with a drip.
-  bucket: "M11 3 3.5 10.5a1.5 1.5 0 0 0 0 2.1l5.9 5.9a1.5 1.5 0 0 0 2.1 0L19 11zM6 2l3 3M4 11h14M21 17c0 1.5-.8 2.5-1.8 2.5s-1.7-1-1.7-2.5c0-1 1.7-3 1.7-3s1.8 2 1.8 3",
-  // Pipette, tip at bottom-left.
-  eyedropper: "M3 21l2-.5L15 10.5M3 21l.5-2L13.5 9M12 7.5l4.5 4.5M14.5 10l4.2-4.2a2 2 0 0 0-2.8-2.8L11.7 7.2",
-  // Photoshop's Quick Mask: a rectangle with a circle in it.
-  quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
-  undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
-  redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
-  // Clipboard (M10b): two sheets (copy), scissors (cut), clipboard board (paste).
-  copy: "M9 9h11v11H9zM5 15H4V4h11v1",
-  cut: "M6 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6M6 14a3 3 0 1 0 0 6a3 3 0 1 0 0-6M8.5 8.5 20 20M8.5 15.5 20 4",
-  paste: "M8 4H5v17h14V4h-3M9 2h6v4H9zM9 11h6M9 15h6",
-  // Paste from the ComfyUI clipspace: the paste board (bottom-right corner
-  // left open) with a small "C" badge there.
-  pasteClipspace: "M8 4H5v17h9M16 4h3v9M9 2h6v4H9zM9 11h6M9 15h3M22 15.9A3 3 0 1 0 22 20.1",
-  // Frame corners around the image: "fit to view".
-  fit: "M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M9 9h6v6H9z",
-  clear: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
-  fullscreen: "M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7",
-  // Arrows pointing inwards: "exit fullscreen".
-  exitFullscreen: "M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7",
-  panel: "M4 5h16v14H4zM15 5v14",
-  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
-  eyeOff: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6M4 4l16 16",
-  // Curved double arrow (Photoshop's "switch colors").
-  swap: "M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3",
-  // Layers panel.
-  lock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 7 0v3",
-  unlock: "M6 11h12v9H6zM8.5 11V8a3.5 3.5 0 0 1 6.8-1.2",
-  plus: "M12 5v14M5 12h14",
-  // Solo (view only): a ring with a centre dot ("only this one").
-  solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
-  // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
-  maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
-  duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
-  trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
-  // Half-filled circle outline: "invert".
-  invert: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 4v16M12 8h4M12 12h6M12 16h4",
-  // Tablet pen, nib at bottom-left, with a pressure stroke: "pen pressure".
-  stylus: "M17 3l4 4L9 19l-5 1 1-5zM14 6l4 4M5 15l4 4M13 21c2-1.5 4-1.5 6 0",
-  // Shape tools (U).
-  line: "M5 19 19 5",
-  arrow: "M5 19 19 5M11 5h8v8",
-  rectangle: "M4 6h16v12H4z",
-  ellipse: "M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7z",
-  // Text tool (T): a serif "T" (also the text-layer badge in the layers panel).
-  text: "M5 7.5V5h14v2.5M12 5v14M9 19h6",
-  // Move tool (V): four-way arrow.
-  move: "M12 3v18M3 12h18M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3",
-  // Move drawing: back sheet (down-left, partially hidden) + front sheet (up-right),
-  // small four-way arrow centred on the front sheet.
-  // Isometric layer stack: top sheet (diamond) with a 4-way diagonal move
-  // arrow, lower sheet shown as an open chevron underneath.
-  moveDrawing: "M12 2.5 21.5 8.5 12 14.5 2.5 8.5zM2.5 13.5V15L12 20.5 21.5 15v-1.5M9.4 6.8l5.2 3.4M14.6 6.8l-5.2 3.4M10.7 6.8H9.4v1.1M13.3 6.8h1.3v1.1M10.7 10.2H9.4V9.1M13.3 10.2h1.3V9.1",
-  // Merge Down: one isometric sheet with a large straight-down arrow whose
-  // tip sits at its centre; the sheet's top edges stop short of the arrowhead.
-  mergeDown: "M8 13.6 2.5 16.5 12 21.5 21.5 16.5 16 13.6M12 2.5v12M6.5 10.5 12 16l5.5-5.5",
-  // Selection (M): dashed rectangle.
-  marqueeRect: "M4 8V6h2M10 6h4M18 6h2v2M20 11v2M20 16v2h-2M14 18h-4M6 18H4v-2M4 13v-2",
-  // Elliptical marquee (M): dashed ellipse, 8 short arcs evenly spaced by arc
-  // length with ~3.6 px gaps, so the gaps stay open under the round caps
-  // (like the rectangle marquee's dashes).
-  marqueeEllipse: "M20.4 10.9A8.5 6.5 0 0 1 20.4 13.2M18.5 16.2A8.5 6.5 0 0 1 16.6 17.5M13.1 18.4A8.5 6.5 0 0 1 10.8 18.4M7.4 17.5A8.5 6.5 0 0 1 5.5 16.2M3.6 13.1A8.5 6.5 0 0 1 3.6 10.8M5.5 7.8A8.5 6.5 0 0 1 7.4 6.5M10.9 5.6A8.5 6.5 0 0 1 13.2 5.6M16.6 6.5A8.5 6.5 0 0 1 18.5 7.8",
-  // Lasso (L): rope loop with a knot and a dangling tail.
-  lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
-  // Magic wand (W): diagonal stick with a sparkle at its tip.
-  magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
-  // Free Transform (M11): box with corner handles and a rotate arc; flips = mirrored
-  // triangles about a dashed axis; commit tick; cancel cross.
-  transform: "M6 6h12v12H6zM4 4h4v4H4zM16 4h4v4h-4zM16 16h4v4h-4zM4 16h4v4H4zM14 2.5a9 9 0 0 1 7.5 7.5",
-  flipH: "M12 3v2M12 8v2M12 13v2M12 18v3M9 6 3 18h6zM15 6l6 12h-6z",
-  flipV: "M3 12h2M8 12h2M13 12h2M18 12h3M6 9 18 3v6zM6 15l12 6v-6z",
-  check: "M5 12.5 10 17.5 19 7",
-  close: "M6 6l12 12M18 6 6 18",
-  // "Selection to mask": dashed square with the Quick Mask circle.
-  selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6"
-};
-const FALLBACK = "M5 5h14v14H5z";
-function iconPath(name) {
-  return PATHS[name] ?? FALLBACK;
-}
-function iconSvg(name, size = 20) {
-  const d = PATHS[name] ?? FALLBACK;
-  return `<svg class="cps-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="${d}"/></svg>`;
-}
-function setIcon(element, name, size = 20) {
-  element.innerHTML = iconSvg(name, size);
 }
 const WATCH_MS = 250;
 const PLACEHOLDER_TEXT = "Editing in fullscreen — press Esc or click to return";
@@ -4944,6 +5182,7 @@ class ToolRail {
   actions;
   popovers;
   toolButtons = /* @__PURE__ */ new Map();
+  /** Tool buttons group (the Images panel closes on presses here). */
   toolBox;
   undoButton;
   redoButton;
@@ -4952,6 +5191,13 @@ class ToolRail {
   pasteButton;
   toolIds = "";
   groupSlots = [];
+  /**
+   * Add a button to the clipboard group, after Paste (M12 Images button).
+   * @param element - Button element.
+   */
+  appendClipboardButton(element) {
+    this.pasteButton.element.after(element);
+  }
   /** Stop the Paste button's long-press timer and close its menu. */
   dispose() {
     this.pasteButton.dispose();
@@ -5436,7 +5682,7 @@ class RegionCard {
     this.element.classList.toggle("cps-selected", selected);
     this.element.classList.toggle("cps-hidden-layer", !region.visible);
     if (!this.renaming) this.title.textContent = regionSlotLabel(region);
-    this.title.title = `Output pair ${region.slot} (double-click to rename)`;
+    this.title.title = `${regionSlotLabel(region)} -- output pair ${region.slot} (double-click to rename)`;
     const icon = region.visible ? "eye" : "eyeOff";
     if (icon !== this.eyeIcon) setIcon(this.eye, icon, 14);
     this.eyeIcon = icon;
@@ -8538,6 +8784,35 @@ function drawHandles(ctx, view, rect, pixelRatio, px) {
     ctx.strokeRect(at.x - half, at.y - half, 2 * half, 2 * half);
   }
 }
+const FONT_PX = 10;
+const GAP_PX = 4;
+function drawResolutionLabel(ctx, editor, pixelRatio) {
+  const { width, height } = editor.imageSize;
+  if (width <= 0 || height <= 0) return;
+  const px = pixelRatio / (editor.view.graphScale || 1);
+  const area = docRectToStage(editor.view.current, frameRect(editor.imageSize));
+  const text = `${width} x ${height}`;
+  const x = (area.x + area.width / 2) * pixelRatio;
+  const y = (area.y + area.height) * pixelRatio + GAP_PX * px;
+  ctx.save();
+  ctx.font = `${FONT_PX * px}px sans-serif`;
+  const half = ctx.measureText(text).width / 2;
+  const bottom = y + (FONT_PX + 2) * px;
+  if (y < 0 || bottom > ctx.canvas.height || x - half < 0 || x + half > ctx.canvas.width) {
+    ctx.restore();
+    return;
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.globalAlpha = 0.55;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3 * px;
+  ctx.strokeStyle = "#000000";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
 const HANDLES = [
   { hx: -1, hy: -1 },
   { hx: 0, hy: -1 },
@@ -9046,6 +9321,7 @@ class StageView {
     if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
     if (session) drawTransformOverlay(ctx, session.editor, pr);
+    if (session) drawResolutionLabel(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {
@@ -9330,7 +9606,7 @@ class EditorHost {
   /**
    * @param events - Owner callbacks.
    */
-  constructor(events = {}) {
+  constructor(events = {}, sources = null) {
     this.events = events;
     this.shell = new EditorShell();
     this.root = this.shell.root;
@@ -9355,6 +9631,19 @@ class EditorHost {
       this.shell,
       this.clipboard
     );
+    this.images = new ImagesPanel({
+      history: sources,
+      popovers: this.shell.popoverHost,
+      root: this.root,
+      stage: this.stage,
+      toolBox: this.sync.rail.toolBox,
+      beforeOpen: () => this.input.cancel(),
+      pick: (entry) => {
+        const editor = this.session?.editor;
+        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
+      }
+    });
+    this.sync.rail.appendClipboardButton(this.images.button);
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
       if (!colors) return;
@@ -9381,7 +9670,7 @@ class EditorHost {
       viewChanged: () => this.view.requestRender()
     });
     this.keyboard = new KeyboardScope(this.root, {
-      onKeyDown: (event) => this.session ? handleShortcut(event, this.session, {
+      onKeyDown: (event) => this.images.handleKey(event) || (this.session ? handleShortcut(event, this.session, {
         optionsChanged: () => this.optionsChanged(),
         viewChanged: () => this.view.requestRender(),
         cancelDrag: () => this.input.cancel(),
@@ -9399,7 +9688,7 @@ class EditorHost {
           return true;
         },
         clipboard: this.clipboard
-      }) : false,
+      }) : false),
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
       onAltChange: (down) => this.setAlt(down),
       onShiftChange: (down) => this.setShift(down),
@@ -9436,6 +9725,8 @@ class EditorHost {
   /** Copy / cut / paste (keys, rail, drops). */
   clipboard;
   removeDrop;
+  /** M12: Images button + thumbnail panel. */
+  images;
   restoreState = null;
   session = null;
   unbind = [];
@@ -9531,6 +9822,7 @@ class EditorHost {
     this.resizeObserver.disconnect();
     this.removeDrop();
     this.clipboard.dispose();
+    this.images.dispose();
     this.input.dispose();
     this.keyboard.dispose();
     this.sync.dispose();
@@ -9642,14 +9934,17 @@ function sourceFromNode(upstream) {
   if (fileWidget) {
     const widget = upstream.widgets?.find((w) => w.name === fileWidget.widget);
     const item = parseAnnotatedFilename(widget?.value, fileWidget.type);
-    if (item) return resultItemSource(item, "upstream");
+    if (item) return { ...resultItemSource(item, "upstream"), name: fileStem(item.filename ?? "") };
   }
   const locator = nodeLocatorId(upstream);
   if (locator) {
     const preview = app.nodePreviewImages[locator]?.[0];
     if (typeof preview === "string" && preview) return { key: preview, url: preview, origin: "upstream" };
     const item = firstOutputImage(app.nodeOutputs[locator]);
-    if (item) return resultItemSource(item, "upstream");
+    if (item) {
+      const source = resultItemSource(item, "upstream");
+      return item.type === "input" && item.filename ? { ...source, name: fileStem(item.filename) } : source;
+    }
   }
   const legacy = upstream.imgs?.[0]?.src;
   if (legacy) return { key: legacy, url: legacy, origin: "upstream" };
@@ -9661,6 +9956,10 @@ function sourceFromExecuted(node, lastExecuted) {
   const locator = nodeLocatorId(node);
   const stored = locator ? firstOutputImage(app.nodeOutputs[locator]) : null;
   return stored ? resultItemSource(stored, "executed") : null;
+}
+function fileStem(filename) {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 ? filename.slice(0, dot) : filename;
 }
 function resultItemSource(item, origin) {
   return {
@@ -10249,6 +10548,124 @@ function requestGraphSync(node, delayMs) {
 function flushGraphSync() {
   task.flush();
 }
+const SOURCE_HISTORY_SIZE = 10;
+const LAYER_SOURCE_UI_KEY = "layer_source";
+class SourceHistory {
+  /**
+   * @param cap - Maximum entries (default {@link SOURCE_HISTORY_SIZE}).
+   */
+  constructor(cap = SOURCE_HISTORY_SIZE) {
+    this.cap = cap;
+  }
+  cap;
+  list = [];
+  listeners = /* @__PURE__ */ new Set();
+  /** Entries, newest first. */
+  get entries() {
+    return this.list;
+  }
+  /**
+   * Record a sighting: new keys go on top (the oldest falls off past the
+   * cap), a known key moves to the top. Seeing the current top again is a no-op.
+   * @param entry - Source seen.
+   * @param announce - A new key is reported as `"new"` (else `"seed"`).
+   * @returns `true` if the list changed.
+   */
+  add(entry, announce = true) {
+    if (this.list[0]?.key === entry.key) return false;
+    const known = this.list.some((e) => e.key === entry.key);
+    this.list = [{ ...entry }, ...this.list.filter((e) => e.key !== entry.key)].slice(0, this.cap);
+    const change = known ? "moved" : announce ? "new" : "seed";
+    for (const listener of this.listeners) listener(change);
+    return true;
+  }
+  /**
+   * Listen for changes.
+   * @param listener - Called after every change with its kind.
+   * @returns Unsubscribe.
+   */
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+}
+function layerSourceItem(output) {
+  const items = output?.[LAYER_SOURCE_UI_KEY];
+  if (!Array.isArray(items)) return null;
+  for (const item of items) {
+    if (isResultItem(item)) return item;
+  }
+  return null;
+}
+function layerSourceKey(item) {
+  return typeof item.source_id === "string" && item.source_id ? `source:${item.source_id}` : viewQuery(item);
+}
+function isResultItem(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const filename = value.filename;
+  return typeof filename === "string" && filename.length > 0;
+}
+function resolveLayerSource(node, lastExecuted) {
+  const slot = inputSlotIndex(node, INPUT_NAMES.layerSource);
+  if (slot < 0 || node.inputs[slot]?.link == null) return null;
+  const upstream = findUpstreamNode(node, slot);
+  const live = upstream ? sourceFromNode(upstream) : null;
+  if (live) return live.name ? { key: live.key, url: live.url, name: live.name } : { key: live.key, url: live.url };
+  const locator = nodeLocatorId(node);
+  const item = layerSourceItem(lastExecuted) ?? layerSourceItem(locator ? app.nodeOutputs[locator] : null);
+  return item ? { key: layerSourceKey(item), url: viewUrl(item, (route) => api.apiURL(route), app.getRandParam()) } : null;
+}
+class LayerSourceWatch {
+  /**
+   * @param node - Our node.
+   */
+  constructor(node) {
+    this.node = node;
+  }
+  node;
+  /** Sources seen this session (per node instance, memory only). */
+  history = new SourceHistory();
+  executed = null;
+  /**
+   * New sources are announced (auto-open) once the initial state is known:
+   * after the first source seen, or after a user link change on the input.
+   */
+  armed = false;
+  /** A link changed after startup: the next new source is announced even if it is the first one. */
+  arm() {
+    this.armed = true;
+  }
+  /**
+   * Our node executed (its output may carry a `layer_source` preview).
+   * @param output - Execution output.
+   */
+  setExecuted(output) {
+    this.executed = output;
+  }
+  /** Look the source up again and record it (cheap; de-duplicated by the history). */
+  refresh() {
+    const entry = resolveLayerSource(this.node, this.executed);
+    if (!entry) return;
+    this.history.add(entry, this.armed);
+    this.armed = true;
+  }
+}
+const SIZE_WIDGETS = /* @__PURE__ */ new Set([INPUT_NAMES.width, INPUT_NAMES.height]);
+function syncSizeWidgets(node) {
+  const hidden = isInputConnected(node, INPUT_NAMES.image);
+  let changed = false;
+  for (const widget of node.widgets ?? []) {
+    if (!SIZE_WIDGETS.has(widget.name) || (widget.hidden ?? false) === hidden) continue;
+    widget.hidden = hidden;
+    changed = true;
+  }
+  if (!changed) return false;
+  const needed = node.computeSize?.();
+  const [width, height] = node.size;
+  if (!hidden && needed && needed[1] > height) node.setSize([width, needed[1]]);
+  node.setDirtyCanvas?.(true, true);
+  return true;
+}
 function sceneFor(input, source) {
   return source === "background" ? { ...input, layers: [], backgroundHidden: false } : input;
 }
@@ -10625,20 +11042,24 @@ class SelectionMoveOps {
   }
 }
 const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
+const PASTE_TRANSFORM_NOTE = "Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel.";
 class ClipboardOps {
   /**
    * @param s - Shared editor state.
    * @param layers - Layer commands (undoable insert + solo rule).
    * @param paintTargetOff - Turns Quick Mask off (`Editor.setPaintTarget("paint")`).
+   * @param insertPlaced - `SourceInsertOps.insertPlaced` (oversized pastes).
    */
-  constructor(s, layers2, paintTargetOff) {
+  constructor(s, layers2, paintTargetOff, insertPlaced) {
     this.s = s;
     this.layers = layers2;
     this.paintTargetOff = paintTargetOff;
+    this.insertPlaced = insertPlaced;
   }
   s;
   layers;
   paintTargetOff;
+  insertPlaced;
   /** Image px per document px (the frame map scale). */
   get imageScale() {
     return documentMap(this.s.doc, this.s.imageSize).scale;
@@ -10697,6 +11118,7 @@ class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    if (cropped) return this.pasteInTransform(source, size, full);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
     const surface = createSurface(rect.width, rect.height);
@@ -10716,9 +11138,21 @@ class ClipboardOps {
       s.selection.set(null);
       recordSelectionMove(s, sel, null, true);
     }
-    return { layerId: id, name: layer.name, cropped, resampled };
+    return { layerId: id, name: layer.name, transform: false, resampled };
   }
   // ── Internals ───────────────────────────────────────────────────────────
+  /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
+  pasteInTransform(source, size, full) {
+    const surface = createSurface(size.width, size.height);
+    surface.ctx.drawImage(source, 0, 0);
+    const pixels = surface.ctx.getImageData(0, 0, size.width, size.height);
+    releaseSurface(surface);
+    const name = pastedLayerName(this.s.doc.layers);
+    const id = this.insertPlaced(pixels, name, full);
+    if (!id) return null;
+    this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
+    return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
+  }
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
   editLayer() {
     const s = this.s;
@@ -10997,6 +11431,27 @@ class HistoryStack {
     if (!entry) return null;
     this.total -= entry.bytes;
     return entry;
+  }
+  /**
+   * Fold `entry` and every undo entry newer than it into ONE step (via the
+   * `combine` callback, oldest first). Used when an operation spans several
+   * pushes (an inserted image: the layer add + the transform commit).
+   * @param entry - Oldest entry of the step (must be on the undo side).
+   * @returns `true` if entries were joined.
+   */
+  joinSince(entry) {
+    const i = this.undoStack.indexOf(entry);
+    const combine = this.combine;
+    if (i < 0 || i === this.undoStack.length - 1 || !combine) return false;
+    this.joining = null;
+    const parts = this.undoStack.splice(i);
+    this.undoStack.push(parts.reduce((older, newer) => combine(older, newer)));
+    return true;
+  }
+  /** Drop the redo side (an undo that must not be redoable, e.g. a cancelled insert). */
+  dropRedo() {
+    for (const dropped of this.redoStack) this.total -= dropped.bytes;
+    this.redoStack.length = 0;
   }
   /**
    * Move the newest entry to the redo stack.
@@ -14678,6 +15133,14 @@ class FloatOps {
   liftKept() {
     return this.f ? true : this.adopt(liftKept(this.s));
   }
+  /**
+   * Take a float built outside a lift (an inserted image, `sourceInsert.ts`).
+   * @param f - The float (its layer exists; `inserted` set).
+   * @returns `false` if a float already exists.
+   */
+  adoptInserted(f) {
+    return this.f ? false : this.adopt(f);
+  }
   liftFrom(copy, sel) {
     return this.adopt(liftFloat(this.s, copy, sel));
   }
@@ -14784,7 +15247,7 @@ class FloatOps {
     if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
     const m = this.matrix() ?? translation(f.area.x, f.area.y);
-    if (affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
+    if (!f.inserted && affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
       this.cancel();
       return false;
     }
@@ -14797,6 +15260,7 @@ class FloatOps {
       const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : void 0;
       s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
     }
+    f.onEnd?.(true);
     s.afterEdit();
     s.events.emit("transform", void 0);
     return true;
@@ -14815,6 +15279,7 @@ class FloatOps {
     s.runtime.bump(f.layerId);
     s.selection.set(f.selBefore);
     releaseFloat(f);
+    f.onEnd?.(false);
     s.events.emit("history", void 0);
     s.events.emit("render", void 0);
     s.events.emit("transform", void 0);
@@ -15422,11 +15887,11 @@ function inside(r, x, y) {
 }
 const WHEEL_SCALE_STEP = 1.05;
 const MAX_WHEEL_DELTA = 300;
-function fitScale(frame, image) {
+function fitScale$1(frame, image) {
   return frameMap(frame, image).scale;
 }
 function translatePlacement(p, frame, image, dx, dy) {
-  const s = fitScale(frame, image);
+  const s = fitScale$1(frame, image);
   return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
 }
 function scalePlacementAt(p, frame, image, factor, anchor) {
@@ -15448,11 +15913,11 @@ function wheelScaleFactor(deltaPx) {
   return Math.pow(WHEEL_SCALE_STEP, -d / 100);
 }
 function placementImageOffset(p, frame, image) {
-  const s = fitScale(frame, image);
+  const s = fitScale$1(frame, image);
   return { x: p.x * s, y: p.y * s };
 }
 function imageOffsetToPlacement(imagePx, frame, image) {
-  return imagePx / fitScale(frame, image);
+  return imagePx / fitScale$1(frame, image);
 }
 const PLACEMENT_MARGIN = 50;
 function validSizes(frame, image) {
@@ -16318,6 +16783,134 @@ class ResolutionOps {
     return true;
   }
 }
+function fitScale(source, area) {
+  if (source.width <= 0 || source.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
+  return Math.min(1, area.width / source.width, area.height / source.height);
+}
+function insertParams(source, imageArea, docPerImage, place) {
+  const k = fitScale(source, { width: imageArea.width / docPerImage, height: imageArea.height / docPerImage });
+  const t = k * docPerImage;
+  const w = source.width * t;
+  const h = source.height * t;
+  const tl = pasteTopLeft({ width: w, height: h }, { ...place, imageArea, original: null });
+  return { cx: tl.x + w / 2, cy: tl.y + h / 2, sx: t, sy: t, angle: 0 };
+}
+class SourceInsertOps {
+  /**
+   * @param s - Shared editor state.
+   * @param layers - Layer commands (undoable add + solo rule).
+   * @param float - Float commands (the session runs on a float).
+   * @param paintTargetOff - Turns Quick Mask off.
+   * @param undo - Undo one history step (`PaintOps.undo`).
+   */
+  constructor(s, layers2, float, paintTargetOff, undo) {
+    this.s = s;
+    this.layers = layers2;
+    this.float = float;
+    this.paintTargetOff = paintTargetOff;
+    this.undo = undo;
+  }
+  s;
+  layers;
+  float;
+  paintTargetOff;
+  undo;
+  /**
+   * New layer holding `pixels` in a Free Transform session (see module doc).
+   * @param pixels - Full-resolution source pixels (straight alpha).
+   * @param name - Layer name (source file name); default "Image N" (next free N).
+   * @returns `true` if the session runs.
+   */
+  insert(pixels, name) {
+    return this.start(
+      pixels,
+      name?.trim() || imageLayerName(this.s.doc.layers),
+      (place, area, docPerImage) => insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place)
+    ) !== null;
+  }
+  /**
+   * An oversized paste (SPEC M10 Clipboard): the same session, at native
+   * size and the paste's own placement (`pastePlacement.ts`, no fit scaling).
+   * @param pixels - Full source pixels (straight alpha).
+   * @param name - Layer name ("Pasted N").
+   * @param rect - Placed document rect of the whole paste (`pasteRect`).
+   * @returns The new layer id if the session runs, else `null`.
+   */
+  insertPlaced(pixels, name, rect) {
+    const sx = rect.width / pixels.width;
+    const sy = rect.height / pixels.height;
+    return this.start(pixels, name, () => ({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, sx, sy, angle: 0 }));
+  }
+  /** Shared body of {@link insert} / {@link insertPlaced}. */
+  start(pixels, name, paramsFor) {
+    const s = this.s;
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return null;
+    s.settleFloat();
+    s.commitTextEdit();
+    if (s.stroke.active) s.cancelStroke();
+    if (this.float.active || this.float.transform.active) return null;
+    if (s.target === "mask") this.paintTargetOff();
+    const layer = createPaintLayer(name);
+    const id = this.layers.addLayer(layer);
+    if (!id) return null;
+    const map = documentMap(s.doc, s.imageSize);
+    const sel = s.selection.current;
+    const place = pasteContext({ selection: sel, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
+    if (sel) {
+      s.selection.set(null);
+      recordSelectionMove(s, sel, null, true);
+    }
+    const step = s.history.mergeTarget();
+    const docPerImage = 1 / map.scale;
+    const area = imageRectToDoc(map, frameRect(s.imageSize));
+    const { width: w, height: h } = pixels;
+    const params = paramsFor(place, area, docPerImage);
+    const m = paramsMatrix(params, w, h);
+    s.ensureBounds(transformedAabb(m, w, h), true);
+    const surface = createSurface(w, h);
+    surface.ctx.putImageData(pixels, 0, 0);
+    const f = {
+      layerId: id,
+      area: { x: 0, y: 0, width: w, height: h },
+      // The layer is empty: a 1 px transparent "hole" inside the bounds keeps the commit patch small.
+      original: new ImageData(1, 1),
+      holeRect: holeAt(s.store.bounds, params),
+      params,
+      pixels,
+      surface,
+      dx: 0,
+      dy: 0,
+      selBefore: null,
+      selBase: null,
+      xf: m,
+      baked: null,
+      dragBase: null,
+      preview: null,
+      inserted: true,
+      onEnd: (landed) => this.ended(id, step, landed)
+    };
+    if (!this.float.adoptInserted(f)) return null;
+    return this.float.transform.enter() ? id : null;
+  }
+  /** The inserted float ended: join its steps, or remove the layer without a trace. */
+  ended(layerId, step, landed) {
+    const s = this.s;
+    if (!step) return;
+    if (landed) {
+      s.history.joinSince(step);
+      return;
+    }
+    if (s.history.mergeTarget() !== step) return;
+    this.undo();
+    s.history.dropRedo();
+    s.kept.drop(layerId);
+    s.events.emit("history", void 0);
+  }
+}
+function holeAt(bounds, p) {
+  const clamp2 = (v, lo, size) => Math.min(lo + size - 1, Math.max(lo, Math.floor(v)));
+  return { x: clamp2(p.cx, bounds.x, bounds.width), y: clamp2(p.cy, bounds.y, bounds.height), width: 1, height: 1 };
+}
 class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   layerOps;
@@ -16341,6 +16934,8 @@ class Editor extends EditorBase {
   clipboard;
   /** Drawing-grid vs image resolution check + Match image resolution. */
   resolution;
+  /** Image sources (M12): insert as a new layer in Free Transform (`sourceInsert.ts`). */
+  insert;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -16360,8 +16955,9 @@ class Editor extends EditorBase {
     this.regionOps = new RegionOps(this.s);
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
-    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"));
+    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r));
     this.resolution = new ResolutionOps(this.s);
+    this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -19011,12 +19607,13 @@ class PainterSketchController {
    */
   constructor(node) {
     this.node = node;
+    this.sources = new LayerSourceWatch(node);
     this.host = new EditorHost({
       onBecameVisible: () => this.refresh(),
       isDetached: () => this.isOffViewedGraph(),
       onDisengage: () => this.session?.uploader.flushQuietly(),
       onSave: () => void this.saver.save(this.session)
-    });
+    }, this.sources.history);
     this.isolation = isolateEvents({
       root: this.host.root,
       stage: this.host.stage,
@@ -19050,6 +19647,8 @@ class PainterSketchController {
   loader;
   watcher;
   frame;
+  /** M12: `layer_source` history (per node instance, memory only). */
+  sources;
   saver = new WorkflowSaver();
   disposed = false;
   /** A session for a brand-new document (mask styled by the user's "Defaults" settings). */
@@ -19139,6 +19738,7 @@ class PainterSketchController {
    */
   handleExecuted(output) {
     this.loader.setExecuted(output);
+    this.sources.setExecuted(output);
     this.refresh();
   }
   /**
@@ -19153,6 +19753,7 @@ class PainterSketchController {
       return;
     }
     this.frame.handleLinkChange(type, slot, isConnected, this.session, () => !this.disposed && !this.isImageConnected());
+    if (type === LINK_INPUT && slot === inputSlotIndex(this.node, INPUT_NAMES.layerSource)) this.sources.arm();
     this.refresh();
   }
   /**
@@ -19248,6 +19849,8 @@ class PainterSketchController {
   refresh() {
     if (this.disposed) return;
     this.loader.refresh(this.isImageConnected());
+    syncSizeWidgets(this.node);
+    if (this.watcher.active && !this.watcher.starting) this.sources.refresh();
     this.updateContent();
   }
   tick() {
@@ -19360,7 +19963,7 @@ function installPageGuards() {
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
 const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n/* Icon command buttons (Free Transform, flips, commit / cancel). */\n.cps-toggle.cps-icon-command {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 26px;\n  padding: 0;\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  /* Fixed width: without these, the min-content width of a long nowrap\n     layer name (flex min-width: auto) would push the panel over the canvas. */\n  width: var(--cps-panel-width);\n  min-width: 0;\n  max-width: var(--cps-panel-width);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
  *
@@ -19472,6 +20075,7 @@ const layersCss = `/*
   flex-direction: column;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   font-size: 11px;
 }
 
@@ -19678,7 +20282,10 @@ const layersCss = `/*
 }
 
 .cps-layer-rename {
+  display: block;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   height: 18px;
   box-sizing: border-box;
   padding: 0 3px;
@@ -19745,6 +20352,7 @@ const layersCss = `/*
 `;
 const toolGroupsCss = "/* ── Tool group slot + flyout (ui/toolGroupSlot.ts) ─────────────────────── */\n\n.cps-rail-grouped {\n  position: relative;\n}\n\n/* Photoshop's corner triangle: this slot holds more tools. */\n.cps-rail-corner {\n  position: absolute;\n  right: 2px;\n  bottom: 2px;\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid currentColor;\n  opacity: 0.7;\n  pointer-events: none;\n}\n\n.cps-tool-flyout {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 120px;\n}\n\n.cps-tool-flyout-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 3px 6px;\n  border: 1px solid transparent;\n  border-radius: 3px;\n  background: transparent;\n  color: var(--cps-fg);\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-tool-flyout-item:hover {\n  background: var(--cps-hover);\n}\n\n.cps-tool-flyout-item.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-tool-flyout-key {\n  margin-left: auto;\n  color: var(--cps-fg-muted);\n}\n";
 const outputsCss = '/* Side panel tabs (Layers / Outputs) and the Outputs tab cards (M9).\n   Titles, rename field, eye/delete buttons reuse the layer row classes\n   (`cps-layer-name`, `cps-layer-rename`, `cps-layer-button`). */\n\n/* ── Tabs ─────────────────────────────────────────────────────────────── */\n\n.cps-side-content {\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n}\n\n.cps-side-tabs {\n  display: flex;\n  flex: none;\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-side-tabs button {\n  flex: 1;\n  padding: 5px;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-side-tabs button.cps-active {\n  color: var(--cps-fg);\n  background: var(--cps-active-bg);\n  box-shadow: inset 0 -2px var(--cps-accent);\n}\n\n.cps-side-content > .cps-layers,\n.cps-outputs {\n  flex: 1;\n  min-height: 0;\n}\n\n.cps-side-content > [hidden],\n.cps-outputs [hidden] {\n  display: none !important;\n}\n\n/* ── Outputs list ─────────────────────────────────────────────────────── */\n\n.cps-outputs {\n  display: flex;\n  flex-direction: column;\n  font-size: 11px;\n  overflow: hidden;\n}\n\n.cps-outputs-list {\n  overflow-y: auto;\n  min-height: 0;\n  overscroll-behavior: contain;\n}\n\n.cps-outputs-hint {\n  flex: none;\n  padding: 5px 6px;\n  color: var(--cps-fg-muted);\n  line-height: 1.35;\n}\n\n/* ── Cards ────────────────────────────────────────────────────────────── */\n\n.cps-output-card {\n  padding: 3px 4px 4px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  border-left: 2px solid transparent;\n  user-select: none;\n}\n\n.cps-output-card:hover {\n  background: var(--cps-hover);\n}\n\n.cps-output-card.cps-selected {\n  background: var(--cps-active-bg);\n  border-left-color: var(--cps-accent);\n}\n\n.cps-output-header {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  min-height: 22px;\n}\n\n.cps-output-title {\n  flex: 1;\n  min-width: 0;\n}\n\n.cps-output-card.cps-hidden-layer .cps-output-title {\n  opacity: 0.55;\n}\n\n.cps-output-size {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-empty {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  width: 100%;\n  padding: 3px 6px;\n  border: 0;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-output-empty:hover {\n  background: var(--cps-hover);\n  color: var(--cps-fg);\n}\n\n/* ── Fields ───────────────────────────────────────────────────────────── */\n\n.cps-output-geometry {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 0 4px;\n}\n\n.cps-output-field {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n  min-width: 0;\n  margin: 2px 0;\n}\n\n.cps-output-field > span,\n.cps-output-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-scrub {\n  cursor: ew-resize;\n  touch-action: none;\n  user-select: none;\n}\n\n/* Number fields: no spin arrows, so 4-5 digit sizes fit (scrub the label instead). */\n.cps-output-card input[type="number"] {\n  appearance: textfield;\n  -moz-appearance: textfield;\n}\n\n.cps-output-card input[type="number"]::-webkit-inner-spin-button,\n.cps-output-card input[type="number"]::-webkit-outer-spin-button {\n  -webkit-appearance: none;\n  margin: 0;\n}\n\n.cps-output-card input,\n.cps-output-card select {\n  flex: 1;\n  min-width: 0;\n  width: 100%;\n  padding: 2px 3px;\n  font: inherit;\n  color: var(--cps-fg);\n  background: var(--cps-input-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n}\n\n.cps-output-card input:focus {\n  outline: 1px solid var(--cps-accent);\n}\n\n.cps-output-options {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px;\n  margin-top: 2px;\n}\n\n.cps-output-options .cps-output-field {\n  flex: 0 1 70px;\n  margin: 0;\n}\n\n.cps-output-swatch {\n  flex: none;\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid var(--cps-fg-muted);\n  border-radius: 3px;\n  cursor: pointer;\n}\n\n.cps-output-options .cps-output-mode {\n  min-width: 0;\n}\n\n.cps-output-check {\n  display: inline-flex;\n  flex: none;\n  align-items: center;\n  gap: 2px;\n  color: var(--cps-fg-muted);\n  white-space: nowrap;\n  cursor: pointer;\n}\n\n.cps-output-check > input {\n  margin: 0;\n}\n\n.cps-output-check[hidden] {\n  display: none;\n}\n';
+const imagesCss = "/* ── Images button + panel (ui/imagesPanel.ts, M12) ─────────────────────── */\n\n.cps-images-button {\n  position: relative;\n}\n\n.cps-images-badge {\n  position: absolute;\n  top: 0;\n  right: 0;\n  min-width: 12px;\n  height: 12px;\n  padding: 0 2px;\n  box-sizing: border-box;\n  border-radius: 6px;\n  background: var(--cps-accent);\n  color: #fff;\n  font-size: 9px;\n  line-height: 12px;\n  text-align: center;\n  pointer-events: none;\n}\n\n.cps-images-popover {\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n.cps-images-panel {\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n}\n\n.cps-images-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n}\n\n.cps-images-item {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 88px;\n  height: 88px;\n  padding: 2px;\n  box-sizing: border-box;\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  background: var(--cps-input-bg);\n  cursor: pointer;\n}\n\n.cps-images-item:hover {\n  border-color: var(--cps-accent);\n}\n\n.cps-images-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  object-fit: contain;\n  pointer-events: none;\n}\n";
 const STYLE_ELEMENT_ID = "cps-styles";
 function injectStyles() {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;
@@ -19756,7 +20364,8 @@ ${colorPickerCss}
 ${layersCss}
 ${fullscreenCss}
 ${toolGroupsCss}
-${outputsCss}`;
+${outputsCss}
+${imagesCss}`;
   document.head.appendChild(style);
 }
 function createPainterSketchWidget(node, inputName, inputData) {

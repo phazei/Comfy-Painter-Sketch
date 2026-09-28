@@ -119,6 +119,29 @@ export class HistoryStack<T extends Sized> {
   }
 
   /**
+   * Fold `entry` and every undo entry newer than it into ONE step (via the
+   * `combine` callback, oldest first). Used when an operation spans several
+   * pushes (an inserted image: the layer add + the transform commit).
+   * @param entry - Oldest entry of the step (must be on the undo side).
+   * @returns `true` if entries were joined.
+   */
+  joinSince(entry: T): boolean {
+    const i = this.undoStack.indexOf(entry);
+    const combine = this.combine;
+    if (i < 0 || i === this.undoStack.length - 1 || !combine) return false;
+    this.joining = null;
+    const parts = this.undoStack.splice(i);
+    this.undoStack.push(parts.reduce((older, newer) => combine(older, newer)));
+    return true;
+  }
+
+  /** Drop the redo side (an undo that must not be redoable, e.g. a cancelled insert). */
+  dropRedo(): void {
+    for (const dropped of this.redoStack) this.total -= dropped.bytes;
+    this.redoStack.length = 0;
+  }
+
+  /**
    * Move the newest entry to the redo stack.
    *
    * @returns The entry to revert, or `null` when there is nothing to undo.

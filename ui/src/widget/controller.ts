@@ -33,7 +33,7 @@ import type { LGraphNode, NodeExecutionOutput } from "../types/comfy";
 import { EditorHost } from "../ui/editorHost";
 import { chooseForEmpty } from "./attachDecision";
 import { BackgroundLoader, SourceWatcher } from "./backgroundLoader";
-import { INPUT_NAMES } from "./constants";
+import { INPUT_NAMES, LINK_INPUT } from "./constants";
 import { isolateEvents } from "./eventIsolation";
 import type { EventIsolation } from "./eventIsolation";
 import { FrameSync } from "./frameSync";
@@ -43,7 +43,9 @@ import type { NodeHandoff } from "./handoff";
 import { invalidDocumentMessage, skippedLayersMessage } from "./failures";
 import { emitDocumentChange } from "./documentEvents";
 import { EDIT_SYNC_DELAY_MS, requestGraphSync } from "./graphSync";
-import { isInputConnected } from "./imageSource";
+import { inputSlotIndex, isInputConnected } from "./imageSource";
+import { LayerSourceWatch } from "./layerSourceWatch";
+import { syncSizeWidgets } from "./sizeWidgets";
 import { releaseOrDetach, sessionForManifest } from "./sessionAttach";
 import { attachSession, createSession, findSession } from "./sessions";
 import type { EditorSession } from "./sessions";
@@ -92,6 +94,8 @@ export class PainterSketchController {
   private readonly loader: BackgroundLoader;
   private readonly watcher: SourceWatcher;
   private readonly frame: FrameSync;
+  /** M12: `layer_source` history (per node instance, memory only). */
+  private readonly sources: LayerSourceWatch;
   private readonly saver = new WorkflowSaver();
   private disposed = false;
 
@@ -99,12 +103,13 @@ export class PainterSketchController {
    * @param node - The node this controller belongs to.
    */
   constructor(private readonly node: LGraphNode) {
+    this.sources = new LayerSourceWatch(node);
     this.host = new EditorHost({
       onBecameVisible: () => this.refresh(),
       isDetached: () => this.isOffViewedGraph(),
       onDisengage: () => this.session?.uploader.flushQuietly(),
       onSave: () => void this.saver.save(this.session),
-    });
+    }, this.sources.history);
     this.isolation = isolateEvents({
       root: this.host.root,
       stage: this.host.stage,
@@ -220,6 +225,7 @@ export class PainterSketchController {
    */
   handleExecuted(output: NodeExecutionOutput): void {
     this.loader.setExecuted(output);
+    this.sources.setExecuted(output);
     this.refresh();
   }
 
@@ -238,6 +244,7 @@ export class PainterSketchController {
     }
     // `image` unlinked by the user: the widgets take over the last image size.
     this.frame.handleLinkChange(type, slot, isConnected, this.session, () => !this.disposed && !this.isImageConnected());
+    if (type === LINK_INPUT && slot === inputSlotIndex(this.node, INPUT_NAMES.layerSource)) this.sources.arm();
     this.refresh();
   }
 
@@ -343,6 +350,9 @@ export class PainterSketchController {
   refresh(): void {
     if (this.disposed) return;
     this.loader.refresh(this.isImageConnected());
+    syncSizeWidgets(this.node);
+    // Not before the deferred start: unconfigured upstream values would seed the history.
+    if (this.watcher.active && !this.watcher.starting) this.sources.refresh();
     this.updateContent();
   }
 

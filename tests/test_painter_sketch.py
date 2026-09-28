@@ -126,5 +126,64 @@ class TestBackgroundHidden(unittest.TestCase):
         self.assertTrue(torch.allclose(out.result[0], torch.full((1, 4, 8, 3), 0.5)))
 
 
+class _FakePreview:
+    """Stand-in for ``UI.PreviewImage``: records the saved tensor shape, no files."""
+
+    def __init__(self, image: torch.Tensor, cls: type | None = None) -> None:
+        self.shape = tuple(image.shape)
+
+    def as_dict(self) -> dict:
+        return {"images": [{"shape": self.shape}], "animated": (False,)}
+
+
+class TestLayerSourcePreview(unittest.TestCase):
+    """``layer_source`` adds a separate UI preview and never touches outputs."""
+
+    def _run(self, layer_source: torch.Tensor | None):
+        image = torch.full((1, 4, 8, 3), 0.5)
+        with mock.patch.object(painter_sketch.UI, "PreviewImage", _FakePreview):
+            return PainterSketch.execute(
+                image=image, document="", width=8, height=4, layer_source=layer_source,
+            )
+
+    def test_absent_has_no_key(self) -> None:
+        ui = self._run(None).ui.as_dict()
+        self.assertNotIn(painter_sketch.LAYER_SOURCE_UI_KEY, ui)
+        self.assertEqual(ui["images"], [{"shape": (1, 4, 8, 3)}])
+
+    def test_first_frame_under_own_key(self) -> None:
+        source = torch.rand(3, 16, 32, 4)
+        out = self._run(source)
+        self.assertEqual(out.ui["images"], [{"shape": (1, 4, 8, 3)}])
+        items = out.ui[painter_sketch.LAYER_SOURCE_UI_KEY]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["shape"], (1, 16, 32, 4))
+        self.assertIsInstance(items[0]["source_id"], str)
+
+    def test_source_id_is_content_based(self) -> None:
+        a = torch.rand(1, 300, 200, 3)
+        id_a = self._run(a).ui[painter_sketch.LAYER_SOURCE_UI_KEY][0]["source_id"]
+        again = self._run(a.clone()).ui[painter_sketch.LAYER_SOURCE_UI_KEY][0]["source_id"]
+        other = self._run(torch.rand(1, 300, 200, 3)).ui[painter_sketch.LAYER_SOURCE_UI_KEY][0]["source_id"]
+        self.assertEqual(id_a, again)
+        self.assertNotEqual(id_a, other)
+
+    def test_outputs_unaffected(self) -> None:
+        plain = self._run(None)
+        with_source = self._run(torch.rand(1, 16, 32, 3))
+        self.assertTrue(torch.equal(plain.result[0], with_source.result[0]))
+        self.assertTrue(torch.equal(plain.result[1], with_source.result[1]))
+
+    def test_fingerprint_ignores_source(self) -> None:
+        a = PainterSketch.fingerprint_inputs(document="", invert_mask=False, width=8, height=4)
+        b = PainterSketch.fingerprint_inputs(
+            document="", invert_mask=False, width=8, height=4, layer_source=torch.rand(1, 2, 2, 3))
+        self.assertEqual(a, b)
+
+    def test_schema_input_after_image(self) -> None:
+        names = [i.id for i in PainterSketch.define_schema().inputs]
+        self.assertEqual(names[:2], ["image", "layer_source"])
+
+
 if __name__ == "__main__":
     unittest.main()

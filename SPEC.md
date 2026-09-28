@@ -534,6 +534,15 @@ cumulative matrix in memory until any other edit of that layer; a later Ctrl+T o
 transforms from that original (5 x 10 deg = one 50 deg resample). Not saved; freed on
 reload, layer delete, or memory pressure. Pastes benefit the same way.
 
+### Image sources (M12) -- agreed design (2026-09-27)
+- One optional input `layer_source` (IMAGE), below `image` in the socket row (no extra node height). No Autogrow, no helper node, no input regions.
+- Session history: the last 10 distinct images seen on `layer_source`, newest first; a repeat moves to the top. Session only (in memory, per node instance), never in the manifest or workflow.
+- Sources: the upstream preview before a run (LoadImage-style, same lookup as the background), else the preview Python returns after a run (first image of a batch).
+- "Images" button next to Paste with a count badge; disabled while the history is empty. Opens a narrow panel over the left of the stage: vertical thumbnail list. Click outside / Esc closes it. Not in the node's socket/title area (renderer-owned).
+- Clicking a thumbnail: new paint layer at the source's full resolution, Free Transform opens at once (large images start scaled to fit the image area, small ones at native size, centred; resampling from the original, no loss). Commit = one undo step; cancel (Esc / Ctrl+Z) removes the layer as if nothing happened. Selection cleared, like paste.
+- No manifest change.
+- Later (after M12): the user's custom folder loader sometimes shows the `input/` default after a page refresh -- check the upstream lookup order (widget value vs the loader's own preview).
+
 ## Milestones
 
 ### M0 -- Scaffold
@@ -640,9 +649,10 @@ Design: "Free Transform (M11) -- agreed design".
 - [x] No saved-file contract change: pixel layers are resampled on commit, text is rasterized as always
 
 ### M12 -- Extra image inputs
-- [ ] Optional growable inputs `image_2`, `image_3`, ... (V3 `Autogrow`; verify)
-- [ ] "Copy from input N" button: places that image as a new floating layer, ready to Free Transform; no live link after commit
-- [ ] Python returns previews for all image inputs so the editor can see them after a run (LoadImage-style upstreams work before a run)
+- [x] Optional `layer_source` input; Python returns its preview (first of batch) when present
+- [x] Session history (10, deduped, newest first) fed by the upstream preview and executed previews
+- [x] Images button + badge next to Paste; left thumbnail panel
+- [x] Thumbnail click = new layer in Free Transform (fit if large); cancel removes the layer; commit = one undo step
 
 ### M7b -- Release polish (last)
 - [ ] README: real feature list, drawing-vs-image model (fit, paint area, Match image resolution), shortcuts table, screenshots/GIF, install, storage + cleanup explanation
@@ -653,7 +663,7 @@ Design: "Free Transform (M11) -- agreed design".
 - M0-M6, M7a, M8 and M9 (incl. Add border) are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: M12 extra image inputs (plan with the user first), then M7b release polish. Optional split task first: `engine/editor.ts` (393), `ui/keyboard.ts` (390). The user will not publicly release until M8-M12 are done.
+- Next: check the user's custom folder loader (refresh shows the `input/` default; inserts named "Image N"), then M7b release polish. Near the soft limit: `ui/editorHost.ts` (397), `widget/controller.ts` (387), `ui/keyboard.ts` (390); `engine/editor.ts` is the facade exception. The user will not publicly release until M8-M12 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
 - Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
@@ -717,6 +727,16 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-27: A paste/drop that would reach past the paint area opens as a Free Transform session on the full image at native size (same path as Images-panel inserts; commit crops, one undo step; Esc removes it), with a note. Fitting pastes unchanged. Later idea: inverted selections bounded by the image area. (browser-verified)
+
+- 2026-09-27: Paste placement = Photoshop (user-measured), `engine/pastePlacement.ts`: selection -> centre on its bbox (never resized); else own copy from this editor -> in place; else whole image area visible -> its centre; else view centre. Always clamped inside the image area (oversized = centred), pixel-snapped. Drops keep the drop point + clamp; Images-panel inserts use the selection/visible rules + clamp. Long layer names ellipsize (side panel fixed width). (browser-verified)
+
+- 2026-09-27: M12 follow-ups (browser-verified): history cap 10, scrolling list; the Images panel stays open on clicks outside the node and closes on Esc / stage press / rail tool / its button; a new history image auto-opens it (not on load, not repeats). Inserted layer = file name (LoadImage) or "Image N". Stage label under the image area shows its pixel size. width/height widgets `hidden` while `image` is connected (fallback only; order and values unchanged).
+
+- 2026-09-27: M12 code done (browser-verified). Preview under `ui.layer_source` with a content-hash `source_id` (dedupes re-runs). Insert = empty layer + transform session on the full source; commit folds creation into one undo step, cancel undoes and drops it from redo. Sources > 8192 px per side are downscaled on load with a note.
+
+- 2026-09-27: M12 redesigned: one `layer_source` input + session-only history of 5 thumbnails in a left panel (Images button by Paste); a click inserts in Free Transform, cancel removes it. Dropped: Autogrow inputs, helper node, input regions, drop-and-disconnect.
 
 - 2026-09-27: M11 complete (browser-verified): Free Transform, flips, text rotation/scale, kept original (a re-used transform shows its box at the previous angle). Text W/H fields honour Link (unlinked -> rasterize prompt after the field session).
 

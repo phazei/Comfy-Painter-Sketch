@@ -17,7 +17,7 @@
  *   dispose) and stops that event from reaching ComfyUI.
  *
  * Pastes: 1 source px = 1 IMAGE px (internal copies keep their own size),
- * centred on the current image (drops: at the drop point), a new "Pasted" layer, one
+ * placed by `engine/pastePlacement.ts` (drops: at the drop point, clamped), a new "Pasted" layer, one
  * undo step each (the selection is dropped in it). Sources:
  * - Ctrl+V / Paste button "System": `pasteChoice.ts` (system image, else
  *   the internal copy, else clipspace).
@@ -26,14 +26,14 @@
  * - Paste button "Clipspace": the clipspace image only.
  */
 
-import { imageCentreDoc } from "../engine/clipboardMath";
+import { pasteRect } from "../engine/clipboardMath";
 import type { ClipImage, PastePlacement } from "../engine/clipboardOps";
 import type { Editor } from "../engine/editor";
 import { imageToDoc } from "../engine/frameMap";
 import { stageToDoc } from "../engine/viewport";
+import { clampIntoArea, imageAreaDoc, pasteContext, pasteTopLeft } from "../engine/pastePlacement";
 import type { Point } from "../geometry/rect";
 import { log } from "../log";
-import { notify } from "../widget/toast";
 import type { EditorSession } from "../widget/sessions";
 import { choosePasteSource, signaturesMatch } from "./pasteChoice";
 import type { ImageSignature, PasteFacts } from "./pasteChoice";
@@ -60,6 +60,8 @@ interface InternalClip {
   signature: ImageSignature | null;
   /** The PNG reached the system clipboard. */
   systemWritten: boolean;
+  /** Editor the copy was made in (paste in place only there). */
+  from: Editor;
 }
 
 let internal: InternalClip | null = null;
@@ -104,14 +106,16 @@ export class ClipboardActions {
    * @param merged - Copy merged (what is visible, incl. the image).
    */
   copy(merged: boolean): void {
-    const clip = this.getSession()?.editor.clipboard.copy(merged);
-    if (clip) store(clip);
+    const editor = this.getSession()?.editor;
+    const clip = editor?.clipboard.copy(merged);
+    if (editor && clip) store(clip, editor);
   }
 
   /** Ctrl+X / Cut button. */
   cut(): void {
-    const clip = this.getSession()?.editor.clipboard.cut();
-    if (clip) store(clip);
+    const editor = this.getSession()?.editor;
+    const clip = editor?.clipboard.cut();
+    if (editor && clip) store(clip, editor);
   }
 
   /**
@@ -211,7 +215,7 @@ export class ClipboardActions {
     const kind = choosePasteSource(facts);
     if (kind !== "system") bitmap?.close();
     if (kind === "system" && bitmap) return this.place(editor, foreignImage(bitmap), false);
-    if (kind === "internal" && internal) return this.place(editor, internalImage(internal.clip), false);
+    if (kind === "internal" && internal) return this.place(editor, internalImage(internal.clip), false, undefined, internal.from === editor);
     if (kind === "clipspace") return this.pasteClipspace(editor);
     editor.events.emit("note", emptyNote);
   }
@@ -224,17 +228,26 @@ export class ClipboardActions {
     editor.events.emit("note", CLIPSPACE_EMPTY_NOTE);
   }
 
-  /** Paste one decoded image as a new layer; toasts when cropped. */
-  private place(editor: Editor, image: PasteImage, inPlace: boolean, centre?: Point): void {
+  /** Paste one decoded image as a new layer (in Free Transform when it reaches past the paint area). */
+  private place(editor: Editor, image: PasteImage, inPlace: boolean, dropAt?: Point, ownDoc = false): void {
     const map = editor.frameMap;
     const docPerSource = image.imagePerSource / map.scale;
-    const at: PastePlacement =
-      inPlace && image.topLeft ? { topLeft: image.topLeft } : { centre: centre ?? imageCentreDoc(editor.imageSize, map) };
-    const result = editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
-    image.release();
-    if (result?.cropped) {
-      notify("warn", "The pasted image is larger than the paint area and was cropped.", { key: "paste-cropped" });
+    const size = pasteRect({ width: image.width, height: image.height }, docPerSource, { topLeft: { x: 0, y: 0 } });
+    let at: PastePlacement;
+    if (inPlace && image.topLeft) at = { topLeft: image.topLeft };
+    else if (dropAt) {
+      const want = { x: dropAt.x - size.width / 2, y: dropAt.y - size.height / 2 };
+      at = { topLeft: clampIntoArea(want, size, imageAreaDoc(editor.imageSize, map)) };
+    } else {
+      const ctx = pasteContext(
+        { selection: editor.selection.current, view: editor.view.current, stage: editor.view.stageSize, map, imageSize: editor.imageSize },
+        ownDoc ? image.topLeft : null,
+      );
+      at = { topLeft: pasteTopLeft(size, ctx) };
     }
+    // Past the paint area the engine starts Free Transform and notes it (ClipboardOps.paste).
+    editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
+    image.release();
   }
 
   private toStage(client: Point): Point {
@@ -252,12 +265,12 @@ export class ClipboardActions {
 // ── Internal clipboard ────────────────────────────────────────────────────────
 
 /** Keep a copy internally and write its PNG to the system clipboard. */
-function store(clip: ClipImage): void {
+function store(clip: ClipImage, from: Editor): void {
   const canvas = document.createElement("canvas");
   canvas.width = clip.data.width;
   canvas.height = clip.data.height;
   canvas.getContext("2d")?.putImageData(clip.data, 0, 0);
-  const entry: InternalClip = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false };
+  const entry: InternalClip = { clip, signature: imageSignature(canvas, canvas.width, canvas.height), systemWritten: false, from };
   internal = entry;
   const png = new Promise<Blob>((resolve, reject) => {
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("PNG encoding failed"))), "image/png");

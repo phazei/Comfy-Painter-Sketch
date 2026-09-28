@@ -140,6 +140,8 @@ export interface LGraphNode {
   constructor: { comfyClass?: string; nodeData?: { name?: string } };
 
   setSize(size: [number, number]): void;
+  /** Minimum size for the current widgets / slots. */
+  computeSize?(): [number, number];
   getInputNode(slot: number): LGraphNode | null;
   addDOMWidget<T extends HTMLElement, V extends object | string>(
     name: string,

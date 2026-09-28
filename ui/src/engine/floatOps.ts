@@ -158,6 +158,15 @@ export class FloatOps {
     return this.f ? true : this.adopt(liftKept(this.s));
   }
 
+  /**
+   * Take a float built outside a lift (an inserted image, `sourceInsert.ts`).
+   * @param f - The float (its layer exists; `inserted` set).
+   * @returns `false` if a float already exists.
+   */
+  adoptInserted(f: FloatState): boolean {
+    return this.f ? false : this.adopt(f);
+  }
+
   private liftFrom(copy: boolean, sel: Selection | null): boolean {
     return this.adopt(liftFloat(this.s, copy, sel));
   }
@@ -277,7 +286,7 @@ export class FloatOps {
     if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
     const m = this.matrix() ?? translation(f.area.x, f.area.y);
-    if (affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
+    if (!f.inserted && affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
       this.cancel();
       return false;
     }
@@ -291,6 +300,7 @@ export class FloatOps {
       const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : undefined;
       s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
     }
+    f.onEnd?.(true);
     s.afterEdit();
     s.events.emit("transform", undefined);
     return true;
@@ -310,6 +320,7 @@ export class FloatOps {
     s.runtime.bump(f.layerId);
     s.selection.set(f.selBefore);
     releaseFloat(f);
+    f.onEnd?.(false);
     s.events.emit("history", undefined);
     s.events.emit("render", undefined);
     s.events.emit("transform", undefined);

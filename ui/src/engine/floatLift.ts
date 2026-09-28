@@ -64,6 +64,10 @@ export interface FloatState {
   dragBase: { dx: number; dy: number } | null;
   /** Display cache: layer + float, sized to the bounds. */
   preview: { surface: Surface; key: string } | null;
+  /** An inserted image (M12, `sourceInsert.ts`): has no lift position, so a commit always lands. */
+  inserted?: boolean;
+  /** Called once when the float ends: `true` = committed (landed), `false` = cancelled. */
+  onEnd?: (landed: boolean) => void;
 }
 
 /**

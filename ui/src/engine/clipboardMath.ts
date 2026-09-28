@@ -12,8 +12,6 @@
 
 import { intersectRect, isEmptyRect } from "../geometry/rect";
 import type { Point, Rect, Size } from "../geometry/rect";
-import { imageToDoc } from "./frameMap";
-import type { FrameMap } from "./frameMap";
 
 /** Base name of pasted layers. */
 export const PASTED_LAYER_NAME = "Pasted";
@@ -96,18 +94,6 @@ export function unionMaskCoverage(union: Uint8Array, area: Rect, read: Rect | nu
 // ── Placement ─────────────────────────────────────────────────────────────────
 
 /**
- * Document point at the centre of the current image (incl. Move placement),
- * independent of pan / zoom: where Ctrl+V, the Paste button and clipspace
- * pastes are centred.
- * @param imageSize - Current image size, px.
- * @param map - Document -> image map (`Editor.frameMap`).
- * @returns Document point.
- */
-export function imageCentreDoc(imageSize: Size, map: FrameMap): Point {
-  return imageToDoc(map, { x: imageSize.width / 2, y: imageSize.height / 2 });
-}
-
-/**
  * Integer document rect a pasted image covers.
  * @param source - Source size, px.
  * @param docPerSource - Document px per source px (1 / frame-map scale for image px).
@@ -148,4 +134,16 @@ export function pastedLayerName(layers: readonly { name: string }[]): string {
   let n = 2;
   while (taken.has(`${PASTED_LAYER_NAME} ${n}`)) n++;
   return `${PASTED_LAYER_NAME} ${n}`;
+}
+
+/**
+ * Next free inserted-image name: "Image 1", "Image 2", ... (lowest unused N).
+ * @param layers - Existing layers.
+ * @returns Name.
+ */
+export function imageLayerName(layers: readonly { name: string }[]): string {
+  const taken = new Set(layers.map((l) => l.name.trim()));
+  let n = 1;
+  while (taken.has(`Image ${n}`)) n++;
+  return `Image ${n}`;
 }

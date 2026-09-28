@@ -13,8 +13,9 @@
  *   the `preparePixelEdit` gate; a text layer is rasterized first, same step).
  * - {@link ClipboardOps.paste}: a new ordinary paint layer above the current
  *   paint layer (the top-most paint layer when a mask is current), Quick
- *   Mask off, one `layers` undo entry holding the pixels. Cropped to the
- *   paint-area cap. The new layer takes over solo (`LayerOps.addWithPixels`).
+ *   Mask off, one `layers` undo entry holding the pixels. A paste reaching
+ *   past the paint-area cap instead starts like an image-source insert
+ *   (`sourceInsert.ts`, native size, same placement) and crops on commit. The new layer takes over solo (`LayerOps.addWithPixels`).
  *   An active selection is dropped (Photoshop), in the same undo step.
  * - Copy merged under Quick Mask: the visible masks' effective union as
  *   grayscale (same format as a single-mask copy).
@@ -47,6 +48,9 @@ import { alphaBounds } from "./translateMath";
 /** Note when a copy/cut finds no pixels. */
 export const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
 
+/** Note when a paste reaches past the paint area and starts in Free Transform. */
+export const PASTE_TRANSFORM_NOTE = "Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel.";
+
 /** Pixels on their way to a clipboard. */
 export interface ClipImage {
   /** Straight-alpha pixels. */
@@ -64,8 +68,8 @@ export type PastePlacement = { centre: Point } | { topLeft: Point };
 export interface PasteResult {
   layerId: string;
   name: string;
-  /** Part of the image fell outside the paint-area cap and was cut off. */
-  cropped: boolean;
+  /** The paste reached past the paint-area cap: it runs in a Free Transform session (nothing cropped yet). */
+  transform: boolean;
   /** The pixels were resampled once (source px != document px). */
   resampled: boolean;
 }
@@ -78,11 +82,13 @@ export class ClipboardOps {
    * @param s - Shared editor state.
    * @param layers - Layer commands (undoable insert + solo rule).
    * @param paintTargetOff - Turns Quick Mask off (`Editor.setPaintTarget("paint")`).
+   * @param insertPlaced - `SourceInsertOps.insertPlaced` (oversized pastes).
    */
   constructor(
     private readonly s: EditorState,
     private readonly layers: LayerOps,
     private readonly paintTargetOff: () => void,
+    private readonly insertPlaced: (pixels: ImageData, name: string, rect: Rect) => string | null,
   ) {}
 
   /** Image px per document px (the frame map scale). */
@@ -147,6 +153,7 @@ export class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    if (cropped) return this.pasteInTransform(source, size, full);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
     const surface = createSurface(rect.width, rect.height);
@@ -168,10 +175,23 @@ export class ClipboardOps {
       s.selection.set(null);
       recordSelectionMove(s, sel, null, true);
     }
-    return { layerId: id, name: layer.name, cropped, resampled };
+    return { layerId: id, name: layer.name, transform: false, resampled };
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
+
+  /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
+  private pasteInTransform(source: CanvasImageSource, size: Size, full: Rect): PasteResult | null {
+    const surface = createSurface(size.width, size.height);
+    surface.ctx.drawImage(source, 0, 0);
+    const pixels = surface.ctx.getImageData(0, 0, size.width, size.height);
+    releaseSurface(surface);
+    const name = pastedLayerName(this.s.doc.layers);
+    const id = this.insertPlaced(pixels, name, full);
+    if (!id) return null;
+    this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
+    return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
+  }
 
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
   private editLayer(): Layer | undefined {

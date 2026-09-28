@@ -135,7 +135,7 @@ export class RegionCard {
     this.element.classList.toggle("cps-selected", selected);
     this.element.classList.toggle("cps-hidden-layer", !region.visible);
     if (!this.renaming) this.title.textContent = regionSlotLabel(region);
-    this.title.title = `Output pair ${region.slot} (double-click to rename)`;
+    this.title.title = `${regionSlotLabel(region)} -- output pair ${region.slot} (double-click to rename)`;
     const icon = region.visible ? "eye" : "eyeOff";
     if (icon !== this.eyeIcon) setIcon(this.eye, icon, 14);
     this.eyeIcon = icon;

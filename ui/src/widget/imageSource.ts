@@ -10,7 +10,8 @@
  *       (works before any run and reacts to selection immediately);
  *    b. `app.nodePreviewImages[locator]` (blob previews);
  *    c. `app.nodeOutputs[locator].images` (the public mirror of the store the
- *       core Painter reads via `nodeOutputStore.getNodeImageUrls`);
+ *       core Painter reads via `nodeOutputStore.getNodeImageUrls`); `input`
+ *       items also carry a file name, so other loader nodes get named layers;
  *    d. legacy `node.imgs[0].src`.
  * 2. Our own node's last executed `ui` preview (`onExecuted`, falling back to
  *    `app.nodeOutputs[ourLocator]`, which survives tab switches).
@@ -37,6 +38,8 @@ export interface ImageSource {
   /** URL to load (may include a cache-buster; not stable). */
   url: string;
   origin: ImageSourceOrigin;
+  /** File name without extension (file-widget nodes such as `LoadImage`, and `input`-type output items). */
+  name?: string;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -126,7 +129,7 @@ export function sourceFromNode(upstream: LGraphNode): ImageSource | null {
   if (fileWidget) {
     const widget = upstream.widgets?.find((w) => w.name === fileWidget.widget);
     const item = parseAnnotatedFilename(widget?.value, fileWidget.type);
-    if (item) return resultItemSource(item, "upstream");
+    if (item) return { ...resultItemSource(item, "upstream"), name: fileStem(item.filename ?? "") };
   }
 
   const locator = nodeLocatorId(upstream);
@@ -135,7 +138,12 @@ export function sourceFromNode(upstream: LGraphNode): ImageSource | null {
     if (typeof preview === "string" && preview) return { key: preview, url: preview, origin: "upstream" };
 
     const item = firstOutputImage(app.nodeOutputs[locator]);
-    if (item) return resultItemSource(item, "upstream");
+    if (item) {
+      const source = resultItemSource(item, "upstream");
+      // `input` items are user files (e.g. other loader nodes' combo previews);
+      // temp/output previews carry generated names that aren't worth showing.
+      return item.type === "input" && item.filename ? { ...source, name: fileStem(item.filename) } : source;
+    }
   }
 
   const legacy = upstream.imgs?.[0]?.src;
@@ -164,6 +172,16 @@ export function sourceFromExecuted(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * File name without its extension (`"cat.final.png"` -> `"cat.final"`).
+ * @param filename - Bare file name.
+ * @returns Stem (the name itself when it has no extension).
+ */
+export function fileStem(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 ? filename.slice(0, dot) : filename;
+}
 
 /** Wrap a `/view` result item as a source; the cache-buster is URL-only. */
 function resultItemSource(item: ResultItem, origin: ImageSourceOrigin): ImageSource {

@@ -8,11 +8,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createEmptyDocument } from "../document/create";
-import type { Rect } from "../geometry/rect";
-import { imageCentreDoc, unionMaskCoverage } from "./clipboardMath";
+import type { Point, Rect } from "../geometry/rect";
+import { unionMaskCoverage } from "./clipboardMath";
+import { PASTE_TRANSFORM_NOTE } from "./clipboardOps";
 import type { Editor as EditorClass } from "./editor";
-import { docToImage } from "./frameMap";
+import { docToImage, imageToDoc } from "./frameMap";
 import { HIDDEN_LAYER_NOTE, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { clampIntoArea, imageAreaDoc } from "./pastePlacement";
 import { rectSelection } from "./selection";
 
 // ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -137,10 +139,11 @@ describe("paste placement", () => {
     ed.setBackground({ kind: "fill", color: "#fff" }, { width: 100, height: 60 });
     ed.placement.set({ x: 3, y: -2, scale: 1 });
     ed.view.setStage({ width: 301, height: 199 }, 1);
-    const before = imageCentreDoc(ed.imageSize, ed.frameMap);
+    const imageCentre = (): Point => imageToDoc(ed.frameMap, { x: ed.imageSize.width / 2, y: ed.imageSize.height / 2 });
+    const before = imageCentre();
     ed.view.wheelZoom(-120, { x: 50, y: 40 });
     ed.view.pan(-37, 23);
-    const centre = imageCentreDoc(ed.imageSize, ed.frameMap);
+    const centre = imageCentre();
     expect(centre).toEqual(before);
     const result = ed.clipboard.paste(solid(9, 7) as unknown as CanvasImageSource, { width: 9, height: 7 }, 1, { centre });
     expect(result).not.toBeNull();
@@ -167,6 +170,71 @@ describe("paste placement", () => {
     ed.redo();
     expect(ed.selection.current).toBeNull();
     expect(ed.doc.layers.length).toBe(layersBefore + 1);
+  });
+});
+
+describe("oversized paste (past the paint-area cap)", () => {
+  // Frame 4 x 4: cap = 12 x 12 at (-4, -4).
+  const setup = (): { ed: EditorClass; notes: string[]; count: number } => {
+    const ed = new Editor(createEmptyDocument({ width: 4, height: 4 }), "widgets");
+    const notes: string[] = [];
+    ed.events.on("note", (text) => notes.push(text));
+    return { ed, notes, count: ed.doc.layers.length };
+  };
+  const paste = (ed: EditorClass, w: number, h: number) =>
+    ed.clipboard.paste(solid(w, h) as unknown as CanvasImageSource, { width: w, height: h }, 1, { centre: { x: 2, y: 2 } });
+
+  it("a fitting paste is unchanged: pixels land at once, no session, no note", () => {
+    const { ed, notes, count } = setup();
+    const result = paste(ed, 3, 3);
+    expect(result?.transform).toBe(false);
+    expect(ed.float.transform.active).toBe(false);
+    expect(ed.doc.layers.length).toBe(count + 1);
+    expect(contentRect(ed, result!.layerId).width).toBe(3);
+    expect(notes).toEqual([]);
+  });
+
+  it("starts Free Transform on the full image at native size, uncropped, with the note", () => {
+    const { ed, notes, count } = setup();
+    const result = paste(ed, 20, 4);
+    expect(result?.transform).toBe(true);
+    expect(result?.name).toMatch(/^Pasted/);
+    expect(ed.doc.layers.length).toBe(count + 1);
+    expect(ed.float.transform.active).toBe(true);
+    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 1, sy: 1, angle: 0 });
+    expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
+  });
+
+  it("a drop (clamped top-left at the drop point) goes the same way", () => {
+    const { ed, notes } = setup();
+    const size = { width: 20, height: 4 };
+    const at = clampIntoArea({ x: 3 - 10, y: 1 - 2 }, size, imageAreaDoc(ed.imageSize, ed.frameMap));
+    const result = ed.clipboard.paste(solid(20, 4) as unknown as CanvasImageSource, size, 1, { topLeft: at });
+    expect(result?.transform).toBe(true);
+    expect(ed.float.transform.params).toEqual({ cx: at.x + 10, cy: at.y + 2, sx: 1, sy: 1, angle: 0 });
+    expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
+    ed.float.cancel();
+    expect(ed.canUndo).toBe(false);
+  });
+
+  it("commit = one undo step", () => {
+    const { ed, count } = setup();
+    paste(ed, 20, 4);
+    expect(ed.float.transform.commit()).toBe(true);
+    expect(ed.doc.layers.length).toBe(count + 1);
+    ed.undo();
+    expect(ed.doc.layers.length).toBe(count);
+    expect(ed.canUndo).toBe(false);
+  });
+
+  it("cancel leaves no layer and no step", () => {
+    const { ed, count } = setup();
+    paste(ed, 20, 4);
+    ed.float.cancel();
+    expect(ed.doc.layers.length).toBe(count);
+    expect(ed.float.transform.active).toBe(false);
+    expect(ed.canUndo).toBe(false);
+    expect(ed.canRedo).toBe(false);
   });
 });
 

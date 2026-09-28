@@ -89,4 +89,24 @@ describe("HistoryStack", () => {
     expect(h.totalBytes).toBe(0);
     expect(h.canUndo || h.canRedo).toBe(false);
   });
+
+  it("joinSince folds an entry and everything newer into one step; dropRedo clears redo", () => {
+    const combine = (a: ReturnType<typeof entry>, b: ReturnType<typeof entry>) => entry(`${a.name}+${b.name}`, a.bytes + b.bytes);
+    const h = new HistoryStack<ReturnType<typeof entry>>(1000, combine);
+    const a = entry("a", 1);
+    const b = entry("b", 2);
+    h.push(a);
+    h.push(b);
+    expect(h.joinSince(b)).toBe(false); // already the newest
+    h.push(entry("c", 3));
+    h.push(entry("d", 4));
+    expect(h.joinSince(b)).toBe(true);
+    expect(h.undoDepth).toBe(2);
+    expect(h.totalBytes).toBe(10);
+    expect(h.undo()?.name).toBe("b+c+d");
+    h.undo();
+    h.dropRedo();
+    expect(h.canRedo).toBe(false);
+    expect(h.totalBytes).toBe(0);
+  });
 });

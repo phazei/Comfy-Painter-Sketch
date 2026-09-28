@@ -114,6 +114,48 @@ def _fill_like(base_rgb: torch.Tensor, hex_color: str) -> torch.Tensor:
     return color.expand(base_rgb.shape).clone()
 
 
+LAYER_SOURCE_UI_KEY = "layer_source"
+"""UI result key for the ``layer_source`` preview (the frontend reads it apart from ``images``)."""
+
+
+def _ui_previews(
+    preview_frame: torch.Tensor, layer_source: torch.Tensor | None, cls: type[io.ComfyNode],
+) -> UI.PreviewImage | dict:
+    """UI result: the background preview under ``images``, plus the first
+    ``layer_source`` frame under :data:`LAYER_SOURCE_UI_KEY` when connected.
+
+    Args:
+        preview_frame: ``[1, H, W, 3]`` background preview.
+        layer_source:  Optional ``[B, H, W, C]`` source batch (RGBA kept).
+        cls:           Node class (for the temp-file save helper).
+
+    Returns:
+        The ``ui`` value for :class:`io.NodeOutput` (a plain preview without a source).
+    """
+    preview = UI.PreviewImage(preview_frame, cls=cls)
+    if layer_source is None or layer_source.shape[0] == 0:
+        return preview
+    ui = dict(preview.as_dict())
+    source_id = _source_id(layer_source[0])
+    items = UI.PreviewImage(layer_source[:1], cls=cls).as_dict()["images"]
+    ui[LAYER_SOURCE_UI_KEY] = [{**item, "source_id": source_id} for item in items]
+    return ui
+
+
+def _source_id(frame: torch.Tensor) -> str:
+    """Short content id of a ``[H, W, C]`` frame (shape + a strided ~128x128 sample).
+
+    Preview files get random temp names on every run; the editor's source
+    history dedupes by this id instead, so re-runs of an unchanged source
+    don't add entries. Cheap even for large frames.
+    """
+    h, w = frame.shape[:2]
+    sample = frame[:: max(1, h // 128), :: max(1, w // 128)].float().cpu().contiguous()
+    m = hashlib.sha256(str(tuple(frame.shape)).encode("utf-8"))
+    m.update(sample.numpy().tobytes())
+    return m.hexdigest()[:16]
+
+
 class PainterSketch(io.ComfyNode):
     """PainterSketch: in-node paint editor that outputs IMAGE + MASK.
 
@@ -140,6 +182,11 @@ class PainterSketch(io.ComfyNode):
                     "image",
                     optional=True,
                     tooltip="Optional base image to paint over. Batch in, batch out.",
+                ),
+                io.Image.Input(
+                    "layer_source",
+                    optional=True,
+                    tooltip="Optional image offered in the editor's Images panel (insert as a new layer). Does not affect the outputs.",
                 ),
                 io.String.Input(
                     "document",
@@ -194,6 +241,7 @@ class PainterSketch(io.ComfyNode):
         background: str = "#ffffff",
         invert_mask: bool = False,
         image: torch.Tensor | None = None,
+        layer_source: torch.Tensor | None = None,
     ) -> io.NodeOutput:
         """Composite once, then build Main and the region slots from that composite.
 
@@ -204,6 +252,8 @@ class PainterSketch(io.ComfyNode):
             background:   Hex colour for background tile when no image connected.
             invert_mask:  When True, invert the final MASK.
             image:        Optional ``[B, H, W, C]`` float32 input batch.
+            layer_source: Optional image batch for the editor's Images panel;
+                          only its first frame is previewed (outputs unaffected).
 
         Returns:
             `(IMAGE, MASK, regions)`; `regions` is a
@@ -247,7 +297,7 @@ class PainterSketch(io.ComfyNode):
 
         return io.NodeOutput(
             main_image, main_mask, regions,
-            ui=UI.PreviewImage(preview_frame, cls=cls),
+            ui=_ui_previews(preview_frame, layer_source, cls),
         )
 
     @classmethod

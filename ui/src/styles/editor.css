@@ -362,6 +362,12 @@
 
 .cps-side {
   flex: 0 0 var(--cps-panel-width);
+  /* Fixed width: without these, the min-content width of a long nowrap
+     layer name (flex min-width: auto) would push the panel over the canvas. */
+  width: var(--cps-panel-width);
+  min-width: 0;
+  max-width: var(--cps-panel-width);
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -372,6 +378,7 @@
 .cps-side-content {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
 }

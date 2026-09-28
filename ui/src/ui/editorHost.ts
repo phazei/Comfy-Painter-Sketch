@@ -24,7 +24,10 @@
  */
 
 import type { EditorSession } from "../widget/sessions";
+import type { SourceHistory } from "../widget/sourceHistory";
 import { ClipboardActions } from "./clipboardActions";
+import { ImagesPanel } from "./imagesPanel";
+import { insertSourceUrl } from "./sourceInsertAction";
 import { openColorPicker } from "./colorPicker";
 import { installDropImport } from "./dropImport";
 import { FullscreenMount } from "./fullscreen";
@@ -91,6 +94,8 @@ export class EditorHost {
   /** Copy / cut / paste (keys, rail, drops). */
   private readonly clipboard: ClipboardActions;
   private readonly removeDrop: () => void;
+  /** M12: Images button + thumbnail panel. */
+  private readonly images: ImagesPanel;
   private restoreState: FullscreenRestore | null = null;
 
   private session: EditorSession | null = null;
@@ -101,7 +106,7 @@ export class EditorHost {
   /**
    * @param events - Owner callbacks.
    */
-  constructor(private readonly events: EditorHostEvents = {}) {
+  constructor(private readonly events: EditorHostEvents = {}, sources: SourceHistory | null = null) {
     this.shell = new EditorShell();
     this.root = this.shell.root;
     this.stage = this.shell.stage;
@@ -131,6 +136,16 @@ export class EditorHost {
       this.shell,
       this.clipboard,
     );
+    // ── M12: Images button (next to Paste) + thumbnail panel ─────────────
+    this.images = new ImagesPanel({
+      history: sources, popovers: this.shell.popoverHost, root: this.root, stage: this.stage, toolBox: this.sync.rail.toolBox,
+      beforeOpen: () => this.input.cancel(),
+      pick: (entry) => {
+        const editor = this.session?.editor;
+        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
+      },
+    });
+    this.sync.rail.appendClipboardButton(this.images.button);
 
     // ── M3.2: wire the colour picker ──────────────────────────────────────
     this.shell.events.on("pick-color", (request) => {
@@ -161,7 +176,8 @@ export class EditorHost {
     });
     this.keyboard = new KeyboardScope(this.root, {
       onKeyDown: (event) =>
-        this.session
+        this.images.handleKey(event) ||
+        (this.session
           ? handleShortcut(event, this.session, {
               optionsChanged: () => this.optionsChanged(),
               viewChanged: () => this.view.requestRender(),
@@ -182,7 +198,7 @@ export class EditorHost {
               },
               clipboard: this.clipboard,
             })
-          : false,
+          : false),
       onSpaceChange: (down) => this.stage.classList.toggle("cps-pan-ready", down),
       onAltChange: (down) => this.setAlt(down),
       onShiftChange: (down) => this.setShift(down),
@@ -300,6 +316,7 @@ export class EditorHost {
     this.resizeObserver.disconnect();
     this.removeDrop();
     this.clipboard.dispose();
+    this.images.dispose();
     this.input.dispose();
     this.keyboard.dispose();
     this.sync.dispose();
