@@ -63,7 +63,8 @@ export class LayerDrag {
   }
 
   private down(event: PointerEvent): void {
-    if (event.button !== 0 || isControl(event.target) || !(event.target instanceof Element)) return;
+    // Ctrl/Cmd+click loads the layer as the selection: never a drag.
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || isControl(event.target) || !(event.target instanceof Element)) return;
     const row = event.target.closest<HTMLElement>(".cps-layer-paint, .cps-layer-mask");
     const id = row?.dataset["layerId"];
     if (!row || !id) return;

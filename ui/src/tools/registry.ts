@@ -22,6 +22,9 @@ import { createTextTool } from "./text";
 import { createRegionTool } from "./region";
 import { OutlineDragTool } from "./outlineDrag";
 import { ToolGroupState } from "./toolGroups";
+import type { ToolOptions } from "./options";
+import { createTransformSession } from "./transformTool";
+import type { TransformSession } from "./transformTool";
 import type { ToolGroupSpec } from "./toolGroups";
 import type { Tool } from "./types";
 
@@ -134,6 +137,28 @@ export class ToolRegistry {
     this.beforeSwitch = hook;
   }
 
+  // ── Free Transform session ──────────────────────────────────────────────
+
+  private session: TransformSession | null = null;
+
+  /**
+   * Free Transform hooks: while a session runs its tool takes all stage
+   * input and keys ({@link resolve}) and its options fill the bar.
+   * @param session - Hooks (`transformTool.ts`), or `null`.
+   */
+  setSession(session: TransformSession | null): void {
+    this.session = session;
+  }
+
+  /**
+   * Options the bar shows now: the transform session's, the active tool's
+   * with the Transform / Flip buttons, or the active tool's own.
+   * @returns Options, or `null`.
+   */
+  barOptions(): ToolOptions | null {
+    return this.session ? this.session.options(this.active) : this.active.options;
+  }
+
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
 
   private altTool: Tool | null = null;
@@ -174,6 +199,7 @@ export class ToolRegistry {
    * @returns The effective tool.
    */
   resolve(altHeld: boolean, ctrlHeld = false, press?: { shift: boolean; inSelection: boolean }): Tool {
+    if (this.session?.active()) return this.session.tool;
     const active = this.active;
     if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
       return this.outlineTool.wrap(active);
@@ -229,5 +255,6 @@ export function createDefaultTools(
   registry.setAltTool(eyedropper.temporary);
   registry.setCtrlTool(moveLayer);
   registry.setBeforeSwitch(() => editor.settle());
+  registry.setSession(createTransformSession(editor));
   return registry;
 }

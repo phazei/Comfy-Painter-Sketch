@@ -44,8 +44,11 @@ export type PaintOptions = {
   gamma: number;
 };
 
+/** Free Transform handle cursors: native resize axes and the curved rotate arrow (M11). */
+export type TransformCursorIcon = "resize-ns" | "resize-ew" | "resize-nwse" | "resize-nesw" | "rotate";
+
 /** Named stage cursor icon; the CSS definitions live in `ui/cursors.ts`. */
-export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move" | "text";
+export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move" | "text" | TransformCursorIcon;
 
 /**
  * Cursor the stage should show: a brush-size ring (drawn on the overlay, over
@@ -159,6 +162,14 @@ export interface Tool {
    * @returns Cursor description.
    */
   cursor(): ToolCursor;
+  /**
+   * Cursor for a hover position (Free Transform: per handle zone). When
+   * present and the pointer is over the stage, it replaces {@link Tool.cursor}.
+   * @param editor - Editor.
+   * @param at - Hover position, document coords.
+   * @returns Cursor description.
+   */
+  cursorAt?(editor: Editor, at: Point): ToolCursor;
   /**
    * Transient stage overlay (e.g. the eyedropper loupe), drawn at the
    * pointer instead of the cursor ring. Polled on every overlay redraw.

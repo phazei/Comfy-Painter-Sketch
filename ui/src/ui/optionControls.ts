@@ -23,6 +23,7 @@ import {
   toDisplay,
 } from "../tools/options";
 import type { ButtonOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
+import { setIcon } from "./icons";
 import type { PopoverHandle, PopoverHost } from "./popover";
 import { scrubValue } from "./scrub";
 import { textControl } from "./textOptionControl";
@@ -89,6 +90,7 @@ function numberControl(desc: NumberOption, ctx: ControlContext): OptionControl {
   const commit = (next: number): void => {
     if (ctx.options.set(desc.key, fromDisplay(desc, next))) ctx.changed();
   };
+  const endEdit = (): void => ctx.options.endEdit?.(desc.key);
   let popover: { handle: PopoverHandle; sync(): void } | null = null;
 
   const refresh = (): void => {
@@ -97,13 +99,16 @@ function numberControl(desc: NumberOption, ctx: ControlContext): OptionControl {
     popover?.sync();
   };
 
-  label.addEventListener("pointerdown", (event) => startScrub(event, label, desc, display, commit));
+  label.addEventListener("pointerdown", (event) => startScrub(event, label, desc, display, commit, endEdit));
   value.addEventListener("click", () => {
     if (popover) {
       popover.handle.close();
       return;
     }
-    popover = openSlider(desc, ctx, value, display, commit, () => (popover = null));
+    popover = openSlider(desc, ctx, value, display, commit, endEdit, () => {
+      popover = null;
+      endEdit();
+    });
   });
   refresh();
   return { element, refresh };
@@ -116,6 +121,7 @@ function startScrub(
   desc: NumberOption,
   display: () => number,
   commit: (next: number) => void,
+  endEdit: () => void,
 ): void {
   if (event.button !== 0) return;
   event.preventDefault();
@@ -144,6 +150,7 @@ function startScrub(
     controller.abort();
     label.classList.remove("cps-scrubbing");
     if (label.hasPointerCapture(id)) label.releasePointerCapture(id);
+    endEdit();
   };
   const { signal } = controller;
   label.addEventListener("pointermove", move, { signal });
@@ -159,6 +166,7 @@ function openSlider(
   anchor: HTMLElement,
   display: () => number,
   commit: (next: number) => void,
+  endEdit: () => void,
   onClose: () => void,
 ): { handle: PopoverHandle; sync(): void } {
   const content = document.createElement("div");
@@ -187,9 +195,11 @@ function openSlider(
   const commitField = (): void => {
     const parsed = Number.parseFloat(field.value.replace(",", "."));
     if (Number.isFinite(parsed)) commit(parsed);
+    endEdit();
     field.value = formatDisplay(desc, display());
   };
   range.addEventListener("input", () => commit(sliderToDisplay(desc, Number(range.value) / SLIDER_STEPS)));
+  range.addEventListener("change", endEdit);
   field.addEventListener("change", commitField);
   field.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
@@ -230,8 +240,14 @@ function buttonControl(desc: ButtonOption, ctx: ControlContext): OptionControl {
   const element = document.createElement("button");
   element.type = "button";
   element.className = "cps-toggle cps-command";
-  element.textContent = desc.label;
-  if (desc.title) element.title = desc.title;
+  if (desc.icon) {
+    element.classList.add("cps-icon-command");
+    element.setAttribute("aria-label", desc.label);
+    setIcon(element, desc.icon, 16);
+  } else {
+    element.textContent = desc.label;
+  }
+  element.title = desc.title ?? desc.label;
   element.addEventListener("click", () => {
     ctx.options.set(desc.key, true);
     ctx.changed();

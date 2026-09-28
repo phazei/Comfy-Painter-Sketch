@@ -65,6 +65,8 @@ export interface SelectOption extends BaseOption {
  */
 export interface ButtonOption extends BaseOption {
   kind: "button";
+  /** Icon name (`ui/icons.ts`): an icon button with `label` as its accessible name. */
+  icon?: string;
 }
 
 /**
@@ -128,6 +130,12 @@ export interface ToolOptions {
    * @returns `true` if the value changed.
    */
   set(key: string, value: OptionValue): boolean;
+  /**
+   * A number field session ended (typed value committed, scrub released,
+   * slider released / popover closed). Optional; may be called repeatedly.
+   * @param key - Option key.
+   */
+  endEdit?(key: string): void;
 }
 
 /** Exponent of the `"pow"` slider curve. */

@@ -86,6 +86,13 @@ const PATHS: Readonly<Record<string, string>> = {
   lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
   // Magic wand (W): diagonal stick with a sparkle at its tip.
   magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
+  // Free Transform (M11): box with corner handles and a rotate arc; flips = mirrored
+  // triangles about a dashed axis; commit tick; cancel cross.
+  transform: "M6 6h12v12H6zM4 4h4v4H4zM16 4h4v4h-4zM16 16h4v4h-4zM4 16h4v4H4zM14 2.5a9 9 0 0 1 7.5 7.5",
+  flipH: "M12 3v2M12 8v2M12 13v2M12 18v3M9 6 3 18h6zM15 6l6 12h-6z",
+  flipV: "M3 12h2M8 12h2M13 12h2M18 12h3M6 9 18 3v6zM6 15l12 6v-6z",
+  check: "M5 12.5 10 17.5 19 7",
+  close: "M6 6l12 12M18 6 6 18",
   // "Selection to mask": dashed square with the Quick Mask circle.
   selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
 };

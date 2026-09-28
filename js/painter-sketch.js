@@ -484,6 +484,8 @@ function readTextData(value) {
   };
   const lineHeight = v["lineHeight"];
   if (isFiniteNumber(lineHeight) && lineHeight > 0) data.lineHeight = Math.min(10, lineHeight);
+  const rotation = v["rotation"];
+  if (isFiniteNumber(rotation) && normalizeDegrees(rotation) !== 0) data.rotation = normalizeDegrees(rotation);
   return data;
 }
 function serializeTextData(data) {
@@ -499,10 +501,23 @@ function serializeTextData(data) {
     align: data.align
   };
   if (data.lineHeight !== void 0) out["lineHeight"] = data.lineHeight;
+  if (data.rotation) out["rotation"] = data.rotation;
   return out;
 }
 function sameTextData(a, b) {
-  return a.text === b.text && a.x === b.x && a.y === b.y && a.font === b.font && a.size === b.size && a.color === b.color && a.bold === b.bold && a.italic === b.italic && a.align === b.align && (a.lineHeight ?? DEFAULT_LINE_HEIGHT) === (b.lineHeight ?? DEFAULT_LINE_HEIGHT);
+  return a.text === b.text && a.x === b.x && a.y === b.y && a.font === b.font && a.size === b.size && a.color === b.color && a.bold === b.bold && a.italic === b.italic && a.align === b.align && (a.lineHeight ?? DEFAULT_LINE_HEIGHT) === (b.lineHeight ?? DEFAULT_LINE_HEIGHT) && (a.rotation ?? 0) === (b.rotation ?? 0);
+}
+function normalizeDegrees(deg) {
+  if (!Number.isFinite(deg)) return 0;
+  let a = deg % 360;
+  if (a <= -180) a += 360;
+  if (a > 180) a -= 360;
+  return a === 0 ? 0 : a;
+}
+function withRotation(td, deg) {
+  const { rotation: _old, ...rest } = td;
+  const r = normalizeDegrees(deg);
+  return r === 0 ? rest : { ...rest, rotation: r };
 }
 function cleanFontName(font) {
   return font.replace(/\s+/g, " ").trim().slice(0, MAX_FONT_LENGTH);
@@ -1364,14 +1379,14 @@ function maskToGray(rgba, coverage) {
   }
   return any;
 }
-function unionMaskCoverage(union, area, read, rgba, invert) {
+function unionMaskCoverage(union, area, read, rgba, invert2) {
   for (let y = 0; y < area.height; y++) {
     const ry = area.y + y - (read?.y ?? 0);
     for (let x = 0; x < area.width; x++) {
       const rx = area.x + x - (read?.x ?? 0);
       const inside2 = read !== null && rx >= 0 && ry >= 0 && rx < read.width && ry < read.height;
       const a = inside2 ? rgba[(ry * read.width + rx) * 4 + 3] : 0;
-      const v = invert ? 255 - a : a;
+      const v = invert2 ? 255 - a : a;
       const i = y * area.width + x;
       if (v > union[i]) union[i] = v;
     }
@@ -1819,17 +1834,17 @@ function store(clip) {
   const png = new Promise((resolve, reject) => {
     canvas.toBlob((blob2) => blob2 ? resolve(blob2) : reject(new Error("PNG encoding failed")), "image/png");
   });
-  const release2 = () => {
+  const release = () => {
     canvas.width = canvas.height = 0;
   };
   if (typeof ClipboardItem !== "function" || typeof navigator.clipboard?.write !== "function") {
     log.warn("System clipboard unavailable; the copy is kept inside PainterSketch only.");
-    void png.then(release2, release2);
+    void png.then(release, release);
     return;
   }
   navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(() => {
     entry.systemWritten = true;
-  }).catch((error) => log.warn("Could not write the system clipboard; the copy is kept inside PainterSketch only.", error)).finally(release2);
+  }).catch((error) => log.warn("Could not write the system clipboard; the copy is kept inside PainterSketch only.", error)).finally(release);
 }
 function internalImage(clip) {
   const canvas = document.createElement("canvas");
@@ -2409,6 +2424,13 @@ const PATHS = {
   lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
   // Magic wand (W): diagonal stick with a sparkle at its tip.
   magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
+  // Free Transform (M11): box with corner handles and a rotate arc; flips = mirrored
+  // triangles about a dashed axis; commit tick; cancel cross.
+  transform: "M6 6h12v12H6zM4 4h4v4H4zM16 4h4v4h-4zM16 16h4v4h-4zM4 16h4v4H4zM14 2.5a9 9 0 0 1 7.5 7.5",
+  flipH: "M12 3v2M12 8v2M12 13v2M12 18v3M9 6 3 18h6zM15 6l6 12h-6z",
+  flipV: "M3 12h2M8 12h2M13 12h2M18 12h3M6 9 18 3v6zM6 15l12 6v-6z",
+  check: "M5 12.5 10 17.5 19 7",
+  close: "M6 6l12 12M18 6 6 18",
   // "Selection to mask": dashed square with the Quick Mask circle.
   selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6"
 };
@@ -2781,6 +2803,218 @@ function applyLayerChange(layers2, change, forward) {
     }
   }
 }
+const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
+function selectionMode(shift, alt) {
+  if (shift && alt) return "intersect";
+  if (shift) return "add";
+  if (alt) return "subtract";
+  return "replace";
+}
+function snapRect(box) {
+  const x0 = Math.round(box.x);
+  const y0 = Math.round(box.y);
+  const x1 = Math.round(box.x + box.width);
+  const y1 = Math.round(box.y + box.height);
+  return { x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.abs(x1 - x0), height: Math.abs(y1 - y0) };
+}
+function rectSelection(box) {
+  const rect = snapRect(box);
+  if (isEmptyRect(rect)) return null;
+  return { rect, data: new Uint8Array(rect.width * rect.height).fill(255), outside: 0 };
+}
+function selectionFromCoverage(coverage, area, bbox) {
+  if (coverage.length < area.width * area.height) return null;
+  const inner = bbox ? intersectRect(bbox, { x: 0, y: 0, width: area.width, height: area.height }) : null;
+  if (inner && isEmptyRect(inner)) return null;
+  const crop = inner ?? { x: 0, y: 0, width: area.width, height: area.height };
+  const data = copyRegion(coverage, area.width, crop);
+  return trimSelection({ rect: { x: area.x + crop.x, y: area.y + crop.y, width: crop.width, height: crop.height }, data, outside: 0 });
+}
+function selectionFromAlpha(rgba, area) {
+  const n = area.width * area.height;
+  if (rgba.length < n * 4) return null;
+  const coverage = new Uint8Array(n);
+  for (let i = 0; i < n; i++) coverage[i] = rgba[i * 4 + 3];
+  return selectionFromCoverage(coverage, area);
+}
+function hardenSelection(sel) {
+  if (!sel) return null;
+  const data = new Uint8Array(sel.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = sel.data[i] > 0 ? 255 : 0;
+  return { rect: sel.rect, data, outside: sel.outside };
+}
+function coverageAt(sel, x, y) {
+  if (!sel) return 0;
+  const { rect } = sel;
+  const px = x - rect.x;
+  const py = y - rect.y;
+  if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return sel.outside;
+  return sel.data[py * rect.width + px];
+}
+function coverageFor(sel, area) {
+  const out = new Uint8Array(Math.max(0, area.width * area.height));
+  if (sel.outside) out.fill(sel.outside);
+  const overlap = intersectRect(sel.rect, area);
+  if (isEmptyRect(overlap)) return out;
+  const sw = sel.rect.width;
+  for (let y = overlap.y; y < overlap.y + overlap.height; y++) {
+    const src = (y - sel.rect.y) * sw + (overlap.x - sel.rect.x);
+    out.set(sel.data.subarray(src, src + overlap.width), (y - area.y) * area.width + (overlap.x - area.x));
+  }
+  return out;
+}
+function selectionExtent(sel, area) {
+  return intersectRect(sel.outside ? area : sel.rect, area);
+}
+function selectionsEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.outside !== b.outside) return false;
+  const r = a.rect;
+  const q = b.rect;
+  if (r.x !== q.x || r.y !== q.y || r.width !== q.width || r.height !== q.height) return false;
+  for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) return false;
+  return true;
+}
+function selectionBytes(sel) {
+  return (sel?.data.byteLength ?? 0) + 64;
+}
+const OPS = {
+  add: (a, b) => a > b ? a : b,
+  subtract: (a, b) => Math.min(a, 255 - b),
+  intersect: (a, b) => a < b ? a : b
+};
+function combineSelection(current, next, mode) {
+  if (mode === "replace") return next ? trimSelection(next) : null;
+  if (!current) return mode === "add" && next ? trimSelection(next) : null;
+  if (!next) return mode === "intersect" ? null : current;
+  const op = OPS[mode];
+  const outside = op(current.outside, next.outside) >= 128 ? 255 : 0;
+  const rect = unionRect(current.rect, next.rect);
+  const a = coverageFor(current, rect);
+  const b = coverageFor(next, rect);
+  const data = new Uint8Array(a.length);
+  for (let i = 0; i < data.length; i++) data[i] = op(a[i], b[i]);
+  return trimSelection({ rect, data, outside });
+}
+function invertSelection(sel) {
+  if (!sel) return null;
+  const data = new Uint8Array(sel.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = 255 - sel.data[i];
+  return trimSelection({ rect: { ...sel.rect }, data, outside: sel.outside ? 0 : 255 });
+}
+function clipSelection(sel, limit) {
+  if (!sel) return null;
+  const rect = sel.outside ? { ...limit } : intersectRect(sel.rect, limit);
+  if (isEmptyRect(rect)) return null;
+  return trimSelection({ rect, data: coverageFor(sel, rect), outside: 0 });
+}
+function trimSelection(sel) {
+  const { rect, data, outside } = sel;
+  let minX = rect.width;
+  let minY = rect.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < rect.height; y++) {
+    const row = y * rect.width;
+    for (let x = 0; x < rect.width; x++) {
+      if (data[row + x] === outside) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return outside ? { rect: { ...EMPTY$1, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
+  if (minX === 0 && minY === 0 && maxX === rect.width - 1 && maxY === rect.height - 1) return sel;
+  const crop = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  return {
+    rect: { x: rect.x + crop.x, y: rect.y + crop.y, width: crop.width, height: crop.height },
+    data: copyRegion(data, rect.width, crop),
+    outside
+  };
+}
+function eraseCoverage(dst, rect, coverage, coverageWidth) {
+  for (let y = 0; y < rect.height; y++) {
+    const row = (rect.y + y) * coverageWidth + rect.x;
+    for (let x = 0; x < rect.width; x++) {
+      const c = coverage[row + x];
+      if (c === 0) continue;
+      const p = (y * rect.width + x) * 4 + 3;
+      dst[p] = dst[p] * (255 - c) / 255;
+    }
+  }
+}
+function copyRegion(src, stride, crop) {
+  const out = new Uint8Array(crop.width * crop.height);
+  for (let y = 0; y < crop.height; y++) {
+    const from = (crop.y + y) * stride + crop.x;
+    out.set(src.subarray(from, from + crop.width), y * crop.width);
+  }
+  return out;
+}
+const MOVE_LAYER_ID = "move-layer";
+const OUTLINE_ID = "selection-outline";
+function moveCursorKind(state) {
+  if (state.toolId === OUTLINE_ID) return "outline";
+  if (state.toolId !== MOVE_LAYER_ID) return null;
+  if (state.floatActive || !state.inSelection) return "move";
+  return state.alt ? "copy" : "cut";
+}
+const SIZE = 32;
+const MOVE_PATH = "M11 1.5l-3.5 3.5h2.5v5H5V7.5L1.5 11 5 14.5V12h5v5H7.5l3.5 3.5 3.5-3.5H12v-5h5v2.5l3.5-3.5L17 7.5V10h-5V5h2.5z";
+const ARROW_PATH = "M2 2v16l4.2-4 3 6.6 2.6-1.2-3-6.4H14.5z";
+const MARQUEE_BADGE = `<path transform='translate(14.2 16.8) scale(0.7)' vector-effect='non-scaling-stroke' d='${iconPath("marqueeRect")}'/>`;
+const MODE_MARKS = {
+  replace: "",
+  add: "<path d='M26 9v6M23 12h6'/>",
+  subtract: "<path d='M23 12h6'/>",
+  intersect: "<path d='M23.5 9.5l5 5M28.5 9.5l-5 5'/>"
+};
+const BADGES = {
+  cut: "<circle cx='22' cy='28' r='2.2'/><circle cx='28.5' cy='28' r='2.2'/><path d='M23.2 26.2L28 18.5M27.3 26.2L22.5 18.5'/>",
+  copy: "<path d='M25 19v10M20 24h10'/>",
+  outline: MARQUEE_BADGE
+};
+const HOTSPOTS$1 = {
+  cut: [11, 11, "move"],
+  copy: [11, 11, "move"],
+  outline: [2, 2, "default"]
+};
+const cache$1 = /* @__PURE__ */ new Map();
+function moveCursorCss(kind) {
+  if (kind === "move") return "move";
+  const cached = cache$1.get(kind);
+  if (cached) return cached;
+  const shape = kind === "outline" ? ARROW_PATH : MOVE_PATH;
+  const [x, y, fallback] = HOTSPOTS$1[kind];
+  const value = badgedCursor(shape, BADGES[kind], x, y, fallback);
+  cache$1.set(kind, value);
+  return value;
+}
+function badgedCursor(shape, badge, x, y, fallback) {
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${SIZE}' height='${SIZE}' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${shape}' fill='#000' stroke='#fff' stroke-width='1.5' stroke-linejoin='round' paint-order='stroke'/><g fill='none' stroke='#fff' stroke-width='3.5' stroke-linecap='round'>${badge}</g><g fill='none' stroke='#000' stroke-width='1.5' stroke-linecap='round'>${badge}</g></svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
+}
+function layerSelectMode(mods) {
+  return mods.ctrl ? selectionMode(mods.shift, mods.alt) : null;
+}
+const selectCache = /* @__PURE__ */ new Map();
+function layerSelectCursorCss(mode) {
+  const cached = selectCache.get(mode);
+  if (cached) return cached;
+  const value = badgedCursor(ARROW_PATH, MARQUEE_BADGE + MODE_MARKS[mode], 2, 2, "default");
+  selectCache.set(mode, value);
+  return value;
+}
+const ROTATE_ARCS = "M16 7A9 9 0 0 1 24.46 19.08M16 25A9 9 0 0 1 7.54 12.92";
+const ROTATE_HEADS = "M27.5 17.5 24 23.5 20.2 18.4zM4.5 14.5 8 8.5 11.8 13.6z";
+let rotateCursor = "";
+function rotateCursorCss() {
+  if (rotateCursor) return rotateCursor;
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${SIZE}' height='${SIZE}' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${ROTATE_ARCS}' fill='none' stroke='#fff' stroke-width='4.5'/><path d='${ROTATE_HEADS}' fill='#fff' stroke='#fff' stroke-width='3' stroke-linejoin='round'/><path d='${ROTATE_ARCS}' fill='none' stroke='#000' stroke-width='2'/><path d='${ROTATE_HEADS}' fill='#000'/></svg>`;
+  rotateCursor = `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+  return rotateCursor;
+}
 const MAX_NAME_LENGTH = 100;
 function startInlineRename(host, initial, finish) {
   const input = document.createElement("input");
@@ -2972,11 +3206,14 @@ class LayerRow {
       setIcon(this.lock, "lock", 14);
     } else {
       this.element.addEventListener("click", (event) => {
-        if (!isControl(event.target)) actions.select(id);
+        if (isControl(event.target)) return;
+        const mode = layerSelectMode({ ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
+        if (mode) actions.loadSelection(id, mode);
+        else actions.select(id);
       });
       this.nameEl.addEventListener("dblclick", (event) => {
         event.stopPropagation();
-        this.startRename();
+        if (!event.ctrlKey && !event.metaKey) this.startRename();
       });
     }
     if (kind === "mask") {
@@ -2984,13 +3221,13 @@ class LayerRow {
       extra.className = "cps-layer-extra";
       const swatch2 = button("cps-layer-swatch", () => actions.pickColor(id, swatch2));
       swatch2.title = "Mask colour (display only)";
-      const invert = button("cps-layer-invert", () => actions.toggleInvert(id));
-      setIcon(invert, "invert", 14);
-      extra.append(swatch2, invert);
+      const invert2 = button("cps-layer-invert", () => actions.toggleInvert(id));
+      setIcon(invert2, "invert", 14);
+      extra.append(swatch2, invert2);
       if (maskOpacity) extra.appendChild(maskOpacity.element);
       this.element.appendChild(extra);
       this.swatch = swatch2;
-      this.invertButton = invert;
+      this.invertButton = invert2;
     }
   }
   kind;
@@ -3123,7 +3360,7 @@ class LayerDrag {
     this.controller.abort();
   }
   down(event) {
-    if (event.button !== 0 || isControl(event.target) || !(event.target instanceof Element)) return;
+    if (event.button !== 0 || event.ctrlKey || event.metaKey || isControl(event.target) || !(event.target instanceof Element)) return;
     const row = event.target.closest(".cps-layer-paint, .cps-layer-mask");
     const id = row?.dataset["layerId"];
     if (!row || !id) return;
@@ -3402,7 +3639,33 @@ function layoutText(td, measure) {
     width: inkRect.width + INK_PAD * 2,
     height: inkRect.height + INK_PAD * 2
   }) : { x: Math.floor(box.x), y: Math.floor(box.y), width: 0, height: 0 };
-  return { lines, lineHeight, box, bbox };
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const rotation = td.rotation ?? 0;
+  const paint2 = rotation && bbox.width > 0 ? rotatedAabb(bbox, rotation, centre) : bbox;
+  return { lines, lineHeight, box, bbox, centre, rotation, paint: paint2 };
+}
+function rotatedAabb(rect, deg, centre) {
+  const pts = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+    { x: rect.x, y: rect.y + rect.height }
+  ].map((p) => rotatePoint(p, deg, centre));
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const x0 = Math.floor(Math.min(...xs) + 1e-6);
+  const y0 = Math.floor(Math.min(...ys) + 1e-6);
+  const x1 = Math.ceil(Math.max(...xs) - 1e-6);
+  const y1 = Math.ceil(Math.max(...ys) - 1e-6);
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+function rotatePoint(p, deg, centre) {
+  const r = deg * Math.PI / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  const dx = p.x - centre.x;
+  const dy = p.y - centre.y;
+  return { x: centre.x + cos * dx - sin * dy, y: centre.y + sin * dx + cos * dy };
 }
 function alignedX(td, width) {
   if (td.align === "center") return td.x - width / 2;
@@ -3451,7 +3714,12 @@ function textLayout(td) {
 function drawText(ctx, td, origin) {
   const layout = textLayout(td);
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const r = layout.rotation * Math.PI / 180;
+  const cos = layout.rotation ? Math.cos(r) : 1;
+  const sin = layout.rotation ? Math.sin(r) : 0;
+  const cx = layout.centre.x - origin.x;
+  const cy = layout.centre.y - origin.y;
+  ctx.setTransform(cos, sin, -sin, cos, cx - (cos * cx - sin * cy), cy - (sin * cx + cos * cy));
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.font = fontString(td);
@@ -3462,7 +3730,7 @@ function drawText(ctx, td, origin) {
     if (line.text) ctx.fillText(line.text, line.x - origin.x, line.baseline - origin.y);
   }
   ctx.restore();
-  return layout.bbox;
+  return layout.paint;
 }
 function roundPx(size) {
   return Math.round(size * 100) / 100;
@@ -3575,24 +3843,28 @@ function numberControl(desc, ctx) {
   const commit = (next) => {
     if (ctx.options.set(desc.key, fromDisplay(desc, next))) ctx.changed();
   };
+  const endEdit = () => ctx.options.endEdit?.(desc.key);
   let popover = null;
   const refresh = () => {
     value.textContent = `${formatDisplay(desc, display())}${desc.unit ?? ""}`;
     element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
     popover?.sync();
   };
-  label.addEventListener("pointerdown", (event) => startScrub(event, label, desc, display, commit));
+  label.addEventListener("pointerdown", (event) => startScrub(event, label, desc, display, commit, endEdit));
   value.addEventListener("click", () => {
     if (popover) {
       popover.handle.close();
       return;
     }
-    popover = openSlider(desc, ctx, value, display, commit, () => popover = null);
+    popover = openSlider(desc, ctx, value, display, commit, endEdit, () => {
+      popover = null;
+      endEdit();
+    });
   });
   refresh();
   return { element, refresh };
 }
-function startScrub(event, label, desc, display, commit) {
+function startScrub(event, label, desc, display, commit, endEdit) {
   if (event.button !== 0) return;
   event.preventDefault();
   const id = event.pointerId;
@@ -3620,6 +3892,7 @@ function startScrub(event, label, desc, display, commit) {
     controller.abort();
     label.classList.remove("cps-scrubbing");
     if (label.hasPointerCapture(id)) label.releasePointerCapture(id);
+    endEdit();
   };
   const { signal } = controller;
   label.addEventListener("pointermove", move, { signal });
@@ -3627,7 +3900,7 @@ function startScrub(event, label, desc, display, commit) {
   label.addEventListener("pointercancel", end, { signal });
   label.addEventListener("lostpointercapture", end, { signal });
 }
-function openSlider(desc, ctx, anchor, display, commit, onClose) {
+function openSlider(desc, ctx, anchor, display, commit, endEdit, onClose) {
   const content = document.createElement("div");
   content.className = "cps-slider-pop";
   const range = document.createElement("input");
@@ -3653,9 +3926,11 @@ function openSlider(desc, ctx, anchor, display, commit, onClose) {
   const commitField = () => {
     const parsed = Number.parseFloat(field.value.replace(",", "."));
     if (Number.isFinite(parsed)) commit(parsed);
+    endEdit();
     field.value = formatDisplay(desc, display());
   };
   range.addEventListener("input", () => commit(sliderToDisplay(desc, Number(range.value) / SLIDER_STEPS)));
+  range.addEventListener("change", endEdit);
   field.addEventListener("change", commitField);
   field.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
@@ -3691,8 +3966,14 @@ function buttonControl(desc, ctx) {
   const element = document.createElement("button");
   element.type = "button";
   element.className = "cps-toggle cps-command";
-  element.textContent = desc.label;
-  if (desc.title) element.title = desc.title;
+  if (desc.icon) {
+    element.classList.add("cps-icon-command");
+    element.setAttribute("aria-label", desc.label);
+    setIcon(element, desc.icon, 16);
+  } else {
+    element.textContent = desc.label;
+  }
+  element.title = desc.title ?? desc.label;
   element.addEventListener("click", () => {
     ctx.options.set(desc.key, true);
     ctx.changed();
@@ -3776,10 +4057,67 @@ class MaskColorPicker {
    */
   open(anchor, target, initial) {
     const gesture = newGesture("mask-color");
-    const apply = (hex) => {
+    const apply2 = (hex) => {
       target.editor.layerOps.setMaskColor(target.layerId, hex, gesture);
     };
-    this.pick(anchor, { initial, title: "Mask colour", onInput: apply, onCommit: apply });
+    this.pick(anchor, { initial, title: "Mask colour", onInput: apply2, onCommit: apply2 });
+  }
+}
+const ROW_SELECTOR = ".cps-layer-paint, .cps-layer-mask";
+class LayerSelectHover {
+  controller = new AbortController();
+  keys = null;
+  row = null;
+  mods = { ctrl: false, shift: false, alt: false };
+  /**
+   * @param list - The rows container.
+   */
+  constructor(list) {
+    const { signal } = this.controller;
+    list.addEventListener("pointerenter", () => this.listenKeys(), { signal });
+    list.addEventListener("pointerleave", () => this.leave(), { signal });
+    list.addEventListener("pointermove", (e) => this.move(e), { signal });
+  }
+  /** Remove listeners and any cursor override. */
+  dispose() {
+    this.leave();
+    this.controller.abort();
+  }
+  move(event) {
+    const target = event.target;
+    const row = target instanceof Element && !isControl(target) ? target.closest(ROW_SELECTOR) : null;
+    if (row !== this.row) {
+      this.clear();
+      this.row = row;
+    }
+    this.read(event);
+    this.listenKeys();
+  }
+  listenKeys() {
+    if (this.keys) return;
+    this.keys = new AbortController();
+    const opts = { capture: true, signal: this.keys.signal };
+    window.addEventListener("keydown", (e) => this.read(e), opts);
+    window.addEventListener("keyup", (e) => this.read(e), opts);
+  }
+  leave() {
+    this.keys?.abort();
+    this.keys = null;
+    this.clear();
+    this.row = null;
+  }
+  read(event) {
+    this.mods = { ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey };
+    this.apply();
+  }
+  apply() {
+    const row = this.row;
+    if (!row) return;
+    const mode = layerSelectMode(this.mods);
+    row.style.cursor = mode ? layerSelectCursorCss(mode) : "";
+  }
+  clear() {
+    if (this.row) this.row.style.cursor = "";
   }
 }
 function soloMark(layer, solo) {
@@ -3859,6 +4197,8 @@ class LayersPanel {
       (id, drop) => this.withEditor((e) => e.layerOps.move(id, drop.targetId, drop.above))
     );
     this.unbind.push(ctx.sidePanel.events.on("collapse", (collapsed) => !collapsed && this.thumbs.request()));
+    const hover = new LayerSelectHover(this.list);
+    this.unbind.push(() => hover.dispose());
   }
   ctx;
   element;
@@ -4027,9 +4367,9 @@ class LayersPanel {
       const row = this.rows.get(layer.id);
       if (!row) continue;
       const mask = layer.kind === "mask";
-      const invert = mask && layer.invert === true;
-      const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
-      row.thumb.update(key, imageSize2, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
+      const invert2 = mask && layer.invert === true;
+      const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert2}`;
+      row.thumb.update(key, imageSize2, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert: invert2 });
     }
     const bg = this.rows.get(BACKGROUND_ID);
     if (bg) {
@@ -4054,6 +4394,8 @@ class LayersPanel {
         e.layerOps.setActiveLayer(id);
         e.setPaintTarget("paint");
       }),
+      // Selection only: the current layer, Quick Mask and solo stay as they are.
+      loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
       toggleVisible: (id) => this.withEditor(
         (e) => id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer$1(e, id)?.visible)
       ),
@@ -4249,14 +4591,14 @@ class SelectionActions {
     setIcon(toMask, "selectionToMask", 14);
     toMask.append("To mask");
     toMask.addEventListener("click", () => this.editor?.selection.toMask());
-    const invert = document.createElement("button");
-    invert.type = "button";
-    invert.className = "cps-toggle";
-    invert.title = "Invert selection (Ctrl+Shift+I)";
-    setIcon(invert, "invert", 14);
-    invert.append("Invert");
-    invert.addEventListener("click", () => this.editor?.selection.invert());
-    this.element.append(toMask, invert);
+    const invert2 = document.createElement("button");
+    invert2.type = "button";
+    invert2.className = "cps-toggle";
+    invert2.title = "Invert selection (Ctrl+Shift+I)";
+    setIcon(invert2, "invert", 14);
+    invert2.append("Invert");
+    invert2.addEventListener("click", () => this.editor?.selection.invert());
+    this.element.append(toMask, invert2);
   }
   /**
    * Follow an editor (or none) and refresh.
@@ -5265,21 +5607,21 @@ class OutputsPanel {
   slotView(slot) {
     const element = document.createElement("div");
     element.className = "cps-output-slot";
-    const empty = document.createElement("button");
-    empty.type = "button";
-    empty.className = "cps-output-empty";
-    empty.title = `Add a centred region in slot ${slot}`;
+    const empty2 = document.createElement("button");
+    empty2.type = "button";
+    empty2.className = "cps-output-empty";
+    empty2.title = `Add a centred region in slot ${slot}`;
     const icon = document.createElement("span");
     setIcon(icon, "plus", 12);
     const text = document.createElement("span");
     text.textContent = defaultRegionName(slot);
-    empty.append(icon, text);
-    empty.addEventListener("click", () => {
+    empty2.append(icon, text);
+    empty2.addEventListener("click", () => {
       this.ctx.beforeEdit();
       this.editor?.regionOps.addDefault(slot);
     });
-    element.append(empty);
-    return { slot, element, empty, card: null };
+    element.append(empty2);
+    return { slot, element, empty: empty2, card: null };
   }
 }
 const toldDocs = /* @__PURE__ */ new Set();
@@ -5573,8 +5915,17 @@ class HostSync {
     this.shell.outputsButton.classList.toggle("cps-active", regionMode);
     this.shell.outputsButton.setAttribute("aria-pressed", String(regionMode));
     this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
-    this.optionsBar.bind(session.tools.active.options);
+    this.optionsBar.bind(session.tools.barOptions());
     this.syncMoveMode();
+  }
+  /**
+   * Re-bind the options bar (Free Transform session start / end, selection
+   * appearing for the selection tools' Transform buttons); a refresh when
+   * the options object is unchanged (live transform fields).
+   */
+  syncOptions() {
+    const tools = this.getSession()?.tools;
+    if (tools) this.optionsBar.bind(tools.barOptions());
   }
   /**
    * Toggle "Move drawing" mode from the registry's state (single source of
@@ -6434,10 +6785,10 @@ class EditorShell {
    * @param current - Current colour (`#rrggbb`).
    * @param apply - Called with each picked colour.
    */
-  requestColorPick(slot, anchor, current, apply) {
+  requestColorPick(slot, anchor, current, apply2) {
     const request = { slot, anchor, handled: false };
     this.events.emit("pick-color", request);
-    if (!request.handled) this.nativeColorPick(current, apply);
+    if (!request.handled) this.nativeColorPick(current, apply2);
   }
   /**
    * Horizontal scroll for wheel over the options bar (vertical wheels scroll
@@ -6471,7 +6822,7 @@ class EditorShell {
     this.panelButton.title = open ? "Hide side panel" : "Show side panel";
   }
   /** Fallback picker until M3.2: a hidden native `<input type=color>`. */
-  nativeColorPick(current, apply) {
+  nativeColorPick(current, apply2) {
     let input = this.nativeInput;
     if (!input) {
       const created = document.createElement("input");
@@ -6483,7 +6834,7 @@ class EditorShell {
       this.popoverHost.element.appendChild(created);
       this.nativeInput = input = created;
     }
-    this.nativeApply = apply;
+    this.nativeApply = apply2;
     input.value = current;
     if (typeof input.showPicker === "function") {
       try {
@@ -6539,7 +6890,14 @@ function handleFloatShortcut(event, editor, effects) {
     }
     return true;
   }
-  if (!editor.float.active || ctrl || event.altKey) return false;
+  if (isTransformChord(event)) {
+    if (!event.repeat) {
+      effects.cancelDrag();
+      editor.float.transform.enter();
+    }
+    return true;
+  }
+  if (!(editor.float.active || editor.float.transform.active) || ctrl || event.altKey) return false;
   if (key === "escape") {
     effects.cancelDrag();
     editor.float.cancel();
@@ -6547,10 +6905,15 @@ function handleFloatShortcut(event, editor, effects) {
   }
   if (key === "enter" && !event.shiftKey) {
     effects.cancelDrag();
-    editor.float.commit();
+    if (editor.float.transform.active) editor.float.transform.commit();
+    else editor.float.commit();
     return true;
   }
   return false;
+}
+function isTransformChord(event) {
+  const ctrl = event.ctrlKey || event.metaKey;
+  return ctrl && event.altKey && !event.shiftKey && (event.key === "t" || event.key === "T");
 }
 function handleSelectionShortcut(event, editor, cancelDrag) {
   const ctrl = event.ctrlKey || event.metaKey;
@@ -6600,7 +6963,7 @@ function handleShortcut(event, session, effects) {
     return false;
   }
   if (event.altKey || ctrl) return false;
-  if (tools.active.onKey?.(editor, event)) return true;
+  if (tools.resolve(false).onKey?.(editor, event)) return true;
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {
     const up = event.code === "BracketRight" || key === "]" || key === "}";
@@ -7876,165 +8239,34 @@ function checkerPattern(ctx) {
   if (pattern) checkerPatterns.set(ctx, pattern);
   return pattern;
 }
-const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
-function selectionMode(shift, alt) {
-  if (shift && alt) return "intersect";
-  if (shift) return "add";
-  if (alt) return "subtract";
-  return "replace";
-}
-function snapRect(box) {
-  const x0 = Math.round(box.x);
-  const y0 = Math.round(box.y);
-  const x1 = Math.round(box.x + box.width);
-  const y1 = Math.round(box.y + box.height);
-  return { x: Math.min(x0, x1), y: Math.min(y0, y1), width: Math.abs(x1 - x0), height: Math.abs(y1 - y0) };
-}
-function rectSelection(box) {
-  const rect = snapRect(box);
-  if (isEmptyRect(rect)) return null;
-  return { rect, data: new Uint8Array(rect.width * rect.height).fill(255), outside: 0 };
-}
-function selectionFromCoverage(coverage, area, bbox) {
-  if (coverage.length < area.width * area.height) return null;
-  const inner = bbox ? intersectRect(bbox, { x: 0, y: 0, width: area.width, height: area.height }) : null;
-  if (inner && isEmptyRect(inner)) return null;
-  const crop = inner ?? { x: 0, y: 0, width: area.width, height: area.height };
-  const data = copyRegion(coverage, area.width, crop);
-  return trimSelection({ rect: { x: area.x + crop.x, y: area.y + crop.y, width: crop.width, height: crop.height }, data, outside: 0 });
-}
-function coverageAt(sel, x, y) {
-  if (!sel) return 0;
-  const { rect } = sel;
-  const px = x - rect.x;
-  const py = y - rect.y;
-  if (px < 0 || py < 0 || px >= rect.width || py >= rect.height) return sel.outside;
-  return sel.data[py * rect.width + px];
-}
-function coverageFor(sel, area) {
-  const out = new Uint8Array(Math.max(0, area.width * area.height));
-  if (sel.outside) out.fill(sel.outside);
-  const overlap = intersectRect(sel.rect, area);
-  if (isEmptyRect(overlap)) return out;
-  const sw = sel.rect.width;
-  for (let y = overlap.y; y < overlap.y + overlap.height; y++) {
-    const src = (y - sel.rect.y) * sw + (overlap.x - sel.rect.x);
-    out.set(sel.data.subarray(src, src + overlap.width), (y - area.y) * area.width + (overlap.x - area.x));
-  }
-  return out;
-}
-function selectionExtent(sel, area) {
-  return intersectRect(sel.outside ? area : sel.rect, area);
-}
-function selectionsEqual(a, b) {
-  if (a === b) return true;
-  if (!a || !b || a.outside !== b.outside) return false;
-  const r = a.rect;
-  const q = b.rect;
-  if (r.x !== q.x || r.y !== q.y || r.width !== q.width || r.height !== q.height) return false;
-  for (let i = 0; i < a.data.length; i++) if (a.data[i] !== b.data[i]) return false;
-  return true;
-}
-function selectionBytes(sel) {
-  return (sel?.data.byteLength ?? 0) + 64;
-}
-const OPS = {
-  add: (a, b) => a > b ? a : b,
-  subtract: (a, b) => Math.min(a, 255 - b),
-  intersect: (a, b) => a < b ? a : b
-};
-function combineSelection(current, next, mode) {
-  if (mode === "replace") return next ? trimSelection(next) : null;
-  if (!current) return mode === "add" && next ? trimSelection(next) : null;
-  if (!next) return mode === "intersect" ? null : current;
-  const op = OPS[mode];
-  const outside = op(current.outside, next.outside) >= 128 ? 255 : 0;
-  const rect = unionRect(current.rect, next.rect);
-  const a = coverageFor(current, rect);
-  const b = coverageFor(next, rect);
-  const data = new Uint8Array(a.length);
-  for (let i = 0; i < data.length; i++) data[i] = op(a[i], b[i]);
-  return trimSelection({ rect, data, outside });
-}
-function invertSelection(sel) {
-  if (!sel) return null;
-  const data = new Uint8Array(sel.data.length);
-  for (let i = 0; i < data.length; i++) data[i] = 255 - sel.data[i];
-  return trimSelection({ rect: { ...sel.rect }, data, outside: sel.outside ? 0 : 255 });
-}
-function clipSelection(sel, limit) {
-  if (!sel) return null;
-  const rect = sel.outside ? { ...limit } : intersectRect(sel.rect, limit);
-  if (isEmptyRect(rect)) return null;
-  return trimSelection({ rect, data: coverageFor(sel, rect), outside: 0 });
-}
-function trimSelection(sel) {
-  const { rect, data, outside } = sel;
-  let minX = rect.width;
-  let minY = rect.height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < rect.height; y++) {
-    const row = y * rect.width;
-    for (let x = 0; x < rect.width; x++) {
-      if (data[row + x] === outside) continue;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  if (maxX < 0) return outside ? { rect: { ...EMPTY$1, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
-  if (minX === 0 && minY === 0 && maxX === rect.width - 1 && maxY === rect.height - 1) return sel;
-  const crop = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-  return {
-    rect: { x: rect.x + crop.x, y: rect.y + crop.y, width: crop.width, height: crop.height },
-    data: copyRegion(data, rect.width, crop),
-    outside
-  };
-}
-function eraseCoverage(dst, rect, coverage, coverageWidth) {
-  for (let y = 0; y < rect.height; y++) {
-    const row = (rect.y + y) * coverageWidth + rect.x;
-    for (let x = 0; x < rect.width; x++) {
-      const c = coverage[row + x];
-      if (c === 0) continue;
-      const p = (y * rect.width + x) * 4 + 3;
-      dst[p] = dst[p] * (255 - c) / 255;
-    }
-  }
-}
-function copyRegion(src, stride, crop) {
-  const out = new Uint8Array(crop.width * crop.height);
-  for (let y = 0; y < crop.height; y++) {
-    const from = (crop.y + y) * stride + crop.x;
-    out.set(src.subarray(from, from + crop.width), y * crop.width);
-  }
-  return out;
-}
 const ICON_SIZE = 24;
 const OUTLINE_WIDTH = 4;
 const ICON_WIDTH = 1.75;
 const OUTLINE_COLOR = "#111";
 const ICON_COLOR = "#fff";
-const HOTSPOTS$1 = {
+const HOTSPOTS = {
   eyedropper: [3, 21],
   bucket: [19, 20]
 };
-const cache$1 = /* @__PURE__ */ new Map();
+const cache = /* @__PURE__ */ new Map();
 function iconCursor(icon) {
   if (icon === "crosshair") return "crosshair";
   if (icon === "move") return "move";
   if (icon === "text") return "text";
-  const cached = cache$1.get(icon);
+  if (isTransformIcon(icon)) return icon === "rotate" ? rotateCursorCss() : `${icon.slice("resize-".length)}-resize`;
+  const cached = cache.get(icon);
   if (cached) return cached;
   const d = iconPath(icon);
-  const [x, y] = HOTSPOTS$1[icon];
+  const [x, y] = HOTSPOTS[icon];
   const pathAttrs = `fill='none' stroke-linecap='round' stroke-linejoin='round'`;
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${ICON_SIZE}' height='${ICON_SIZE}' viewBox='0 0 ${ICON_SIZE} ${ICON_SIZE}'><path ${pathAttrs} stroke='${OUTLINE_COLOR}' stroke-width='${OUTLINE_WIDTH}' d='${d}'/><path ${pathAttrs} stroke='${ICON_COLOR}' stroke-width='${ICON_WIDTH}' d='${d}'/></svg>`;
   const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, crosshair`;
-  cache$1.set(icon, value);
+  cache.set(icon, value);
   return value;
+}
+const TRANSFORM_ICONS = /* @__PURE__ */ new Set(["resize-ns", "resize-ew", "resize-nwse", "resize-nesw", "rotate"]);
+function isTransformIcon(icon) {
+  return TRANSFORM_ICONS.has(icon);
 }
 function cssCursor(cursor, badge = null) {
   if (badge && cursor.kind === "icon" && cursor.icon === "crosshair") return badgeCursor(badge);
@@ -8090,41 +8322,6 @@ function drawLoupe(ctx, x, y, pr, overlay) {
     ctx.stroke();
   }
   ctx.restore();
-}
-const MOVE_LAYER_ID = "move-layer";
-const OUTLINE_ID = "selection-outline";
-function moveCursorKind(state) {
-  if (state.toolId === OUTLINE_ID) return "outline";
-  if (state.toolId !== MOVE_LAYER_ID) return null;
-  if (state.floatActive || !state.inSelection) return "move";
-  return state.alt ? "copy" : "cut";
-}
-const SIZE = 32;
-const MOVE_PATH = "M11 1.5l-3.5 3.5h2.5v5H5V7.5L1.5 11 5 14.5V12h5v5H7.5l3.5 3.5 3.5-3.5H12v-5h5v2.5l3.5-3.5L17 7.5V10h-5V5h2.5z";
-const ARROW_PATH = "M2 2v16l4.2-4 3 6.6 2.6-1.2-3-6.4H14.5z";
-const BADGES = {
-  cut: "<circle cx='22' cy='28' r='2.2'/><circle cx='28.5' cy='28' r='2.2'/><path d='M23.2 26.2L28 18.5M27.3 26.2L22.5 18.5'/>",
-  copy: "<path d='M25 19v10M20 24h10'/>",
-  outline: "<rect x='18.5' y='20.5' width='11' height='8'/>"
-};
-const HOTSPOTS = {
-  cut: [11, 11, "move"],
-  copy: [11, 11, "move"],
-  outline: [2, 2, "default"]
-};
-const cache = /* @__PURE__ */ new Map();
-function moveCursorCss(kind) {
-  if (kind === "move") return "move";
-  const cached = cache.get(kind);
-  if (cached) return cached;
-  const shape = kind === "outline" ? ARROW_PATH : MOVE_PATH;
-  const badge = BADGES[kind];
-  const dash = kind === "outline" ? " stroke-dasharray='2 1.5'" : "";
-  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${SIZE}' height='${SIZE}' viewBox='0 0 ${SIZE} ${SIZE}'><path d='${shape}' fill='#000' stroke='#fff' stroke-width='1.5' stroke-linejoin='round' paint-order='stroke'/><g fill='none' stroke='#fff' stroke-width='3.5' stroke-linecap='round'>${badge}</g><g fill='none' stroke='#000' stroke-width='1.5' stroke-linecap='round'${dash}>${badge}</g></svg>`;
-  const [x, y, fallback] = HOTSPOTS[kind];
-  const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, ${fallback}`;
-  cache.set(kind, value);
-  return value;
 }
 const STEP_MS = 125;
 const DASH = 4;
@@ -8238,7 +8435,7 @@ function shapePath(shape) {
   return path;
 }
 const SELECTED_COLOR = "#62d5ff";
-const HANDLE_PX = 6;
+const HANDLE_PX$1 = 6;
 function regionOutlineStyle(regionMode, selected) {
   if (!regionMode) {
     return { lineWidth: 1, dash: [4, 4], alpha: 0.3, color: "#ffffff", halo: false, labelPx: 9, badge: false, handles: false };
@@ -8331,7 +8528,7 @@ function drawLabel(ctx, box, text, style, px) {
 function drawHandles(ctx, view, rect, pixelRatio, px) {
   ctx.globalAlpha = 1;
   ctx.lineWidth = px;
-  const half = HANDLE_PX / 2 * px;
+  const half = HANDLE_PX$1 / 2 * px;
   for (const handle of REGION_HANDLES) {
     const p = regionHandlePoint(rect, handle);
     const at = backingRect(view, { x: p.x, y: p.y, width: 0, height: 0 }, pixelRatio);
@@ -8340,6 +8537,218 @@ function drawHandles(ctx, view, rect, pixelRatio, px) {
     ctx.strokeStyle = "#111111";
     ctx.strokeRect(at.x - half, at.y - half, 2 * half, 2 * half);
   }
+}
+const HANDLES = [
+  { hx: -1, hy: -1 },
+  { hx: 0, hy: -1 },
+  { hx: 1, hy: -1 },
+  { hx: 1, hy: 0 },
+  { hx: 1, hy: 1 },
+  { hx: 0, hy: 1 },
+  { hx: -1, hy: 1 },
+  { hx: -1, hy: 0 }
+];
+const ROTATE_SNAP = Math.PI / 12;
+const MIN_SIDE = 1;
+function translation(x, y) {
+  return { a: 1, b: 0, c: 0, d: 1, e: x, f: y };
+}
+function multiply(m, n) {
+  return {
+    a: m.a * n.a + m.c * n.b,
+    b: m.b * n.a + m.d * n.b,
+    c: m.a * n.c + m.c * n.d,
+    d: m.b * n.c + m.d * n.d,
+    e: m.a * n.e + m.c * n.f + m.e,
+    f: m.b * n.e + m.d * n.f + m.f
+  };
+}
+function invert(m) {
+  const det = m.a * m.d - m.b * m.c;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return null;
+  return {
+    a: m.d / det,
+    b: -m.b / det,
+    c: -m.c / det,
+    d: m.a / det,
+    e: (m.c * m.f - m.d * m.e) / det,
+    f: (m.b * m.e - m.a * m.f) / det
+  };
+}
+function apply(m, p) {
+  return { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f };
+}
+function affineEquals(m, n, eps = 1e-6) {
+  return Math.abs(m.a - n.a) < eps && Math.abs(m.b - n.b) < eps && Math.abs(m.c - n.c) < eps && Math.abs(m.d - n.d) < eps && Math.abs(m.e - n.e) < eps && Math.abs(m.f - n.f) < eps;
+}
+function mirrorAbout(axis, centre) {
+  return axis === "h" ? { a: -1, b: 0, c: 0, d: 1, e: 2 * centre.x, f: 0 } : { a: 1, b: 0, c: 0, d: -1, e: 0, f: 2 * centre.y };
+}
+function paramsMatrix(p, w, h) {
+  const cos = Math.cos(p.angle);
+  const sin = Math.sin(p.angle);
+  const a = cos * p.sx;
+  const b = sin * p.sx;
+  const c = -sin * p.sy;
+  const d = cos * p.sy;
+  return { a, b, c, d, e: p.cx - (a * w + c * h) / 2, f: p.cy - (b * w + d * h) / 2 };
+}
+function decomposeAffine(m, w, h) {
+  const sx = Math.hypot(m.a, m.b);
+  const angle = sx > 0 ? Math.atan2(m.b, m.a) : 0;
+  const sy = sx > 0 ? (m.a * m.d - m.b * m.c) / sx : Math.hypot(m.c, m.d);
+  const centre = apply(m, { x: w / 2, y: h / 2 });
+  return { cx: centre.x, cy: centre.y, sx, sy, angle };
+}
+function normalizeAngle(angle) {
+  let a = angle % (2 * Math.PI);
+  if (a <= -Math.PI) a += 2 * Math.PI;
+  if (a > Math.PI) a -= 2 * Math.PI;
+  return a;
+}
+function flipParams(p, axis) {
+  return axis === "h" ? { ...p, sx: -p.sx, angle: normalizeAngle(-p.angle) } : { ...p, sy: -p.sy, angle: normalizeAngle(-p.angle) };
+}
+function transformedCorners(m, w, h) {
+  return [apply(m, { x: 0, y: 0 }), apply(m, { x: w, y: 0 }), apply(m, { x: w, y: h }), apply(m, { x: 0, y: h })];
+}
+function transformedAabb(m, w, h) {
+  const pts = transformedCorners(m, w, h);
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const x0 = Math.floor(Math.min(...xs) + 1e-6);
+  const y0 = Math.floor(Math.min(...ys) + 1e-6);
+  const x1 = Math.ceil(Math.max(...xs) - 1e-6);
+  const y1 = Math.ceil(Math.max(...ys) - 1e-6);
+  return { x: x0, y: y0, width: Math.max(0, x1 - x0), height: Math.max(0, y1 - y0) };
+}
+function scaleDrag(start, w, h, handle, at, opts) {
+  const dir = HANDLES[handle];
+  if (!dir) return start;
+  const cos = Math.cos(start.angle);
+  const sin = Math.sin(start.angle);
+  const dx = at.x - start.cx;
+  const dy = at.y - start.cy;
+  const P = { x: cos * dx + sin * dy, y: -sin * dx + cos * dy };
+  const H = { x: dir.hx * start.sx * w / 2, y: dir.hy * start.sy * h / 2 };
+  const A = opts.fromCentre ? { x: 0, y: 0 } : { x: -H.x, y: -H.y };
+  const D = { x: H.x - A.x, y: H.y - A.y };
+  let kx = dir.hx !== 0 && D.x !== 0 ? (P.x - A.x) / D.x : 1;
+  let ky = dir.hy !== 0 && D.y !== 0 ? (P.y - A.y) / D.y : 1;
+  if (opts.proportional) {
+    let k;
+    if (dir.hx !== 0 && dir.hy !== 0) {
+      const dd = D.x * D.x + D.y * D.y;
+      k = dd > 0 ? ((P.x - A.x) * D.x + (P.y - A.y) * D.y) / dd : 1;
+    } else {
+      k = dir.hx !== 0 ? kx : ky;
+    }
+    kx = k;
+    ky = k;
+  }
+  const sx = clampScale(start.sx * kx, w);
+  const sy = clampScale(start.sy * ky, h);
+  kx = start.sx !== 0 ? sx / start.sx : 1;
+  ky = start.sy !== 0 ? sy / start.sy : 1;
+  const C = opts.fromCentre ? { x: 0, y: 0 } : { x: A.x + D.x * kx / 2, y: A.y + D.y * ky / 2 };
+  return { ...start, sx, sy, cx: start.cx + cos * C.x - sin * C.y, cy: start.cy + sin * C.x + cos * C.y };
+}
+function rotateDrag(start, from, at, snap) {
+  const a0 = Math.atan2(from.y - start.cy, from.x - start.cx);
+  const a1 = Math.atan2(at.y - start.cy, at.x - start.cx);
+  let angle = start.angle + (a1 - a0);
+  if (snap) angle = Math.round(angle / ROTATE_SNAP) * ROTATE_SNAP;
+  return { ...start, angle: normalizeAngle(angle) };
+}
+function clampScale(s, side) {
+  if (side <= 0 || !Number.isFinite(s)) return 1;
+  const min = MIN_SIDE / side;
+  if (Math.abs(s) >= min) return s;
+  return s < 0 ? -min : min;
+}
+function handlePoint(m, w, h, dir) {
+  return apply(m, { x: (dir.hx + 1) * w / 2, y: (dir.hy + 1) * h / 2 });
+}
+function hitTransform(m, w, h, at, handleTol, rotateTol) {
+  let best = -1;
+  let bestDist = handleTol;
+  HANDLES.forEach((dir, i) => {
+    const p = handlePoint(m, w, h, dir);
+    const dist = Math.hypot(p.x - at.x, p.y - at.y);
+    if (dist <= bestDist) {
+      best = i;
+      bestDist = dist;
+    }
+  });
+  if (best >= 0) return { kind: "scale", handle: best };
+  const inv = invert(m);
+  if (!inv) return { kind: "outside" };
+  const local = apply(inv, at);
+  if (local.x >= 0 && local.y >= 0 && local.x <= w && local.y <= h) return { kind: "move" };
+  for (const corner of transformedCorners(m, w, h)) {
+    if (Math.hypot(corner.x - at.x, corner.y - at.y) <= handleTol + rotateTol) return { kind: "rotate" };
+  }
+  return { kind: "outside" };
+}
+function resizeAxis(m, w, h, handle) {
+  const dir = HANDLES[handle] ?? { hx: 1, hy: 0 };
+  const centre = handlePoint(m, w, h, { hx: 0, hy: 0 });
+  const p = handlePoint(m, w, h, dir);
+  let deg = Math.atan2(p.y - centre.y, p.x - centre.x) * 180 / Math.PI;
+  deg = (deg % 180 + 180) % 180;
+  if (deg < 22.5 || deg >= 157.5) return "ew";
+  if (deg < 67.5) return "nwse";
+  if (deg < 112.5) return "ns";
+  return "nesw";
+}
+const HANDLE_PX = 7;
+const CENTRE_PX = 3.5;
+function drawTransformOverlay(ctx, editor, pixelRatio) {
+  const box = editor.float.transform.box();
+  if (!box) return;
+  const view = editor.view.current;
+  const map = editor.frameMap;
+  const toBacking = (p) => {
+    const img = docToImage(map, p);
+    return { x: (img.x * view.scale + view.offsetX) * pixelRatio, y: (img.y * view.scale + view.offsetY) * pixelRatio };
+  };
+  const px = pixelRatio / editor.view.graphScale;
+  const corners = transformedCorners(box.m, box.w, box.h).map(toBacking);
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.setLineDash([]);
+  ctx.lineJoin = "miter";
+  outline(ctx, corners, "#111111", 3 * px);
+  outline(ctx, corners, "#ffffff", px);
+  ctx.lineWidth = px;
+  const half = HANDLE_PX / 2 * px;
+  for (const dir of HANDLES) {
+    const p = toBacking(handlePoint(box.m, box.w, box.h, dir));
+    const x = Math.round(p.x - half) + 0.5;
+    const y = Math.round(p.y - half) + 0.5;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x, y, 2 * half, 2 * half);
+    ctx.strokeStyle = "#111111";
+    ctx.strokeRect(x, y, 2 * half, 2 * half);
+  }
+  const c = toBacking(handlePoint(box.m, box.w, box.h, { hx: 0, hy: 0 }));
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, CENTRE_PX * px, 0, Math.PI * 2);
+  ctx.strokeStyle = "#111111";
+  ctx.lineWidth = 3 * px;
+  ctx.stroke();
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = px;
+  ctx.stroke();
+  ctx.restore();
+}
+function outline(ctx, pts, color, width) {
+  ctx.beginPath();
+  pts.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.closePath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.stroke();
 }
 const CLICK_SLOP = 4;
 const CLICK_MS = 500;
@@ -8544,7 +8953,7 @@ class StageView {
         alt: this.altDown
       });
     }
-    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(tool.cursor(), this.badge);
+    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(this.toolCursor(tool, session), this.badge);
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -8565,6 +8974,12 @@ class StageView {
     this.overlay.width = this.overlay.height = 0;
   }
   // ── Internals ───────────────────────────────────────────────────────────
+  /** The tool's cursor, per hover position for tools with `cursorAt` (Free Transform zones). */
+  toolCursor(tool, session) {
+    if (!session || !this.hover || !tool.cursorAt) return tool.cursor();
+    const { editor } = session;
+    return tool.cursorAt(editor, imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover)));
+  }
   /** Whether the hover point is inside the selection (the press test, `selectionMove.hit`). */
   hoverInSelection(session) {
     const { editor } = session;
@@ -8630,6 +9045,7 @@ class StageView {
     const overlay = tool?.overlay?.() ?? null;
     if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
+    if (session) drawTransformOverlay(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {
@@ -8664,7 +9080,7 @@ const HIT_MARGIN = 0.15;
 function renderTextLayer(s, layer) {
   const td = layer.kind === "text" ? layer.textData : void 0;
   if (!td) return;
-  const bbox = textLayout(td).bbox;
+  const bbox = textLayout(td).paint;
   if (bbox.width > 0 && bbox.height > 0) s.ensureBounds(bbox, true);
   const surface = s.store.ensure(layer.id);
   surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
@@ -8721,7 +9137,9 @@ function hitTestText(layers2, point, boxOf) {
     if (!layer || layer.kind !== "text" || !layer.visible || !layer.textData) continue;
     const box = boxOf(layer.textData);
     const m = layer.textData.size * HIT_MARGIN;
-    if (point.x >= box.x - m && point.x <= box.x + box.width + m && point.y >= box.y - m && point.y <= box.y + box.height + m) {
+    const rot = layer.textData.rotation ?? 0;
+    const p = rot ? rotatePoint(point, -rot, { x: box.x + box.width / 2, y: box.y + box.height / 2 }) : point;
+    if (p.x >= box.x - m && p.x <= box.x + box.width + m && p.y >= box.y - m && p.y <= box.y + box.height + m) {
       return layer.id;
     }
   }
@@ -8876,7 +9294,10 @@ class TextOverlay {
     const sx = (map.offsetX + left * map.scale) * view.scale + view.offsetX;
     const sy = (map.offsetY + lay.box.y * map.scale) * view.scale + view.offsetY;
     const style = area.style;
-    style.transform = `translate(${sx}px, ${sy}px) scale(${k})`;
+    const ox = lay.centre.x - left;
+    const oy = lay.box.height / 2;
+    const rot = lay.rotation ? ` translate(${ox}px, ${oy}px) rotate(${lay.rotation}deg) translate(${-ox}px, ${-oy}px)` : "";
+    style.transform = `translate(${sx}px, ${sy}px) scale(${k})${rot}`;
     style.width = `${lay.box.width + pad}px`;
     style.height = `${lay.box.height}px`;
     style.font = fontString(td);
@@ -9051,7 +9472,9 @@ class EditorHost {
         // Drawing resolution notice: frame / image size / load changes (cheap, de-duplicated).
         editor.events.on("render", () => this.sync.resolution.sync()),
         // Selection: marching ants + "To mask" button.
-        editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.view.requestOverlay())),
+        editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.sync.syncOptions(), this.view.requestOverlay())),
+        // Free Transform: bar swaps to the session options and back; handles + cursor follow.
+        editor.events.on("transform", () => (this.sync.syncOptions(), this.view.requestOverlay())),
         editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),
         // Tool switch: chrome (rail, options, Move drawing toggle) + stage cursor/ring now.
         tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay()))
@@ -10287,6 +10710,7 @@ class ClipboardOps {
     const layer = createPaintLayer(pastedLayerName(s.doc.layers));
     const id = this.layers.addWithPixels(layer, index, { x: rect.x, y: rect.y, data });
     if (!id) return null;
+    s.kept.keep(id, { pixels: data, area: { ...rect }, m: translation(rect.x, rect.y), revision: s.runtime.revision(id) });
     const sel = s.selection.current;
     if (sel) {
       s.selection.set(null);
@@ -10651,6 +11075,86 @@ class HistoryStack {
     return evicted;
   }
 }
+const KEPT_ORIGINAL_BYTES = 128 * 1024 * 1024;
+class KeptOriginals {
+  /**
+   * @param maxBytes - Memory cap (default {@link KEPT_ORIGINAL_BYTES}).
+   */
+  constructor(maxBytes = KEPT_ORIGINAL_BYTES) {
+    this.maxBytes = maxBytes;
+  }
+  maxBytes;
+  entries = /* @__PURE__ */ new Map();
+  total = 0;
+  /** Bytes held. */
+  get bytes() {
+    return this.total;
+  }
+  /** Number of entries. */
+  get size() {
+    return this.entries.size;
+  }
+  /**
+   * Keep (replace) a layer's original, then enforce the cap (oldest first;
+   * an entry larger than the whole cap is not kept at all).
+   * @param layerId - Layer id.
+   * @param entry - Original.
+   */
+  keep(layerId, entry) {
+    this.drop(layerId);
+    const bytes = entry.pixels.data.byteLength;
+    if (bytes > this.maxBytes) return;
+    this.entries.set(layerId, entry);
+    this.total += bytes;
+    for (const id of this.entries.keys()) {
+      if (this.total <= this.maxBytes) break;
+      this.drop(id);
+    }
+  }
+  /**
+   * A layer's original if still valid (dropped otherwise).
+   * @param layerId - Layer id.
+   * @param revision - The layer's current pixel revision.
+   * @returns Entry, or `null`.
+   */
+  get(layerId, revision) {
+    const entry = this.entries.get(layerId);
+    if (!entry) return null;
+    if (entry.revision === revision) return entry;
+    this.drop(layerId);
+    return null;
+  }
+  /**
+   * Whether a layer has an entry (valid or not).
+   * @param layerId - Layer id.
+   * @returns `true` if held.
+   */
+  has(layerId) {
+    return this.entries.has(layerId);
+  }
+  /**
+   * Forget a layer's original.
+   * @param layerId - Layer id.
+   */
+  drop(layerId) {
+    const entry = this.entries.get(layerId);
+    if (!entry) return;
+    this.total -= entry.pixels.data.byteLength;
+    this.entries.delete(layerId);
+  }
+  /**
+   * Drop entries whose layer is gone.
+   * @param alive - Ids of the document's layers.
+   */
+  prune(alive) {
+    for (const id of [...this.entries.keys()]) if (!alive.has(id)) this.drop(id);
+  }
+  /** Drop everything. */
+  clear() {
+    this.entries.clear();
+    this.total = 0;
+  }
+}
 class LayerRuntimeTable {
   entries = /* @__PURE__ */ new Map();
   revisions = /* @__PURE__ */ new Map();
@@ -10922,7 +11426,7 @@ function outlineContours(sel, area) {
   const w = dom.width;
   const h = dom.height;
   if (w <= 0 || h <= 0) return [];
-  if (!bounded && isUniform(data)) {
+  if (!bounded && isUniform$1(data)) {
     if (data[0] >= OUTLINE_THRESHOLD === beyond) return [];
     return [rectContour(dom)];
   }
@@ -11002,7 +11506,7 @@ function rectContour(r) {
   const y1 = r.y + r.height;
   return Float64Array.from([r.x, r.y, x1, r.y, x1, y1, r.x, y1]);
 }
-function isUniform(data) {
+function isUniform$1(data) {
   const first = data[0];
   for (let i = 1; i < data.length; i++) if (data[i] !== first) return false;
   return true;
@@ -11850,6 +12354,8 @@ class EditorState {
   stroke = new StrokeBuffer();
   runtime = new LayerRuntimeTable();
   store;
+  /** Pre-transform originals per layer (M11b, memory only; `keptOriginal.ts`). */
+  kept = new KeptOriginals();
   /** Current selection (session state, not saved); strokes are clipped to it. */
   selection = new SelectionState(() => this.events.emit("selection", void 0));
   /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
@@ -11898,6 +12404,8 @@ class EditorState {
    * before every other edit / history action -- the float's central hook.
    */
   settleFloat = () => void 0;
+  /** Commit an open text edit, if any (`textOps.ts` installs it; Free Transform calls it first). */
+  commitTextEdit = () => void 0;
   /**
    * Live display of a layer with its floating selection (hole + float at
    * its offset), or `null` when the layer has no float (`floatOps.ts`).
@@ -11924,6 +12432,10 @@ class EditorState {
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
     this.events.on("layers", () => this.solo.set(pruneSolo(this.solo.current, this.doc.layers)));
+    this.events.on("layers", () => this.kept.prune(new Set(this.doc.layers.map((l) => l.id))));
+    this.events.on("change", () => {
+      for (const layer of this.doc.layers) if (this.kept.has(layer.id)) this.kept.get(layer.id, this.runtime.revision(layer.id));
+    });
   }
   /** Layer files are being restored. */
   get loading() {
@@ -12285,11 +12797,11 @@ class LayerDisplay {
         this.tints.set(layer.id, tint);
       }
       const color = maskDisplayColor(layer);
-      const invert = layer.invert === true;
-      const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
+      const invert2 = layer.invert === true;
+      const key = { bounds, color, invert: invert2, revision: s.runtime.revision(layer.id) };
       const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
       const offset = this.moveOffset(layer.id);
-      out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...offset ? { offset } : {} });
+      out.push({ tint: canvas, color, opacity: layer.opacity, invert: invert2, ...offset ? { offset } : {} });
     }
     return out;
   }
@@ -12382,12 +12894,12 @@ function isDrawableShape(shape) {
   return hasPaint && shape.rect.width > 0 && shape.rect.height > 0;
 }
 function shapeBounds(shape) {
-  const empty = { x: 0, y: 0, width: 0, height: 0 };
-  if (!isDrawableShape(shape)) return empty;
+  const empty2 = { x: 0, y: 0, width: 0, height: 0 };
+  if (!isDrawableShape(shape)) return empty2;
   if (shape.kind === "line") {
     const geo = lineGeometry(shape);
-    if (!geo) return empty;
-    let r = empty;
+    if (!geo) return empty2;
+    let r = empty2;
     if (geo.shaft) r = unionRect(r, padRect(pointsRect(geo.shaft), shape.width / 2));
     for (const head of geo.heads) r = unionRect(r, pointsRect(head));
     return padRect(r, AA_PAD);
@@ -13201,9 +13713,9 @@ class LayerOps {
    * @param invert - Invert state.
    * @returns `true` if changed.
    */
-  setMaskInvert(layerId, invert) {
+  setMaskInvert(layerId, invert2) {
     if (findLayer(this.s, layerId)?.kind !== "mask") return false;
-    return setLayerProps(this.s, layerId, { invert });
+    return setLayerProps(this.s, layerId, { invert: invert2 });
   }
   // ── Internals ───────────────────────────────────────────────────────────
   /**
@@ -13280,7 +13792,797 @@ class EditorMaskOps {
     this.paint.setMaskVisible(visible);
   }
 }
+const MAX_SUPERSAMPLE = 4;
+function supersampleFactor(inv) {
+  const stretch = Math.max(Math.hypot(inv.a, inv.b), Math.hypot(inv.c, inv.d));
+  return Math.min(MAX_SUPERSAMPLE, Math.max(1, Math.ceil(stretch - 1e-6)));
+}
+function resampleRgba(src, sw, sh, m, dest) {
+  const out = new Uint8ClampedArray(Math.max(0, dest.width * dest.height * 4));
+  const inv = invert(m);
+  if (!inv) return out;
+  const n = supersampleFactor(inv);
+  const taps = n * n;
+  const acc = [0, 0, 0, 0];
+  for (let y = 0; y < dest.height; y++) {
+    for (let x = 0; x < dest.width; x++) {
+      acc.fill(0);
+      for (let j = 0; j < n; j++) {
+        const py = dest.y + y + (j + 0.5) / n;
+        for (let i = 0; i < n; i++) {
+          const px = dest.x + x + (i + 0.5) / n;
+          const u = inv.a * px + inv.c * py + inv.e - 0.5;
+          const v = inv.b * px + inv.d * py + inv.f - 0.5;
+          bilinearRgba(src, sw, sh, u, v, acc);
+        }
+      }
+      const alpha = acc[3];
+      if (alpha <= 0) continue;
+      const o = (y * dest.width + x) * 4;
+      out[o] = Math.round(acc[0] / alpha);
+      out[o + 1] = Math.round(acc[1] / alpha);
+      out[o + 2] = Math.round(acc[2] / alpha);
+      out[o + 3] = Math.round(alpha / taps);
+    }
+  }
+  return out;
+}
+function resampleCoverage(src, sw, sh, m, dest) {
+  const out = new Uint8Array(Math.max(0, dest.width * dest.height));
+  const inv = invert(m);
+  if (!inv) return out;
+  const n = supersampleFactor(inv);
+  for (let y = 0; y < dest.height; y++) {
+    for (let x = 0; x < dest.width; x++) {
+      let sum = 0;
+      for (let j = 0; j < n; j++) {
+        const py = dest.y + y + (j + 0.5) / n;
+        for (let i = 0; i < n; i++) {
+          const px = dest.x + x + (i + 0.5) / n;
+          sum += bilinearByte(src, sw, sh, inv.a * px + inv.c * py + inv.e - 0.5, inv.b * px + inv.d * py + inv.f - 0.5);
+        }
+      }
+      out[y * dest.width + x] = Math.round(sum / (n * n));
+    }
+  }
+  return out;
+}
+function transformSelection(sel, area, m) {
+  const coverage = coverageFor(sel, area);
+  const dest = transformedAabb(m, area.width, area.height);
+  if (dest.width <= 0 || dest.height <= 0) return null;
+  return selectionFromCoverage(resampleCoverage(coverage, area.width, area.height, m, dest), dest);
+}
+function flipRgba(src, w, h, axis) {
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < h; y++) {
+    const ty = axis === "v" ? h - 1 - y : y;
+    for (let x = 0; x < w; x++) {
+      const tx = axis === "h" ? w - 1 - x : x;
+      const s = (y * w + x) * 4;
+      out.set(src.subarray(s, s + 4), (ty * w + tx) * 4);
+    }
+  }
+  return out;
+}
+function bilinearRgba(src, sw, sh, u, v, acc) {
+  const x0 = Math.floor(u);
+  const y0 = Math.floor(v);
+  const fx = u - x0;
+  const fy = v - y0;
+  for (let k = 0; k < 4; k++) {
+    const xx = x0 + (k & 1);
+    const yy = y0 + (k >> 1);
+    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
+    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
+    const p = (yy * sw + xx) * 4;
+    const a = src[p + 3] * wgt;
+    if (a <= 0) continue;
+    acc[0] = acc[0] + src[p] * a;
+    acc[1] = acc[1] + src[p + 1] * a;
+    acc[2] = acc[2] + src[p + 2] * a;
+    acc[3] = acc[3] + a;
+  }
+}
+function bilinearByte(src, sw, sh, u, v) {
+  const x0 = Math.floor(u);
+  const y0 = Math.floor(v);
+  const fx = u - x0;
+  const fy = v - y0;
+  let sum = 0;
+  for (let k = 0; k < 4; k++) {
+    const xx = x0 + (k & 1);
+    const yy = y0 + (k >> 1);
+    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
+    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
+    sum += src[yy * sw + xx] * wgt;
+  }
+  return sum;
+}
+const EMPTY_LAYER_NOTE$1 = "The layer is empty.";
+function flipLayer(s, axis) {
+  const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+  const rect = layerContentRect(s, layer.id);
+  const before = isEmptyRect(rect) ? null : s.store.read(layer.id, rect);
+  if (!before) {
+    s.events.emit("note", EMPTY_LAYER_NOTE$1);
+    return false;
+  }
+  const { width, height } = before.rect;
+  const flipped = flipRgba(before.data.data, width, height, axis);
+  s.store.write(layer.id, before.rect.x, before.rect.y, new ImageData(flipped, width, height));
+  const after = s.store.read(layer.id, before.rect);
+  if (after) {
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId: layer.id, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+  }
+  s.runtime.touch(layer.id);
+  s.afterEdit();
+  return true;
+}
+function flipOutsideSession(s, float, axis) {
+  if (s.loading || s.stroke.active) return false;
+  if (!float.active && !s.selection.current) return flipLayer(s, axis);
+  if (!float.active && !float.lift(false)) return false;
+  const f = float.state;
+  const m = float.matrix();
+  if (!f || !m) return false;
+  const r = transformedAabb(m, f.area.width, f.area.height);
+  const next = multiply(mirrorAbout(axis, { x: r.x + r.width / 2, y: r.y + r.height / 2 }), m);
+  float.setTransform(next, float.selectionAt(next));
+  float.bake();
+  s.events.emit("transform", void 0);
+  return true;
+}
 const EMPTY_FLOAT_NOTE = "No pixels are selected.";
+function checkLift(s) {
+  const sel = s.selection.current;
+  if (s.loading || s.stroke.active || !sel) return "blocked";
+  const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!layer) return "blocked";
+  const note = editBlockNote(s, layer);
+  if (note) {
+    s.events.emit("note", note);
+    return "blocked";
+  }
+  if (layer.kind === "text") return "confirm";
+  const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
+  if (isEmptyRect(area)) return empty(s, EMPTY_FLOAT_NOTE) || "blocked";
+  return "ok";
+}
+function prepareLift(s) {
+  const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (layer) preparePixelEdit(s, layer);
+}
+function liftFloat(s, copy, sel) {
+  if (s.loading || s.stroke.active) return null;
+  const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+  const note = sel ? EMPTY_FLOAT_NOTE : EMPTY_LAYER_NOTE$1;
+  const content = layerContentRect(s, layer.id);
+  const area = sel ? selectionExtent(sel, s.store.bounds) : content;
+  const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
+  if (!read) return empty(s, note) || null;
+  const coverage = sel ? coverageFor(sel, read.rect) : new Uint8Array(read.rect.width * read.rect.height).fill(255);
+  const { float, rest } = liftPixels(read.data.data, coverage, !copy);
+  if (!hasAlpha(float)) return empty(s, note) || null;
+  const w = read.rect.width;
+  const h = read.rect.height;
+  const pixels = new ImageData(float, w, h);
+  if (!copy) {
+    s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
+    s.runtime.bump(layer.id);
+  }
+  const surface = createSurface(w, h);
+  surface.ctx.putImageData(pixels, 0, 0);
+  return { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, selBase: sel, xf: null, baked: null, dragBase: null, preview: null };
+}
+function liftKept(s) {
+  if (s.loading || s.stroke.active || s.selection.current) return null;
+  const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+  if (!layer || layer.kind === "text" || !s.kept.get(layer.id, s.runtime.revision(layer.id))) return null;
+  if (preparePixelEdit(s, layer) === "blocked") return null;
+  const kept = s.kept.get(layer.id, s.runtime.revision(layer.id));
+  const content = layerContentRect(s, layer.id);
+  const read = kept && !isEmptyRect(content) ? s.store.read(layer.id, content) : null;
+  if (!kept || !read) return null;
+  const { width: w, height: h } = read.rect;
+  s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(w, h));
+  s.runtime.bump(layer.id);
+  const { width: pw, height: ph } = kept.area;
+  const surface = createSurface(pw, ph);
+  surface.ctx.putImageData(kept.pixels, 0, 0);
+  return {
+    layerId: layer.id,
+    area: { ...kept.area },
+    original: read.data,
+    holeRect: read.rect,
+    liftM: kept.m,
+    params: kept.params,
+    pixels: kept.pixels,
+    surface,
+    dx: 0,
+    dy: 0,
+    selBefore: null,
+    selBase: null,
+    xf: kept.m,
+    baked: null,
+    dragBase: null,
+    preview: null
+  };
+}
+function holeOf(f) {
+  return f.holeRect ?? f.area;
+}
+function empty(s, note) {
+  s.events.emit("note", note);
+  return false;
+}
+function hasAlpha(px) {
+  for (let p = 3; p < px.length; p += 4) if (px[p] !== 0) return true;
+  return false;
+}
+function isPlainPlacement(f, m) {
+  return !f.xf && m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1;
+}
+function writeFloatPatch(s, f, m) {
+  const plain = isPlainPlacement(f, m);
+  const dest = plain ? { ...f.area, x: m.e, y: m.f } : transformedAabb(m, f.area.width, f.area.height);
+  s.ensureBounds(dest, true);
+  const hole = holeOf(f);
+  const union = intersectRect(unionRect(hole, dest), s.store.bounds);
+  const current = s.store.read(f.layerId, union);
+  if (!current) return;
+  const r = current.rect;
+  const before = new Uint8ClampedArray(current.data.data);
+  copyPixels(before, r, f.original.data, hole);
+  const next = new Uint8ClampedArray(current.data.data);
+  const at = plain ? dest : intersectRect(dest, r);
+  const src = plain ? f.pixels.data : resampleRgba(f.pixels.data, f.area.width, f.area.height, m, at);
+  compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
+  const after = s.store.read(f.layerId, r);
+  if (after) {
+    const beforeData = new ImageData(before, r.width, r.height);
+    const bytes = before.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
+    recordSelectionMove(s, f.selBefore, s.selection.current, true);
+  }
+  s.runtime.touch(f.layerId);
+}
+function bakeFloat(f, m) {
+  const rect = transformedAabb(m, f.area.width, f.area.height);
+  const surface = createSurface(Math.max(1, rect.width), Math.max(1, rect.height));
+  if (rect.width > 0 && rect.height > 0) {
+    const px = resampleRgba(f.pixels.data, f.area.width, f.area.height, m, rect);
+    surface.ctx.putImageData(new ImageData(px, rect.width, rect.height), 0, 0);
+  }
+  return { surface, rect, m };
+}
+function floatPreviewCanvas(s, f, m) {
+  const b = s.store.bounds;
+  const key = `${s.runtime.revision(f.layerId)}:${b.x},${b.y},${b.width},${b.height}`;
+  if (f.preview?.key === key) return f.preview.surface.canvas;
+  if (f.preview) releaseSurface(f.preview.surface);
+  const surface = createSurface(b.width, b.height);
+  drawFloatPreview(surface.ctx, s.store.ensure(f.layerId).canvas, f, m, b);
+  f.preview = { surface, key };
+  return surface.canvas;
+}
+function dropBake(f) {
+  if (f.baked) releaseSurface(f.baked.surface);
+  f.baked = null;
+}
+function releaseFloat(f) {
+  releaseSurface(f.surface);
+  dropBake(f);
+  if (f.preview) releaseSurface(f.preview.surface);
+  f.preview = null;
+}
+function isWholeShift(from, to) {
+  const dx = to.e - from.e;
+  const dy = to.f - from.f;
+  const whole = (v) => Math.abs(v - Math.round(v)) < 1e-6;
+  return from.a === to.a && from.b === to.b && from.c === to.c && from.d === to.d && whole(dx) && whole(dy);
+}
+function drawFloatPreview(ctx, layer, f, m, bounds) {
+  ctx.drawImage(layer, 0, 0);
+  if (isPlainPlacement(f, m)) {
+    ctx.drawImage(f.surface.canvas, m.e - bounds.x, m.f - bounds.y);
+    return;
+  }
+  const baked = f.baked;
+  if (baked && isWholeShift(baked.m, m)) {
+    ctx.drawImage(baked.surface.canvas, baked.rect.x + Math.round(m.e - baked.m.e) - bounds.x, baked.rect.y + Math.round(m.f - baked.m.f) - bounds.y);
+    return;
+  }
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.setTransform(m.a, m.b, m.c, m.d, m.e - bounds.x, m.f - bounds.y);
+  ctx.drawImage(f.surface.canvas, 0, 0);
+  ctx.restore();
+}
+function fieldValue(p, map, key) {
+  const centre = docToImage(map, { x: p.cx, y: p.cy });
+  switch (key) {
+    case "x":
+      return centre.x;
+    case "y":
+      return centre.y;
+    case "w":
+      return Math.abs(p.sx);
+    case "h":
+      return Math.abs(p.sy);
+    case "angle":
+      return normalizeAngle(p.angle) * 180 / Math.PI;
+  }
+}
+function withField(p, map, key, value, linked) {
+  if (!Number.isFinite(value)) return null;
+  const next = { ...p };
+  if (key === "x" || key === "y") {
+    const img = docToImage(map, { x: p.cx, y: p.cy });
+    const doc = imageToDoc(map, key === "x" ? { x: value, y: img.y } : { x: img.x, y: value });
+    next.cx = doc.x;
+    next.cy = doc.y;
+  } else if (key === "w" || key === "h") {
+    if (value <= 0) return null;
+    const old = Math.abs(key === "w" ? p.sx : p.sy);
+    const k = old > 0 ? value / old : 1;
+    if (key === "w" || linked) next.sx *= k;
+    if (key === "h" || linked) next.sy *= k;
+  } else {
+    next.angle = normalizeAngle(value * Math.PI / 180);
+  }
+  return next;
+}
+function dragParams(drag, w, h, at, mods, proportional) {
+  const { hit, start, from } = drag;
+  switch (hit.kind) {
+    case "move":
+      return { ...start, cx: start.cx + Math.round(at.x - from.x), cy: start.cy + Math.round(at.y - from.y) };
+    case "scale":
+      return scaleDrag(start, w, h, hit.handle, at, { proportional: proportional !== mods.shift, fromCentre: mods.alt });
+    case "rotate":
+      return rotateDrag(start, from, at, mods.shift);
+    case "outside":
+      return start;
+  }
+}
+const UNIFORM_EPS = 1e-6;
+function isUniform(p) {
+  const ax = Math.abs(p.sx);
+  const ay = Math.abs(p.sy);
+  return Math.sign(p.sx) === Math.sign(p.sy) && Math.abs(ax - ay) <= UNIFORM_EPS * Math.max(ax, ay, 1);
+}
+function textDataAt(start, centre, p) {
+  const angle = p.sx < 0 ? p.angle + Math.PI : p.angle;
+  const size = clampSize(start.size * Math.abs(p.sx));
+  const k = size / start.size;
+  const moved = { ...start, size, x: p.cx + k * (start.x - centre.x), y: p.cy + k * (start.y - centre.y) };
+  return withRotation(moved, angle * 180 / Math.PI);
+}
+function rasterizeText(s, layerId) {
+  const layer = s.doc.layers.find((l) => l.id === layerId);
+  if (layer?.kind !== "text") return false;
+  rasterizeLayer(s, layer);
+  s.history.joinNext(() => false);
+  return true;
+}
+class TextTransform {
+  constructor(s, layerId, start, name) {
+    this.s = s;
+    this.layerId = layerId;
+    this.start = start;
+    this.name = name;
+    const lay = textLayout(start);
+    this.w = Math.max(1, lay.box.width);
+    this.h = Math.max(1, lay.box.height);
+    this.centre = { ...lay.centre };
+    this.startParams = { cx: lay.centre.x, cy: lay.centre.y, sx: 1, sy: 1, angle: (start.rotation ?? 0) * Math.PI / 180 };
+  }
+  s;
+  layerId;
+  start;
+  name;
+  /** Session box: unrotated edit box size, document px. */
+  w;
+  h;
+  /** Parameters at session start. */
+  startParams;
+  centre;
+  /**
+   * Start a session on the current edit layer if it is text (a selection is
+   * ignored: Photoshop transforms the text layer as a whole).
+   * @param s - Editor state.
+   * @returns Session, `"blocked"` (hidden / locked note shown) or `null` (not a text layer).
+   */
+  static begin(s) {
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+    if (layer?.kind !== "text" || !layer.textData) return null;
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
+      return "blocked";
+    }
+    return new TextTransform(s, layer.id, layer.textData, layer.name);
+  }
+  /** Whether the layer is still this session's text layer. */
+  get valid() {
+    return this.layer() !== void 0;
+  }
+  /**
+   * Show parameters (re-render, no history).
+   * @param p - Parameters.
+   * @returns `false` (nothing changed) when `p` is not uniform.
+   */
+  apply(p) {
+    const layer = this.layer();
+    if (!layer || !isUniform(p)) return false;
+    this.show(layer, textDataAt(this.start, this.centre, p));
+    return true;
+  }
+  /**
+   * End the session: ONE text step when anything changed.
+   * @returns `true` if a step was recorded.
+   */
+  commit() {
+    const layer = this.layer();
+    const td = layer?.textData;
+    if (!layer || !td || sameTextData(td, this.start)) return false;
+    const s = this.s;
+    recordTextChange(s, layer.id, { kind: "text", name: this.name, textData: this.start }, { kind: "text", name: layer.name, textData: td });
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    s.events.emit("layers", void 0);
+    return true;
+  }
+  /** Put the start text back. */
+  cancel() {
+    const layer = this.layer();
+    if (layer) this.show(layer, this.start);
+  }
+  show(layer, td) {
+    if (layer.textData && sameTextData(layer.textData, td)) return;
+    layer.textData = td;
+    renderTextLayer(this.s, layer);
+    this.s.runtime.bump(layer.id);
+    this.s.events.emit("render", void 0);
+  }
+  layer() {
+    const layer = this.s.doc.layers.find((l) => l.id === this.layerId);
+    return layer?.kind === "text" && layer.textData ? layer : void 0;
+  }
+}
+function isScaleField(key) {
+  return key === "w" || key === "h";
+}
+function endTextFieldEdit(edit, current, map) {
+  const want = withField(edit.before, map, edit.key, fieldValue(current, map, edit.key), false);
+  if (!want || isUniform(want)) return null;
+  return { before: { ...edit.before }, want };
+}
+function rescaleFromText(p, req) {
+  const kx = req.before.sx !== 0 ? req.want.sx / req.before.sx : 1;
+  const ky = req.before.sy !== 0 ? req.want.sy / req.before.sy : 1;
+  return { ...p, sx: p.sx * kx, sy: p.sy * ky };
+}
+class TransformOps {
+  /**
+   * @param s - Shared editor state.
+   * @param float - The editor's float commands.
+   */
+  constructor(s, float) {
+    this.s = s;
+    this.float = float;
+  }
+  s;
+  float;
+  session = null;
+  drag = null;
+  /** A text session asked for a non-uniform change / flip (rasterize prompt pending). */
+  wantRaster = null;
+  /** Open unlinked W / H field session of a text session ({@link endField}). */
+  fieldEdit = null;
+  /** Proportion lock (options bar); Shift inverts it while dragging a handle. */
+  proportional = true;
+  /** Whether a session is running. */
+  get active() {
+    return this.current() !== null;
+  }
+  /** Whether a TEXT layer session is running (no float; M11b). */
+  get textActive() {
+    return this.current()?.text != null;
+  }
+  /** Whether a text session is waiting for the rasterize prompt ({@link resolvePending}). */
+  get pending() {
+    return this.wantRaster !== null && this.textActive;
+  }
+  /** Current parameters, or `null` outside a session. */
+  get params() {
+    return this.current()?.params ?? null;
+  }
+  /** Whether a handle drag is in progress. */
+  get dragging() {
+    return this.drag !== null && this.active;
+  }
+  /**
+   * Float-local -> document matrix and float size of the session.
+   * @returns Box geometry, or `null` outside a session.
+   */
+  box() {
+    const session = this.current();
+    if (!session) return null;
+    const { w, h } = session;
+    return { m: paramsMatrix(session.params, w, h), w, h };
+  }
+  /**
+   * Start a session (see module doc). Notes explain refusals.
+   * @returns `true` if a session is running afterwards.
+   */
+  enter() {
+    if (this.active) return true;
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    s.commitTextEdit();
+    this.drag = null;
+    this.wantRaster = null;
+    this.fieldEdit = null;
+    if (!this.float.active) {
+      const text = TextTransform.begin(s);
+      if (text === "blocked") return false;
+      if (text) {
+        const p = text.startParams;
+        this.session = { float: null, text, w: text.w, h: text.h, params: { ...p }, startM: paramsMatrix(p, text.w, text.h), startSel: null };
+        s.events.emit("transform", void 0);
+        return true;
+      }
+      const lifted = s.selection.current ? this.float.lift(false) : this.float.liftKept() || this.float.liftWhole();
+      if (!lifted) return false;
+    }
+    const f = this.float.state;
+    const m = this.float.matrix();
+    if (!f || !m) return false;
+    const { width: w, height: h } = f.area;
+    const known = f.params && affineEquals(paramsMatrix(f.params, w, h), m) ? { ...f.params } : null;
+    const params = known ?? decomposeAffine(m, w, h);
+    this.session = { float: f, text: null, w, h, params, startM: m, startSel: s.selection.current };
+    this.float.setTransform(m, void 0, params);
+    s.events.emit("transform", void 0);
+    return true;
+  }
+  /**
+   * Commit the session. Whole-layer sessions land in the layer (the float's
+   * commit, one undo step). Selection sessions end but the float STAYS: its
+   * matrix is kept over the original lifted pixels (a later session resumes
+   * from it, no accumulated resampling), the display is resampled once
+   * (`FloatOps.bake`), and the float commits by the M10 rules later.
+   * @returns `true` if layer pixels changed (never for a selection session).
+   */
+  commit() {
+    const session = this.current();
+    if (!session) return false;
+    if (session.text) return this.endText(session.text, true);
+    if (!session.float?.selBefore) return this.float.commit();
+    if (this.drag) this.endDrag();
+    this.apply(session.params, true);
+    this.session = null;
+    this.float.bake();
+    this.s.events.emit("transform", void 0);
+    return false;
+  }
+  /** Cancel the session: everything back as before it (and before its lift). */
+  cancel() {
+    const session = this.current();
+    if (session?.text) this.endText(session.text, false);
+    else if (session) this.float.cancel();
+  }
+  /**
+   * Outside any gesture: a text session's non-uniform change / flip asks to
+   * rasterize (`EditorState.confirmRasterize`). Yes = the text changes so
+   * far commit, the layer is rasterized (its own step) and a whole-layer
+   * pixel session continues from it (a pending flip / field W H is
+   * re-applied; a drag's shape is not). No = the change is dropped (it was
+   * never shown / was reverted); the text session stays.
+   * @returns `true` if the session turned into a pixel session.
+   */
+  resolvePending() {
+    const want = this.wantRaster;
+    this.wantRaster = null;
+    const session = this.current();
+    if (!want || !session?.text || this.drag) return false;
+    if (!this.s.confirmRasterize()) return false;
+    const layerId = session.text.layerId;
+    this.commit();
+    if (!rasterizeText(this.s, layerId) || !this.float.liftWhole() || !this.enter()) return false;
+    if (want.flip) this.flip(want.flip);
+    const p = this.params;
+    if (want.fields && p) this.apply(rescaleFromText(p, want.fields), true);
+    return true;
+  }
+  // ── Handles ─────────────────────────────────────────────────────────────
+  /**
+   * Hit zone at a document point.
+   * @param at - Document point.
+   * @param handleTol - Handle radius, document px.
+   * @param rotateTol - Rotate reach beyond a corner, document px.
+   * @returns Hit (`outside` without a session).
+   */
+  hit(at, handleTol, rotateTol) {
+    const box = this.box();
+    return box ? hitTransform(box.m, box.w, box.h, at, handleTol, rotateTol) : { kind: "outside" };
+  }
+  /**
+   * Resize cursor axis of a handle for the current rotation / flips.
+   * @param handle - Handle index.
+   * @returns Axis.
+   */
+  resizeAxis(handle) {
+    const box = this.box();
+    return box ? resizeAxis(box.m, box.w, box.h, handle) : "ew";
+  }
+  /** Hit of the drag in progress (cursor during a drag), or `null`. */
+  get dragHit() {
+    return this.dragging ? this.drag?.hit ?? null : null;
+  }
+  /**
+   * Start a drag.
+   * @param hit - Zone pressed ({@link hit}); `outside` starts nothing.
+   * @param at - Pointer, document px.
+   * @returns `true` if a drag started.
+   */
+  beginDrag(hit, at) {
+    const session = this.current();
+    if (!session || hit.kind === "outside") return false;
+    this.drag = { hit, start: { ...session.params }, from: { ...at } };
+    return true;
+  }
+  /**
+   * Update the drag.
+   * @param at - Pointer, document px.
+   * @param mods - Shift (free scale / 15 deg snap) and Alt (around the centre).
+   */
+  dragTo(at, mods) {
+    const drag = this.drag;
+    const session = this.current();
+    if (!drag || !session) return;
+    this.apply(dragParams(drag, session.w, session.h, at, mods, this.proportional), false);
+  }
+  /** End the drag (the session stays open). */
+  endDrag() {
+    if (!this.drag) return;
+    this.drag = null;
+    const session = this.current();
+    if (session) this.apply(session.params, true);
+  }
+  /** Abort the drag: back to its start parameters. */
+  cancelDrag() {
+    const drag = this.drag;
+    this.drag = null;
+    if (drag && this.current()) this.apply(drag.start, true);
+    this.wantRaster = null;
+  }
+  /**
+   * Arrow nudge of the session.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   * @returns `true` if a session moved.
+   */
+  nudge(dx, dy) {
+    const session = this.current();
+    if (!session || this.drag) return false;
+    this.apply({ ...session.params, cx: session.params.cx + dx, cy: session.params.cy + dy }, true);
+    return true;
+  }
+  // ── Flips ───────────────────────────────────────────────────────────────
+  /**
+   * Flip H / V: part of a running session; else mirror a float (lifting the
+   * selection first) as a still-floating exact mirror; else mirror the whole
+   * current layer about its content centre (one undo step).
+   * @param axis - `"h"` or `"v"`.
+   * @returns `true` if something flipped.
+   */
+  flip(axis) {
+    const session = this.current();
+    if (session?.text) {
+      this.wantRaster = { flip: axis };
+      return this.resolvePending();
+    }
+    if (session) {
+      this.apply(flipParams(session.params, axis), true);
+      return true;
+    }
+    return flipOutsideSession(this.s, this.float, axis);
+  }
+  // ── Option fields ───────────────────────────────────────────────────────
+  /**
+   * An options-bar value (`transformFields.ts`: X / Y = box centre in image
+   * px, W / H = scale fractions, angle in degrees).
+   * @param key - Field.
+   * @returns Value, or `undefined` outside a session.
+   */
+  field(key) {
+    const p = this.params;
+    return p ? fieldValue(p, documentMap(this.s.doc, this.s.imageSize), key) : void 0;
+  }
+  /**
+   * Set an options-bar value (same units as {@link field}); W / H keep the
+   * ratio while the proportion lock is on; flips are kept. Text sessions
+   * with the lock off preview W / H linked and resolve the unlinked value
+   * when the field session ends ({@link endField}).
+   * @param key - Field.
+   * @param value - New value.
+   * @returns `true` if the session changed.
+   */
+  setField(key, value) {
+    const session = this.current();
+    if (!session || this.drag) return false;
+    const p = withField(session.params, documentMap(this.s.doc, this.s.imageSize), key, value, this.proportional || session.text !== null);
+    if (!p) return false;
+    if (session.text && !this.proportional && isScaleField(key) && this.fieldEdit?.key !== key) this.fieldEdit = { key, before: { ...session.params } };
+    this.apply(p, true);
+    return true;
+  }
+  /**
+   * A field session ended (Enter / blur / scrub release). An unlinked text
+   * W / H edit that is not uniform reverts to its start and becomes a
+   * pending rasterize request ({@link resolvePending}, run it deferred).
+   * @returns `true` if a prompt is pending.
+   */
+  endField() {
+    const edit = this.fieldEdit;
+    this.fieldEdit = null;
+    const session = this.current();
+    if (!edit || !session?.text || this.drag) return false;
+    const req = endTextFieldEdit(edit, session.params, documentMap(this.s.doc, this.s.imageSize));
+    if (!req) return false;
+    this.apply(req.before, true);
+    this.wantRaster = { flip: null, fields: req };
+    return true;
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  /** End a text session: commit (one text step) or cancel. @returns `true` if a step was recorded. */
+  endText(text, commit) {
+    this.drag = null;
+    this.session = null;
+    this.wantRaster = null;
+    this.fieldEdit = null;
+    const changed = commit ? text.commit() : (text.cancel(), false);
+    this.s.events.emit("transform", void 0);
+    return changed;
+  }
+  /** The running session, dropping a stale one (its float was committed / cancelled). */
+  current() {
+    const session = this.session;
+    const stale = session?.text ? !session.text.valid || this.float.active : session && this.float.state !== session.float;
+    if (session && stale) {
+      this.session = null;
+      this.drag = null;
+      return null;
+    }
+    return session;
+  }
+  /** Show parameters; `settled` = also re-rasterize the transformed selection. */
+  apply(p, settled) {
+    const session = this.current();
+    if (!session) return;
+    if (session.text) {
+      if (session.text.apply(p)) {
+        session.params = p;
+        if (this.drag) this.wantRaster = null;
+      } else this.wantRaster = { flip: null };
+      this.s.events.emit("transform", void 0);
+      return;
+    }
+    session.params = p;
+    const m = paramsMatrix(p, session.w, session.h);
+    if (!session.float?.selBefore) this.float.setTransform(m, void 0, p);
+    else if (affineEquals(m, session.startM)) this.float.setTransform(m, session.startSel, p);
+    else this.float.setTransform(m, settled ? this.float.selectionAt(m) : null, p);
+    this.s.events.emit("transform", void 0);
+  }
+}
 class FloatOps {
   /**
    * @param s - Shared editor state (installs the settle hook and the preview).
@@ -13291,9 +14593,25 @@ class FloatOps {
       this.commit();
     };
     s.floatPreview = (layerId) => this.preview(layerId);
+    this.transform = new TransformOps(s, this);
   }
   s;
   f = null;
+  /** Free Transform sessions over this float (M11). */
+  transform;
+  /** The float itself (read-only view for `transformOps.ts`), or `null`. */
+  get state() {
+    return this.f;
+  }
+  /**
+   * The float's full float-local -> document matrix (offset included).
+   * @returns Matrix, or `null` without a float.
+   */
+  matrix() {
+    const f = this.f;
+    if (!f) return null;
+    return multiply(translation(f.dx, f.dy), f.xf ?? translation(f.area.x, f.area.y));
+  }
   /** Whether a float exists. */
   get active() {
     return this.f !== null;
@@ -13324,30 +14642,14 @@ class FloatOps {
    * @returns Check result.
    */
   check() {
-    const s = this.s;
-    if (this.f) return "ok";
-    const sel = s.selection.current;
-    if (s.loading || s.stroke.active || !sel) return "blocked";
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (!layer) return "blocked";
-    const note = editBlockNote(s, layer);
-    if (note) {
-      s.events.emit("note", note);
-      return "blocked";
-    }
-    if (layer.kind === "text") return "confirm";
-    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
-    if (isEmptyRect(area)) return this.empty() || "blocked";
-    return "ok";
+    return this.f ? "ok" : checkLift(this.s);
   }
   /**
    * Outside any gesture: run the pixel-edit gate for a lift (the text
    * rasterize confirm; Yes = its own undo step). Nothing is lifted.
    */
   prepareLift() {
-    const s = this.s;
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (layer) preparePixelEdit(s, layer);
+    prepareLift(this.s);
   }
   /**
    * Lift the selected pixels of the current edit layer into a float (the
@@ -13356,30 +14658,81 @@ class FloatOps {
    * @returns `true` if a float exists afterwards.
    */
   lift(copy) {
-    const s = this.s;
     if (this.f) return true;
-    const sel = s.selection.current;
-    if (s.loading || s.stroke.active || !sel) return false;
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
-    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
-    const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
-    if (!read) return this.empty();
-    const { float, rest } = liftPixels(read.data.data, coverageFor(sel, read.rect), !copy);
-    if (!hasAlpha(float)) return this.empty();
-    const w = read.rect.width;
-    const h = read.rect.height;
-    const pixels = new ImageData(float, w, h);
-    if (!copy) {
-      s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
-      s.runtime.bump(layer.id);
-    }
-    const surface = createSurface(w, h);
-    surface.ctx.putImageData(pixels, 0, 0);
-    this.f = { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, dragBase: null, preview: null };
-    s.events.emit("history", void 0);
-    s.events.emit("render", void 0);
+    const sel = this.s.selection.current;
+    return sel ? this.liftFrom(copy, sel) : false;
+  }
+  /**
+   * Lift the whole content of the current edit layer (Free Transform without
+   * a selection): the hole is the whole layer until commit. Same gate as {@link lift}.
+   * @returns `true` if a float exists afterwards.
+   */
+  liftWhole() {
+    return this.f ? true : this.liftFrom(false, null);
+  }
+  /**
+   * Whole-layer lift from the layer's kept original (M11b), if it has a
+   * valid one and there is no selection.
+   * @returns `true` if a float exists afterwards.
+   */
+  liftKept() {
+    return this.f ? true : this.adopt(liftKept(this.s));
+  }
+  liftFrom(copy, sel) {
+    return this.adopt(liftFloat(this.s, copy, sel));
+  }
+  adopt(f) {
+    if (!f) return false;
+    this.f = f;
+    this.s.events.emit("history", void 0);
+    this.s.events.emit("render", void 0);
     return true;
+  }
+  /**
+   * Set the float's matrix (Free Transform); the offset is folded in (reset to 0).
+   * @param m - Float-local -> document matrix.
+   * @param sel - New selection at that matrix (`undefined` = keep the current one).
+   * @param params - Session parameters that give `m` (kept for an exact restart), if any.
+   */
+  setTransform(m, sel, params) {
+    const f = this.f;
+    if (!f) return;
+    const s = this.s;
+    s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
+    f.xf = m;
+    f.params = params ? { ...params } : void 0;
+    dropBake(f);
+    f.dx = 0;
+    f.dy = 0;
+    if (sel !== void 0) {
+      f.selBase = sel;
+      s.selection.set(sel);
+    }
+    s.runtime.bump(f.layerId);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * The lift-time selection carried through a matrix (`null` for whole-layer lifts).
+   * @param m - Float-local -> document matrix.
+   * @returns Transformed selection.
+   */
+  selectionAt(m) {
+    const f = this.f;
+    return f?.selBefore ? transformSelection(f.selBefore, f.area, m) : null;
+  }
+  /**
+   * Resample the ORIGINAL lifted pixels once through the current matrix for
+   * display (a transform session ended, the float stays). Later whole-px
+   * moves reuse it; a new session / flip drops it (`setTransform`).
+   */
+  bake() {
+    const f = this.f;
+    const m = this.matrix();
+    if (!f || !m || !f.xf) return;
+    dropBake(f);
+    f.baked = bakeFloat(f, m);
+    this.s.runtime.bump(f.layerId);
+    this.s.events.emit("render", void 0);
   }
   // ── Moving ──────────────────────────────────────────────────────────────
   /** Start a drag of the float. @returns `false` without a float. */
@@ -13428,49 +14781,43 @@ class FloatOps {
    */
   commit() {
     const f = this.f;
-    if (!f) return false;
+    if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
-    if (f.dx === 0 && f.dy === 0) {
+    const m = this.matrix() ?? translation(f.area.x, f.area.y);
+    if (affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
       this.cancel();
       return false;
     }
+    if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
-    const dest = { ...f.area, x: f.area.x + f.dx, y: f.area.y + f.dy };
-    s.ensureBounds(dest, true);
-    const union = intersectRect(unionRect(f.area, dest), s.store.bounds);
-    const current = s.store.read(f.layerId, union);
-    if (current) {
-      const r = current.rect;
-      const before = new Uint8ClampedArray(current.data.data);
-      copyPixels(before, r, f.original.data, f.area);
-      const next = new Uint8ClampedArray(current.data.data);
-      compositeOver(next, r.width, r.height, f.pixels.data, f.area.width, f.area.height, dest.x - r.x, dest.y - r.y);
-      s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
-      const after = s.store.read(f.layerId, r);
-      if (after) {
-        const beforeData = new ImageData(before, r.width, r.height);
-        const bytes = before.byteLength + after.data.data.byteLength;
-        s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
-        recordSelectionMove(s, f.selBefore, s.selection.current, true);
-      }
-      s.runtime.touch(f.layerId);
+    const keep = f.xf !== null && isEmptyRect(layerContentRect(s, f.layerId));
+    writeFloatPatch(s, f, m);
+    releaseFloat(f);
+    if (keep) {
+      const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : void 0;
+      s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
     }
-    release(f);
     s.afterEdit();
+    s.events.emit("transform", void 0);
     return true;
   }
   /** Put everything back exactly as before the lift (Esc, Ctrl+Z). */
   cancel() {
     const f = this.f;
-    if (!f) return;
+    if (!f) {
+      this.transform.cancel();
+      return;
+    }
     const s = this.s;
     this.f = null;
-    s.store.write(f.layerId, f.area.x, f.area.y, f.original);
+    const hole = holeOf(f);
+    s.store.write(f.layerId, hole.x, hole.y, f.original);
     s.runtime.bump(f.layerId);
     s.selection.set(f.selBefore);
-    release(f);
+    releaseFloat(f);
     s.events.emit("history", void 0);
     s.events.emit("render", void 0);
+    s.events.emit("transform", void 0);
   }
   /**
    * Layer pixels as they were before the lift, for saving while floating.
@@ -13479,47 +14826,27 @@ class FloatOps {
    */
   savedPatch(layerId) {
     const f = this.f;
-    return f && f.layerId === layerId ? { x: f.area.x, y: f.area.y, data: f.original } : null;
+    const hole = f ? holeOf(f) : null;
+    return f && hole && f.layerId === layerId ? { x: hole.x, y: hole.y, data: f.original } : null;
   }
   // ── Internals ───────────────────────────────────────────────────────────
-  empty() {
-    this.s.events.emit("note", EMPTY_FLOAT_NOTE);
-    return false;
-  }
   setOffset(dx, dy) {
     const f = this.f;
     if (!f || f.dx === dx && f.dy === dy) return;
     const s = this.s;
-    s.ensureBounds({ ...f.area, x: f.area.x + dx, y: f.area.y + dy }, true);
+    const m = multiply(translation(dx, dy), f.xf ?? translation(f.area.x, f.area.y));
+    s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
     f.dx = dx;
     f.dy = dy;
     s.runtime.bump(f.layerId);
-    s.selection.set(offsetSelection(f.selBefore, dx, dy));
+    if (f.selBase) s.selection.set(offsetSelection(f.selBase, dx, dy));
     s.events.emit("render", void 0);
   }
   preview(layerId) {
     const f = this.f;
     if (!f || f.layerId !== layerId) return null;
-    const s = this.s;
-    const b = s.store.bounds;
-    const key = `${s.runtime.revision(layerId)}:${b.x},${b.y},${b.width},${b.height}`;
-    if (f.preview?.key === key) return f.preview.surface.canvas;
-    if (f.preview) releaseSurface(f.preview.surface);
-    const surface = createSurface(b.width, b.height);
-    surface.ctx.drawImage(s.store.ensure(layerId).canvas, 0, 0);
-    surface.ctx.drawImage(f.surface.canvas, f.area.x + f.dx - b.x, f.area.y + f.dy - b.y);
-    f.preview = { surface, key };
-    return surface.canvas;
+    return floatPreviewCanvas(this.s, f, this.matrix() ?? translation(f.area.x, f.area.y));
   }
-}
-function hasAlpha(px) {
-  for (let p = 3; p < px.length; p += 4) if (px[p] !== 0) return true;
-  return false;
-}
-function release(f) {
-  releaseSurface(f.surface);
-  if (f.preview) releaseSurface(f.preview.surface);
-  f.preview = null;
 }
 const MERGE_NOTHING_NOTE = "Nothing to merge down into.";
 function mergeDown(s) {
@@ -14246,6 +15573,7 @@ class PlacementOps {
   }
 }
 const NO_SELECTION_NOTE = "Nothing is selected.";
+const EMPTY_LAYER_NOTE = "The layer has no pixels.";
 class SelectionOps {
   /**
    * @param s - Shared editor state.
@@ -14324,6 +15652,32 @@ class SelectionOps {
    */
   invert() {
     return this.change(invertSelection(this.current));
+  }
+  /**
+   * Ctrl+click on a layer row (Photoshop's thumbnail Ctrl+click): the layer's
+   * alpha becomes the selection coverage (soft edges stay partial), combined
+   * by `mode`. A mask uses its effective coverage (per-mask invert applied,
+   * as the overlay shows it). Works on hidden layers; does not change the
+   * current layer, Quick Mask or solo. An empty layer notes and leaves the
+   * selection unchanged.
+   * @param layerId - Paint, text or mask layer id.
+   * @param mode - Combination mode.
+   * @returns `true` if the selection changed.
+   */
+  fromLayer(layerId, mode) {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    if (!layer) return false;
+    s.settleFloat();
+    const px = s.store.read(layer.id, s.store.bounds);
+    const alpha = px ? selectionFromAlpha(px.data.data, px.rect) : null;
+    if (!alpha) {
+      s.events.emit("note", EMPTY_LAYER_NOTE);
+      return false;
+    }
+    const next = layer.kind === "mask" && layer.invert === true ? invertSelection(alpha) : alpha;
+    return this.apply(hardenSelection(next), mode);
   }
   // ── Pixel commands (one undo patch each) ────────────────────────────────
   /**
@@ -14447,6 +15801,9 @@ class TextOps {
   constructor(s, layers2) {
     this.s = s;
     this.layers = layers2;
+    s.commitTextEdit = () => {
+      this.commit();
+    };
   }
   s;
   layers;
@@ -14532,6 +15889,40 @@ class TextOps {
     this.s.events.emit("text", void 0);
     this.s.events.emit("render", void 0);
     if (next.font !== td.font) this.noteMissingFont(next.font);
+  }
+  /**
+   * Rotation (degrees) of a text layer that is not being edited (Text tool
+   * angle field; M11b). Consecutive changes on the same layer merge into
+   * one text step (gesture `text-angle`), like arrow nudges.
+   * @param layerId - Text layer id.
+   * @param deg - Rotation, degrees.
+   * @returns `true` if the layer changed.
+   */
+  setRotation(layerId, deg) {
+    const s = this.s;
+    if (this.session?.layerId === layerId) {
+      const td2 = this.editing?.textData;
+      if (td2) this.update({ rotation: withRotation(td2, deg).rotation ?? 0 });
+      return td2 !== void 0;
+    }
+    const layer = this.find(layerId);
+    const td = layer?.kind === "text" ? layer.textData : void 0;
+    if (s.loading || s.stroke.active || !layer || !td) return false;
+    s.settleFloat();
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
+      return false;
+    }
+    const next = withRotation(td, deg);
+    if (sameTextData(next, td)) return false;
+    const before = textStateOf(layer);
+    layer.textData = next;
+    renderTextLayer(s, layer);
+    recordTextChange(s, layer.id, before, textStateOf(layer), "text-angle");
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    return true;
   }
   /**
    * Close the open edit: record it as one undo step (or remove an empty
@@ -14983,11 +16374,11 @@ class Editor extends EditorBase {
   }
   /** Undo available. */
   get canUndo() {
-    return (this.s.history.canUndo || this.float.active) && !this.s.stroke.active;
+    return (this.s.history.canUndo || this.float.active || this.float.transform.active) && !this.s.stroke.active;
   }
   /** Redo available. */
   get canRedo() {
-    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active;
+    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active && !this.float.transform.active;
   }
   /** Layer files are being restored; painting is disabled. */
   get loading() {
@@ -15165,7 +16556,7 @@ class Editor extends EditorBase {
    * (a no-op edit just closes). A floating selection is cancelled instead.
    */
   undo() {
-    if (this.float.active) {
+    if (this.float.active || this.float.transform.active) {
       this.float.cancel();
       return;
     }
@@ -15178,7 +16569,7 @@ class Editor extends EditorBase {
   }
   /** Redo the last undone operation (an open text edit is committed first). Ignored while floating. */
   redo() {
-    if (this.float.active) return;
+    if (this.float.active || this.float.transform.active) return;
     this.regionOps.cancel();
     this.text.commit();
     this.paint.redo();
@@ -15224,7 +16615,7 @@ class Editor extends EditorBase {
   }
   /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes() {
-    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes;
+    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes + this.s.kept.bytes;
   }
   /** Release everything. */
   dispose() {
@@ -15956,14 +17347,14 @@ function createMarqueeTools() {
     new MarqueeTool({ id: "marquee-ellipse", label: "Elliptical marquee", icon: "marqueeEllipse", kind: ELLIPSE_MARQUEE })
   ];
 }
-const OFFSET_LIMIT = 16384;
+const OFFSET_LIMIT$1 = 16384;
 const DESCRIPTORS$1 = [
-  { kind: "number", key: "x", label: "X", title: "Horizontal offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
-  { kind: "number", key: "y", label: "Y", title: "Vertical offset (image px; arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 1, unit: "px" },
+  { kind: "number", key: "x", label: "X", title: "Horizontal offset (image px; arrows nudge)", min: -OFFSET_LIMIT$1, max: OFFSET_LIMIT$1, step: 1, unit: "px" },
+  { kind: "number", key: "y", label: "Y", title: "Vertical offset (image px; arrows nudge)", min: -OFFSET_LIMIT$1, max: OFFSET_LIMIT$1, step: 1, unit: "px" },
   { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 1e3, step: 0.1, unit: "%", scale: 100, curve: "pow" },
   { kind: "button", key: "reset", label: "Reset position", title: "Put the drawing back where it was painted", group: "reset" }
 ];
-const ARROWS$1 = {
+const ARROWS$2 = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
   ArrowUp: [0, -1],
@@ -16069,7 +17460,7 @@ class MoveTool {
   }
   /** @inheritdoc */
   onKey(editor, event) {
-    const dir = ARROWS$1[event.key];
+    const dir = ARROWS$2[event.key];
     if (!dir) return false;
     if (this.drag) return true;
     const step = event.shiftKey ? 10 : 1;
@@ -16100,7 +17491,7 @@ function createMoveTool(editor) {
 const DESCRIPTORS = [
   { kind: "toggle", key: "autoSelect", label: "Auto-select", title: "Pick the layer under the pointer (hold Ctrl for a one-off pick)" }
 ];
-const ARROWS = {
+const ARROWS$1 = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
   ArrowUp: [0, -1],
@@ -16179,7 +17570,7 @@ class MoveLayerTool {
   }
   /** @inheritdoc */
   onKey(editor, event) {
-    const dir = ARROWS[event.key];
+    const dir = ARROWS$1[event.key];
     if (!dir) return false;
     if (this.start) return true;
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
@@ -16458,13 +17849,22 @@ function rememberFont(font) {
   }
 }
 class TextOptionSet extends OptionSet {
-  constructor(descriptors, values, changed) {
-    super(descriptors, values);
+  constructor(descriptors, store2, changed, angle) {
+    super(descriptors, store2);
+    this.store = store2;
     this.changed = changed;
+    this.angle = angle;
   }
+  store;
   changed;
+  angle;
+  /** The angle field always shows the target text layer's rotation. */
+  get(key) {
+    return key === "angle" ? this.angle() : super.get(key);
+  }
   /** @inheritdoc */
   set(key, value) {
+    if (key === "angle") this.store.angle = this.angle();
     const changed = super.set(key, value);
     if (changed) this.changed(key);
     return changed;
@@ -16501,9 +17901,19 @@ class TextTool {
           { value: "center", label: "Center" },
           { value: "right", label: "Right" }
         ]
+      },
+      {
+        kind: "number",
+        key: "angle",
+        label: "Angle",
+        title: "Rotation of the edited / selected text layer, degrees (Ctrl+Alt+T: rotate and scale on the canvas)",
+        min: -180,
+        max: 180,
+        step: 0.1,
+        unit: "°"
       }
     ];
-    this.options = new TextOptionSet(descriptors, this.values, (key) => this.optionChanged(key));
+    this.options = new TextOptionSet(descriptors, this.values, (key) => this.optionChanged(key), () => this.angleTarget()?.rotation ?? 0);
     editor.events.on("text", () => this.syncFromEdit());
     editor.colors.events.on("change", (colors) => {
       if (editor.text.editing) editor.text.update({ color: colors.fg });
@@ -16518,7 +17928,7 @@ class TextTool {
   ctrlMove = false;
   options;
   /** Stored option values (edited in place through {@link options}). */
-  values = { font: "sans-serif", size: 48, bold: false, italic: false, align: "left" };
+  values = { font: "sans-serif", size: 48, bold: false, italic: false, align: "left", angle: 0 };
   /** Ctrl+drag move in progress: pointer-down position, document coords. */
   moveStart = null;
   /** Layer whose edit the option values were last loaded from. */
@@ -16611,12 +18021,24 @@ class TextTool {
     const editor = this.editor;
     const v = this.values;
     if (key === "font") rememberFont(v.font);
+    if (key === "angle") {
+      const id = editor.text.editing?.layerId ?? editor.doc.activeLayerId;
+      editor.text.setRotation(id, v.angle);
+      return;
+    }
     if (!editor.text.editing) return;
     if (key === "font") editor.text.update({ font: v.font });
     else if (key === "size") editor.text.update({ size: this.docSize(editor) });
     else if (key === "bold") editor.text.update({ bold: v.bold });
     else if (key === "italic") editor.text.update({ italic: v.italic });
     else if (key === "align") editor.text.update({ align: v.align });
+  }
+  /** Text data the angle field shows / sets: the open edit, else the active layer if it is text. */
+  angleTarget() {
+    const edit = this.editor.text.editing;
+    if (edit) return edit.textData;
+    const active = this.editor.doc.layers.find((l) => l.id === this.editor.doc.activeLayerId);
+    return active?.kind === "text" ? active.textData : void 0;
   }
   /** A re-edit started: show that layer's style in the options and FG swatch. */
   syncFromEdit() {
@@ -16755,6 +18177,208 @@ class ToolGroupState {
     return group2.toolIds[(index + 1) % group2.toolIds.length];
   }
 }
+const TRANSFORM_TOOL_ID = "transform";
+const HANDLE_GRAB_PX = 8;
+const ROTATE_REACH_PX = 16;
+const OFFSET_LIMIT = 32768;
+const ARROWS = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1]
+};
+function docPerScreenPx(editor) {
+  const scale = editor.view.current.scale * editor.frameMap.scale * editor.view.graphScale;
+  return scale > 0 ? 1 / scale : 1;
+}
+class TransformTool {
+  id = TRANSFORM_TOOL_ID;
+  label = "Free transform";
+  shortcut = "";
+  icon = "transform";
+  rail = false;
+  ctrlMove = false;
+  options;
+  pressed = false;
+  /**
+   * @param editor - Session editor (the options read its transform).
+   */
+  constructor(editor) {
+    this.options = new TransformSessionOptions(editor);
+  }
+  /** @inheritdoc */
+  onPointerDown(editor, samples) {
+    const first = samples[0];
+    if (!first) return;
+    const t = editor.float.transform;
+    const k = docPerScreenPx(editor);
+    this.pressed = t.beginDrag(t.hit(first, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k), first);
+  }
+  /** @inheritdoc */
+  onPointerMove(editor, samples) {
+    const last = samples[samples.length - 1];
+    if (this.pressed && last) editor.float.transform.dragTo(last, { shift: last.shiftKey, alt: last.altKey });
+  }
+  /** @inheritdoc */
+  onPointerUp(editor, sample) {
+    if (!this.pressed) return;
+    this.pressed = false;
+    editor.float.transform.dragTo(sample, { shift: sample.shiftKey, alt: sample.altKey });
+    editor.float.transform.endDrag();
+    if (editor.float.transform.pending) setTimeout(() => editor.float.transform.resolvePending(), 0);
+  }
+  /** @inheritdoc */
+  onCancel(editor) {
+    if (!this.pressed) return;
+    this.pressed = false;
+    editor.float.transform.cancelDrag();
+  }
+  /** @inheritdoc */
+  onKey(editor, event) {
+    const dir = ARROWS[event.key];
+    if (!dir) return false;
+    const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    editor.float.transform.nudge(dir[0] * step, dir[1] * step);
+    return true;
+  }
+  /** @inheritdoc */
+  cursor() {
+    return { kind: "icon", icon: "move" };
+  }
+  /** @inheritdoc */
+  cursorAt(editor, at) {
+    const t = editor.float.transform;
+    const k = docPerScreenPx(editor);
+    const hit = t.dragHit ?? t.hit(at, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k);
+    switch (hit.kind) {
+      case "move":
+        return { kind: "icon", icon: "move" };
+      case "scale":
+        return { kind: "icon", icon: `resize-${t.resizeAxis(hit.handle)}` };
+      case "rotate":
+        return { kind: "icon", icon: "rotate" };
+      case "outside":
+        return { kind: "icon", icon: "crosshair" };
+    }
+  }
+}
+const SESSION_DESCRIPTORS = [
+  { kind: "number", key: "x", label: "X", title: "Box centre, image px (arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 0.1, unit: "px", group: "pos" },
+  { kind: "number", key: "y", label: "Y", title: "Box centre, image px (arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 0.1, unit: "px", group: "pos" },
+  { kind: "number", key: "w", label: "W", title: "Width scale", min: 1, max: 1e4, step: 0.1, unit: "%", scale: 100, curve: "pow", group: "size" },
+  { kind: "number", key: "h", label: "H", title: "Height scale", min: 1, max: 1e4, step: 0.1, unit: "%", scale: 100, curve: "pow", group: "size" },
+  { kind: "toggle", key: "lock", label: "Link", title: "Keep proportions (Shift while dragging a handle inverts)", group: "size" },
+  { kind: "number", key: "angle", label: "Angle", title: "Rotation, degrees (Shift while rotating = 15 deg steps)", min: -180, max: 180, step: 0.1, unit: "°", group: "angle" },
+  { kind: "button", key: "flipH", label: "Flip horizontal", icon: "flipH", group: "flip" },
+  { kind: "button", key: "flipV", label: "Flip vertical", icon: "flipV", group: "flip" },
+  { kind: "button", key: "commit", label: "Commit transform", title: "Commit transform (Enter)", icon: "check", group: "end" },
+  { kind: "button", key: "cancel", label: "Cancel transform", title: "Cancel transform (Esc)", icon: "close", group: "end" }
+];
+const FIELDS = /* @__PURE__ */ new Set(["x", "y", "w", "h", "angle"]);
+function isField(key) {
+  return FIELDS.has(key);
+}
+class TransformSessionOptions {
+  /**
+   * @param editor - Session editor.
+   */
+  constructor(editor) {
+    this.editor = editor;
+  }
+  editor;
+  descriptors = SESSION_DESCRIPTORS;
+  /** @inheritdoc */
+  get(key) {
+    const t = this.editor.float.transform;
+    if (isField(key)) return t.field(key);
+    if (key === "lock") return t.proportional;
+    return SESSION_DESCRIPTORS.some((d) => d.key === key) ? true : void 0;
+  }
+  /** @inheritdoc */
+  set(key, value) {
+    const t = this.editor.float.transform;
+    if (isField(key)) return typeof value === "number" && t.setField(key, value);
+    if (key === "lock") {
+      if (typeof value !== "boolean" || value === t.proportional) return false;
+      t.proportional = value;
+      return true;
+    }
+    if (value !== true) return false;
+    if (key === "flipH") return t.flip("h");
+    if (key === "flipV") return t.flip("v");
+    if (key === "commit") {
+      t.commit();
+      return true;
+    }
+    if (key !== "cancel") return false;
+    t.cancel();
+    return true;
+  }
+  /**
+   * A field session ended: an unlinked text W / H change asks to rasterize,
+   * deferred past the ending event (M11b).
+   * @param key - Option key.
+   */
+  endEdit(key) {
+    const t = this.editor.float.transform;
+    if (isField(key) && t.endField()) setTimeout(() => t.resolvePending(), 0);
+  }
+}
+const BUTTON_DESCRIPTORS = [
+  { kind: "button", key: "transform", label: "Free transform", title: "Transform (Ctrl+Alt+T)", icon: "transform", group: "transform" },
+  { kind: "button", key: "flipH", label: "Flip horizontal", icon: "flipH", group: "transform" },
+  { kind: "button", key: "flipV", label: "Flip vertical", icon: "flipV", group: "transform" }
+];
+class TransformButtons {
+  /**
+   * @param editor - Session editor.
+   * @param base - The tool's own options (or `null`).
+   */
+  constructor(editor, base) {
+    this.editor = editor;
+    this.base = base;
+    this.descriptors = [...base?.descriptors ?? [], ...BUTTON_DESCRIPTORS];
+  }
+  editor;
+  base;
+  descriptors;
+  /** Groups of the tool's own options. */
+  get groups() {
+    return this.base?.groups;
+  }
+  /** @inheritdoc */
+  get(key) {
+    return BUTTON_DESCRIPTORS.some((d) => d.key === key) ? true : this.base?.get(key);
+  }
+  /** @inheritdoc */
+  set(key, value) {
+    const t = this.editor.float.transform;
+    if (key === "transform") return value === true && t.enter();
+    if (key === "flipH" || key === "flipV") return value === true && t.flip(key === "flipH" ? "h" : "v");
+    return this.base?.set(key, value) ?? false;
+  }
+}
+function createTransformSession(editor) {
+  const tool = new TransformTool(editor);
+  const wrapped = /* @__PURE__ */ new Map();
+  const withButtons = (active) => {
+    let options = wrapped.get(active.id);
+    if (!options) {
+      options = new TransformButtons(editor, active.options);
+      wrapped.set(active.id, options);
+    }
+    return options;
+  };
+  return {
+    tool,
+    active: () => editor.float.transform.active,
+    options: (active) => {
+      if (editor.float.transform.active) return tool.options;
+      const buttons = active.id === "move-layer" || active.combinesSelection === true && editor.selection.active;
+      return buttons ? withButtons(active) : active.options;
+    }
+  };
+}
 class ToolRegistry {
   events = new Emitter();
   tools = /* @__PURE__ */ new Map();
@@ -16840,6 +18464,24 @@ class ToolRegistry {
   setBeforeSwitch(hook) {
     this.beforeSwitch = hook;
   }
+  // ── Free Transform session ──────────────────────────────────────────────
+  session = null;
+  /**
+   * Free Transform hooks: while a session runs its tool takes all stage
+   * input and keys ({@link resolve}) and its options fill the bar.
+   * @param session - Hooks (`transformTool.ts`), or `null`.
+   */
+  setSession(session) {
+    this.session = session;
+  }
+  /**
+   * Options the bar shows now: the transform session's, the active tool's
+   * with the Transform / Flip buttons, or the active tool's own.
+   * @returns Options, or `null`.
+   */
+  barOptions() {
+    return this.session ? this.session.options(this.active) : this.active.options;
+  }
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
   altTool = null;
   /**
@@ -16874,6 +18516,7 @@ class ToolRegistry {
    * @returns The effective tool.
    */
   resolve(altHeld, ctrlHeld = false, press) {
+    if (this.session?.active()) return this.session.tool;
     const active = this.active;
     if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
       return this.outlineTool.wrap(active);
@@ -16909,6 +18552,7 @@ function createDefaultTools(editor, pressure = PRESSURE_DEFAULTS, samples = SAMP
   registry.setAltTool(eyedropper.temporary);
   registry.setCtrlTool(moveLayer);
   registry.setBeforeSwitch(() => editor.settle());
+  registry.setSession(createTransformSession(editor));
   return registry;
 }
 function contentHash(bytes, seed = 0) {
@@ -17715,7 +19359,7 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
-const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
+const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n/* Icon command buttons (Free Transform, flips, commit / cancel). */\n.cps-toggle.cps-icon-command {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 26px;\n  padding: 0;\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
 const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).

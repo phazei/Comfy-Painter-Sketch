@@ -162,6 +162,8 @@ export interface EditorEvents {
   solo: undefined;
   /** Output metadata or selected output changed. */
   outputs: undefined;
+  /** Free Transform session started / changed / ended, or a float ended (Editor.float.transform). */
+  transform: undefined;
 }
 
 /** Note shown when painting on a locked layer. */

@@ -21,51 +21,41 @@
  * - {@link FloatOps.cancel} (Esc, Ctrl+Z) writes the pre-lift pixels back and
  *   restores the selection: nothing happened.
  * - A float left at its lift position commits as a cancel (no-op step).
+ *
+ * Free Transform (M11) extends a float with an affine matrix
+ * ({@link FloatOps.setTransform}; sessions live in `transformOps.ts`,
+ * exposed as {@link FloatOps.transform}): the preview draws the float canvas
+ * through the matrix (smoothed), the commit resamples ONCE from the lifted
+ * pixels (`transformResample.ts`) into the same single patch. A whole-layer
+ * lift ({@link FloatOps.liftWhole}) has no selection. When a session over a
+ * selection float ends, the float stays with its matrix and a resampled
+ * display ({@link FloatOps.bake}); a later session restarts from the lifted
+ * pixels with the cumulative matrix. Lifting itself is in `floatLift.ts`.
  */
 
-import { activeEditLayer } from "../document/masks";
-import { intersectRect, isEmptyRect, unionRect } from "../geometry/rect";
-import type { Rect } from "../geometry/rect";
 import type { EditorState } from "./editorState";
-import { compositeOver, copyPixels, liftPixels, offsetSelection, selectionHit } from "./floatMath";
+import { bakeFloat, dropBake, floatPreviewCanvas, releaseFloat, writeFloatPatch } from "./floatCommit";
+import { checkLift, holeOf, liftFloat, liftKept, prepareLift } from "./floatLift";
 import { layerContentRect } from "./layerTranslate";
-import { editBlockNote, preparePixelEdit } from "./rasterize";
-import { coverageFor, selectionExtent } from "./selection";
+import { isEmptyRect } from "../geometry/rect";
+import type { FloatState } from "./floatLift";
+import { offsetSelection, selectionHit } from "./floatMath";
 import type { Selection } from "./selection";
-import { recordSelectionMove } from "./selectionFollow";
-import { createSurface, releaseSurface } from "./surface";
-import type { Surface } from "./surface";
+import { affineEquals, multiply, paramsMatrix, transformedAabb, translation } from "./transformMath";
+import type { Affine, TransformParams } from "./transformMath";
+import { TransformOps } from "./transformOps";
+import { transformSelection } from "./transformResample";
 
-/** Note when the selection holds no pixels of the layer. */
-export const EMPTY_FLOAT_NOTE = "No pixels are selected.";
-
-/** One floating selection. */
-interface FloatState {
-  layerId: string;
-  /** Lifted document rect (inside the bounds at lift time). */
-  area: Rect;
-  /** Layer pixels over `area` before the lift (cancel / undo). */
-  original: ImageData;
-  /** Floating pixels over `area` (straight alpha). */
-  pixels: ImageData;
-  /** `pixels` on a canvas (display). */
-  surface: Surface;
-  /** Current offset, whole document px. */
-  dx: number;
-  dy: number;
-  /** Selection at lift time (moves with the float). */
-  selBefore: Selection;
-  /** Offset at drag start while a drag is in progress. */
-  dragBase: { dx: number; dy: number } | null;
-  /** Display cache: layer + float, sized to the bounds. */
-  preview: { surface: Surface; key: string } | null;
-}
+export { EMPTY_FLOAT_NOTE } from "./floatLift";
+export type { FloatState } from "./floatLift";
 
 /**
  * Floating-selection commands over a shared {@link EditorState}.
  */
 export class FloatOps {
   private f: FloatState | null = null;
+  /** Free Transform sessions over this float (M11). */
+  readonly transform: TransformOps;
 
   /**
    * @param s - Shared editor state (installs the settle hook and the preview).
@@ -75,6 +65,22 @@ export class FloatOps {
       this.commit();
     };
     s.floatPreview = (layerId) => this.preview(layerId);
+    this.transform = new TransformOps(s, this);
+  }
+
+  /** The float itself (read-only view for `transformOps.ts`), or `null`. */
+  get state(): Readonly<FloatState> | null {
+    return this.f;
+  }
+
+  /**
+   * The float's full float-local -> document matrix (offset included).
+   * @returns Matrix, or `null` without a float.
+   */
+  matrix(): Affine | null {
+    const f = this.f;
+    if (!f) return null;
+    return multiply(translation(f.dx, f.dy), f.xf ?? translation(f.area.x, f.area.y));
   }
 
   /** Whether a float exists. */
@@ -111,21 +117,7 @@ export class FloatOps {
    * @returns Check result.
    */
   check(): "ok" | "blocked" | "confirm" {
-    const s = this.s;
-    if (this.f) return "ok";
-    const sel = s.selection.current;
-    if (s.loading || s.stroke.active || !sel) return "blocked";
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (!layer) return "blocked";
-    const note = editBlockNote(s, layer);
-    if (note) {
-      s.events.emit("note", note);
-      return "blocked";
-    }
-    if (layer.kind === "text") return "confirm";
-    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
-    if (isEmptyRect(area)) return this.empty() || "blocked";
-    return "ok";
+    return this.f ? "ok" : checkLift(this.s);
   }
 
   /**
@@ -133,9 +125,7 @@ export class FloatOps {
    * rasterize confirm; Yes = its own undo step). Nothing is lifted.
    */
   prepareLift(): void {
-    const s = this.s;
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (layer) preparePixelEdit(s, layer);
+    prepareLift(this.s);
   }
 
   /**
@@ -145,30 +135,88 @@ export class FloatOps {
    * @returns `true` if a float exists afterwards.
    */
   lift(copy: boolean): boolean {
-    const s = this.s;
     if (this.f) return true;
-    const sel = s.selection.current;
-    if (s.loading || s.stroke.active || !sel) return false;
-    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-    if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
-    const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
-    const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
-    if (!read) return this.empty();
-    const { float, rest } = liftPixels(read.data.data, coverageFor(sel, read.rect), !copy);
-    if (!hasAlpha(float)) return this.empty();
-    const w = read.rect.width;
-    const h = read.rect.height;
-    const pixels = new ImageData(float, w, h);
-    if (!copy) {
-      s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
-      s.runtime.bump(layer.id);
-    }
-    const surface = createSurface(w, h);
-    surface.ctx.putImageData(pixels, 0, 0);
-    this.f = { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, dragBase: null, preview: null };
-    s.events.emit("history", undefined);
-    s.events.emit("render", undefined);
+    const sel = this.s.selection.current;
+    return sel ? this.liftFrom(copy, sel) : false;
+  }
+
+  /**
+   * Lift the whole content of the current edit layer (Free Transform without
+   * a selection): the hole is the whole layer until commit. Same gate as {@link lift}.
+   * @returns `true` if a float exists afterwards.
+   */
+  liftWhole(): boolean {
+    return this.f ? true : this.liftFrom(false, null);
+  }
+
+  /**
+   * Whole-layer lift from the layer's kept original (M11b), if it has a
+   * valid one and there is no selection.
+   * @returns `true` if a float exists afterwards.
+   */
+  liftKept(): boolean {
+    return this.f ? true : this.adopt(liftKept(this.s));
+  }
+
+  private liftFrom(copy: boolean, sel: Selection | null): boolean {
+    return this.adopt(liftFloat(this.s, copy, sel));
+  }
+
+  private adopt(f: FloatState | null): boolean {
+    if (!f) return false;
+    this.f = f;
+    this.s.events.emit("history", undefined);
+    this.s.events.emit("render", undefined);
     return true;
+  }
+
+  /**
+   * Set the float's matrix (Free Transform); the offset is folded in (reset to 0).
+   * @param m - Float-local -> document matrix.
+   * @param sel - New selection at that matrix (`undefined` = keep the current one).
+   * @param params - Session parameters that give `m` (kept for an exact restart), if any.
+   */
+  setTransform(m: Affine, sel?: Selection | null, params?: TransformParams): void {
+    const f = this.f;
+    if (!f) return;
+    const s = this.s;
+    s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
+    f.xf = m;
+    f.params = params ? { ...params } : undefined;
+    dropBake(f);
+    f.dx = 0;
+    f.dy = 0;
+    if (sel !== undefined) {
+      f.selBase = sel;
+      s.selection.set(sel);
+    }
+    s.runtime.bump(f.layerId);
+    s.events.emit("render", undefined);
+  }
+
+  /**
+   * The lift-time selection carried through a matrix (`null` for whole-layer lifts).
+   * @param m - Float-local -> document matrix.
+   * @returns Transformed selection.
+   */
+  selectionAt(m: Affine): Selection | null {
+    const f = this.f;
+    return f?.selBefore ? transformSelection(f.selBefore, f.area, m) : null;
+  }
+
+  /**
+   * Resample the ORIGINAL lifted pixels once through the current matrix for
+   * display (a transform session ended, the float stays). Later whole-px
+   * moves reuse it; a new session / flip drops it (`setTransform`).
+   */
+  bake(): void {
+    const f = this.f;
+    const m = this.matrix();
+    if (!f || !m || !f.xf) return;
+    dropBake(f);
+    f.baked = bakeFloat(f, m);
+    this.s.runtime.bump(f.layerId);
+    this.s.events.emit("render", undefined);
   }
 
   // ── Moving ──────────────────────────────────────────────────────────────
@@ -225,51 +273,46 @@ export class FloatOps {
    */
   commit(): boolean {
     const f = this.f;
-    if (!f) return false;
+    // No float: a text transform session (M11b) may be open instead.
+    if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
-    if (f.dx === 0 && f.dy === 0) {
+    const m = this.matrix() ?? translation(f.area.x, f.area.y);
+    if (affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
       this.cancel();
       return false;
     }
+    if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
-    const dest: Rect = { ...f.area, x: f.area.x + f.dx, y: f.area.y + f.dy };
-    s.ensureBounds(dest, true);
-    const union = intersectRect(unionRect(f.area, dest), s.store.bounds);
-    const current = s.store.read(f.layerId, union);
-    if (current) {
-      const r = current.rect;
-      const before = new Uint8ClampedArray(current.data.data);
-      copyPixels(before, r, f.original.data, f.area);
-      const next = new Uint8ClampedArray(current.data.data);
-      compositeOver(next, r.width, r.height, f.pixels.data, f.area.width, f.area.height, dest.x - r.x, dest.y - r.y);
-      s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
-      // Re-read so the patch holds exactly what the canvas stores.
-      const after = s.store.read(f.layerId, r);
-      if (after) {
-        const beforeData = new ImageData(before, r.width, r.height);
-        const bytes = before.byteLength + after.data.data.byteLength;
-        s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
-        recordSelectionMove(s, f.selBefore, s.selection.current, true);
-      }
-      s.runtime.touch(f.layerId);
+    // Kept original (M11b): only when the float is ALL the layer will hold.
+    const keep = f.xf !== null && isEmptyRect(layerContentRect(s, f.layerId));
+    writeFloatPatch(s, f, m);
+    releaseFloat(f);
+    if (keep) {
+      const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : undefined;
+      s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
     }
-    release(f);
     s.afterEdit();
+    s.events.emit("transform", undefined);
     return true;
   }
 
   /** Put everything back exactly as before the lift (Esc, Ctrl+Z). */
   cancel(): void {
     const f = this.f;
-    if (!f) return;
+    if (!f) {
+      this.transform.cancel();
+      return;
+    }
     const s = this.s;
     this.f = null;
-    s.store.write(f.layerId, f.area.x, f.area.y, f.original);
+    const hole = holeOf(f);
+    s.store.write(f.layerId, hole.x, hole.y, f.original);
     s.runtime.bump(f.layerId);
     s.selection.set(f.selBefore);
-    release(f);
+    releaseFloat(f);
     s.events.emit("history", undefined);
     s.events.emit("render", undefined);
+    s.events.emit("transform", undefined);
   }
 
   /**
@@ -279,52 +322,30 @@ export class FloatOps {
    */
   savedPatch(layerId: string): { x: number; y: number; data: ImageData } | null {
     const f = this.f;
-    return f && f.layerId === layerId ? { x: f.area.x, y: f.area.y, data: f.original } : null;
+    const hole = f ? holeOf(f) : null;
+    return f && hole && f.layerId === layerId ? { x: hole.x, y: hole.y, data: f.original } : null;
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
-
-  private empty(): false {
-    this.s.events.emit("note", EMPTY_FLOAT_NOTE);
-    return false;
-  }
 
   private setOffset(dx: number, dy: number): void {
     const f = this.f;
     if (!f || (f.dx === dx && f.dy === dy)) return;
     const s = this.s;
-    s.ensureBounds({ ...f.area, x: f.area.x + dx, y: f.area.y + dy }, true);
+    const m = multiply(translation(dx, dy), f.xf ?? translation(f.area.x, f.area.y));
+    s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
     f.dx = dx;
     f.dy = dy;
     // New revision: display caches keyed by it (mask tint, thumbnails) refresh.
     s.runtime.bump(f.layerId);
-    s.selection.set(offsetSelection(f.selBefore, dx, dy));
+    if (f.selBase) s.selection.set(offsetSelection(f.selBase, dx, dy));
     s.events.emit("render", undefined);
   }
+
 
   private preview(layerId: string): HTMLCanvasElement | null {
     const f = this.f;
     if (!f || f.layerId !== layerId) return null;
-    const s = this.s;
-    const b = s.store.bounds;
-    const key = `${s.runtime.revision(layerId)}:${b.x},${b.y},${b.width},${b.height}`;
-    if (f.preview?.key === key) return f.preview.surface.canvas;
-    if (f.preview) releaseSurface(f.preview.surface);
-    const surface = createSurface(b.width, b.height);
-    surface.ctx.drawImage(s.store.ensure(layerId).canvas, 0, 0);
-    surface.ctx.drawImage(f.surface.canvas, f.area.x + f.dx - b.x, f.area.y + f.dy - b.y);
-    f.preview = { surface, key };
-    return surface.canvas;
+    return floatPreviewCanvas(this.s, f, this.matrix() ?? translation(f.area.x, f.area.y));
   }
-}
-
-function hasAlpha(px: Uint8ClampedArray): boolean {
-  for (let p = 3; p < px.length; p += 4) if (px[p] !== 0) return true;
-  return false;
-}
-
-function release(f: FloatState): void {
-  releaseSurface(f.surface);
-  if (f.preview) releaseSurface(f.preview.surface);
-  f.preview = null;
 }

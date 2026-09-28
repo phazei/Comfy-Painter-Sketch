@@ -13,7 +13,8 @@
  * placement), image -> stage through the view. So the caret lines up with
  * the glyphs at any zoom, pan, image size or graph zoom (the stage's own
  * CSS scale applies to the textarea too). It re-positions after every
- * stage render (`StageView.onRendered`).
+ * stage render (`StageView.onRendered`). Rotated text (M11b) is edited in
+ * place: the same CSS transform rotates the textarea about the box centre.
  *
  * Keys: Enter = new line; Esc or Ctrl+Enter commit. The keyboard scope
  * leaves keys from text fields alone (`focusPolicy.ts`), so no editor
@@ -156,7 +157,11 @@ export class TextOverlay {
     const sx = (map.offsetX + left * map.scale) * view.scale + view.offsetX;
     const sy = (map.offsetY + lay.box.y * map.scale) * view.scale + view.offsetY;
     const style = area.style;
-    style.transform = `translate(${sx}px, ${sy}px) scale(${k})`;
+    // Rotated text (M11b): the textarea turns about the box centre like the render.
+    const ox = lay.centre.x - left;
+    const oy = lay.box.height / 2;
+    const rot = lay.rotation ? ` translate(${ox}px, ${oy}px) rotate(${lay.rotation}deg) translate(${-ox}px, ${-oy}px)` : "";
+    style.transform = `translate(${sx}px, ${sy}px) scale(${k})${rot}`;
     style.width = `${lay.box.width + pad}px`;
     style.height = `${lay.box.height}px`;
     style.font = fontString(td);

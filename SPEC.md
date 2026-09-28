@@ -499,6 +499,43 @@ text is rasterized (prompt). No Merge Visible, no multi-select (repeat Ctrl+E).
   `textData`. Upscale only. Not undoable: a confirm explains it clears the undo
   history, then history is cleared.
 
+### Free Transform (M11) -- agreed design (2026-09-27)
+**Targets** (**Ctrl+Alt+T** -- Chrome reserves Ctrl+T; Photopea convention -- from any tool while the editor owns the keyboard, or the Transform
+button): with a selection -> lift the selected pixels of the current layer as a float
+(M10 lift) and transform it; without -> the current layer's whole content; an active
+float -> that float. Masks (Quick Mask) like paint. Text -> `textData` (M11b). Hidden /
+solo-hidden / locked / empty -> the usual note.
+
+**Handles** (Photoshop CC): bounding box, 8 handles + centre mark. Drag inside = move;
+handle = scale, **proportional by default, Shift = free**, Alt = around the centre; drag
+just outside a corner = rotate (curved-arrow cursor), Shift = 15 deg steps. Cursors per
+hover zone. No skew / distort / perspective / warp / movable pivot / multi-layer.
+
+**Options bar while transforming**: X, Y, W %, H %, angle (scrub fields), proportion
+lock, Flip H, Flip V, commit (check) and cancel (x) buttons.
+
+**Commit / cancel**: commit = Enter, the check button, tool switch, any other edit (the
+float commit hub `settleFloat`). Cancel = Esc, x, or Ctrl+Z (cancels the whole session;
+no per-adjustment undo). One undo step per commit. Preview draws the original pixels
+through the current matrix (smoothed); commit resamples **once** from the original
+(high quality), never cumulatively within a session.
+
+**Transform button and flips** (options bar, not the rail): shown in the Move tool bar
+always, and in the selection tools' bar while a selection exists; Transform = Ctrl+T.
+Flip H / Flip V next to it: with a selection -> lift the selected pixels and flip them
+into a float (not committed; Enter / the usual rules commit it); without -> flip the
+whole layer about its content centre, one undo step. Flips are exact pixel mirrors (no
+resampling). While transforming, flips are part of the session. Text -> rasterize prompt.
+
+**M11b**: text layers: rotation (around the text box centre) + uniform scale stored in `textData` (rotation added; angle field in the Text tool options for the selected text layer; creating text does not clear a selection, as PS;
+size scaled; re-rendered, stays editable); non-uniform scale or flip -> rasterize prompt.
+Kept original: after a transform commit the layer keeps its pre-transform pixels + the
+cumulative matrix in memory until any other edit of that layer; a later Ctrl+T on it
+transforms from that original (5 x 10 deg = one 50 deg resample). Not saved; freed on
+reload, layer delete, or memory pressure. Pastes benefit the same way.
+
+## Milestones
+
 ### M0 -- Scaffold
 - [x] Python package: `__init__.py` (`WEB_DIRECTORY`, `comfy_entrypoint`), `nodes/`, V3 node stub with the contract above (smoke-tested in the ComfyUI venv)
 - [x] `ui/` Vite + TS project building one file into `js/`, CSS injection
@@ -595,9 +632,11 @@ Design: "Floating selections + clipboard (M10) -- agreed design".
 - [x] M10b: drop image files onto the canvas = new layer
 
 ### M11 -- Free Transform (Ctrl+T)
-- [ ] Destructive scale/rotate with handles for the active layer, a selection, or a floating paste; Shift keeps proportions (Photoshop); Enter commits, Esc cancels; resample once on commit
-- [ ] Floating pastes/inputs stay unresampled until commit (one resample from the source)
-- [ ] Text rotation stored in `textData` (non-destructive; text re-renders); Free Transform on a text layer rotates/scales via `textData`
+Design: "Free Transform (M11) -- agreed design".
+- [x] M11a: Ctrl+Alt+T / Transform button; handles (scale, rotate outside corners, move inside); proportional by default, Shift = free, Alt = from centre, Shift-rotate = 15 deg; options bar fields + flips + commit/cancel; one resample from the original on commit; one undo step
+- [x] M11a: Flip H / Flip V buttons (Move tool; selection tools with a selection)
+- [x] M11b: text layers: rotation + uniform scale in `textData` (non-uniform / flip -> rasterize prompt)
+- [x] M11b: keep the pre-transform original per layer until its next other edit (repeat transforms resample from it; memory only)
 - [x] No saved-file contract change: pixel layers are resampled on commit, text is rasterized as always
 
 ### M12 -- Extra image inputs
@@ -614,7 +653,7 @@ Design: "Floating selections + clipboard (M10) -- agreed design".
 - M0-M6, M7a, M8 and M9 (incl. Add border) are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: background row eye + solo (agreed, see Decisions Log), then M11 Free Transform (plan with the user first), M12, then M7b release polish. The user will not publicly release until M8-M12 are done.
+- Next: M12 extra image inputs (plan with the user first), then M7b release polish. Optional split task first: `engine/editor.ts` (393), `ui/keyboard.ts` (390). The user will not publicly release until M8-M12 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
 - Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
@@ -678,6 +717,20 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-27: M11 complete (browser-verified): Free Transform, flips, text rotation/scale, kept original (a re-used transform shows its box at the previous angle). Text W/H fields honour Link (unlinked -> rasterize prompt after the field session).
+
+- 2026-09-27: Ctrl+click layer selection is HARD: every pixel with alpha > 0 (mask: effective coverage > 0) is selected at 255. A soft (alpha-weighted) selection left a residue of a*(1-a) on every edge when moved and ghosted on repeat. `selectionFromAlpha` stays soft for other callers.
+
+- 2026-09-27: M11b code done (browser-verified): `textData.rotation` (deg, around the box centre); textarea edited in place with the same CSS rotation; text transform sessions keep W/H linked, a non-uniform drag or flip asks to rasterize after release (No = drop the change, Yes = text step + rasterize step, continue as pixels). Kept original (`engine/keptOriginal.ts`): valid only while the layer's pixel revision is unchanged (any edit / undo / redo on it drops it), 128 MB cap per editor, oldest first; selection-float commits keep it only if the layer was otherwise empty; pastes keep the pasted pixels at identity.
+
+- 2026-09-27: Ctrl+click a layer row = selection from its alpha (PS thumbnail Ctrl+click); Ctrl+Shift add, Ctrl+Alt subtract, Ctrl+Shift+Alt intersect; masks use effective coverage (invert applied); empty layer -> note, selection unchanged; hidden layers allowed; current layer unchanged; hover cursor shows the mode. Marquee cursor badges now use the rail marquee icon. Browser-verified.
+
+- 2026-09-27: Free Transform shortcut = Ctrl+Alt+T (Chrome's Ctrl+T new tab can't be cancelled). Committing a selection/float transform keeps it a float (original pixels + cumulative matrix kept; re-transform resamples once from the original; the float commits by the M10 rules, one undo step). Whole-layer transforms commit straight into the layer. Rotate cursor = two circling arrows.
+
+- 2026-09-27: M11a code done (browser-verified): a transform session = a float with a matrix (`engine/transformOps.ts`, `transformMath.ts`, `transformResample.ts`; hidden transform tool). Edge handles proportional when locked (modern PS); X/Y = box centre in image px. Commit resample = pure-JS bilinear with up to 4x4 supersampling when shrinking (testable; whole-px moves / flips exact). Esc mid-drag cancels the session; clicking outside the box does nothing.
+
+- 2026-09-27: M11 design agreed (see its section): proportional scaling by default (Shift = free), Ctrl+Z cancels the session, kept original per layer in memory (M11b), text = rotation + uniform scale only, Transform + Flip buttons in the options bar (Move tool; selection tools with a selection), a flip with a selection leaves a float. Split M11a / M11b. (Restored the lost `## Milestones` heading.)
 
 - 2026-09-27: Cobweb backdrop = TS port of the user's `temp.cobweb-backdrop.js` (`engine/cobweb/`): grows from the maximum paint-area rect, inline Vite worker (single bundle kept; main-thread fallback), drape maxAngle 160 / length 80 (= 47 steps) / start 3% / ramp 12%; grown once without animation, a plain click on the web regrows it animated (observe-only, no undo). Browser-verified.
 

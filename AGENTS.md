@@ -122,8 +122,14 @@ detail against the local frontend/backend source listed under Local References.
 
 ### Frontend module layout (target)
 
-Keep modules small and single-purpose. No file should approach the 1,000-line mark;
-if it does, split it.
+Keep modules small and single-purpose. **Soft target ~400 lines per file.**
+During a feature or bug-fix task, do **not** split files as a side job: only
+split if the file would pass ~450 lines; otherwise report files that crossed
+~400 and the coordinator queues a separate, behaviour-neutral split task. Keeps
+feature diffs small and refactors reviewable on their own.
+Exception: `engine/editor.ts` is the editor's public facade (docs + delegating
+members) and may run to ~500 lines as long as it only delegates; new behaviour
+goes into an ops module, never into the facade.
 
 ```
 ui/src/

@@ -111,6 +111,20 @@ export function selectionFromAlpha(rgba: Uint8ClampedArray, area: Rect): Selecti
   return selectionFromCoverage(coverage, area);
 }
 
+/**
+ * Hard copy of a selection: every partly covered pixel becomes fully covered
+ * (coverage > 0 -> 255). Used by layer -> selection so a lift takes pixels
+ * whole and leaves no anti-aliased residue.
+ * @param sel - Selection (`null` passes through).
+ * @returns New selection with 0/255 coverage only.
+ */
+export function hardenSelection(sel: Selection | null): Selection | null {
+  if (!sel) return null;
+  const data = new Uint8Array(sel.data.length);
+  for (let i = 0; i < data.length; i++) data[i] = (sel.data[i] as number) > 0 ? 255 : 0;
+  return { rect: sel.rect, data, outside: sel.outside };
+}
+
 // ── Queries ───────────────────────────────────────────────────────────────────
 
 /**

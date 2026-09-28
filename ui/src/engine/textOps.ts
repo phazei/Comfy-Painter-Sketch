@@ -17,7 +17,7 @@
  */
 
 import { createTextLayer } from "../document/create";
-import { commitName, nameFromText, sameTextData } from "../document/textData";
+import { commitName, nameFromText, sameTextData, withRotation } from "../document/textData";
 import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import type { Point } from "../geometry/rect";
@@ -70,7 +70,11 @@ export class TextOps {
   constructor(
     private readonly s: EditorState,
     private readonly layers: LayerOps,
-  ) {}
+  ) {
+    s.commitTextEdit = () => {
+      this.commit();
+    };
+  }
 
   /** The open edit, or `null`. */
   get editing(): Readonly<TextEditState> | null {
@@ -158,6 +162,41 @@ export class TextOps {
     this.s.events.emit("text", undefined);
     this.s.events.emit("render", undefined);
     if (next.font !== td.font) this.noteMissingFont(next.font);
+  }
+
+  /**
+   * Rotation (degrees) of a text layer that is not being edited (Text tool
+   * angle field; M11b). Consecutive changes on the same layer merge into
+   * one text step (gesture `text-angle`), like arrow nudges.
+   * @param layerId - Text layer id.
+   * @param deg - Rotation, degrees.
+   * @returns `true` if the layer changed.
+   */
+  setRotation(layerId: string, deg: number): boolean {
+    const s = this.s;
+    if (this.session?.layerId === layerId) {
+      const td = this.editing?.textData;
+      if (td) this.update({ rotation: withRotation(td, deg).rotation ?? 0 });
+      return td !== undefined;
+    }
+    const layer = this.find(layerId);
+    const td = layer?.kind === "text" ? layer.textData : undefined;
+    if (s.loading || s.stroke.active || !layer || !td) return false;
+    s.settleFloat();
+    const note = editBlockNote(s, layer);
+    if (note) {
+      s.events.emit("note", note);
+      return false;
+    }
+    const next = withRotation(td, deg);
+    if (sameTextData(next, td)) return false;
+    const before = textStateOf(layer);
+    layer.textData = next;
+    renderTextLayer(s, layer);
+    recordTextChange(s, layer.id, before, textStateOf(layer), "text-angle");
+    s.runtime.touch(layer.id);
+    s.afterEdit();
+    return true;
   }
 
   /**

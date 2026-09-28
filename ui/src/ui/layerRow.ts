@@ -10,6 +10,8 @@
  * re-render the first click causes.
  */
 
+import type { SelectionMode } from "../engine/selection";
+import { layerSelectMode } from "./moveCursors";
 import type { OptionControl } from "./optionControls";
 import { setIcon } from "./icons";
 import { startInlineRename } from "./inlineRename";
@@ -49,6 +51,8 @@ export type SoloMark = "on" | "dimmed" | "off";
 /** Row callbacks (ids are layer ids). */
 export interface RowActions {
   select(id: string): void;
+  /** Ctrl(+Shift/Alt)+click: load the layer's pixels as the selection. */
+  loadSelection(id: string, mode: SelectionMode): void;
   toggleVisible(id: string): void;
   /** Solo / un-solo (solo button). */
   toggleSolo(id: string): void;
@@ -123,11 +127,14 @@ export class LayerRow {
       setIcon(this.lock, "lock", 14);
     } else {
       this.element.addEventListener("click", (event) => {
-        if (!isControl(event.target)) actions.select(id);
+        if (isControl(event.target)) return;
+        const mode = layerSelectMode({ ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
+        if (mode) actions.loadSelection(id, mode);
+        else actions.select(id);
       });
       this.nameEl.addEventListener("dblclick", (event) => {
         event.stopPropagation();
-        this.startRename();
+        if (!event.ctrlKey && !event.metaKey) this.startRename();
       });
     }
 

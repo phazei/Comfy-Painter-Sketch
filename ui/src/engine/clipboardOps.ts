@@ -41,6 +41,7 @@ import { coverageFor, eraseCoverage, selectionExtent } from "./selection";
 import { recordSelectionMove } from "./selectionFollow";
 import { shownOnStage } from "./solo";
 import { createSurface, releaseSurface } from "./surface";
+import { translation } from "./transformMath";
 import { alphaBounds } from "./translateMath";
 
 /** Note when a copy/cut finds no pixels. */
@@ -159,6 +160,8 @@ export class ClipboardOps {
     const layer = createPaintLayer(pastedLayerName(s.doc.layers));
     const id = this.layers.addWithPixels(layer, index, { x: rect.x, y: rect.y, data });
     if (!id) return null;
+    // M11b: the paste is the layer's kept original (identity placement).
+    s.kept.keep(id, { pixels: data, area: { ...rect }, m: translation(rect.x, rect.y), revision: s.runtime.revision(id) });
     // Photoshop: a paste drops the selection, in the same undo step.
     const sel = s.selection.current;
     if (sel) {

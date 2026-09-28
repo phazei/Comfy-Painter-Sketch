@@ -159,6 +159,15 @@
   color: var(--cps-fg);
 }
 
+/* Icon command buttons (Free Transform, flips, commit / cancel). */
+.cps-toggle.cps-icon-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 0;
+}
+
 .cps-dim {
   opacity: 0.45;
 }

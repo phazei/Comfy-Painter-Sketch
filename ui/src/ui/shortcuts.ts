@@ -19,7 +19,7 @@
  * | Shift+group key | cycle the group (Shift+U shapes) |
  * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
  * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace) |
- * | float / merge keys | `floatShortcuts.ts` (Enter / Esc while floating, Ctrl+E Merge Down) |
+ * | float / merge / transform keys | `floatShortcuts.ts` (Enter / Esc while floating, Ctrl+E Merge Down, Ctrl+Alt+T Free Transform) |
  * | clipboard keys | `clipboardShortcuts.ts` (Ctrl+C, Ctrl+Shift+C, Ctrl+X, Ctrl+V, Ctrl+Shift+V) |
  */
 
@@ -86,8 +86,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     return false;
   }
   if (event.altKey || ctrl) return false;
-  // Tool-specific keys first (Move: arrow nudges).
-  if (tools.active.onKey?.(editor, event)) return true;
+  // Tool-specific keys first (Move: arrow nudges; a Free Transform session's tool wins).
+  if (tools.resolve(false).onKey?.(editor, event)) return true;
 
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {

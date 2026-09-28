@@ -168,8 +168,18 @@ export class HostSync {
     this.shell.outputsButton.classList.toggle("cps-active", regionMode);
     this.shell.outputsButton.setAttribute("aria-pressed", String(regionMode));
     this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
-    this.optionsBar.bind(session.tools.active.options);
+    this.optionsBar.bind(session.tools.barOptions());
     this.syncMoveMode();
+  }
+
+  /**
+   * Re-bind the options bar (Free Transform session start / end, selection
+   * appearing for the selection tools' Transform buttons); a refresh when
+   * the options object is unchanged (live transform fields).
+   */
+  syncOptions(): void {
+    const tools = this.getSession()?.tools;
+    if (tools) this.optionsBar.bind(tools.barOptions());
   }
 
   /**

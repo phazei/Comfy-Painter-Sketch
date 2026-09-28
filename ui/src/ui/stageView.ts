@@ -15,7 +15,7 @@ import { backgroundShown } from "../engine/solo";
 import { backingStoreSize, docRectToStage, stageToDoc } from "../engine/viewport";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { REGION_TOOL_ID } from "../tools/region";
-import type { Tool } from "../tools/types";
+import type { Tool, ToolCursor } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
 import { cssCursor, cursorBadge } from "./cursors";
 import type { CursorBadge } from "./cursors";
@@ -24,6 +24,7 @@ import { moveCursorCss, moveCursorKind } from "./moveCursors";
 import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
+import { drawTransformOverlay } from "./transformOverlay";
 import { WebClick } from "./webClick";
 
 /** How long transient notes stay visible. */
@@ -189,7 +190,7 @@ export class StageView {
         alt: this.altDown,
       });
     }
-    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(tool.cursor(), this.badge);
+    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(this.toolCursor(tool, session), this.badge);
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -212,6 +213,13 @@ export class StageView {
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
+
+  /** The tool's cursor, per hover position for tools with `cursorAt` (Free Transform zones). */
+  private toolCursor(tool: Tool, session: EditorSession | null): ToolCursor {
+    if (!session || !this.hover || !tool.cursorAt) return tool.cursor();
+    const { editor } = session;
+    return tool.cursorAt(editor, imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover)));
+  }
 
   /** Whether the hover point is inside the selection (the press test, `selectionMove.hit`). */
   private hoverInSelection(session: EditorSession): boolean {
@@ -284,6 +292,7 @@ export class StageView {
     // Marching ants (selection + in-progress marquee) are drawn regardless of hover.
     if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
+    if (session) drawTransformOverlay(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {

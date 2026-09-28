@@ -12,6 +12,8 @@
  *   immutable, see `document/textData.ts`).
  *
  * Anchor: `(x, y)` = first line's baseline at its left / centre / right edge.
+ * Rotation (M11b): about the centre of the unrotated edit box; `paint` is
+ * the rotated ink bbox's AABB (bounds growth).
  */
 
 import { DEFAULT_LINE_HEIGHT } from "../document/textData";
@@ -57,8 +59,14 @@ export interface TextLayout {
   lineHeight: number;
   /** Edit box (all line boxes, widest line), document px: the textarea and hit area. */
   box: Rect;
-  /** Integer rect covering every painted pixel (ink + advance boxes, padded). */
+  /** Integer rect covering every painted pixel of the UNROTATED text (ink + advance boxes, padded). */
   bbox: Rect;
+  /** Rotation centre: the centre of {@link TextLayout.box}. */
+  centre: Point;
+  /** Rotation, degrees (0 = none). */
+  rotation: number;
+  /** Integer rect covering every painted pixel: {@link TextLayout.bbox}, rotated (its AABB). */
+  paint: Rect;
 }
 
 /** CSS generic families (never quoted, always "available"). */
@@ -190,7 +198,49 @@ export function layoutText(td: Readonly<TextData>, measure: MeasureText): TextLa
           height: inkRect.height + INK_PAD * 2,
         })
       : { x: Math.floor(box.x), y: Math.floor(box.y), width: 0, height: 0 };
-  return { lines, lineHeight, box, bbox };
+  const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const rotation = td.rotation ?? 0;
+  const paint = rotation && bbox.width > 0 ? rotatedAabb(bbox, rotation, centre) : bbox;
+  return { lines, lineHeight, box, bbox, centre, rotation, paint };
+}
+
+/**
+ * Integer axis-aligned bounds of a rect rotated about a point.
+ * @param rect - Rect.
+ * @param deg - Rotation, degrees (clockwise on screen: y points down).
+ * @param centre - Rotation centre.
+ * @returns Rect rounded outwards (edges within 1e-6 of a whole px are not grown).
+ */
+export function rotatedAabb(rect: Rect, deg: number, centre: Point): Rect {
+  const pts = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+    { x: rect.x, y: rect.y + rect.height },
+  ].map((p) => rotatePoint(p, deg, centre));
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const x0 = Math.floor(Math.min(...xs) + 1e-6);
+  const y0 = Math.floor(Math.min(...ys) + 1e-6);
+  const x1 = Math.ceil(Math.max(...xs) - 1e-6);
+  const y1 = Math.ceil(Math.max(...ys) - 1e-6);
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/**
+ * Rotate a point about a centre.
+ * @param p - Point.
+ * @param deg - Degrees (clockwise on screen).
+ * @param centre - Centre.
+ * @returns Rotated point.
+ */
+export function rotatePoint(p: Point, deg: number, centre: Point): Point {
+  const r = (deg * Math.PI) / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  const dx = p.x - centre.x;
+  const dy = p.y - centre.y;
+  return { x: centre.x + cos * dx - sin * dy, y: centre.y + sin * dx + cos * dy };
 }
 
 /** Pen x of a line of `width` for the anchor + alignment. */
@@ -269,7 +319,13 @@ export function textLayout(td: Readonly<TextData>): TextLayout {
 export function drawText(ctx: CanvasRenderingContext2D, td: Readonly<TextData>, origin: Point): Rect {
   const layout = textLayout(td);
   ctx.save();
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  // Rotation about the box centre in canvas px (exactly the identity without rotation).
+  const r = (layout.rotation * Math.PI) / 180;
+  const cos = layout.rotation ? Math.cos(r) : 1;
+  const sin = layout.rotation ? Math.sin(r) : 0;
+  const cx = layout.centre.x - origin.x;
+  const cy = layout.centre.y - origin.y;
+  ctx.setTransform(cos, sin, -sin, cos, cx - (cos * cx - sin * cy), cy - (sin * cx + cos * cy));
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.font = fontString(td);
@@ -280,7 +336,7 @@ export function drawText(ctx: CanvasRenderingContext2D, td: Readonly<TextData>, 
     if (line.text) ctx.fillText(line.text, line.x - origin.x, line.baseline - origin.y);
   }
   ctx.restore();
-  return layout.bbox;
+  return layout.paint;
 }
 
 /** Font sizes are kept to 1/100 px in the font string. */

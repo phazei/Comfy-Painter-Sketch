@@ -136,12 +136,12 @@ export class Editor extends EditorBase {
 
   /** Undo available. */
   get canUndo(): boolean {
-    return (this.s.history.canUndo || this.float.active) && !this.s.stroke.active;
+    return (this.s.history.canUndo || this.float.active || this.float.transform.active) && !this.s.stroke.active;
   }
 
   /** Redo available. */
   get canRedo(): boolean {
-    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active;
+    return this.s.history.canRedo && !this.s.stroke.active && !this.float.active && !this.float.transform.active;
   }
 
   /** Layer files are being restored; painting is disabled. */
@@ -327,7 +327,7 @@ export class Editor extends EditorBase {
    * (a no-op edit just closes). A floating selection is cancelled instead.
    */
   undo(): void {
-    if (this.float.active) { this.float.cancel(); return; }
+    if (this.float.active || this.float.transform.active) { this.float.cancel(); return; }
     this.layerMove.cancel();
     if (this.regionOps.active) { this.regionOps.cancel(); return; }
     if (!this.text.editing || this.text.commit()) this.paint.undo();
@@ -335,7 +335,7 @@ export class Editor extends EditorBase {
 
   /** Redo the last undone operation (an open text edit is committed first). Ignored while floating. */
   redo(): void {
-    if (this.float.active) return; this.regionOps.cancel(); this.text.commit(); this.paint.redo(); }
+    if (this.float.active || this.float.transform.active) return; this.regionOps.cancel(); this.text.commit(); this.paint.redo(); }
 
   /** Clear paint and output metadata in the existing single Clear history step. */
   override clear(): void { this.s.settleFloat(); this.regionOps.cancel(); super.clear(); }
@@ -376,7 +376,7 @@ export class Editor extends EditorBase {
 
   /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes(): number {
-    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes;
+    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes + this.s.kept.bytes;
   }
 
   /** Release everything. */

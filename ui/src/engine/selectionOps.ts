@@ -34,10 +34,12 @@ import {
   combineSelection,
   coverageFor,
   eraseCoverage,
+  hardenSelection,
   invertSelection,
   rectSelection,
   selectionBytes,
   selectionExtent,
+  selectionFromAlpha,
   selectionsEqual,
 } from "./selection";
 import type { Selection, SelectionMode } from "./selection";
@@ -45,6 +47,8 @@ import type { Contour } from "./selectionOutline";
 
 /** Note when a command needs a selection. */
 const NO_SELECTION_NOTE = "Nothing is selected.";
+/** Note when Ctrl+click loads a fully transparent layer. */
+const EMPTY_LAYER_NOTE = "The layer has no pixels.";
 
 /**
  * Selection state changes + selection pixel commands over a shared {@link EditorState}.
@@ -135,6 +139,36 @@ export class SelectionOps {
    */
   invert(): boolean {
     return this.change(invertSelection(this.current));
+  }
+
+  /**
+   * Ctrl+click on a layer row (Photoshop's thumbnail Ctrl+click): the layer's
+   * alpha becomes the selection coverage (soft edges stay partial), combined
+   * by `mode`. A mask uses its effective coverage (per-mask invert applied,
+   * as the overlay shows it). Works on hidden layers; does not change the
+   * current layer, Quick Mask or solo. An empty layer notes and leaves the
+   * selection unchanged.
+   * @param layerId - Paint, text or mask layer id.
+   * @param mode - Combination mode.
+   * @returns `true` if the selection changed.
+   */
+  fromLayer(layerId: string, mode: SelectionMode): boolean {
+    const s = this.s;
+    if (s.loading || s.stroke.active) return false;
+    const layer = s.doc.layers.find((l) => l.id === layerId);
+    if (!layer) return false;
+    // A float is part of the layer's pixels: settle it before reading.
+    s.settleFloat();
+    const px = s.store.read(layer.id, s.store.bounds);
+    const alpha = px ? selectionFromAlpha(px.data.data, px.rect) : null;
+    if (!alpha) {
+      s.events.emit("note", EMPTY_LAYER_NOTE);
+      return false;
+    }
+      const next = layer.kind === "mask" && layer.invert === true ? invertSelection(alpha) : alpha;
+      // Full strength wherever the (effective) alpha is > 0: lifting then takes
+      // the pixels whole, so a move leaves no residue and keeps exact alpha.
+      return this.apply(hardenSelection(next), mode);
   }
 
   // ── Pixel commands (one undo patch each) ────────────────────────────────

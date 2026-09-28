@@ -14,7 +14,7 @@ import type { TextData } from "../document/textData";
 import type { Point, Rect } from "../geometry/rect";
 import type { TextEntry, TextLayerState } from "./editorTypes";
 import type { EditorState } from "./editorState";
-import { drawText, textLayout } from "./textRender";
+import { drawText, rotatePoint, textLayout } from "./textRender";
 
 /** History cost of a text entry (metadata only), bytes. */
 export const TEXT_ENTRY_BYTES = 256;
@@ -34,7 +34,7 @@ const HIT_MARGIN = 0.15;
 export function renderTextLayer(s: EditorState, layer: Readonly<Layer>): void {
   const td = layer.kind === "text" ? layer.textData : undefined;
   if (!td) return;
-  const bbox = textLayout(td).bbox;
+  const bbox = textLayout(td).paint;
   if (bbox.width > 0 && bbox.height > 0) s.ensureBounds(bbox, true);
   const surface = s.store.ensure(layer.id);
   surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
@@ -152,8 +152,9 @@ export function moveTextLayer(s: EditorState, layer: Layer, dx: number, dy: numb
 // ── Hit test ──────────────────────────────────────────────────────────────────
 
 /**
- * Top-most visible text layer whose text box contains a point (pure: boxes
- * come from `boxOf`).
+ * Top-most visible text layer whose (rotated, M11b) text box contains a
+ * point (pure: unrotated boxes come from `boxOf`; the point is rotated back
+ * about the box centre).
  * @param layers - Document layers, bottom -> top.
  * @param point - Document point.
  * @param boxOf - Text box of a text data value, document coords.
@@ -169,7 +170,9 @@ export function hitTestText(
     if (!layer || layer.kind !== "text" || !layer.visible || !layer.textData) continue;
     const box = boxOf(layer.textData);
     const m = layer.textData.size * HIT_MARGIN;
-    if (point.x >= box.x - m && point.x <= box.x + box.width + m && point.y >= box.y - m && point.y <= box.y + box.height + m) {
+    const rot = layer.textData.rotation ?? 0;
+    const p = rot ? rotatePoint(point, -rot, { x: box.x + box.width / 2, y: box.y + box.height / 2 }) : point;
+    if (p.x >= box.x - m && p.x <= box.x + box.width + m && p.y >= box.y - m && p.y <= box.y + box.height + m) {
       return layer.id;
     }
   }

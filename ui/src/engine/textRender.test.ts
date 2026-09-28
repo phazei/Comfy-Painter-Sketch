@@ -4,7 +4,7 @@ import { createPaintLayer, createTextLayer } from "../document/create";
 import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import { hitTestText } from "./textLayer";
-import { cssFontFamily, fontString, isFontAvailable, layoutText, lineHeightPx } from "./textRender";
+import { cssFontFamily, fontString, isFontAvailable, layoutText, lineHeightPx, rotatedAabb } from "./textRender";
 import type { MeasureText } from "./textRender";
 
 const TD: TextData = { text: "ab\nabcd", x: 100, y: 50, font: "sans-serif", size: 10, color: "#000000", bold: false, italic: false, align: "left" };
@@ -100,5 +100,44 @@ describe("hitTestText", () => {
     const layer = text(100);
     expect(hitTestText([layer], { x: 99, y: 55 }, boxOf)).toBe(layer.id);
     expect(hitTestText([layer], { x: 97, y: 55 }, boxOf)).toBeNull();
+  });
+});
+
+describe("rotated text (M11b)", () => {
+  it("rotatedAabb covers the rotated rect about a point", () => {
+    const r = { x: 0, y: 0, width: 10, height: 4 };
+    expect(rotatedAabb(r, 0, { x: 5, y: 2 })).toEqual(r);
+    expect(rotatedAabb(r, 90, { x: 5, y: 2 })).toEqual({ x: 3, y: -3, width: 4, height: 10 });
+    const d = rotatedAabb(r, 45, { x: 5, y: 2 });
+    const half = (10 + 4) / Math.SQRT2 / 2;
+    expect(d).toEqual({ x: Math.floor(5 - half), y: Math.floor(2 - half), width: Math.ceil(5 + half) - Math.floor(5 - half), height: Math.ceil(2 + half) - Math.floor(2 - half) });
+  });
+
+  it("layout: paint = AABB of the rotated ink bbox about the box centre; box unchanged", () => {
+    const flat = layoutText(TD, measure);
+    const turned = layoutText({ ...TD, rotation: 90 }, measure);
+    expect(turned.box).toEqual(flat.box);
+    expect(turned.centre).toEqual({ x: flat.box.x + flat.box.width / 2, y: flat.box.y + flat.box.height / 2 });
+    expect(flat.paint).toEqual(flat.bbox);
+    expect(turned.paint).toEqual(rotatedAabb(flat.bbox, 90, turned.centre));
+    // Half-px centre: rounding out may add one px.
+    expect(turned.paint.width - flat.bbox.height).toBeGreaterThanOrEqual(0);
+    expect(turned.paint.width - flat.bbox.height).toBeLessThanOrEqual(1);
+  });
+
+  it("hit-testing uses the rotated box", () => {
+    const layout = layoutText(TD, measure);
+    const long: TextData = { ...TD, text: "abcdefghijklmnopqrst" };
+    const box = layoutText(long, measure).box;
+    const c = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const layer = { ...createTextLayer(long), id: "t" };
+    const rotated = { ...layer, textData: { ...long, rotation: 90 } };
+    const boxOf = (td: Readonly<TextData>) => layoutText(td, measure).box;
+    const farRight = { x: c.x + box.width / 2 - 2, y: c.y };
+    const below = { x: c.x, y: c.y + box.width / 2 - 2 };
+    expect(hitTestText([layer], farRight, boxOf)).toBe("t");
+    expect(hitTestText([rotated], farRight, boxOf)).toBeNull();
+    expect(hitTestText([rotated], below, boxOf)).toBe("t");
+    expect(layout.box.width).toBeGreaterThan(0);
   });
 });

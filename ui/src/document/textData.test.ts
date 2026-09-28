@@ -8,9 +8,11 @@ import {
   nameFromText,
   parseRecentFonts,
   pushRecentFont,
+  normalizeDegrees,
   readTextData,
   sameTextData,
   serializeTextData,
+  withRotation,
 } from "./textData";
 import type { TextData } from "./textData";
 
@@ -105,5 +107,30 @@ describe("recent fonts", () => {
     expect(parseRecentFonts("{")).toEqual([]);
     expect(parseRecentFonts('{"a":1}')).toEqual([]);
     expect(parseRecentFonts('["Arial", 3, "Impact", "arial"]')).toEqual(["Arial", "Impact"]);
+  });
+});
+
+describe("text rotation (M11b)", () => {
+  it("reads, normalizes to (-180, 180] and drops 0 / junk", () => {
+    expect(readTextData({ ...TD, rotation: 30 })?.rotation).toBe(30);
+    expect(readTextData({ ...TD, rotation: 190 })?.rotation).toBe(-170);
+    expect(readTextData({ ...TD, rotation: -180 })?.rotation).toBe(180);
+    expect(readTextData({ ...TD, rotation: 720 })).toEqual(TD);
+    expect(readTextData({ ...TD, rotation: "5" })).toEqual(TD);
+    expect(readTextData({ ...TD, rotation: Number.NaN })).toEqual(TD);
+    expect(normalizeDegrees(-0)).toBe(0);
+  });
+
+  it("serializes only a non-zero rotation and round-trips", () => {
+    expect("rotation" in serializeTextData(TD)).toBe(false);
+    const rotated = withRotation(TD, 45);
+    expect(serializeTextData(rotated)["rotation"]).toBe(45);
+    expect(readTextData(serializeTextData(rotated))).toEqual(rotated);
+    expect(withRotation(rotated, 360)).toEqual(TD);
+  });
+
+  it("counts in equality (missing = 0)", () => {
+    expect(sameTextData(TD, { ...TD, rotation: 0 })).toBe(true);
+    expect(sameTextData(TD, withRotation(TD, 1))).toBe(false);
   });
 });

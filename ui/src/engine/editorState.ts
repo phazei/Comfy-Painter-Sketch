@@ -18,6 +18,7 @@ import { groupEntries } from "./editorTypes";
 import type { EditorEvents, FrameSource, HistoryEntry } from "./editorTypes";
 import { Emitter } from "./emitter";
 import { DEFAULT_HISTORY_BYTES, HistoryStack } from "./history";
+import { KeptOriginals } from "./keptOriginal";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
 import { SelectionState } from "./selectionState";
@@ -36,6 +37,8 @@ export class EditorState {
   readonly stroke = new StrokeBuffer();
   readonly runtime = new LayerRuntimeTable();
   readonly store: LayerStore;
+  /** Pre-transform originals per layer (M11b, memory only; `keptOriginal.ts`). */
+  readonly kept = new KeptOriginals();
   /** Current selection (session state, not saved); strokes are clipped to it. */
   readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
   /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
@@ -85,6 +88,8 @@ export class EditorState {
    * before every other edit / history action -- the float's central hook.
    */
   settleFloat: () => void = () => undefined;
+  /** Commit an open text edit, if any (`textOps.ts` installs it; Free Transform calls it first). */
+  commitTextEdit: () => void = () => undefined;
   /**
    * Live display of a layer with its floating selection (hole + float at
    * its offset), or `null` when the layer has no float (`floatOps.ts`).
@@ -113,6 +118,11 @@ export class EditorState {
     this.syncViewFrame();
     // A solo ends when its layer is deleted (every layer-list change emits `layers`).
     this.events.on("layers", () => this.solo.set(pruneSolo(this.solo.current, this.doc.layers)));
+    // Kept originals die with their layer and with any other edit of it.
+    this.events.on("layers", () => this.kept.prune(new Set(this.doc.layers.map((l) => l.id))));
+    this.events.on("change", () => {
+      for (const layer of this.doc.layers) if (this.kept.has(layer.id)) this.kept.get(layer.id, this.runtime.revision(layer.id));
+    });
   }
 
   /** Layer files are being restored. */

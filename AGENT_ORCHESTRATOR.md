@@ -33,8 +33,10 @@ decisions, not file contents.
 
 Each prompt is self-contained (the agent has no memory of this chat):
 
-1. What the project is, one line, and "Read `AGENTS.md` (sections X, Y) and
-   `SPEC.md` (sections ...) first" -- point at the sections that are the spec.
+1. What the project is, one line, and "Read `SPEC.md` (sections ...) first" --
+   point at the sections that are the spec. `AGENTS.md` is injected into every
+   agent automatically; don't tell them to read it (you may point at a section
+   by name when it matters).
 2. The task, with the user's exact decisions and any repro steps.
 3. Constraints: never git commit; don't edit `SPEC.md` / `AGENTS.md` / `README.md`
    (report doc suggestions instead); which files are off limits.
@@ -60,8 +62,10 @@ $env:PYTHONPATH='D:\AITools\StabilityMatrixData\Packages\ComfyUI'
 & 'D:\AITools\StabilityMatrixData\Packages\ComfyUI\venv\Scripts\python.exe' -m unittest discover tests
 ```
 
-Also watch for files creeping past ~400 lines and CRLF line endings; hand those
-to an opus agent.
+Also watch for files creeping past ~400 lines and CRLF line endings. Don't ask a
+feature agent to split "while you're here"; queue a separate behaviour-neutral
+split task (opus agent) between features, so the user can review and commit it
+on its own.
 
 ## Working with the user
 

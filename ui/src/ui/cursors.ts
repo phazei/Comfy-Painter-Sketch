@@ -20,8 +20,9 @@
 
 import { selectionMode } from "../engine/selection";
 import type { SelectionMode } from "../engine/selection";
-import type { CursorIcon, ToolCursor } from "../tools/types";
+import type { CursorIcon, ToolCursor, TransformCursorIcon } from "../tools/types";
 import { iconPath } from "./icons";
+import { rotateCursorCss } from "./moveCursors";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ const ICON_COLOR = "#fff";
  * bucket: drip bottom is the end of `c0 1.5-.8 2.5-1.8 2.5` from (21,17)
  *         → (21-1.8, 17+2.5) = (19.2, 19.5) → rounded (19, 20).
  */
-const HOTSPOTS: Readonly<Record<Exclude<CursorIcon, "crosshair" | "move" | "text">, readonly [number, number]>> = {
+const HOTSPOTS: Readonly<Record<Exclude<CursorIcon, "crosshair" | "move" | "text" | TransformCursorIcon>, readonly [number, number]>> = {
   eyedropper: [3, 21],
   bucket: [19, 20],
 };
@@ -76,6 +77,8 @@ export function iconCursor(icon: CursorIcon): string {
   if (icon === "move") return "move";
   // Text tool: the native I-beam.
   if (icon === "text") return "text";
+  // Free Transform: native resize cursors, SVG rotate arrow (`moveCursors.ts`).
+  if (isTransformIcon(icon)) return icon === "rotate" ? rotateCursorCss() : `${icon.slice("resize-".length)}-resize`;
   const cached = cache.get(icon);
   if (cached) return cached;
 
@@ -93,6 +96,13 @@ export function iconCursor(icon: CursorIcon): string {
   const value = `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${x} ${y}, crosshair`;
   cache.set(icon, value);
   return value;
+}
+
+/** Free Transform cursor icons. */
+const TRANSFORM_ICONS: ReadonlySet<string> = new Set<TransformCursorIcon>(["resize-ns", "resize-ew", "resize-nwse", "resize-nesw", "rotate"]);
+
+function isTransformIcon(icon: CursorIcon): icon is TransformCursorIcon {
+  return TRANSFORM_ICONS.has(icon);
 }
 
 /**

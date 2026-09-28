@@ -23,6 +23,7 @@ import { LayerDrag } from "./layerDrag";
 import { layerOpacityControl, MaskColorPicker } from "./layerControls";
 import type { ColorPickFn, LayerTarget } from "./layerControls";
 import { LayerRow } from "./layerRow";
+import { LayerSelectHover } from "./layerSelectHover";
 import type { RowActions, RowKind } from "./layerRow";
 import { el, footerButton, moveDrawingBtn, rowModel, soloMark } from "./layersPanelParts";
 import type { OptionControl } from "./optionControls";
@@ -107,6 +108,8 @@ export class LayersPanel {
       this.withEditor((e) => e.layerOps.move(id, drop.targetId, drop.above)),
     );
     this.unbind.push(ctx.sidePanel.events.on("collapse", (collapsed) => !collapsed && this.thumbs.request()));
+    const hover = new LayerSelectHover(this.list);
+    this.unbind.push(() => hover.dispose());
   }
 
   /**
@@ -307,6 +310,8 @@ export class LayersPanel {
           e.layerOps.setActiveLayer(id);
           e.setPaintTarget("paint");
         }),
+      // Selection only: the current layer, Quick Mask and solo stay as they are.
+      loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
       toggleVisible: (id) =>
         this.withEditor((e) =>
           id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer(e, id)?.visible),

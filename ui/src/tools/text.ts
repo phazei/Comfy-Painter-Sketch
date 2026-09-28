@@ -16,10 +16,12 @@
  *   "Custom font..."), size in image px (converted with the frame-map
  *   scale, like brush size), bold, italic, alignment. Colour = FG. While
  *   editing, option and FG changes apply live to the edited text.
+ * - Angle (M11b): rotation of the edited text, else of the active text
+ *   layer (one merged text step per run of changes, `TextOps.setRotation`).
  */
 
 import { clampSize, MAX_FONT_LENGTH, parseRecentFonts, pushRecentFont } from "../document/textData";
-import type { TextAlign } from "../document/textData";
+import type { TextAlign, TextData } from "../document/textData";
 import type { Editor } from "../engine/editor";
 import { dragDelta } from "../engine/translateMath";
 import type { Point } from "../geometry/rect";
@@ -55,6 +57,8 @@ type TextToolValues = {
   bold: boolean;
   italic: boolean;
   align: TextAlign;
+  /** Rotation of the selected / edited text layer, degrees (mirrors the layer; M11b). */
+  angle: number;
 };
 
 /** Largest size option, image px. */
@@ -91,14 +95,21 @@ function rememberFont(font: string): void {
 class TextOptionSet extends OptionSet {
   constructor(
     descriptors: readonly OptionDescriptor[],
-    values: TextToolValues,
+    private readonly store: TextToolValues,
     private readonly changed: (key: string) => void,
+    private readonly angle: () => number,
   ) {
-    super(descriptors, values);
+    super(descriptors, store);
+  }
+
+  /** The angle field always shows the target text layer's rotation. */
+  override get(key: string): OptionValue | undefined {
+    return key === "angle" ? this.angle() : super.get(key);
   }
 
   /** @inheritdoc */
   override set(key: string, value: OptionValue): boolean {
+    if (key === "angle") this.store.angle = this.angle();
     const changed = super.set(key, value);
     if (changed) this.changed(key);
     return changed;
@@ -117,7 +128,7 @@ export class TextTool implements Tool {
   readonly ctrlMove = false;
   readonly options: OptionSet;
   /** Stored option values (edited in place through {@link options}). */
-  readonly values: TextToolValues = { font: "sans-serif", size: 48, bold: false, italic: false, align: "left" };
+  readonly values: TextToolValues = { font: "sans-serif", size: 48, bold: false, italic: false, align: "left", angle: 0 };
   /** Ctrl+drag move in progress: pointer-down position, document coords. */
   private moveStart: Point | null = null;
   /** Layer whose edit the option values were last loaded from. */
@@ -155,8 +166,18 @@ export class TextTool implements Tool {
           { value: "right", label: "Right" },
         ],
       },
+      {
+        kind: "number",
+        key: "angle",
+        label: "Angle",
+        title: "Rotation of the edited / selected text layer, degrees (Ctrl+Alt+T: rotate and scale on the canvas)",
+        min: -180,
+        max: 180,
+        step: 0.1,
+        unit: "\u00b0",
+      },
     ];
-    this.options = new TextOptionSet(descriptors, this.values, (key) => this.optionChanged(key));
+    this.options = new TextOptionSet(descriptors, this.values, (key) => this.optionChanged(key), () => this.angleTarget()?.rotation ?? 0);
     editor.events.on("text", () => this.syncFromEdit());
     editor.colors.events.on("change", (colors) => {
       if (editor.text.editing) editor.text.update({ color: colors.fg });
@@ -260,12 +281,25 @@ export class TextTool implements Tool {
     const editor = this.editor;
     const v = this.values;
     if (key === "font") rememberFont(v.font);
+    if (key === "angle") {
+      const id = editor.text.editing?.layerId ?? editor.doc.activeLayerId;
+      editor.text.setRotation(id, v.angle);
+      return;
+    }
     if (!editor.text.editing) return;
     if (key === "font") editor.text.update({ font: v.font });
     else if (key === "size") editor.text.update({ size: this.docSize(editor) });
     else if (key === "bold") editor.text.update({ bold: v.bold });
     else if (key === "italic") editor.text.update({ italic: v.italic });
     else if (key === "align") editor.text.update({ align: v.align });
+  }
+
+  /** Text data the angle field shows / sets: the open edit, else the active layer if it is text. */
+  private angleTarget(): Readonly<TextData> | undefined {
+    const edit = this.editor.text.editing;
+    if (edit) return edit.textData;
+    const active = this.editor.doc.layers.find((l) => l.id === this.editor.doc.activeLayerId);
+    return active?.kind === "text" ? active.textData : undefined;
   }
 
   /** A re-edit started: show that layer's style in the options and FG swatch. */

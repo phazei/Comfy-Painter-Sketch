@@ -37,6 +37,11 @@ export interface TextData {
   align: TextAlign;
   /** Line spacing as a multiple of `size` (default {@link DEFAULT_LINE_HEIGHT}). */
   lineHeight?: number;
+  /**
+   * Rotation in degrees (clockwise on screen) around the centre of the
+   * unrotated edit box (M11b); missing = 0, normalized to (-180, 180].
+   */
+  rotation?: number;
 }
 
 /** Default line spacing (multiple of the font size). */
@@ -95,6 +100,8 @@ export function readTextData(value: unknown): TextData | null {
   };
   const lineHeight = v["lineHeight"];
   if (isFiniteNumber(lineHeight) && lineHeight > 0) data.lineHeight = Math.min(10, lineHeight);
+  const rotation = v["rotation"];
+  if (isFiniteNumber(rotation) && normalizeDegrees(rotation) !== 0) data.rotation = normalizeDegrees(rotation);
   return data;
 }
 
@@ -116,6 +123,7 @@ export function serializeTextData(data: TextData): Record<string, unknown> {
     align: data.align,
   };
   if (data.lineHeight !== undefined) out["lineHeight"] = data.lineHeight;
+  if (data.rotation) out["rotation"] = data.rotation;
   return out;
 }
 
@@ -136,8 +144,34 @@ export function sameTextData(a: Readonly<TextData>, b: Readonly<TextData>): bool
     a.bold === b.bold &&
     a.italic === b.italic &&
     a.align === b.align &&
-    (a.lineHeight ?? DEFAULT_LINE_HEIGHT) === (b.lineHeight ?? DEFAULT_LINE_HEIGHT)
+    (a.lineHeight ?? DEFAULT_LINE_HEIGHT) === (b.lineHeight ?? DEFAULT_LINE_HEIGHT) &&
+    (a.rotation ?? 0) === (b.rotation ?? 0)
   );
+}
+
+/**
+ * Degrees normalized to (-180, 180] (-0 becomes 0).
+ * @param deg - Angle, degrees.
+ * @returns Normalized angle (0 for non-finite input).
+ */
+export function normalizeDegrees(deg: number): number {
+  if (!Number.isFinite(deg)) return 0;
+  let a = deg % 360;
+  if (a <= -180) a += 360;
+  if (a > 180) a -= 360;
+  return a === 0 ? 0 : a;
+}
+
+/**
+ * Text data with a new rotation (the field is dropped at 0).
+ * @param td - Text data.
+ * @param deg - Rotation, degrees (normalized here).
+ * @returns New text data.
+ */
+export function withRotation(td: Readonly<TextData>, deg: number): TextData {
+  const { rotation: _old, ...rest } = td;
+  const r = normalizeDegrees(deg);
+  return r === 0 ? rest : { ...rest, rotation: r };
 }
 
 /**
