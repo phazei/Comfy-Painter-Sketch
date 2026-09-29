@@ -7,19 +7,23 @@
  * maps onto it (never resampling, decision 4). Pushes are de-duplicated by a
  * content key so polls and repeated refreshes cost a string compare.
  *
+ * Each newly pushed image also writes its size into `width` / `height`
+ * (only when they differ), so the fallback frame always equals the last
+ * image: disconnecting, an upstream without an image, or a reload without
+ * one keep the frame (no copy step on disconnect).
+ *
  * Owned by `controller.ts`.
  */
 
-import { app } from "@comfy/scripts/app.js";
-
-import type { Size } from "../geometry/rect";
+import { log } from "../log";
 import type { IBaseWidget, LGraphNode } from "../types/comfy";
 import type { BackgroundLoader } from "./backgroundLoader";
-import { INPUT_NAMES, LINK_INPUT } from "./constants";
-import { resolveFallbackFrame, widgetDimension } from "./frameFallback";
+import { INPUT_NAMES } from "./constants";
+import { resolveFallbackFrame } from "./frameFallback";
 import type { FallbackFrame } from "./frameFallback";
-import { inputSlotIndex } from "./imageSource";
+import type { LoadedBackground } from "./handoff";
 import type { EditorSession } from "./sessions";
+import { writeSizeWidgets } from "./sizeWidgets";
 
 /**
  * Syncs the editor's background/frame with the node's input and widgets.
@@ -30,10 +34,13 @@ export class FrameSync {
   /**
    * @param node - The node whose widgets define the fallback frame.
    * @param loader - Background loader of the same node.
+   * @param onSizeWritten - Called after `width` / `height` were set to a new
+   *   image's size (a value change ComfyUI does not observe).
    */
   constructor(
     private readonly node: LGraphNode,
     private readonly loader: BackgroundLoader,
+    private readonly onSizeWritten: () => void,
   ) {}
 
   /** Forget the last pushed content so the next {@link apply} pushes again. */
@@ -76,6 +83,7 @@ export class FrameSync {
       this.contentKey = key;
       editor.setBackground({ kind: "image", image: bg.image }, bg.size);
       editor.handleBackgroundSize(bg.size);
+      this.followImageSize(bg);
       return;
     }
     // A re-attached session (tab switch) still has its image: keep it until
@@ -105,59 +113,20 @@ export class FrameSync {
   }
 
   /**
-   * A link on the node changed. If `image` lost its link (a user edit, not a
-   * load), see {@link adoptSizeOnDisconnect}.
-   * @param type - Slot type (`LINK_INPUT` for inputs).
-   * @param slot - Slot index.
-   * @param isConnected - `false` when a link was removed.
-   * @param session - Attached session, if any.
-   * @param stillWanted - Checked in the deferred microtask.
+   * A new image became the current image: `width` / `height` follow its size
+   * (see `sizeWidgets.ts`), so losing it later keeps the frame. Skipped for
+   * the handed-off background of a graph undo/redo: the restored widget
+   * values are part of that state, and writing would make the graph differ
+   * from the tracker's snapshot.
    */
-  handleLinkChange(
-    type: number,
-    slot: number,
-    isConnected: boolean,
-    session: EditorSession | null,
-    stillWanted: () => boolean,
-  ): void {
-    const imageSlot = inputSlotIndex(this.node, INPUT_NAMES.image);
-    if (type === LINK_INPUT && slot === imageSlot && !isConnected && session && this.node.graph) {
-      this.adoptSizeOnDisconnect(session.editor.imageSize, stillWanted);
+  private followImageSize(background: LoadedBackground): void {
+    if (this.loader.isHandedOff(background)) return;
+    const { changed, clamped } = writeSizeWidgets(this.node, background.size);
+    if (clamped) {
+      const { width, height } = background.size;
+      log.warn(`image ${width}x${height} is outside the width/height widget range; the size widgets were clamped.`);
     }
-  }
-
-  /**
-   * `image` lost its link (a user edit, not a load): the widgets take over the
-   * last image size so the canvas keeps its size and the node shows it.
-   * Deferred a microtask so a link replaced by another (disconnect, then
-   * connect in one call) leaves the widgets alone.
-   * @param size - Image size shown when the link was removed.
-   * @param stillWanted - Checked in the microtask (not disposed, still
-   *   disconnected).
-   */
-  private adoptSizeOnDisconnect(size: Size, stillWanted: () => boolean): void {
-    queueMicrotask(() => {
-      if (!stillWanted()) return;
-      const width = this.setWidgetValue(INPUT_NAMES.width, widgetDimension(size.width));
-      const height = this.setWidgetValue(INPUT_NAMES.height, widgetDimension(size.height));
-      if (!width && !height) return;
-      this.node.graph?.incrementVersion?.();
-      app.canvas?.setDirty?.(true, true);
-    });
-  }
-
-  /**
-   * Set a widget's value like a user edit: the value setter (backed by the
-   * widget value store, so both renderers update) plus its callback (ours
-   * re-applies the frame; see {@link chainWidgetCallbacks}).
-   * @returns `true` if the value changed.
-   */
-  private setWidgetValue(name: string, value: number): boolean {
-    const widget = this.findWidget(name);
-    if (!widget || widget.value === value) return false;
-    widget.value = value;
-    widget.callback?.(widget.value);
-    return true;
+    if (changed) this.onSizeWritten();
   }
 
   private findWidget(name: string): IBaseWidget | undefined {

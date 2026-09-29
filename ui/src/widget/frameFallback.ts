@@ -14,9 +14,9 @@ export const FALLBACK_DEFAULTS = {
   color: "#ffffff",
 } as const;
 
-/** Frame side limits accepted from widgets (match the Python INT min/max). */
+/** Frame side limits accepted from widgets (match the Python INT min/max, `FRAME_MAX`). */
 export const MIN_FRAME_SIDE = 64;
-export const MAX_FRAME_SIDE = 8192;
+export const MAX_FRAME_SIDE = 16384;
 /** Step of the `width`/`height` widgets (Python INT `step`). */
 export const FRAME_SIDE_STEP = 8;
 
@@ -81,16 +81,30 @@ export function resolveFallbackFrame(width: unknown, height: unknown, color: unk
   };
 }
 
+/** Range and step of an INT widget. */
+export interface SideLimits {
+  min: number;
+  max: number;
+  step: number;
+}
+
+/** The `width`/`height` widget limits of the Python schema. */
+export const FRAME_SIDE_LIMITS: SideLimits = { min: MIN_FRAME_SIDE, max: MAX_FRAME_SIDE, step: FRAME_SIDE_STEP };
+
 /**
- * Widget value for a frame side, so the `width`/`height` widgets can take
- * over an image's size on disconnect: rounded to the nearest multiple of
- * {@link FRAME_SIDE_STEP} and clamped to the widget range. The result may
- * differ from `side` by less than one step; the frame map absorbs that.
+ * Widget value for an image side, so the `width`/`height` widgets can follow
+ * the current image: rounded like the frontend INT widget does (nearest
+ * multiple of `step`, offset by `min % step`) and clamped to `[min, max]`.
+ * The result may differ from `side` by less than one step (the frame map
+ * absorbs that), or more when `side` exceeds `max`.
  *
  * @param side - Image side in pixels.
- * @returns Value valid for the `width`/`height` INT widgets.
+ * @param limits - Widget range and step.
+ * @returns Value valid for the widget.
  */
-export function widgetDimension(side: number): number {
-  const snapped = Math.round(side / FRAME_SIDE_STEP) * FRAME_SIDE_STEP;
-  return Math.min(MAX_FRAME_SIDE, Math.max(MIN_FRAME_SIDE, snapped));
+export function widgetDimension(side: number, limits: SideLimits = FRAME_SIDE_LIMITS): number {
+  const step = limits.step > 0 ? limits.step : 1;
+  const offset = limits.min % step;
+  const snapped = Math.round((side - offset) / step) * step + offset;
+  return Math.min(limits.max, Math.max(limits.min, snapped));
 }

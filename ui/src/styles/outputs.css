@@ -68,7 +68,7 @@
 
 .cps-output-card {
   padding: 3px 4px 4px;
-  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
   border-left: 2px solid transparent;
   user-select: none;
 }
@@ -110,7 +110,7 @@
   width: 100%;
   padding: 3px 6px;
   border: 0;
-  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
   background: transparent;
   color: var(--cps-fg-muted);
   font: inherit;
@@ -180,17 +180,30 @@
   outline: 1px solid var(--cps-accent);
 }
 
+/* Line 1: Modify + dropdown + Alpha / Fill swatch. Line 2: Crop / border extras. */
 .cps-output-options {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.cps-output-options-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 4px;
-  margin-top: 2px;
 }
 
 .cps-output-options .cps-output-field {
-  flex: 0 1 70px;
+  flex: none;
   margin: 0;
+}
+
+/* Pad / border width: 4 digits (max 4096) + padding and border. */
+.cps-output-options .cps-output-field > input {
+  flex: none;
+  width: calc(4ch + 8px);
 }
 
 .cps-output-swatch {
@@ -203,8 +216,11 @@
   cursor: pointer;
 }
 
+/* Takes the free width but never shrinks below its longest option. */
 .cps-output-options .cps-output-mode {
-  min-width: 0;
+  flex: 1 0 auto;
+  width: auto;
+  min-width: max-content;
 }
 
 .cps-output-check {

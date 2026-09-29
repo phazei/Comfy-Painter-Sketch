@@ -14,6 +14,7 @@ import {
   writeProps,
 } from "../document/layerList";
 import type { LayerChange, LayerProps } from "../document/layerList";
+import { findAnyLayer } from "../document/imageMask";
 import type { Layer } from "../document/types";
 import type { LayerPixels } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -28,13 +29,14 @@ import {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Find a layer by id in the document.
+ * Find a layer by id in the document, including the M13a Image Mask row
+ * (its eye, colour, invert and opacity edit like a mask's).
  * @param s - Shared editor state.
- * @param layerId - Layer id.
+ * @param layerId - Layer id or `IMAGE_MASK_ID`.
  * @returns The layer, or `undefined` if not found.
  */
 export function findLayer(s: EditorState, layerId: string): Layer | undefined {
-  return s.doc.layers.find((l) => l.id === layerId);
+  return findAnyLayer(s.doc, layerId);
 }
 
 /**

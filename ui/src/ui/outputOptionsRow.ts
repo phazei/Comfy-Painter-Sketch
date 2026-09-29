@@ -1,7 +1,9 @@
 /**
- * Options row of an output card (Main or a region): "Modify" dropdown with
- * the Fill colour swatch, the Crop padding field, or the Add border width,
- * colour and "Mask border" checkbox inline (wrapping only when needed).
+ * Options of an output card (Main or a region), two lines:
+ * 1. "Modify" dropdown (never squeezed) + Alpha checkbox (hidden while
+ *    Fill mask; the Fill colour swatch takes its place).
+ * 2. Per-choice extras, only when there are any: Crop -> padding; Add
+ *    border -> width, colour and "Mask border" (wrapping only when needed).
  * Options apply on execution only; nothing changes on the stage.
  */
 
@@ -40,21 +42,53 @@ function readMode(value: string): OutputOptions["applyMask"] | null {
   return value === "none" || value === "fill" || value === "crop" || value === "border" ? value : null;
 }
 
+/** Tooltip of the M13c Alpha checkbox. */
+export const ALPHA_TITLE = "Output the image with the mask as transparency (RGBA). Some nodes use RGB only and drop it.";
+
+/**
+ * Inline checkbox with a text label (`.cps-output-check`).
+ * @param text - Label text.
+ * @param title - Tooltip.
+ * @param onChange - Called with the new checked state.
+ * @returns The label and its checkbox.
+ */
+function checkLabel(
+  text: string, title: string, onChange: (checked: boolean) => void,
+): { label: HTMLLabelElement; box: HTMLInputElement } {
+  const label = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.addEventListener("change", () => onChange(box.checked));
+  label.className = "cps-output-check";
+  label.title = title;
+  const span = document.createElement("span");
+  span.textContent = text;
+  label.append(box, span);
+  return { label, box };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // OutputOptionsRow
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Mode + swatch/padding row, refreshed in place.
+ * Mode line + extras line, refreshed in place.
  */
 export class OutputOptionsRow {
   readonly element = document.createElement("div");
+  /** Line 1: Modify label + dropdown + Alpha (or the Fill swatch). */
+  private readonly mainLine = document.createElement("div");
+  /** Line 2: Crop / Add border extras; hidden when the choice has none. */
+  private readonly extrasLine = document.createElement("div");
   private readonly mode = document.createElement("select");
   private readonly swatch = document.createElement("button");
   private readonly padding: OutputField;
   private readonly borderSize: OutputField;
-  private readonly borderMask = document.createElement("label");
-  private readonly borderMaskBox = document.createElement("input");
+  private readonly borderMask: HTMLLabelElement;
+  private readonly borderMaskBox: HTMLInputElement;
+  /** M13c: RGBA IMAGE (hidden, value kept, while Modify = Fill mask). */
+  private readonly alpha: HTMLLabelElement;
+  private readonly alphaBox: HTMLInputElement;
 
   /**
    * @param id - Region id, or null for Main.
@@ -108,23 +142,25 @@ export class OutputOptionsRow {
       write: (value) => ops.setOptions(id, { borderSize: Number(value) }),
     });
 
-    this.borderMaskBox.type = "checkbox";
-    this.borderMaskBox.addEventListener("change", () => {
+    ({ label: this.borderMask, box: this.borderMaskBox } = checkLabel(
+      "Mask border", "Border area white in the MASK (for outpainting)", (checked) => {
+        ctx.beforeEdit();
+        ops.setOptions(id, { borderMask: checked });
+      }));
+    ({ label: this.alpha, box: this.alphaBox } = checkLabel("Alpha", ALPHA_TITLE, (checked) => {
       ctx.beforeEdit();
-      ops.setOptions(id, { borderMask: this.borderMaskBox.checked });
-    });
-    this.borderMask.className = "cps-output-check";
-    this.borderMask.title = "Border area white in the MASK (for outpainting)";
-    const checkText = document.createElement("span");
-    checkText.textContent = "Mask border";
-    this.borderMask.append(this.borderMaskBox, checkText);
+      ops.setOptions(id, { alpha: checked });
+    }));
+    this.alpha.classList.add("cps-output-alpha");
 
     const label = document.createElement("span");
     label.className = "cps-output-label";
     label.textContent = "Modify";
-    this.element.append(
-      label, this.mode, this.padding.element, this.borderSize.element, this.swatch, this.borderMask,
-    );
+    this.mainLine.className = "cps-output-options-line";
+    this.extrasLine.className = "cps-output-options-line cps-output-extras";
+    this.mainLine.append(label, this.mode, this.alpha);
+    this.extrasLine.append(this.padding.element, this.borderSize.element, this.swatch, this.borderMask);
+    this.element.append(this.mainLine, this.extrasLine);
     this.refresh();
   }
 
@@ -133,7 +169,12 @@ export class OutputOptionsRow {
     const options = this.ctx.editor.regionOps.options(this.id);
     this.mode.value = options.applyMask;
     const border = options.applyMask === "border";
-    this.swatch.hidden = options.applyMask !== "fill" && !border;
+    const fill = options.applyMask === "fill";
+    this.extrasLine.hidden = !border && options.applyMask !== "crop";
+    // Fill: swatch in Alpha's place on line 1; border: after the width on line 2.
+    if (fill && this.swatch.parentElement !== this.mainLine) this.mainLine.append(this.swatch);
+    if (border && this.swatch.parentElement !== this.extrasLine) this.borderSize.element.after(this.swatch);
+    this.swatch.hidden = !fill && !border;
     this.swatch.style.backgroundColor = border ? options.borderColor : options.fillColor;
     this.swatch.title = border ? "Border colour (output only)" : "Fill colour (output only)";
     this.swatch.setAttribute("aria-label", this.swatch.title);
@@ -143,6 +184,9 @@ export class OutputOptionsRow {
     this.borderSize.refresh();
     this.borderMask.hidden = !border;
     this.borderMaskBox.checked = options.borderMask;
+    // Fill and alpha cancel out: hidden, the saved value is kept.
+    this.alphaBox.checked = options.alpha === true;
+    this.alpha.hidden = fill;
   }
 
   /** Close the picker / revert open sessions. */

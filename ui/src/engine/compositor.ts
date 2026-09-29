@@ -48,6 +48,8 @@ export interface MaskOverlay {
   invert: boolean;
   /** Move-tool drag preview: draw shifted by this many document px. */
   offset?: Point;
+  /** Image px coverage (the M13a Image Mask): drawn over the image rect, not through the frame map. */
+  imageSpace?: boolean;
 }
 
 /** Everything needed for one frame. */
@@ -154,7 +156,7 @@ export function composite(input: CompositeInput): void {
   for (const mask of input.masks) {
     if (mask.opacity <= 0) continue;
     ctx.globalAlpha = mask.opacity;
-    const r = at(mask.offset);
+    const r = mask.imageSpace ? imageRect : at(mask.offset);
     ctx.drawImage(mask.tint, r.x, r.y, r.width, r.height);
     if (mask.invert) {
       // (image rect) minus (placed rect); clip first because the placed rect

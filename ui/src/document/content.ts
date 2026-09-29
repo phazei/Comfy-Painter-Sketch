@@ -19,10 +19,11 @@ export function hasOutputMetadata(doc: PainterDocument): boolean {
  * File references count even when restoration failed (preserve recovery).
  * @param doc - Document.
  * @param hasPaint - Runtime content flag, including unuploaded paint.
- * @returns True for paint, retained file references or output metadata.
+ * An Image Mask row (M13a) counts: Python needs the manifest to combine it.
+ * @returns True for paint, retained file references, output metadata or an Image Mask.
  */
 export function hasDocumentContent(doc: PainterDocument, hasPaint = false): boolean {
-  return hasPaint || doc.layers.some((layer) => layer.file !== null) || hasOutputMetadata(doc);
+  return hasPaint || doc.layers.some((layer) => layer.file !== null) || hasOutputMetadata(doc) || doc.imageMask !== undefined;
 }
 
 /**

@@ -14,7 +14,8 @@
  *       items also carry a file name, so other loader nodes get named layers;
  *    d. legacy `node.imgs[0].src`.
  * 2. Our own node's last executed `ui` preview (`onExecuted`, falling back to
- *    `app.nodeOutputs[ourLocator]`, which survives tab switches).
+ *    `app.nodeOutputs[ourLocator]`, which survives tab switches) -- only if
+ *    it was produced with the same upstream link (`backgroundRule.ts`).
  *
  * Every candidate carries a stable `key` (no random cache-buster) so callers
  * can poll cheaply and only reload when the key changes.
@@ -24,6 +25,7 @@ import { api } from "@comfy/scripts/api.js";
 import { app } from "@comfy/scripts/app.js";
 
 import type { LGraphNode, NodeExecutionOutput, ResultItem } from "../types/comfy";
+import { linkIdentity } from "./backgroundRule";
 import { firstOutputImage, parseAnnotatedFilename, viewQuery, viewUrl } from "./viewUrl";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -48,6 +50,8 @@ export interface ImageSource {
 const FILE_WIDGET_NODES: Readonly<Record<string, { widget: string; type: string }>> = {
   LoadImage: { widget: "image", type: "input" },
   LoadImageOutput: { widget: "image", type: "output" },
+  // Only feeds a MASK (the Input Mask's live read, `inputMaskRule.ts`).
+  LoadImageMask: { widget: "image", type: "input" },
 };
 
 /** Max virtual nodes (reroutes) to walk through before giving up. */
@@ -104,16 +108,47 @@ export function isInputConnected(node: LGraphNode, name: string): boolean {
  * @returns Upstream node or `null`.
  */
 export function findUpstreamNode(node: LGraphNode, slot: number): LGraphNode | null {
+  return findUpstreamOutput(node, slot)?.node ?? null;
+}
+
+/** What feeds an input: the real upstream node (if resolvable) and the link's identity. */
+export interface UpstreamOutput {
+  /** Real upstream node; `null` when fed from a subgraph input. */
+  node: LGraphNode | null;
+  /** {@link linkIdentity} of the real origin (node + output slot). */
+  link: string;
+  /** Origin output slot (`-1` when unknown). */
+  slot: number;
+}
+
+/**
+ * Like {@link findUpstreamNode}, plus the identity of the real origin output
+ * (`backgroundRule.ts`), also for a subgraph input.
+ *
+ * @param node - Our node.
+ * @param slot - Input slot index.
+ * @returns The upstream output, or `null` when unconnected / not in a graph.
+ */
+export function findUpstreamOutput(node: LGraphNode, slot: number): UpstreamOutput | null {
   let current = node;
   let currentSlot = slot;
   for (let hop = 0; hop <= MAX_VIRTUAL_HOPS; hop++) {
-    if (!current.graph || currentSlot < 0 || currentSlot >= (current.inputs ?? []).length) return null;
+    const graph = current.graph;
+    if (!graph || currentSlot < 0 || currentSlot >= (current.inputs ?? []).length) return null;
     if (current.inputs[currentSlot]?.link == null) return null;
     const upstream = current.getInputNode(currentSlot);
-    if (!upstream) return null;
-    if (!upstream.isVirtualNode) return upstream;
-    current = upstream;
-    currentSlot = 0;
+    if (upstream?.isVirtualNode) {
+      current = upstream;
+      currentSlot = 0;
+      continue;
+    }
+    const linkInfo = current.getInputLink?.(currentSlot) ?? null;
+    if (!upstream && !linkInfo) return null;
+    const prefix = graph.isRootGraph === false ? `${graph.id}:` : "";
+    const link = linkInfo
+      ? linkIdentity(prefix, linkInfo.origin_id, linkInfo.origin_slot)
+      : linkIdentity(prefix, upstream?.id ?? "", -1);
+    return { node: upstream, link, slot: linkInfo?.origin_slot ?? -1 };
   }
   return null;
 }

@@ -22,6 +22,7 @@ import { Editor } from "../engine/editor";
 import type { FrameSource } from "../engine/editor";
 import { createDefaultTools } from "../tools/registry";
 import type { ToolRegistry } from "../tools/registry";
+import { restoreImageMask } from "./imageMaskSync";
 import { LayerUploader, restoreLayers } from "./persistence";
 
 /** Detached sessions kept for re-attachment. */
@@ -68,6 +69,8 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   ed.setMaskStyleProvider(readFirstMaskStyle);
   const knownFiles = new Set<string>();
   for (const layer of ed.doc.layers) if (layer.file) knownFiles.add(layer.file);
+  const imageMaskFile = ed.doc.imageMask?.file;
+  if (imageMaskFile) knownFiles.add(imageMaskFile);
   const session: EditorSession = {
     docId: doc.docId,
     editor: ed,
@@ -86,7 +89,10 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
     list.push(signature);
     if (list.length > RECENT_SIGNATURES) list.shift();
   });
-  if (!editor) session.ready = restoreLayers(ed, () => session.alive);
+  if (!editor) {
+    const alive = (): boolean => session.alive;
+    session.ready = Promise.all([restoreLayers(ed, alive), restoreImageMask(ed, alive)]).then(() => undefined);
+  }
   sessions.set(doc.docId, session);
   return session;
 }
@@ -101,12 +107,13 @@ export function findSession(docId: string): EditorSession | undefined {
 }
 
 /**
- * Identity of a manifest's saved state: frame + per-layer files + output metadata.
+ * Identity of a manifest's saved state: frame + per-layer files + output
+ * metadata + the Image Mask file (M13a).
  * @param doc - Document.
  * @returns Signature string.
  */
 export function fileSignature(doc: PainterDocument): string {
-  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc)]);
+  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc), doc.imageMask?.file ?? null]);
 }
 
 /**

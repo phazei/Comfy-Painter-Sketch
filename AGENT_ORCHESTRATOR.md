@@ -62,10 +62,10 @@ $env:PYTHONPATH='D:\AITools\StabilityMatrixData\Packages\ComfyUI'
 & 'D:\AITools\StabilityMatrixData\Packages\ComfyUI\venv\Scripts\python.exe' -m unittest discover tests
 ```
 
-Also watch for files creeping past ~400 lines and CRLF line endings. Don't ask a
-feature agent to split "while you're here"; queue a separate behaviour-neutral
-split task (opus agent) between features, so the user can review and commit it
-on its own.
+Also watch for CRLF line endings. File size: aim < ~500 lines, hard limit 600
+(AGENTS.md). No split tasks and no "split while you're here"; don't tell agents
+to avoid growing a file below 500 or to put small additions in new modules.
+Only a file about to pass 600 gets a minimal split.
 
 ## Working with the user
 

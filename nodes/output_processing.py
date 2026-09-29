@@ -3,7 +3,8 @@ nodes/output_processing.py -- Main/region output processing and the PS_REGIONS v
 
 SPEC.md "Output regions (M9) -- agreed design": the main node composites once,
 then every output (Main and each of the six region slots) starts from that one
-composite + final mask and applies its own output options (None / Fill / Crop / Border).
+composite + final mask and applies its own output options (None / Fill / Crop / Border,
+then the M13c Alpha checkbox: RGBA IMAGE, alpha = 1 - that output's final MASK).
 Main's options never affect regions.
 
 Region geometry:
@@ -41,7 +42,8 @@ class RegionOutput:
     """Processed tensors of one filled region slot.
 
     Attributes:
-        image: ``[B, h, w, 3]`` float32 IMAGE (after the region's options).
+        image: ``[B, h, w, 3]`` float32 IMAGE (after the region's options;
+               ``[B, h, w, 4]`` with the region's M13c ``alpha``).
         mask:  ``[B, h, w]`` float32 MASK (after the region's options).
     """
     image: torch.Tensor
@@ -111,22 +113,49 @@ def inside_image(edges: Edges, width: int, height: int) -> bool:
 def apply_output_options(
     image: torch.Tensor, mask: torch.Tensor, options: OutputOptions,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply None / Fill / Crop / Border to one output, keeping the batch dimension.
+    """Apply None / Fill / Crop / Border, then the M13c alpha, keeping the batch dimension.
 
     Fill blends ``image * (1 - mask) + color * mask`` (MASK unchanged). Crop
     keeps ``mask > 0`` (union over the batch) plus padding, clamped to this
     output; an empty mask leaves the output uncropped. Border pads every side
     by ``border_size``: IMAGE with ``border_color``, MASK with 1.0
-    (``border_mask``) or 0.0.
+    (``border_mask``) or 0.0. With ``alpha`` (ignored for Fill) the IMAGE
+    gets a 4th channel ``1 - mask`` of the returned MASK, so a masked border
+    is transparent and an unmasked one opaque.
 
     Args:
         image:   ``[B, H, W, 3]`` IMAGE.
-        mask:    ``[B, H, W]`` MASK.
+        mask:    ``[B, H, W]`` final MASK (incl. ``invert_mask`` and the
+                 Image / Input Mask).
         options: This output's options.
 
     Returns:
-        ``(image, mask)`` after the options.
+        ``(image [B, h, w, 3 | 4], mask [B, h, w])`` after the options.
     """
+    image, mask = _modify(image, mask, options)
+    if options.alpha and options.apply_mask != "fill":
+        image = with_alpha(image, mask)
+    return image, mask
+
+
+def with_alpha(image: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """RGBA IMAGE with alpha = ``1 - mask`` (M13c; masked = transparent).
+
+    Args:
+        image: ``[B, h, w, 3]`` IMAGE.
+        mask:  ``[B | 1, h, w]`` MASK of the same output (broadcast over the batch).
+
+    Returns:
+        ``[B, h, w, 4]`` IMAGE.
+    """
+    alpha = (1.0 - mask).to(image.dtype).unsqueeze(-1).expand(*image.shape[:3], 1)
+    return torch.cat((image, alpha), dim=-1)
+
+
+def _modify(
+    image: torch.Tensor, mask: torch.Tensor, options: OutputOptions,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The Modify step (None / Fill / Crop / Border) of :func:`apply_output_options`."""
     if options.apply_mask == "border":
         return _add_border(image, mask, options)
     if options.apply_mask == "fill":

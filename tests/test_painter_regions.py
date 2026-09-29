@@ -8,7 +8,7 @@ from unittest import mock
 import torch
 
 from comfy_execution.graph_utils import ExecutionBlocker
-from nodes import ALL_NODES, painter_sketch
+from nodes import ALL_NODES, painter_sketch, previews
 from nodes.output_processing import PainterRegions, RegionOutput
 from nodes.painter_sketch import PainterSketch
 from nodes.painter_sketch_regions import PainterSketchRegions
@@ -33,7 +33,7 @@ class _PreviewPatch(unittest.TestCase):
 
     def setUp(self) -> None:
         """Patch UI.PreviewImage for the duration of each test."""
-        patcher = mock.patch.object(painter_sketch.UI, "PreviewImage", return_value={"images": []})
+        patcher = mock.patch.object(previews.UI, "PreviewImage", return_value={"images": []})
         self.preview = patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -145,7 +145,7 @@ class TestRegionsHelper(unittest.TestCase):
 
     def test_end_to_end_from_main_node(self) -> None:
         """Main node regions value feeds the helper."""
-        with mock.patch.object(painter_sketch.UI, "PreviewImage", return_value={"images": []}):
+        with mock.patch.object(previews.UI, "PreviewImage", return_value={"images": []}):
             main = PainterSketch.execute(_manifest(regions=[_region(3)]), 8, 6, "#ffffff")
         out = PainterSketchRegions.execute(main.result[2])
         self.assertEqual(tuple(out.result[4].shape), (1, 4, 4, 3))

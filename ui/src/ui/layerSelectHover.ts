@@ -11,7 +11,7 @@ import { isControl } from "./layerRow";
 import { layerSelectCursorCss, layerSelectMode } from "./moveCursors";
 
 /** Rows that can load a selection (not the background). */
-const ROW_SELECTOR = ".cps-layer-paint, .cps-layer-mask";
+const ROW_SELECTOR = ".cps-layer-paint, .cps-layer-mask, .cps-layer-image-mask";
 
 /**
  * Cursor tracker for one layers list.

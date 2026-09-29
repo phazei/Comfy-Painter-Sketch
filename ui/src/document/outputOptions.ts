@@ -66,7 +66,17 @@ export function readOutputOptions(value: unknown): OutputOptions {
     borderSize: readBorderSize(record["borderSize"]),
     borderColor: readColor(record["borderColor"], DEFAULT_OUTPUT_OPTIONS.borderColor),
     borderMask: typeof borderMask === "boolean" ? borderMask : DEFAULT_OUTPUT_OPTIONS.borderMask,
+    ...alphaField(record["alpha"]),
   };
+}
+
+/**
+ * M13c `alpha`: only a literal `true` turns it on; the field exists only then.
+ * @param value - Untrusted / in-memory value.
+ * @returns `{ alpha: true }` or an empty object.
+ */
+function alphaField(value: unknown): { alpha?: true } {
+  return value === true ? { alpha: true } : {};
 }
 
 /**
@@ -82,6 +92,7 @@ export function cloneOutputOptions(options: Readonly<OutputOptions> = DEFAULT_OU
     borderSize: options.borderSize ?? DEFAULT_OUTPUT_OPTIONS.borderSize,
     borderColor: options.borderColor ?? DEFAULT_OUTPUT_OPTIONS.borderColor,
     borderMask: options.borderMask ?? DEFAULT_OUTPUT_OPTIONS.borderMask,
+    ...alphaField(options.alpha),
   };
 }
 
@@ -97,7 +108,8 @@ export function outputOptionsEqual(a: Readonly<OutputOptions>, b: Readonly<Outpu
     && a.cropPadding === b.cropPadding
     && a.borderSize === b.borderSize
     && a.borderColor === b.borderColor
-    && a.borderMask === b.borderMask;
+    && a.borderMask === b.borderMask
+    && (a.alpha === true) === (b.alpha === true);
 }
 
 /**

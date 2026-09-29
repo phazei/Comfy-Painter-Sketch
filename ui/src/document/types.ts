@@ -5,6 +5,7 @@
  */
 
 import type { Rect, Size } from "../geometry/rect";
+import type { ImageMask } from "./imageMask";
 import type { TextData } from "./textData";
 
 export type { TextData } from "./textData";
@@ -54,6 +55,12 @@ export interface OutputOptions {
   borderColor: string;
   /** Border area in the MASK: true = 1 (outpainting), false = 0. */
   borderMask: boolean;
+  /**
+   * M13c: IMAGE as RGBA, alpha = 1 - this output's final mask (ignored with
+   * `fill`). Normalized copies only carry it when `true`, so the manifest
+   * writes it only when on; absent / `false` = off.
+   */
+  alpha?: boolean;
 }
 
 /** Stable output pair, independent of paint placement and overlay visibility. */
@@ -102,6 +109,8 @@ export interface PainterDocument {
    * (saved only when `false`).
    */
   backgroundVisible?: boolean;
+  /** M13a Image Mask row (background alpha, image px); saved only while it exists (`imageMask.ts`). */
+  imageMask?: ImageMask;
   /** Move tool; `undefined` = identity (saved only when non-identity). */
   placement?: Placement;
   activeLayerId: string;

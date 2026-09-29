@@ -23,6 +23,8 @@ export const DOM_WIDGET_TYPE = "paintersketch";
 /** Input / widget names from the node schema. */
 export const INPUT_NAMES = {
   image: "image",
+  /** M13b: optional MASK, the Input Mask row. */
+  mask: "mask",
   /** M12: optional image offered in the Images panel. */
   layerSource: "layer_source",
   document: "document",

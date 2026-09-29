@@ -43,7 +43,9 @@ import type { NodeHandoff } from "./handoff";
 import { invalidDocumentMessage, skippedLayersMessage } from "./failures";
 import { emitDocumentChange } from "./documentEvents";
 import { EDIT_SYNC_DELAY_MS, requestGraphSync } from "./graphSync";
+import { syncImageMask } from "./imageMaskSync";
 import { inputSlotIndex, isInputConnected } from "./imageSource";
+import { InputMaskWatch } from "./inputMaskSync";
 import { LayerSourceWatch } from "./layerSourceWatch";
 import { syncSizeWidgets } from "./sizeWidgets";
 import { releaseOrDetach, sessionForManifest } from "./sessionAttach";
@@ -96,6 +98,8 @@ export class PainterSketchController {
   private readonly frame: FrameSync;
   /** M12: `layer_source` history (per node instance, memory only). */
   private readonly sources: LayerSourceWatch;
+  /** M13b: the `mask` input's Input Mask row. */
+  private readonly inputMask: InputMaskWatch;
   private readonly saver = new WorkflowSaver();
   private disposed = false;
 
@@ -104,6 +108,7 @@ export class PainterSketchController {
    */
   constructor(private readonly node: LGraphNode) {
     this.sources = new LayerSourceWatch(node);
+    this.inputMask = new InputMaskWatch(node);
     this.host = new EditorHost({
       onBecameVisible: () => this.refresh(),
       isDetached: () => this.isOffViewedGraph(),
@@ -119,7 +124,8 @@ export class PainterSketchController {
     });
     this.loader = new BackgroundLoader(node, () => this.updateContent());
     this.watcher = new SourceWatcher(() => this.refresh(), () => this.tick());
-    this.frame = new FrameSync(node, this.loader);
+    // Size widgets followed a new image: let the draft see it (`graphSync.ts`).
+    this.frame = new FrameSync(node, this.loader, () => requestGraphSync(node, EDIT_SYNC_DELAY_MS));
     controllers.set(node, this);
     this.attach(this.newEmptySession());
   }
@@ -226,6 +232,7 @@ export class PainterSketchController {
   handleExecuted(output: NodeExecutionOutput): void {
     this.loader.setExecuted(output);
     this.sources.setExecuted(output);
+    this.inputMask.setExecuted(output);
     this.refresh();
   }
 
@@ -233,17 +240,14 @@ export class PainterSketchController {
    * A link on our node changed.
    * @param type - Slot type (`LINK_INPUT` for inputs).
    * @param slot - Slot index.
-   * @param isConnected - `false` when a link was removed.
    */
-  handleConnectionsChange(type: number, slot: number, isConnected: boolean): void {
+  handleConnectionsChange(type: number, slot: number): void {
     // During `configure` (before the deferred first refresh) upstream nodes
     // may not be configured yet; resolving now could load a bogus source.
     if (this.watcher.starting) {
       this.updateContent();
       return;
     }
-    // `image` unlinked by the user: the widgets take over the last image size.
-    this.frame.handleLinkChange(type, slot, isConnected, this.session, () => !this.disposed && !this.isImageConnected());
     if (type === LINK_INPUT && slot === inputSlotIndex(this.node, INPUT_NAMES.layerSource)) this.sources.arm();
     this.refresh();
   }
@@ -349,7 +353,7 @@ export class PainterSketchController {
    */
   refresh(): void {
     if (this.disposed) return;
-    this.loader.refresh(this.isImageConnected());
+    this.loader.refresh(this.isImageConnected(), this.watcher.active && !this.watcher.starting);
     syncSizeWidgets(this.node);
     // Not before the deferred start: unconfigured upstream values would seed the history.
     if (this.watcher.active && !this.watcher.starting) this.sources.refresh();
@@ -362,11 +366,14 @@ export class PainterSketchController {
     this.refresh();
   }
 
-  /** Push background + frame to the editor when anything relevant changed. */
+  /** Push background + frame (and the Image Mask / M13b Input Mask source) to the editor when anything relevant changed. */
   private updateContent(): void {
     const session = this.session;
     if (this.disposed || !session) return;
-    this.frame.apply(session, this.isImageConnected());
+    const connected = this.isImageConnected();
+    this.frame.apply(session, connected);
+    const settled = this.watcher.active && !this.watcher.starting;
+    if (!this.inputMask.sync(session, this.loader.background?.size ?? null, settled)) syncImageMask(session, this.loader.status);
   }
 
   /**

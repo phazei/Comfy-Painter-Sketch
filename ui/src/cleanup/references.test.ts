@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import pythonCleanup from "../../../nodes/cleanup.py?raw";
+import { createEmptyDocument, DEFAULT_MASK_STYLE } from "../document/create";
+import { createImageMask } from "../document/imageMask";
+import { stringifyDocument } from "../document/serialize";
 import { confirmText, extractReferences, formatBytes, isCleanupResponse, isStatsResponse, REFERENCE_SOURCE } from "./references";
 
 const A = "ps-abcd1234-0123456789abcd.webp";
@@ -21,6 +24,13 @@ describe("extractReferences", () => {
     const manifest = JSON.stringify({ layers: [{ file: `painter-sketch/${A} [input]` }] });
     const workflow = JSON.stringify({ nodes: [{ widgets_values: [manifest] }] });
     expect([...extractReferences(workflow)]).toEqual([A]);
+  });
+
+  it("finds the M13a Image Mask file of a serialized document", () => {
+    const doc = createEmptyDocument({ width: 8, height: 8 }, "abcd1234");
+    doc.imageMask = { ...createImageMask("k", { width: 8, height: 8 }, DEFAULT_MASK_STYLE), file: `painter-sketch/${B} [input]` };
+    const workflow = JSON.stringify({ nodes: [{ widgets_values: [stringifyDocument(doc)] }] });
+    expect([...extractReferences(workflow)]).toEqual([B]);
   });
 
   it("accepts escaped / encoded separators and any case", () => {

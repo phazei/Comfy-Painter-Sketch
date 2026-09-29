@@ -16,6 +16,9 @@ Document model (v1, SPEC.md "Document Model" section):
     mainOutput?: OutputOptions             -- independent Main post-processing
     placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
     backgroundVisible?: bool               -- Background row eye (missing = true)
+    imageMask?: {file, visible, color, opacity, invert, sourceKey, width, height}
+                                           -- M13a Image Mask (input image's alpha, image px);
+                                              M13b: the Input Mask row's settings (file ignored)
     activeLayerId: str
     layers: Layer[]                        -- bottom -> top; background NOT included
 
@@ -99,6 +102,21 @@ IDENTITY_PLACEMENT = Placement()
 """Default placement (no move, no scale)."""
 
 
+@dataclass(frozen=True)
+class ImageMask:
+    """The Image Mask row (M13a): coverage read from the input image's alpha.
+
+    Unlike layers it is stored in current-image px: the file is exactly
+    ``width x height`` (the image it was read from) and is used only when the
+    run-time image has that size. Colour / opacity are display-only.
+    """
+    file: str | None
+    visible: bool
+    invert: bool
+    width: int
+    height: int
+
+
 @dataclass
 class Document:
     """Fully validated v1 PainterDocument."""
@@ -109,6 +127,7 @@ class Document:
     regions: list[Region] = field(default_factory=list)
     main_output: OutputOptions = OutputOptions()
     background_visible: bool = True
+    image_mask: ImageMask | None = None
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -191,6 +210,41 @@ def parse_placement(raw: object) -> Placement:
     return Placement(x=_finite(raw.get("x"), 0.0), y=_finite(raw.get("y"), 0.0), scale=scale)
 
 
+def parse_image_mask(raw: object) -> ImageMask | None:
+    """Leniently validate the optional ``imageMask`` object (M13a; never fails).
+
+    Missing -> ``None``. Not an object, no string ``sourceKey`` or no valid
+    ``width`` / ``height`` -> ``None`` with a warning (the editor drops it
+    too). ``file`` non-string / blank -> ``None``; ``visible`` non-boolean ->
+    ``True``; ``invert`` non-boolean -> ``False`` (``ui/src/document/parse.ts``).
+
+    Args:
+        raw: The manifest's ``imageMask`` value (any JSON value or None).
+
+    Returns:
+        Validated :class:`ImageMask`, or ``None``.
+    """
+    if raw is None:
+        return None
+    sides = (raw.get("width"), raw.get("height")) if isinstance(raw, dict) else (None, None)
+    valid = all(isinstance(v, int) and not isinstance(v, bool) and 0 < v <= FRAME_MAX for v in sides)
+    if not valid or not isinstance(raw.get("sourceKey"), str):
+        log.warning("document: 'imageMask' is malformed; ignoring it")
+        return None
+    file_val = raw.get("file")
+    if not isinstance(file_val, str) or not file_val.strip():
+        file_val = None
+    visible = raw.get("visible", True)
+    invert = raw.get("invert", False)
+    return ImageMask(
+        file=file_val,
+        visible=visible if isinstance(visible, bool) else True,
+        invert=invert if isinstance(invert, bool) else False,
+        width=sides[0],
+        height=sides[1],
+    )
+
+
 def _parse_layer(raw: dict, idx: int) -> Layer | None:
     """Validate one layer dict; return Layer or None (skipping unknown kinds)."""
     if not isinstance(raw, dict):
@@ -256,6 +310,7 @@ def parse_document(raw: str) -> Document | None:
     - Regions/options are additive and tolerant; bad records never discard paint.
     - ``backgroundVisible`` is strict: only JSON ``false`` hides the input
       image; missing or any non-boolean value means visible.
+    - ``imageMask`` is optional and lenient (:func:`parse_image_mask`).
 
     Args:
         raw: The ``document`` widget value.
@@ -319,6 +374,7 @@ def parse_document(raw: str) -> Document | None:
         regions=parse_regions(doc.get("regions")),
         main_output=parse_output_options(doc.get("mainOutput")),
         background_visible=raw_bg,
+        image_mask=parse_image_mask(doc.get("imageMask")),
     )
 
 

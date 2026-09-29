@@ -24,7 +24,7 @@ Category: `image`.
 | | Name | Type | Notes |
 |---|---|---|---|
 | in | `image` | IMAGE, optional | Background. Batch in, batch out |
-| in | `width`, `height`, `background` | widgets | Only used when `image` is not connected. `width`/`height` 64-8192, step 8, default 1024; `background` default `#ffffff` |
+| in | `width`, `height`, `background` | widgets | Only used when `image` is not connected. `width`/`height` 64-16384, step 8, default 1024; hidden while `image` is connected and kept synced to the image size; `background` default `#ffffff` |
 | in | `invert_mask` | BOOLEAN widget | Inverts the `MASK` output |
 | in | `document` | STRING widget, hidden | Versioned layer manifest (see Persistence). Not a socket |
 | out | `IMAGE` | IMAGE `[B,H,W,3]` | Each input image with visible paint layers composited on top |
@@ -543,8 +543,35 @@ reload, layer delete, or memory pressure. Pastes benefit the same way.
 - No manifest change.
 - Later (after M12): the user's custom folder loader sometimes shows the `input/` default after a page refresh -- check the upstream lookup order (widget value vs the loader's own preview).
 
-## Milestones
+### Image Mask / Input Mask (M13) -- agreed design (2026-09-28)
+- One fixed mask row (layer-row scaffolding), directly above Background. Never deleted, reordered or painted on; eye (on by default), overlay colour, invert. Ctrl+click = selection; Duplicate = an ordinary editable mask layer.
+- Name follows the source: "Image Mask" (from the background image's alpha) or "Input Mask" (from a `mask` input, later step). Tooltip: a connected mask input replaces the image's alpha.
+- M13a, image alpha: shown only when the upstream background file has alpha (any pixel < 255). The editor fetches it with `/view?...&channel=a` (the background itself uses `channel=rgb`). Coverage = 255 - alpha (LoadImage's MASK polarity).
+- Stored like a mask layer: the editor uploads the alpha as a PNG when the SOURCE changes (not on edits; it isn't editable); the manifest references it with its settings. Python combines it into the MASK outputs when visible (same rules as other masks). A stale file (size differs from the input image) is skipped with a log line.
+- M13b, `mask` input (2nd input, after `image`; `layer_source` moves to 3rd): replaces the image alpha while connected (row named "Input Mask"; the alpha upload stops); disconnect = back to Image Mask if the image has alpha. Row settings (eye, colour, opacity, invert) survive a source change. No pixels stored (Python has the tensor), like the background.
+  - Live source: when `mask` comes from a MASK-typed output of any node that shows a `/view` file -> `channel=a` of that file (updates at once). Exception: core Load Image (as Mask) with a non-alpha `channel` (can't be split by `/view`) waits for a run. Otherwise: a Python mask preview after a run; before it the row shows empty with "Run the workflow to load this mask" (Python still uses the mask). After a run the Python preview always wins over the live read.
+  - Python: mask size != image -> resized to the image (ComfyUI convention). Batch: mask n for image n when counts match, else the first mask for all. LoadImage's 64x64 all-zero placeholder = no mask. A 4-channel IMAGE is used as RGB (alpha ignored).
+- M13c: per-output "Alpha" checkbox next to the Modify dropdown (not a dropdown choice): that output's IMAGE gets 4 channels, alpha = 1 - that output's final mask (after Modify). Combines with None, Crop to mask and Add border; hidden while Modify = Fill mask (fill and alpha cancel out; value kept). Add border: the border's alpha follows "Mask border" (masked = transparent). MASK output unchanged. Manifest: additive per-output `alpha: true` (written only when on). Tooltip: some downstream nodes use RGB only and drop the alpha.
 
+### Layer masks (M14) -- agreed design (2026-09-28)
+Editing masks, not output masks: they hide part of a paint layer non-destructively and never reach the MASK outputs.
+- **Scope:** paint layers only (not text, mask layers, Image/Input Mask or Background). A rasterized text layer is a paint layer and can get one. One mask per layer, always linked to it.
+- **Pixels:** 8-bit grayscale, white = show, black = hide, grey = partial. Same extent as the layer; the area outside the stored pixels uses the mask's `outside` value (show, or hide for a hide-all mask).
+- **Row:** a tiny "add layer mask" icon right of the layer thumbnail (no footer button -- it would be confused with Add Mask). Click = a mask that shows all; with a selection = shows only the selection; Alt+click = hides all. Once added, the icon becomes the mask thumbnail.
+- **Target:** click the layer thumbnail = edit pixels; click the mask thumbnail = edit the mask (highlighted frame). One target at a time; clicking elsewhere on the row keeps the layer's current target.
+- **Mask thumbnail modifiers:** Shift+click = off/on (red X, layer shows unmasked); Alt+click = view the mask alone as grayscale in the stage (Alt+click again, or clicking a thumbnail, ends it); Ctrl+click = selection from the mask (+Shift add, +Alt subtract, +Shift+Alt intersect, like rows).
+- **Options bar while the mask is targeted:** Invert (a setting, like mask layers; not a pixel change), Apply (bake into the layer pixels, one undo step), Delete (remove, undoable).
+- **Painting on the mask:** the colour is ignored.
+  - Brush hides at its size / hardness / opacity / flow. It has a hide/reveal state; **X toggles it while a layer mask is targeted** (same brush settings, like Photoshop's X with black/white). Elsewhere X keeps its normal meaning.
+  - Eraser always reveals.
+  - Fill = hide the selection (or the whole mask with no selection). Delete with a selection = hide it.
+  - Selections clip mask painting as usual. Other pixel tools (shapes, line, text) refuse with a note.
+- **Display:** the live composite while editing (no auto solo, no red overlay); the solo button still works manually. Alt+click view for the mask alone.
+- **Engine:** one mask canvas per masked layer; the compositor caches the masked layer and rebuilds only when the layer or its mask changes. Undo uses the existing dirty-rect patches.
+- **Saved:** additive per-layer manifest field `layerMask: { file, enabled, invert, outside }` + a PNG like mask layers (no version bump if old documents load unchanged). Python applies it when compositing, matching the editor; `fingerprint_inputs` includes the file.
+- **M14b interactions:** Move, Free Transform (incl. kept original) and flip carry the mask with the layer. Merge Down uses the masked result with a note ("Layer mask applied"; undo reverts). Copy / cut copy the masked result. Ctrl+click on the layer row = the layer's own pixels (mask ignored). Lifting a selection float from a masked layer: decide in M14b.
+
+## Milestones
 ### M0 -- Scaffold
 - [x] Python package: `__init__.py` (`WEB_DIRECTORY`, `comfy_entrypoint`), `nodes/`, V3 node stub with the contract above (smoke-tested in the ComfyUI venv)
 - [x] `ui/` Vite + TS project building one file into `js/`, CSS injection
@@ -654,19 +681,31 @@ Design: "Free Transform (M11) -- agreed design".
 - [x] Images button + badge next to Paste; left thumbnail panel
 - [x] Thumbnail click = new layer in Free Transform (fit if large); cancel removes the layer; commit = one undo step
 
+### M13 -- Image Mask / Input Mask
+- [x] Background loads with `channel=rgb` (matches LoadImage's IMAGE) (browser-verified)
+- [x] M13a: Image Mask row from the image's alpha, uploaded on source change, combined by Python
+- [x] M13b: optional `mask` input (2nd) -> Input Mask, no stored pixels
+- [x] M13c: per-output Alpha checkbox (RGBA IMAGE)
+
+### M14 -- Layer masks
+- [ ] M14a: add (show all / selection / hide all), mask thumbnail + target, off/on, invert, Alt view, Ctrl+click selection
+- [ ] M14a: painting (brush hide/reveal + X, eraser reveals, fill, Delete), selection clip, other tools refuse
+- [ ] M14a: compositor cache, undo, manifest `layerMask` + PNG, Python applies it
+- [ ] M14b: Move / Free Transform / flip carry the mask; Merge Down + copy use the masked result; Apply / Delete; floats
+
 ### M7b -- Release polish (last)
 - [ ] README: real feature list, drawing-vs-image model (fit, paint area, Match image resolution), shortcuts table, screenshots/GIF, install, storage + cleanup explanation
 - [ ] Example workflows (`example_workflows/`): e.g. LoadImage -> PainterSketch -> inpaint (Crop to mask); regions -> per-person prompts
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
-- M0-M6, M7a, M8 and M9 (incl. Add border) are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
+- M0-M6, M7a and M8-M13 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: check the user's custom folder loader (refresh shows the `input/` default; inserts named "Image N"), then M7b release polish. Near the soft limit: `ui/editorHost.ts` (397), `widget/controller.ts` (387), `ui/keyboard.ts` (390); `engine/editor.ts` is the facade exception. The user will not publicly release until M8-M12 are done.
+- Next: M14 layer masks (designed, not started), then M7b release polish. File size: aim < 500 lines, hard limit 600 (AGENTS.md); no split tasks. The user will not publicly release until M8-M14 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
-- Largest files: `ui/src/ui/keyboard.ts` (390), `widget/controller.ts` (367), `engine/dabMask.ts` (337), `engine/stroke.ts` (330), `engine/editor.ts` (272 + `editorBase.ts`). User messages go through `notify` (AGENTS.md).
+- Largest files: see the Next line above. User messages go through `notify` (AGENTS.md).
 
 #### Brush engine (2026-09-25/26, after M7a)
 Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at PS's model from screenshots went wrong (details in the Decisions Log); on 2026-09-26 the model was **measured** from PS's own lossless exports and the engine rebuilt on it. Do not re-derive the model from eyeballing screenshots: the measurements below are the ground truth (`300px*.png` in the repo root at the time; keep them out of git or move them).
@@ -705,9 +744,9 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
   current image: editor and Python both use it, and the document maps onto it with
   the normal scale-to-fit transform (empty documents adopt it as their frame).
   Editing the widgets updates the canvas live.
-- Disconnecting `image` (a real link removal) copies the last image size into
-  `width`/`height` (rounded to a multiple of 8, clamped 64-8192), so the canvas
-  keeps its size and the node shows it.
+- Whenever an image loads and the frame adopts its size, the size is written into
+  `width`/`height` (only when different; rounded to a multiple of 8, clamped 64-16384).
+  Disconnecting, an image-less upstream or a reload without an image keep that size.
 - A **Clear** button resets the document (all layers and masks) after a
   `window.confirm()`. Clearing is undoable. The frame becomes the current image
   size (the widget size when no image is connected).
@@ -727,6 +766,28 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-28: File-size rule changed (user): aim < 500 lines, hard limit 600; no split tasks, no new modules just to save lines. A 30+-file split was reverted.
+
+- 2026-09-28: M14 layer masks designed (see "Layer masks (M14)"): paint layers only; row icon -> mask thumbnail; Shift/Alt/Ctrl+click like Photoshop; Invert/Apply/Delete in the options bar; colour ignored (brush hides, X toggles the brush to reveal while a mask is targeted, eraser reveals); live view, no auto solo, no overlay; Merge Down/copy use the masked result.
+
+- 2026-09-28: Layers panel section dividers (`ui/layerSections.ts`): 2px accent bar (matches the active side-tab underline) wherever the group changes (masks | paint/text | Image/Input Mask + Background); not rows, not drop targets. Row / output-card separators 2px. Custom loader: refresh glitch gone with the reroute walk in `findUpstreamOutput`; inserts from any `type=input` preview use the file stem (user's edit in `imageSource.ts`). (browser-verified)
+
+- 2026-09-28: Output card layout: line 1 = Modify select (never shrinks below its longest option) + Alpha (hidden for Fill; Fill's swatch takes its place); line 2 = extras (Pad / W + colour + Mask border, wrapping); Pad/W sized for 4 digits. (browser-verified)
+
+- 2026-09-28: M13c code done (browser-verified). Alpha checkbox on output cards (`ui/outputOptionsRow.ts`); Python `apply_output_options` runs Modify, then `with_alpha` appends 1 - the returned MASK (skipped for Fill); Main and regions share the path.
+
+- 2026-09-28: Input Mask live rule relaxed (user): any MASK output of a node showing a `/view` file (LoadImageMask only on alpha); a wrong guess lasts until the first run, when the Python preview wins. Duplicating the Image/Input Mask takes the next free mask colour (`nextMaskStyle`). (browser-verified)
+
+- 2026-09-28: M13b code done (browser-verified). Manifest keeps the `imageMask` record: while `mask` is linked, `sourceKey` starts with `mask:` and `file` is null (no version bump). Python: `nodes/input_mask.py` (bilinear resize copied from ComfyUI's `resize_mask`, batch n-for-n else first), `nodes/previews.py`; ui key `input_mask` (first mask, grayscale, `mask_id`; LoadImage placeholder = `empty`). 4-channel IMAGE was already sliced to RGB (now tested). The run preview wins only while it matches the same mask link AND the same live file; if the LoadImage file changes after a run, the new file is read live until the next run.
+
+- 2026-09-28: width/height sync to every loaded image size (replaces copy-on-disconnect); TS widget max raised to 16384 to match Python; fingerprint ignores width/height while an image is linked. Known: a new size from our executed preview still re-runs the node once on the next queue (widget values are in ComfyUI's cache key). (browser-verified)
+
+- 2026-09-28: Background source rule (`widget/backgroundRule.ts`): show only the connected upstream's own image, or our executed preview from a run with the same origin node + slot; an upstream with no image = blank like disconnected (fixed: the loader kept the last image). Image Mask row removed (and its manifest entry) when the source goes away or changes to another key; kept while the same key reloads, for our same-link executed preview, and on page reload. Later UI idea: dividers between paint layers / masks / input section (Image Mask + Background). (browser-verified)
+
+- 2026-09-28: M13a code done (browser-verified). Manifest optional `imageMask: {file, visible, color, opacity, invert, sourceKey, width, height}`, no version bump (additive). `channel=a` drops `preview` (else lossy webp of the whole image). Alpha read once per upstream source key; our executed preview keeps the current row. A row alone counts as document content. Merge Down from it refused; eye not undoable (like other masks). Python uses it only with an image connected, visible, exact size.
+
+- 2026-09-28: Background ignores file alpha: `/view` background URLs get `channel=rgb` (`widget/viewUrl.ts`, applied in `backgroundLoader`), matching LoadImage's 3-channel IMAGE. layer_source thumbnails unchanged. Next (M13, design pending the user's test): optional `mask` input (2nd), an "Input Mask" row on the normal layer scaffolding, always shown when connected, eye on; live source TBD (`channel=a` of LoadImage's file before a run vs Python preview after); Modify "Mask as alpha (RGBA)". Mask-editor facts: 4 clipspace files in input/ root, one merged alpha, RGB kept under it. (browser-verified)
 
 - 2026-09-27: A paste/drop that would reach past the paint area opens as a Free Transform session on the full image at native size (same path as Images-panel inserts; commit crops, one undo step; Esc removes it), with a note. Fitting pastes unchanged. Later idea: inverted selections bounded by the image area. (browser-verified)
 

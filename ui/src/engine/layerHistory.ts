@@ -12,7 +12,8 @@
  *   layer before it was deleted apply again once it is restored.
  */
 
-import { applyLayerChange, isPaintLike } from "../document/layerList";
+import { IMAGE_MASK_ID } from "../document/imageMask";
+import { applyLayerChange, isPaintLike, writeProps } from "../document/layerList";
 import type { LayerChange } from "../document/layerList";
 import type { LayerPixels, LayersEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -82,6 +83,11 @@ export function applyLayersEntry(s: EditorState, entry: LayersEntry, forward: bo
   if (s.stroke.active) s.cancelStroke();
   const changes = forward ? entry.changes : [...entry.changes].reverse();
   for (const change of changes) {
+    // The Image Mask row is not in `layers`; only its settings are undoable.
+    if (change.op === "props" && change.id === IMAGE_MASK_ID) {
+      if (s.doc.imageMask) writeProps(s.doc.imageMask, forward ? change.after : change.before);
+      continue;
+    }
     if (!applyLayerChange(s.doc.layers, change, forward)) continue;
     if (change.op !== "insert" && change.op !== "remove") continue;
     const appeared = (change.op === "insert") === forward;

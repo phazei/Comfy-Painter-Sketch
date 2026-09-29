@@ -70,7 +70,7 @@
 .cps-layer-row {
   position: relative;
   padding: 3px 4px;
-  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
   border-left: 2px solid transparent;
   cursor: default;
   user-select: none;
@@ -78,7 +78,8 @@
 }
 
 .cps-layer-paint,
-.cps-layer-mask {
+.cps-layer-mask,
+.cps-layer-image-mask {
   cursor: pointer;
 }
 
@@ -126,6 +127,15 @@
   opacity: 0.25;
 }
 
+/* Section divider between row groups (masks | paint | input rows):
+   layerSections.ts. Not a row; matches the active side-tab underline. */
+.cps-layers-section-divider {
+  flex: none;
+  height: 2px;
+  background: var(--cps-accent);
+  pointer-events: none;
+}
+
 .cps-layer-row.cps-dragging {
   opacity: 0.5;
 }
@@ -159,6 +169,20 @@
 
 .cps-layer-extra {
   margin: 2px 0 0 42px;
+}
+
+/* M13b: "Run the workflow to load this mask" under the Input Mask row. */
+.cps-layer-hint {
+  margin: 2px 0 0 42px;
+  font-size: 11px;
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cps-layer-hint[hidden] {
+  display: none;
 }
 
 .cps-layer-thumb-box {

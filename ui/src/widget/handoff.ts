@@ -23,6 +23,7 @@
 
 import type { Size } from "../geometry/rect";
 import type { LGraphNode, NodeExecutionOutput } from "../types/comfy";
+import type { ImageSourceOrigin } from "./imageSource";
 import type { EditorSession } from "./sessions";
 
 /** A successfully loaded background image. */
@@ -30,6 +31,10 @@ export interface LoadedBackground {
   key: string;
   image: HTMLImageElement;
   size: Size;
+  /** Where the source came from (`imageSource.ts`). */
+  origin: ImageSourceOrigin;
+  /** `/view?channel=a` URL of an upstream file (M13a Image Mask), else `null`. */
+  alphaUrl: string | null;
 }
 
 /** What a removed node instance leaves for its successor. */

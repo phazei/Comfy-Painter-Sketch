@@ -5,7 +5,7 @@ import { createEmptyDocument } from "./create";
 import { MAX_BORDER_SIZE, cloneOutputOptions, isDefaultOutputOptions, outputOptionsEqual, readOutputOptions } from "./outputOptions";
 import { parseDocument } from "./parse";
 import { createRegion } from "./regions";
-import { cloneDocument } from "./serialize";
+import { cloneDocument, stringifyDocument } from "./serialize";
 
 describe("output options", () => {
   it("defaults missing/malformed records and validates each field independently", () => {
@@ -36,6 +36,45 @@ describe("output options", () => {
     expect(isDefaultOutputOptions({ applyMask: "none", fillColor: "#000000", cropPadding: 0 } as never)).toBe(true);
     expect(outputOptionsEqual(cloneOutputOptions(), { ...cloneOutputOptions(), borderMask: false })).toBe(false);
     expect(isDefaultOutputOptions({ ...cloneOutputOptions(), borderSize: 8 })).toBe(false);
+  });
+
+  it("alpha (M13c): only a literal true is kept, and only then present", () => {
+    expect(readOutputOptions({ alpha: true }).alpha).toBe(true);
+    for (const alpha of [false, 1, "true", null, undefined]) {
+      expect(readOutputOptions({ alpha })).not.toHaveProperty("alpha");
+    }
+    expect(cloneOutputOptions({ ...cloneOutputOptions(), alpha: false })).not.toHaveProperty("alpha");
+    expect(cloneOutputOptions({ ...cloneOutputOptions(), alpha: true }).alpha).toBe(true);
+    expect(outputOptionsEqual(cloneOutputOptions(), { ...cloneOutputOptions(), alpha: false })).toBe(true);
+    expect(outputOptionsEqual(cloneOutputOptions(), { ...cloneOutputOptions(), alpha: true })).toBe(false);
+    expect(isDefaultOutputOptions({ ...cloneOutputOptions(), alpha: true })).toBe(false);
+    // Kept with Fill mask (the editor greys it, Python ignores it).
+    expect(readOutputOptions({ applyMask: "fill", alpha: true })).toMatchObject({ applyMask: "fill", alpha: true });
+  });
+
+  it("alpha round-trips through the manifest; old documents and off outputs have no field", () => {
+    const doc = createEmptyDocument({ width: 20, height: 30 });
+    doc.regions.push(createRegion("one", 1, { x: 0, y: 0, width: 10, height: 20 }));
+    doc.regions.push(createRegion("two", 2, { x: 0, y: 0, width: 5, height: 5 }));
+    doc.regions[0]!.output = { ...cloneOutputOptions(), applyMask: "border", alpha: true };
+    doc.mainOutput = { ...cloneOutputOptions(), applyMask: "crop", alpha: true };
+    const text = stringifyDocument(doc);
+    const raw = JSON.parse(text) as { mainOutput: object; regions: Array<{ output: object }> };
+    expect(raw.mainOutput).toMatchObject({ alpha: true });
+    expect(raw.regions[0]!.output).toMatchObject({ alpha: true });
+    expect(raw.regions[1]!.output).not.toHaveProperty("alpha");
+    expect(parseDocument(text)).toEqual({ status: "ok", repaired: false, document: doc });
+
+    const old = createEmptyDocument({ width: 20, height: 30 });
+    old.mainOutput = { ...cloneOutputOptions(), applyMask: "border" };
+    old.regions.push(createRegion("one", 1, { x: 0, y: 0, width: 10, height: 20 }));
+    const oldText = stringifyDocument(old);
+    expect(oldText).not.toContain("alpha");
+    const parsed = parseDocument(oldText);
+    expect(parsed).toEqual({ status: "ok", repaired: false, document: old });
+    if (parsed.status === "ok") expect(stringifyDocument(parsed.document)).toBe(oldText);
+    expect(outputMetadataSignature({ ...old, mainOutput: { ...old.mainOutput, alpha: true } }))
+      .not.toBe(outputMetadataSignature(old));
   });
 
   it("copies defaults independently and counts inactive colour/padding edits", () => {

@@ -10,6 +10,7 @@
  *   picker session.
  */
 
+import { findAnyLayer } from "../document/imageMask";
 import type { Editor } from "../engine/editor";
 import type { NumberOption, OptionValue, ToolOptions } from "../tools/options";
 import { createControl } from "./optionControls";
@@ -48,7 +49,7 @@ class LayerOpacityOptions implements ToolOptions {
   get(key: string): OptionValue | undefined {
     const t = this.target();
     if (key !== "opacity" || !t) return undefined;
-    return t.editor.doc.layers.find((l) => l.id === t.layerId)?.opacity;
+    return findAnyLayer(t.editor.doc, t.layerId)?.opacity;
   }
 
   set(key: string, value: OptionValue): boolean {

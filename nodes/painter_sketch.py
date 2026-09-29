@@ -10,7 +10,9 @@ Execution flow:
        document frame is mapped onto it, never used as the output size).
     2. Build a ``[B, H, W, 3]`` base-image tensor (input image or background fill).
     3. Parse the document manifest -> :class:`~document.Document`.
-    4. Load each layer file -> RGBA tensor (via :mod:`layers`).
+    4. Load each layer file -> RGBA tensor, and a visible M13a Image Mask
+       matching the input image size -> coverage (via :mod:`layers`); a
+       connected ``mask`` (M13b, :mod:`input_mask`) replaces that coverage.
     5. Composite paint/text layers over the base -> IMAGE (via :mod:`composite`).
     6. Combine mask layers -> MASK (via :mod:`composite`).
     7. Apply Main's output options; build the region slots from the same
@@ -32,16 +34,18 @@ import os
 import torch
 from typing_extensions import override
 
-from comfy_api.latest import io, UI
+from comfy_api.latest import io
 import folder_paths
 
-from .composite import run_composite
+from .composite import IMAGE_MASK_KEY, run_composite
 from .document import FRAME_MAX, parse_document
-from .layers import load_layer_rgba
+from .input_mask import mask_without_document, prepare_input_mask, row_settings
+from .layers import load_image_mask, load_layer_rgba
 from .output_processing import (
     EMPTY_REGIONS, apply_output_options, build_regions, viewport_renderer,
 )
 from .painter_sketch_regions import PSRegions
+from .previews import LAYER_SOURCE_UI_KEY, ui_previews  # noqa: F401 (LAYER_SOURCE_UI_KEY re-exported)
 
 log = logging.getLogger("paintersketch.painter_sketch")
 
@@ -114,48 +118,6 @@ def _fill_like(base_rgb: torch.Tensor, hex_color: str) -> torch.Tensor:
     return color.expand(base_rgb.shape).clone()
 
 
-LAYER_SOURCE_UI_KEY = "layer_source"
-"""UI result key for the ``layer_source`` preview (the frontend reads it apart from ``images``)."""
-
-
-def _ui_previews(
-    preview_frame: torch.Tensor, layer_source: torch.Tensor | None, cls: type[io.ComfyNode],
-) -> UI.PreviewImage | dict:
-    """UI result: the background preview under ``images``, plus the first
-    ``layer_source`` frame under :data:`LAYER_SOURCE_UI_KEY` when connected.
-
-    Args:
-        preview_frame: ``[1, H, W, 3]`` background preview.
-        layer_source:  Optional ``[B, H, W, C]`` source batch (RGBA kept).
-        cls:           Node class (for the temp-file save helper).
-
-    Returns:
-        The ``ui`` value for :class:`io.NodeOutput` (a plain preview without a source).
-    """
-    preview = UI.PreviewImage(preview_frame, cls=cls)
-    if layer_source is None or layer_source.shape[0] == 0:
-        return preview
-    ui = dict(preview.as_dict())
-    source_id = _source_id(layer_source[0])
-    items = UI.PreviewImage(layer_source[:1], cls=cls).as_dict()["images"]
-    ui[LAYER_SOURCE_UI_KEY] = [{**item, "source_id": source_id} for item in items]
-    return ui
-
-
-def _source_id(frame: torch.Tensor) -> str:
-    """Short content id of a ``[H, W, C]`` frame (shape + a strided ~128x128 sample).
-
-    Preview files get random temp names on every run; the editor's source
-    history dedupes by this id instead, so re-runs of an unchanged source
-    don't add entries. Cheap even for large frames.
-    """
-    h, w = frame.shape[:2]
-    sample = frame[:: max(1, h // 128), :: max(1, w // 128)].float().cpu().contiguous()
-    m = hashlib.sha256(str(tuple(frame.shape)).encode("utf-8"))
-    m.update(sample.numpy().tobytes())
-    return m.hexdigest()[:16]
-
-
 class PainterSketch(io.ComfyNode):
     """PainterSketch: in-node paint editor that outputs IMAGE + MASK.
 
@@ -182,6 +144,11 @@ class PainterSketch(io.ComfyNode):
                     "image",
                     optional=True,
                     tooltip="Optional base image to paint over. Batch in, batch out.",
+                ),
+                io.Mask.Input(
+                    "mask",
+                    optional=True,
+                    tooltip="Optional mask; replaces the image's transparency as the Input Mask row (resized to the image; per image when the batch sizes match).",
                 ),
                 io.Image.Input(
                     "layer_source",
@@ -241,6 +208,7 @@ class PainterSketch(io.ComfyNode):
         background: str = "#ffffff",
         invert_mask: bool = False,
         image: torch.Tensor | None = None,
+        mask: torch.Tensor | None = None,
         layer_source: torch.Tensor | None = None,
     ) -> io.NodeOutput:
         """Composite once, then build Main and the region slots from that composite.
@@ -251,7 +219,11 @@ class PainterSketch(io.ComfyNode):
             height:       Fallback canvas height (no image connected).
             background:   Hex colour for background tile when no image connected.
             invert_mask:  When True, invert the final MASK.
-            image:        Optional ``[B, H, W, C]`` float32 input batch.
+            image:        Optional ``[B, H, W, C]`` float32 input batch (a 4th
+                          channel is dropped; an output's RGBA comes only from
+                          its M13c ``alpha`` option, via its final MASK).
+            mask:         Optional MASK (``[H, W]`` / ``[B, H, W]``); the Input
+                          Mask row's coverage (:mod:`input_mask`), previewed.
             layer_source: Optional image batch for the editor's Images panel;
                           only its first frame is previewed (outputs unaffected).
 
@@ -272,20 +244,36 @@ class PainterSketch(io.ComfyNode):
         B, H, W = base_rgb.shape[:3]
         # Keep the raw input for the UI preview (before compositing).
         preview_frame = base_rgb[:1]
+        # M13b: a connected ``mask`` replaces the image alpha (only with an
+        # image, like M13a); ``None`` coverage = LoadImage's "no mask" placeholder.
+        use_mask = image is not None and mask is not None
+        coverage = prepare_input_mask(mask, (W, H), B) if use_mask else None
 
         # ── 2. Parse manifest ─────────────────────────────────────────────────
         doc = parse_document(document)
         if doc is None:
-            # No valid document: pass image through, emit zero mask.
+            # No valid document: pass image through, emit zero mask (or the Input Mask).
             fill = 1.0 if invert_mask else 0.0
             out_image = base_rgb
             out_mask = torch.full((B, H, W), fill, dtype=torch.float32, device=base_rgb.device)
+            if coverage is not None:
+                out_mask = mask_without_document(coverage, B, invert_mask)
             main_image, main_mask, regions = out_image, out_mask, EMPTY_REGIONS
         else:
             # ── 3. Load layer files and composite once ────────────────────────
             layer_tensors = {
                 layer.id: load_layer_rgba(layer, doc.bounds) for layer in doc.layers
             }
+            # M13a: the Image Mask is the input image's alpha; without an
+            # image (widgets fill) there is nothing it belongs to. M13b: the
+            # Input Mask takes its place (the record's file is ignored).
+            if use_mask:
+                doc = row_settings(doc, (W, H))
+            record = doc.image_mask
+            if use_mask and record.visible:
+                layer_tensors[IMAGE_MASK_KEY] = coverage
+            elif image is not None and record is not None and record.visible:
+                layer_tensors[IMAGE_MASK_KEY] = load_image_mask(record, (W, H))
             # Background eye off: outputs use the ``background`` colour instead
             # of the input image (same size, batch kept; the preview is unchanged).
             paint_base = base_rgb if doc.background_visible else _fill_like(base_rgb, background)
@@ -297,7 +285,7 @@ class PainterSketch(io.ComfyNode):
 
         return io.NodeOutput(
             main_image, main_mask, regions,
-            ui=_ui_previews(preview_frame, layer_source, cls),
+            ui=ui_previews(preview_frame, layer_source, cls, use_mask, coverage),
         )
 
     @classmethod
@@ -315,8 +303,14 @@ class PainterSketch(io.ComfyNode):
 
         Hashes:
         - ``document`` manifest string (captures structural changes)
-        - ``invert_mask``, ``width``, ``height``, ``background``
-        - For each layer file that resolves on disk: ``(size, mtime)`` pair.
+        - ``invert_mask``, ``background``
+        - ``width``, ``height`` only while ``image`` is not linked (with an
+          image they cannot affect the output; the editor keeps them at the
+          image size). ComfyUI passes a linked input as ``None`` here (only
+          constants are resolved), so "linked" means the key is present.
+        - A marker while ``mask`` is linked (M13b).
+        - For each layer file (and the M13a Image Mask file, unless ``mask``
+          is linked) that resolves on disk: ``(size, mtime)`` pair.
           Size + mtime is cheap (single ``os.stat`` call) and catches any edit
           even when the frontend reuses a filename.  A missing file contributes
           a fixed marker so it still invalidates the cache relative to a present
@@ -334,7 +328,7 @@ class PainterSketch(io.ComfyNode):
             width:       width widget value.
             height:      height widget value.
             background:  background colour hex string.
-            **kwargs:    Ignored (ComfyUI may pass unknown fields).
+            **kwargs:    ``image`` / ``mask`` when linked; others ignored.
 
         Returns:
             Hex-encoded SHA-256 digest string.
@@ -342,28 +336,39 @@ class PainterSketch(io.ComfyNode):
         m = hashlib.sha256()
         m.update(document.encode("utf-8"))
         m.update(str(invert_mask).encode("utf-8"))
-        m.update(str(width).encode("utf-8"))
-        m.update(str(height).encode("utf-8"))
+        if "image" in kwargs:
+            m.update(b"\x00IMAGE\x00")
+        else:
+            m.update(str(width).encode("utf-8"))
+            m.update(str(height).encode("utf-8"))
         m.update(background.encode("utf-8"))
+        # M13b: a linked ``mask`` replaces the Image Mask file (its tensor is
+        # cached like ``image``, through the upstream node).
+        mask_linked = "mask" in kwargs
+        if mask_linked:
+            m.update(b"\x00MASK\x00")
 
         # Hash file metadata for each referenced layer file.
         doc = parse_document(document)
         if doc is not None:
-            for layer in doc.layers:
-                if layer.file is None:
+            files = [layer.file for layer in doc.layers]
+            if doc.image_mask is not None and not mask_linked:
+                files.append(doc.image_mask.file)
+            for file in files:
+                if file is None:
                     continue
-                if not folder_paths.exists_annotated_filepath(layer.file):
+                if not folder_paths.exists_annotated_filepath(file):
                     m.update(b"\x00MISSING\x00")
-                    m.update(layer.file.encode("utf-8"))
+                    m.update(file.encode("utf-8"))
                     continue
-                path = folder_paths.get_annotated_filepath(layer.file)
+                path = folder_paths.get_annotated_filepath(file)
                 try:
                     st = os.stat(path)
-                    m.update(layer.file.encode("utf-8"))
+                    m.update(file.encode("utf-8"))
                     m.update(str(st.st_size).encode("utf-8"))
                     m.update(str(st.st_mtime).encode("utf-8"))
                 except OSError:
                     m.update(b"\x00MISSING\x00")
-                    m.update(layer.file.encode("utf-8"))
+                    m.update(file.encode("utf-8"))
 
         return m.hexdigest()

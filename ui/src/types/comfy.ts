@@ -100,6 +100,12 @@ export interface INodeOutputSlot {
   label?: string;
 }
 
+/** A link (subset of `LLink`). */
+export interface LLinkInfo {
+  origin_id: string | number;
+  origin_slot: number;
+}
+
 /** A graph or subgraph (subset). */
 export interface LGraph {
   id: string;
@@ -143,6 +149,8 @@ export interface LGraphNode {
   /** Minimum size for the current widgets / slots. */
   computeSize?(): [number, number];
   getInputNode(slot: number): LGraphNode | null;
+  /** Link feeding an input slot (origin node id + output slot), if any. */
+  getInputLink?(slot: number): LLinkInfo | null;
   addDOMWidget<T extends HTMLElement, V extends object | string>(
     name: string,
     type: string,

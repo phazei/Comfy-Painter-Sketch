@@ -110,20 +110,8 @@ export class LayerDrag {
     this.mark(null);
   }
 
-  /** Row of the dragged row's group under (or nearest to) the pointer, above/below its middle. */
   private findDrop(clientY: number, group: string): DropTarget | null {
-    const rows = [...this.list.querySelectorAll<HTMLElement>(group)];
-    let best: DropTarget | null = null;
-    for (const row of rows) {
-      const id = row.dataset["layerId"];
-      if (!id) continue;
-      const r = row.getBoundingClientRect();
-      if (clientY < r.top) return best ?? { targetId: id, above: true };
-      best = { targetId: id, above: clientY < r.top + r.height / 2 };
-      if (clientY <= r.bottom) return best;
-      best = { targetId: id, above: false };
-    }
-    return best;
+    return findDropTarget(this.list.querySelectorAll<HTMLElement>(group), clientY);
   }
 
   private mark(drop: DropTarget | null): void {
@@ -144,4 +132,30 @@ export class LayerDrag {
     if (clientY < r.top + EDGE_PX) this.list.scrollTop -= SCROLL_STEP_PX;
     else if (clientY > r.bottom - EDGE_PX) this.list.scrollTop += SCROLL_STEP_PX;
   }
+}
+
+/** What the drop math reads from a row element. */
+export type DropRow = Pick<HTMLElement, "dataset" | "getBoundingClientRect">;
+
+/**
+ * Row of the dragged row's group under (or nearest to) the pointer, above/below
+ * its middle. Only rows of that group are passed in (the list is queried by row
+ * class), so section dividers and other groups' rows never shift the result: a
+ * pointer over a divider at a group edge resolves to that edge row.
+ * @param rows - The group's rows, top -> bottom.
+ * @param clientY - Pointer y (client px).
+ * @returns The drop target, or null with no rows.
+ */
+export function findDropTarget(rows: Iterable<DropRow>, clientY: number): DropTarget | null {
+  let best: DropTarget | null = null;
+  for (const row of rows) {
+    const id = row.dataset["layerId"];
+    if (!id) continue;
+    const r = row.getBoundingClientRect();
+    if (clientY < r.top) return best ?? { targetId: id, above: true };
+    best = { targetId: id, above: clientY < r.top + r.height / 2 };
+    if (clientY <= r.bottom) return best;
+    best = { targetId: id, above: false };
+  }
+  return best;
 }

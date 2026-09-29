@@ -2,7 +2,8 @@
  * The one gate every pixel-editing operation passes before it modifies a
  * layer (brush / eraser / shapes via `paintOps.ts`, bucket via
  * `pixelOps.ts`, selection fill / clear via `selectionOps.ts`): lock and
- * visibility notes, and -- for text layers -- the rasterize prompt (SPEC M6b).
+ * visibility notes, the Image Mask refusal (M13a: it is never edited), and
+ * -- for text layers -- the rasterize prompt (SPEC M6b).
  *
  * Rasterizing turns the layer into a paint layer (drops `textData`; the
  * pixels already hold the rendered text) as a text history entry, and asks
@@ -13,8 +14,9 @@
  * step. Moving a text layer never rasterizes (`textLayer.ts` moves it).
  */
 
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import type { Layer } from "../document/types";
-import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, imageMaskNote, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
 import { shownOnStage } from "./solo";
 import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -48,14 +50,16 @@ export function rasterizeDecision(layer: Pick<Layer, "kind">, confirm: () => boo
 export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
 
 /**
- * Why `layer` can't be edited right now, or `null`. Order: hidden (eye) >
- * hidden by another layer's solo > locked -- showing it is the first fix.
- * A soloed layer with its eye off stays blocked (eye state wins).
+ * Why `layer` can't be edited right now, or `null`. The Image Mask row
+ * (M13a, and the M13b Input Mask) never is. Order otherwise: hidden (eye) > hidden by another layer's
+ * solo > locked -- showing it is the first fix. A soloed layer with its eye
+ * off stays blocked (eye state wins).
  * @param s - Editor state (solos).
  * @param layer - Layer to edit.
  * @returns Note text, or `null` if editing is allowed.
  */
 export function editBlockNote(s: EditorState, layer: Layer): string | null {
+  if (layer.id === IMAGE_MASK_ID) return imageMaskNote(layer.name);
   if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
   if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
   if (layer.locked) return LOCKED_LAYER_NOTE;

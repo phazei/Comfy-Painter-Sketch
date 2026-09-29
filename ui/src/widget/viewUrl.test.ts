@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { firstOutputImage, parseAnnotatedFilename, viewQuery, viewUrl } from "./viewUrl";
+import { firstOutputImage, parseAnnotatedFilename, viewQuery, viewUrl, withAlphaChannel, withRgbChannel } from "./viewUrl";
 
 describe("parseAnnotatedFilename", () => {
   it("parses a plain LoadImage value as an input file", () => {
@@ -56,5 +56,60 @@ describe("viewUrl", () => {
 
   it("defaults missing fields", () => {
     expect(viewQuery({ filename: "x.png" })).toBe("filename=x.png&subfolder=&type=output");
+  });
+});
+
+describe("withRgbChannel", () => {
+  it("adds channel=rgb to relative and api-prefixed /view URLs, keeping params", () => {
+    expect(withRgbChannel("/view?filename=a+b%26c.png&subfolder=&type=input")).toBe(
+      "/view?filename=a+b%26c.png&subfolder=&type=input&channel=rgb",
+    );
+    expect(withRgbChannel("/api/view?filename=a.png&type=temp&rand=0.5")).toBe(
+      "/api/view?filename=a.png&type=temp&rand=0.5&channel=rgb",
+    );
+    expect(withRgbChannel("/comfy/api/view?filename=a.png&preview=webp;90")).toBe(
+      "/comfy/api/view?filename=a.png&preview=webp;90&channel=rgb",
+    );
+  });
+
+  it("handles absolute URLs, fragments and a bare /view", () => {
+    expect(withRgbChannel("http://127.0.0.1:8188/api/view?filename=a.png#x")).toBe(
+      "http://127.0.0.1:8188/api/view?filename=a.png&channel=rgb#x",
+    );
+    expect(withRgbChannel("/view")).toBe("/view?channel=rgb");
+  });
+
+  it("replaces an existing channel param", () => {
+    expect(withRgbChannel("/api/view?channel=rgba&filename=a.png&channel=a")).toBe(
+      "/api/view?filename=a.png&channel=rgb",
+    );
+    expect(withRgbChannel("/api/view?filename=a.png&channel=rgb")).toBe("/api/view?filename=a.png&channel=rgb");
+  });
+
+  it("leaves non-/view URLs untouched", () => {
+    for (const url of NON_VIEW) {
+      expect(withRgbChannel(url)).toBe(url);
+    }
+  });
+});
+
+const NON_VIEW = [
+  "data:image/png;base64,AAAA",
+  "blob:http://127.0.0.1:8188/1234-5678",
+  "/api/viewer?filename=a.png",
+  "/api/preview?filename=view",
+  "http://example.com/img.png?channel=a",
+];
+
+describe("withAlphaChannel", () => {
+  it("asks for channel=a as a lossless PNG (drops preview and any channel)", () => {
+    expect(withAlphaChannel("/api/view?filename=a.png&subfolder=&type=input&rand=0.5")).toBe(
+      "/api/view?filename=a.png&subfolder=&type=input&rand=0.5&channel=a",
+    );
+    expect(withAlphaChannel("/api/view?filename=a.png&preview=webp;90&channel=rgb")).toBe("/api/view?filename=a.png&channel=a");
+  });
+
+  it("is null for URLs without a file behind them", () => {
+    for (const url of NON_VIEW) expect(withAlphaChannel(url)).toBeNull();
   });
 });

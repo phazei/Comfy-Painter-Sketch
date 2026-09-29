@@ -23,6 +23,7 @@
  * - `mergeDown.ts`  -- Merge Down ({@link Editor.mergeDown})
  * - `selectionFollow.ts` -- outline-only selection drags ({@link Editor.selectionMove})
  * - `clipboardOps.ts` -- copy / cut / paste pixels ({@link Editor.clipboard})
+ * - `imageMaskOps.ts` -- the M13a Image Mask row ({@link Editor.imageMask})
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -61,6 +62,8 @@ import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
 import { ResolutionOps } from "./resolutionOps";
 import { SourceInsertOps } from "./sourceInsert";
+import { ImageMaskOps } from "./imageMaskOps";
+import { findAnyLayer } from "../document/imageMask";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
 export type { LayerOps } from "./layerOps";
@@ -99,6 +102,8 @@ export class Editor extends EditorBase {
   readonly resolution: ResolutionOps;
   /** Image sources (M12): insert as a new layer in Free Transform (`sourceInsert.ts`). */
   readonly insert: SourceInsertOps;
+  /** Image Mask row (M13a): background alpha, restore / upload bookkeeping, Duplicate. */
+  readonly imageMask: ImageMaskOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -124,6 +129,7 @@ export class Editor extends EditorBase {
     this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r));
     this.resolution = new ResolutionOps(this.s);
     this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
+    this.imageMask = new ImageMaskOps(this.s);
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -158,9 +164,9 @@ export class Editor extends EditorBase {
     return this.s.runtime.hasPaint;
   }
 
-  /** Whether any layer needs uploading. */
+  /** Whether any layer (or the Image Mask) needs uploading. */
   get dirty(): boolean {
-    return this.s.runtime.dirty;
+    return this.s.runtime.dirty || this.imageMask.dirty;
   }
 
   /**
@@ -277,10 +283,10 @@ export class Editor extends EditorBase {
 
   /**
    * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
-   * @param layerId - Layer id, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
+   * @param layerId - Layer id, `IMAGE_MASK_ID`, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
    */
   toggleSolo(layerId: string): void {
-    const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" as const } : this.s.doc.layers.find((l) => l.id === layerId);
+    const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" as const } : findAnyLayer(this.s.doc, layerId);
     if (layer) this.s.settleFloat();
     if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
   }
@@ -374,19 +380,21 @@ export class Editor extends EditorBase {
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;
+    copy.s.imageMask.copyFrom(this.s.imageMask);
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
   }
 
   /** Estimated memory held (pixels + history; mask tint caches excluded). */
   get bytes(): number {
-    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes + this.s.kept.bytes;
+    return this.s.store.bytes + this.s.history.totalBytes + this.s.selection.bytes + this.s.kept.bytes + this.s.imageMask.bytes;
   }
 
   /** Release everything. */
   dispose(): void {
     this.s.stroke.dispose();
     this.s.store.dispose();
+    this.s.imageMask.dispose();
     this.display.dispose();
     this.pixelOps.dispose();
     this.s.selection.dispose();

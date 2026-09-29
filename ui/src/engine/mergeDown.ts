@@ -15,11 +15,13 @@
  *   A solo on the removed layer ends (the `layers` event prunes it).
  */
 
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import { isPaintLike } from "../document/layerList";
 import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { intersectRect, isEmptyRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
+import { imageMaskNote } from "./editorTypes";
 import type { HistoryEntry, LayersEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { compositeOver, mergeMaskCoverage } from "./floatMath";
@@ -79,6 +81,9 @@ export function canMergeDown(s: EditorState): boolean {
 function mergePlan(s: EditorState): { upper: Layer; lower: Layer; index: number } | string | null {
   const upper = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!upper) return null;
+  // The Image Mask row is not in `layers`: it never merges down, and nothing
+  // merges onto it (the bottom mask has no mask below it).
+  if (upper.id === IMAGE_MASK_ID) return imageMaskNote(upper.name);
   const index = s.doc.layers.indexOf(upper);
   const lower = s.doc.layers[index - 1];
   if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;

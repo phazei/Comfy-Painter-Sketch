@@ -2,6 +2,7 @@
  * Document -> widget value string.
  */
 
+import { serializeImageMask } from "./imageMask";
 import { isIdentityPlacement } from "./placement";
 import { cloneOutputOptions } from "./outputOptions";
 import { cloneRegion } from "./regions";
@@ -25,6 +26,8 @@ export function stringifyDocument(doc: PainterDocument): string {
     regions: doc.regions.map(cloneRegion),
     ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     ...(doc.backgroundVisible === false ? { backgroundVisible: false } : {}),
+    // M13a: only while the row exists (older manifests stay byte-identical).
+    ...(doc.imageMask ? { imageMask: serializeImageMask(doc.imageMask) } : {}),
     // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
     ...(p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {}),
     activeLayerId: doc.activeLayerId,
@@ -63,6 +66,7 @@ export function cloneDocument(doc: PainterDocument): PainterDocument {
     regions: doc.regions.map(cloneRegion),
     ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     ...(doc.placement ? { placement: { ...doc.placement } } : {}),
+    ...(doc.imageMask ? { imageMask: { ...doc.imageMask } } : {}),
     layers: doc.layers.map((l) => ({ ...l, ...(l.textData ? { textData: { ...l.textData } } : {}) })),
   };
 }

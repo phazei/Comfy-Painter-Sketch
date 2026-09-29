@@ -6,6 +6,7 @@
 
 import { createMaskLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_STYLE, FIRST_MASK_NAME } from "./create";
 import type { MaskStyle } from "./create";
+import { IMAGE_MASK_ID } from "./imageMask";
 import type { Layer, PainterDocument } from "./types";
 
 /** What brush/eraser strokes paint into. */
@@ -14,13 +15,15 @@ export type PaintTarget = "paint" | "mask";
 /**
  * The current mask (M8): the mask Quick Mask edits. It is the last selected
  * mask row (`currentMaskId`, editor UI state); if that mask no longer exists
- * (deleted, undone) the top-most mask is used instead.
+ * (deleted, undone) the top-most mask is used instead. The Image Mask row
+ * (M13a) can be current too: every pixel edit on it is refused (`rasterize.ts`).
  *
  * @param doc - Document.
  * @param currentMaskId - Last selected mask id (`null`/`undefined` = none yet).
  * @returns The mask layer, or `undefined` if the document has none.
  */
 export function findMaskLayer(doc: Readonly<PainterDocument>, currentMaskId?: string | null): Layer | undefined {
+  if (currentMaskId === IMAGE_MASK_ID && doc.imageMask) return doc.imageMask;
   if (currentMaskId) {
     const current = doc.layers.find((l) => l.id === currentMaskId);
     if (current?.kind === "mask") return current;

@@ -18,6 +18,7 @@ import { groupEntries } from "./editorTypes";
 import type { EditorEvents, FrameSource, HistoryEntry } from "./editorTypes";
 import { Emitter } from "./emitter";
 import { DEFAULT_HISTORY_BYTES, HistoryStack } from "./history";
+import { ImageMaskPixels } from "./imageMask";
 import { KeptOriginals } from "./keptOriginal";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
@@ -41,6 +42,8 @@ export class EditorState {
   readonly kept = new KeptOriginals();
   /** Current selection (session state, not saved); strokes are clipped to it. */
   readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
+  /** Image Mask coverage (M13a, image px; metadata is `doc.imageMask`). */
+  readonly imageMask = new ImageMaskPixels();
   /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
   readonly solo = new SoloState(() => {
     this.events.emit("solo", undefined);
@@ -116,8 +119,11 @@ export class EditorState {
     }
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
-    // A solo ends when its layer is deleted (every layer-list change emits `layers`).
-    this.events.on("layers", () => this.solo.set(pruneSolo(this.solo.current, this.doc.layers)));
+    // A solo ends when its layer (or the Image Mask row) goes (every layer-list change emits `layers`).
+    this.events.on("layers", () => {
+      const rows = this.doc.imageMask ? [...this.doc.layers, this.doc.imageMask] : this.doc.layers;
+      this.solo.set(pruneSolo(this.solo.current, rows));
+    });
     // Kept originals die with their layer and with any other edit of it.
     this.events.on("layers", () => this.kept.prune(new Set(this.doc.layers.map((l) => l.id))));
     this.events.on("change", () => {

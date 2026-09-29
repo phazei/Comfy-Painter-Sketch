@@ -44,8 +44,8 @@ export function installNodeHooks(nodeType: LGraphNodeConstructor): void {
   const onConnectionsChange = proto.onConnectionsChange;
   proto.onConnectionsChange = function (this: LGraphNode, ...args): void {
     onConnectionsChange?.apply(this, args);
-    const [type, slot, isConnected] = args;
-    getController(this)?.handleConnectionsChange(type, slot, isConnected);
+    const [type, slot] = args;
+    getController(this)?.handleConnectionsChange(type, slot);
   };
 
   const onRemoved = proto.onRemoved;

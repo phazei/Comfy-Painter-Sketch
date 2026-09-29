@@ -5,7 +5,8 @@ Additive v1 manifest fields (SPEC.md "Output regions (M9) -- agreed design"):
 
     regions:    [{id, slot 1..6, rect {x, y, width, height}, name?, visible?, output?}]
     mainOutput: {applyMask: "none"|"fill"|"crop"|"border", fillColor: "#rrggbb", cropPadding,
-                 borderSize 1..4096, borderColor: "#rrggbb", borderMask: bool}
+                 borderSize 1..4096, borderColor: "#rrggbb", borderMask: bool,
+                 alpha?: true}   (M13c; written only when on)
 
 Region rects are in current-image pixels from the top-left and are never
 rescaled. Legacy records ``{id, index, rect}`` map to ``slot = index + 1``.
@@ -43,6 +44,8 @@ class OutputOptions:
         border_size:  ``1..MAX_BORDER_SIZE`` px added on every side by ``border``.
         border_color: ``#rrggbb`` (lower case) of the ``border`` area.
         border_mask:  ``border`` area in the MASK: True = 1.0, False = 0.0.
+        alpha:        M13c: IMAGE as RGBA, alpha = 1 - the final MASK
+                      (ignored with ``fill``).
     """
     apply_mask: str = "none"
     fill_color: str = "#000000"
@@ -50,6 +53,7 @@ class OutputOptions:
     border_size: int = 64
     border_color: str = "#ffffff"
     border_mask: bool = True
+    alpha: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,7 @@ def parse_output_options(raw: object) -> OutputOptions:
         border_size=border_size,
         border_color=_color(raw.get("borderColor"), "#ffffff"),
         border_mask=border_mask if isinstance(border_mask, bool) else True,
+        alpha=raw.get("alpha") is True,
     )
 
 

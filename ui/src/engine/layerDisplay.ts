@@ -5,13 +5,15 @@
  * dirtied since the last frame. A Move-tool drag shows its layer offset
  * (`EditorState.movePreview`) without touching pixels; a floating selection
  * shows inside its layer (`EditorState.floatPreview`, `floatOps.ts`). Solo (`solo.ts`,
- * view only) decides which layers count as shown here.
+ * view only) decides which layers count as shown here. The M13a Image Mask
+ * is the bottom overlay, drawn over the image rect (`imageMaskOps.ts`).
  */
 
 import { maskDisplayColor } from "../document/masks";
 import type { Point } from "../geometry/rect";
 import type { CompositeLayer, MaskOverlay } from "./compositor";
 import type { EditorState } from "./editorState";
+import { imageMaskApplies } from "./imageMaskOps";
 import { MaskTint } from "./maskTint";
 import { shownOnStage } from "./solo";
 
@@ -55,18 +57,15 @@ export class LayerDisplay {
    */
   maskOverlays(): MaskOverlay[] {
     const s = this.s;
-    const out: MaskOverlay[] = [];
+    const image = this.imageMaskOverlay();
+    const out: MaskOverlay[] = image ? [image] : [];
     const bounds = s.store.bounds;
     for (const layer of s.doc.layers) {
       if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const stroking = s.strokeLayerId === layer.id && s.stroke.active;
       const source = s.floatPreview(layer.id) ?? (stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
-      let tint = this.tints.get(layer.id);
-      if (!tint) {
-        tint = new MaskTint();
-        this.tints.set(layer.id, tint);
-      }
+      const tint = this.tintFor(layer.id);
       const color = maskDisplayColor(layer);
       const invert = layer.invert === true;
       const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
@@ -75,6 +74,28 @@ export class LayerDisplay {
       out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...(offset ? { offset } : {}) });
     }
     return out;
+  }
+
+  /** The Image Mask row's overlay (bottom of the masks, image px), if shown. */
+  private imageMaskOverlay(): MaskOverlay | null {
+    const s = this.s;
+    const mask = s.doc.imageMask;
+    if (!mask || !shownOnStage(mask, s.solo.current) || !imageMaskApplies(s)) return null;
+    const source = s.imageMask.canvas();
+    if (!source) return null;
+    const color = maskDisplayColor(mask);
+    const invert = mask.invert === true;
+    const key = { bounds: { x: 0, y: 0, width: mask.width, height: mask.height }, color, invert, revision: s.imageMask.revision };
+    return { tint: this.tintFor(mask.id).update(source, key, null), color, opacity: mask.opacity, invert, imageSpace: true };
+  }
+
+  private tintFor(id: string): MaskTint {
+    let tint = this.tints.get(id);
+    if (!tint) {
+      tint = new MaskTint();
+      this.tints.set(id, tint);
+    }
+    return tint;
   }
 
   /** Release the tint caches. */

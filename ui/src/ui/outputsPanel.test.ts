@@ -42,6 +42,16 @@ class FakeElement extends EventTarget {
       this.children.push(item);
     }
   }
+  get parentElement(): FakeElement | null {
+    return this.parent;
+  }
+  after(item: FakeElement): void {
+    const parent = this.parent;
+    if (!parent) return;
+    item.remove();
+    item.parent = parent;
+    parent.children.splice(parent.children.indexOf(this) + 1, 0, item);
+  }
   prepend(item: FakeElement): void {
     item.parent = this;
     this.children.unshift(item);
@@ -146,6 +156,82 @@ describe("Outputs tab slot cards", () => {
     ops.rename(id, "  face  ");
     expect(root.find("cps-output-card")[1]).toBe(card);
     expect(root.find("cps-output-title")[1]!.textContent).toBe("1 · face");
+  });
+
+  it("options layout: Modify + Alpha on line 1, extras on line 2 only when the choice has any", async () => {
+    const { ops, root } = await setup();
+    const options = root.find("cps-output-options")[0]!;
+    const [line1, line2] = options.children;
+    const swatch = options.find("cps-output-swatch")[0]!;
+    const [pad, width] = options.find("cps-output-field");
+    const mask = options.find("cps-output-check").find((c) => !c.classes.has("cps-output-alpha"))!;
+    const classOf = (e: FakeElement) => e.className.split(" ")[0] ?? "";
+    expect(line1!.children.map(classOf)).toEqual(["cps-output-label", "cps-output-mode", "cps-output-check"]);
+    expect(line2!.className.split(" ")).toContain("cps-output-extras");
+    expect(line2!.hidden).toBe(true);
+
+    ops.setOptions(null, { applyMask: "crop" });
+    expect(line2!.hidden).toBe(false);
+    expect(pad!.hidden).toBe(false);
+    expect(width!.hidden).toBe(true);
+    expect(mask.hidden).toBe(true);
+
+    ops.setOptions(null, { applyMask: "border" });
+    expect(line2!.children).toEqual([pad, width, swatch, mask]);
+    expect([pad!.hidden, width!.hidden, swatch.hidden, mask.hidden]).toEqual([true, false, false, false]);
+
+    // Fill: no line 2; the swatch sits on line 1 in the hidden Alpha's place.
+    ops.setOptions(null, { applyMask: "fill" });
+    expect(line2!.hidden).toBe(true);
+    expect(swatch.parent).toBe(line1);
+    expect(line1!.children.at(-1)).toBe(swatch);
+    expect(swatch.hidden).toBe(false);
+
+    ops.setOptions(null, { applyMask: "border" });
+    expect(line2!.children).toEqual([pad, width, swatch, mask]);
+    ops.setOptions(null, { applyMask: "none" });
+    expect(line2!.hidden).toBe(true);
+    expect(swatch.hidden).toBe(true);
+  });
+
+  it("Alpha toggle (M13c): undoable per output, hidden but kept while Modify = Fill mask", async () => {
+    const { ALPHA_TITLE } = await import("./outputOptionsRow");
+    const { ops, paint, root } = await setup();
+    const id = ops.addDefault(1)!;
+    const [mainAlpha, regionAlpha] = root.find("cps-output-alpha");
+    const box = (label: FakeElement) => label.children[0] as FakeElement & { checked?: boolean };
+    expect(mainAlpha!.title).toBe(ALPHA_TITLE);
+    expect(mainAlpha!.children[1]!.textContent).toBe("Alpha");
+    // Sits right after the Modify dropdown.
+    const row = mainAlpha!.parent!;
+    expect(row.children.indexOf(mainAlpha!)).toBe(row.children.indexOf(row.find("cps-output-mode")[0]!) + 1);
+    expect(box(mainAlpha!).checked).toBe(false);
+
+    box(regionAlpha!).checked = true;
+    box(regionAlpha!).dispatchEvent(new Event("change"));
+    expect(ops.options(id).alpha).toBe(true);
+    expect(ops.options(null).alpha).toBeUndefined();
+
+    ops.setOptions(id, { applyMask: "fill" });
+    expect(regionAlpha!.hidden).toBe(true);
+    expect(mainAlpha!.hidden).toBe(false);
+    expect(box(regionAlpha!).checked).toBe(true);
+    expect(ops.options(id).alpha).toBe(true);
+    ops.setOptions(id, { applyMask: "crop" });
+    expect(regionAlpha!.hidden).toBe(false);
+    expect(box(regionAlpha!).checked).toBe(true);
+
+    paint.undo();
+    paint.undo();
+    expect(ops.options(id).alpha).toBe(true);
+    paint.undo();
+    expect(ops.options(id).alpha).toBeUndefined();
+    expect(box(regionAlpha!).checked).toBe(false);
+    paint.redo();
+    expect(box(regionAlpha!).checked).toBe(true);
+    box(regionAlpha!).checked = false;
+    box(regionAlpha!).dispatchEvent(new Event("change"));
+    expect(ops.options(id)).not.toHaveProperty("alpha");
   });
 
   it("does not re-sync on render events", async () => {

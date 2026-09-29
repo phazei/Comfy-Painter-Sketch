@@ -52,6 +52,17 @@ vi.mock("./persistence", () => ({
     onSettled(): () => void { return () => undefined; }
   },
 }));
+vi.mock("./imageMaskSync", () => ({
+  restoreImageMask: async () => undefined,
+  syncImageMask: () => undefined,
+  imageMaskReady: async () => undefined,
+}));
+vi.mock("./inputMaskSync", () => ({
+  InputMaskWatch: class {
+    setExecuted(): void {}
+    sync(): boolean { return false; }
+  },
+}));
 vi.mock("../ui/editorHost", () => ({
   EditorHost: class {
     element = { isConnected: false, remove: vi.fn() };

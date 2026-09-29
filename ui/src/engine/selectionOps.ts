@@ -19,6 +19,7 @@
  * frame size, Move-tool placement, or upstream image changes.
  */
 
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import { targetLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
@@ -27,6 +28,7 @@ import { boundsCap } from "./bounds";
 import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { documentMap, imageRectToDoc } from "./frameMap";
+import { imageMaskSelection } from "./imageMaskOps";
 import { blendCoverage, hexToRgb } from "./pixelColor";
 import { preparePixelEdit } from "./rasterize";
 import {
@@ -155,6 +157,13 @@ export class SelectionOps {
   fromLayer(layerId: string, mode: SelectionMode): boolean {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
+    if (layerId === IMAGE_MASK_ID && s.doc.imageMask) {
+      // Image px coverage, resampled into document coords (M13a).
+      const sel = imageMaskSelection(s);
+      if (sel) return this.apply(sel, mode);
+      s.events.emit("note", EMPTY_LAYER_NOTE);
+      return false;
+    }
     const layer = s.doc.layers.find((l) => l.id === layerId);
     if (!layer) return false;
     // A float is part of the layer's pixels: settle it before reading.

@@ -178,5 +178,17 @@ export const HIDDEN_LAYER_NOTE = "The layer is hidden.";
 /** Note shown when editing a layer that a solo (on another layer) hides. */
 export const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
 
+/**
+ * Note shown when any pixel edit targets the Image Mask / Input Mask row (M13a/b).
+ * @param name - Row name.
+ * @returns Note text.
+ */
+export function imageMaskNote(name: string): string {
+  return `${name} can't be edited \u2014 duplicate it to edit.`;
+}
+
+/** {@link imageMaskNote} of the Image Mask row. */
+export const IMAGE_MASK_NOTE = imageMaskNote("Image Mask");
+
 /** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
 export const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";

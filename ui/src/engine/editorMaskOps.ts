@@ -7,6 +7,7 @@
  * editor state and paint operations.
  */
 
+import { findAnyLayer } from "../document/imageMask";
 import { findMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer } from "../document/types";
@@ -65,7 +66,8 @@ export class EditorMaskOps {
    */
   selectMask(layerId: string): boolean {
     const s = this.s;
-    if (s.doc.layers.find((l) => l.id === layerId)?.kind !== "mask") return false;
+    // Mask layers and the Image Mask row (M13a; pixel edits on it are refused).
+    if (findAnyLayer(s.doc, layerId)?.kind !== "mask") return false;
     const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId;
     if (changed && s.stroke.active) s.cancelStroke();
     s.currentMaskId = layerId;

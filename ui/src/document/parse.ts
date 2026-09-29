@@ -11,7 +11,9 @@
 
 import { containsRect, frameRect } from "../geometry/rect";
 import type { Rect, Size } from "../geometry/rect";
-import { createId, createPaintLayer } from "./create";
+import { createId, createPaintLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_OPACITY } from "./create";
+import { createImageMask } from "./imageMask";
+import type { ImageMask } from "./imageMask";
 import { log } from "../log";
 import { readPlacement } from "./placement";
 import { readTextData } from "./textData";
@@ -138,6 +140,9 @@ function validate(data: Record<string, unknown>): ParseResult {
   const placed = readPlacement(data["placement"]);
   if (placed.repaired) repaired = true;
 
+  const imageMask = readImageMask(data["imageMask"]);
+  if (imageMask.repaired) repaired = true;
+
   return {
     status: "ok",
     repaired,
@@ -150,6 +155,7 @@ function validate(data: Record<string, unknown>): ParseResult {
       regions: regions.regions,
       ...(data["mainOutput"] !== undefined ? { mainOutput: readOutputOptions(data["mainOutput"]) } : {}),
       ...(bgVisible === false ? { backgroundVisible: false } : {}),
+      ...(imageMask.mask ? { imageMask: imageMask.mask } : {}),
       ...(placed.placement ? { placement: placed.placement } : {}),
       activeLayerId,
       layers,
@@ -239,6 +245,34 @@ function readLayer(value: unknown): Layer | null {
     }
   }
   return layer;
+}
+
+/**
+ * Read the optional M13a `imageMask` record (`imageMask.ts`) leniently: a
+ * record without a string `sourceKey` or a valid size is dropped (Python
+ * ignores it too); unusable `file` -> none, `visible` -> true, `invert` ->
+ * false, colour / opacity as for mask layers.
+ * @param value - Saved `imageMask` value.
+ * @returns The record (absent when missing or dropped) and a repair flag.
+ */
+function readImageMask(value: unknown): { mask?: ImageMask; repaired: boolean } {
+  if (value === undefined) return { repaired: false };
+  const size = readSize(value);
+  const sourceKey = isRecord(value) ? value["sourceKey"] : undefined;
+  if (!isRecord(value) || !size || typeof sourceKey !== "string") {
+    log.warn("imageMask is malformed; dropping it", value);
+    return { repaired: true };
+  }
+  const { file, visible, color, invert } = value;
+  const mask = createImageMask(sourceKey, size, {
+    color: typeof color === "string" ? color : DEFAULT_MASK_COLOR,
+    opacity: clamp01(value["opacity"], DEFAULT_MASK_OPACITY),
+  });
+  if (typeof file === "string" && file.trim()) mask.file = file;
+  if (typeof visible === "boolean") mask.visible = visible;
+  mask.invert = invert === true;
+  const repaired = (file !== null && mask.file === null) || (visible !== undefined && typeof visible !== "boolean");
+  return { mask, repaired };
 }
 
 function readSize(value: unknown): Size | null {

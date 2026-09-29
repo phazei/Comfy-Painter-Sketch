@@ -64,5 +64,11 @@ describe("widgetDimension", () => {
   it("clamps to the widget range", () => {
     expect(widgetDimension(10)).toBe(MIN_FRAME_SIDE);
     expect(widgetDimension(20000)).toBe(MAX_FRAME_SIDE);
+    expect(MAX_FRAME_SIDE).toBe(16384);
+  });
+
+  it("rounds like the INT widget with a min offset", () => {
+    expect(widgetDimension(1000, { min: 3, max: 4096, step: 8 })).toBe(1003);
+    expect(widgetDimension(1000, { min: 64, max: 512, step: 8 })).toBe(512);
   });
 });

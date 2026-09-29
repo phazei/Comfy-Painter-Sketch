@@ -13,6 +13,7 @@ import { HIDDEN_MASK_NOTE } from "../engine/editor";
 import type { LGraphNode } from "../types/comfy";
 import { executeCommand, SAVE_WORKFLOW_COMMAND } from "./comfyApi";
 import { EDIT_SYNC_DELAY_MS, requestGraphSync, UPLOAD_SYNC_DELAY_MS } from "./graphSync";
+import { imageMaskReady } from "./imageMaskSync";
 import type { EditorSession } from "./sessions";
 import { notify } from "./toast";
 
@@ -50,6 +51,8 @@ export function bindSessionUploads(node: LGraphNode, session: EditorSession, syn
  */
 export async function flushForQueue(session: EditorSession): Promise<void> {
   await session.ready;
+  // An Image Mask being read from a just-connected image is part of this run.
+  await imageMaskReady(session);
   // A floating selection lands before the queued document is saved.
   session.editor.settle();
   await session.uploader.flush();

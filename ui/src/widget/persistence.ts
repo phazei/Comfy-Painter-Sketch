@@ -13,6 +13,9 @@
  * across documents) and the batch is retried automatically with backoff
  * (15 s doubling to 2 min); the first success after a toasted failure says so.
  *
+ * The M13a Image Mask uploads the same way (PNG) when its coverage is dirty,
+ * i.e. after its source changed (`imageMaskSync.ts`); it is never edited.
+ *
  * Upload timing (saved-file contract): the owner calls {@link LayerUploader.flush}
  * on disengage / fullscreen exit / Ctrl+S / queue; {@link LayerUploader.schedule}
  * is the idle fallback, {@link IDLE_UPLOAD_DELAY_MS} after the last edit.
@@ -157,6 +160,7 @@ export class LayerUploader {
         failures.push(error);
       }
     }
+    await this.uploadImageMask(paintQuality, failures);
     if (this.disposed) return;
     if (failures.length) {
       const message = uploadFailureMessage(failures[0]);
@@ -188,13 +192,33 @@ export class LayerUploader {
     }, this.retryDelay);
   }
 
+  /**
+   * M13a: the Image Mask coverage, like a mask layer (PNG, same folder and
+   * naming); dirty only after its source changed.
+   */
+  private async uploadImageMask(paintQuality: number, failures: unknown[]): Promise<void> {
+    const mask = this.editor.imageMask;
+    const info = mask.info;
+    const canvas = mask.dirty ? mask.canvas() : null;
+    if (this.disposed || !info || !canvas) return;
+    const version = mask.version;
+    try {
+      const file = await this.uploadLayer(info, paintQuality, canvas);
+      if (this.disposed) return;
+      if (file) this.knownFiles.add(file);
+      mask.markUploaded(version, file);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+
   /** @returns The file reference for the layer's current pixels (null = empty). */
   private async uploadLayer(
     layer: { id: string; name: string; kind: LayerKind; file: string | null },
     paintQuality: number,
-  ): Promise<string | null> {
     // Pre-lift pixels while a floating selection is open (never half-saved).
-    const canvas = this.editor.savedLayerCanvas(layer.id);
+    canvas: HTMLCanvasElement = this.editor.savedLayerCanvas(layer.id),
+  ): Promise<string | null> {
     if (isCanvasEmpty(canvas)) return null;
     const currentFile = layer.file;
     const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error: unknown) => {

@@ -9,6 +9,7 @@ Covers:
     widgets are the current image) and the document frame is mapped onto it
     with the decision-4 frame-mismatch transform
   - no image, no document: plain background of ``width`` x ``height``
+  - fingerprint_inputs ignores ``width``/``height`` while ``image`` is linked
 """
 
 import json
@@ -23,7 +24,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO not in sys.path:
     sys.path.insert(0, _REPO)
 
-from nodes import painter_sketch  # noqa: E402
+from nodes import painter_sketch, previews  # noqa: E402
 from nodes.painter_sketch import PainterSketch  # noqa: E402
 
 
@@ -141,7 +142,7 @@ class TestLayerSourcePreview(unittest.TestCase):
 
     def _run(self, layer_source: torch.Tensor | None):
         image = torch.full((1, 4, 8, 3), 0.5)
-        with mock.patch.object(painter_sketch.UI, "PreviewImage", _FakePreview):
+        with mock.patch.object(previews.UI, "PreviewImage", _FakePreview):
             return PainterSketch.execute(
                 image=image, document="", width=8, height=4, layer_source=layer_source,
             )
@@ -182,7 +183,25 @@ class TestLayerSourcePreview(unittest.TestCase):
 
     def test_schema_input_after_image(self) -> None:
         names = [i.id for i in PainterSketch.define_schema().inputs]
-        self.assertEqual(names[:2], ["image", "layer_source"])
+        self.assertEqual(names[:3], ["image", "mask", "layer_source"])
+
+
+class TestFingerprintSize(unittest.TestCase):
+    """width/height count only while ``image`` is not linked (ComfyUI passes a linked input as None)."""
+
+    @staticmethod
+    def _fp(width: int, height: int, **kwargs) -> str:
+        return PainterSketch.fingerprint_inputs(
+            document="", invert_mask=False, width=width, height=height, **kwargs)
+
+    def test_ignored_with_image(self) -> None:
+        self.assertEqual(self._fp(512, 512, image=None), self._fp(1920, 1080, image=None))
+
+    def test_used_without_image(self) -> None:
+        self.assertNotEqual(self._fp(512, 512), self._fp(1920, 1080))
+
+    def test_linking_image_changes_fingerprint(self) -> None:
+        self.assertNotEqual(self._fp(512, 512), self._fp(512, 512, image=None))
 
 
 if __name__ == "__main__":

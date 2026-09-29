@@ -42,6 +42,12 @@ Mask combination (SPEC.md "Mask layers", decision 5):
     Areas outside the placed layer (not covered by the PNG) count as 0.0
     *before* the per-layer invert, so a fully-inverted mask layer with no
     paint covers the whole frame.
+
+Image Mask (M13a):
+    The loaded Image Mask coverage (``layer_tensors[IMAGE_MASK_KEY]``, image
+    px, exactly the run-time image size) joins the union like a visible mask
+    layer: placed at the image origin (0 outside the image), its own invert,
+    then the max. Only when visible and not stale (M13b: or ``input_mask.py``).
 """
 
 import logging
@@ -52,6 +58,9 @@ import torch.nn.functional as F
 from .document import IDENTITY_PLACEMENT, Bounds, Document, Frame, Layer, Placement
 
 log = logging.getLogger("paintersketch.composite")
+
+IMAGE_MASK_KEY = "\x00image-mask"
+"""``layer_tensors`` key of the loaded Image Mask coverage ``[ih, iw]`` (never a layer id)."""
 
 
 # ── Placement helpers ─────────────────────────────────────────────────────────
@@ -238,6 +247,7 @@ def combine_mask_layers(
     placement: Placement = IDENTITY_PLACEMENT,
     image_size: tuple[int, int] | None = None,
     origin: tuple[int, int] = (0, 0),
+    image_mask: tuple[torch.Tensor, bool] | None = None,
 ) -> torch.Tensor:
     """Build the final MASK tensor from visible mask layers.
 
@@ -247,6 +257,8 @@ def combine_mask_layers(
       2. Apply per-layer ``invert`` (``1 - alpha``).
       3. Union (max) across all mask layers.
       4. Apply node-level ``invert_mask``.
+    The Image Mask (``image_mask``) counts as one more visible mask layer,
+    placed at the image origin instead of through the frame map.
 
     Opacity and display color are intentionally ignored for masks (SPEC.md:
     "opacity and color are display-only and do NOT affect MASK").
@@ -261,9 +273,11 @@ def combine_mask_layers(
         placement:     Move-tool placement (default identity).
         image_size:    ``(W, H)`` of the run-time image; default = canvas size.
         origin:        Image px of the canvas top-left (viewport canvases).
+        image_mask:    ``(coverage [ih, iw] or [Bm, ih, iw] in image px, invert)``
+                       of a visible Image / Input Mask, or ``None``.
 
     Returns:
-        ``[H, W]`` float32 mask in [0, 1].
+        ``[H, W]`` (``[Bm, H, W]`` with a batch coverage) float32 mask in [0, 1].
     """
     iw, ih = image_size or (W, H)
     s, ox, oy = _layout(iw, ih, frame, placement)
@@ -291,6 +305,12 @@ def combine_mask_layers(
 
         combined = torch.max(combined, placed_a)
 
+    if image_mask is not None:
+        has_mask = True
+        coverage, invert = image_mask
+        placed_a = _place_image_px(coverage, W, H, origin)
+        combined = torch.max(combined, 1.0 - placed_a if invert else placed_a)
+
     if invert_mask:
         if not has_mask:
             # No mask layers + invert = full mask
@@ -299,6 +319,38 @@ def combine_mask_layers(
             combined = 1.0 - combined
 
     return combined
+
+
+def _place_image_px(coverage: torch.Tensor, W: int, H: int, origin: tuple[int, int]) -> torch.Tensor:
+    """Copy an image-px ``[..., ih, iw]`` plane (M13b: a ``[Bm, ih, iw]`` batch) onto a W x H canvas at image px ``origin``.
+
+    Args:
+        coverage: ``[..., ih, iw]`` float32 plane(s) at image px ``(0, 0)``.
+        W, H:     Canvas size.
+        origin:   Image px of the canvas top-left.
+
+    Returns:
+        ``[..., H, W]`` plane(s), zeros where the canvas lies outside the image.
+    """
+    canvas = torch.zeros((*coverage.shape[:-2], H, W), dtype=torch.float32)
+    ih, iw = coverage.shape[-2:]
+    x0, y0 = -origin[0], -origin[1]
+    cx0, cy0 = max(0, x0), max(0, y0)
+    cx1, cy1 = min(W, x0 + iw), min(H, y0 + ih)
+    if cx1 > cx0 and cy1 > cy0:
+        canvas[..., cy0:cy1, cx0:cx1] = coverage[..., cy0 - y0:cy1 - y0, cx0 - x0:cx1 - x0]
+    return canvas
+
+
+def _image_mask_input(
+    doc: Document, layer_tensors: dict[str, torch.Tensor | None],
+) -> tuple[torch.Tensor, bool] | None:
+    """The ``image_mask`` argument of :func:`combine_mask_layers` for a document, or ``None``."""
+    coverage = layer_tensors.get(IMAGE_MASK_KEY)
+    mask = doc.image_mask
+    if coverage is None or mask is None or not mask.visible:
+        return None
+    return coverage, mask.invert
 
 
 # ── Top-level entry point ─────────────────────────────────────────────────────
@@ -322,7 +374,8 @@ def run_composite(
         base_rgb:      ``[B, H, W, 3]`` float32 base canvas (0-1).
         doc:           Validated :class:`~document.Document`.
         layer_tensors: Map from layer id to ``[lh, lw, 4]`` RGBA tensor or None,
-                       as returned by :func:`~layers.load_layer_rgba`.
+                       as returned by :func:`~layers.load_layer_rgba`, plus the
+                       Image Mask coverage under :data:`IMAGE_MASK_KEY`.
         invert_mask:   Node-level invert_mask widget value.
         image_size:    ``(W, H)`` of the run-time image; default = canvas size.
         origin:        Image px of the canvas top-left.
@@ -339,9 +392,9 @@ def run_composite(
 
     mask_hw = combine_mask_layers(
         doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask, doc.placement,
-        image_size, origin,
+        image_size, origin, _image_mask_input(doc, layer_tensors),
     )
-    # Broadcast mask to batch
-    mask = mask_hw.unsqueeze(0).expand(B, -1, -1)
+    # Broadcast mask to batch ([H, W], or a per-image [B, H, W] with an Input Mask batch)
+    mask = mask_hw.expand(B, -1, -1)
 
     return image, mask

@@ -28,6 +28,7 @@ import {
   resolveMove,
 } from "../document/layerList";
 import { copyLayerName } from "../document/layerList";
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import { findMaskLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import type { LayerPixels } from "./editorTypes";
@@ -178,7 +179,8 @@ export class LayerOps {
   setLocked(layerId: string, locked: boolean): void {
     const s = this.s;
     const layer = findLayer(s, layerId);
-    if (!layer || layer.locked === locked) return;
+    // The Image Mask row is never edited, so it has no lock.
+    if (!layer || layer.locked === locked || layerId === IMAGE_MASK_ID) return;
     s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.locked = locked;
@@ -309,7 +311,7 @@ export class LayerOps {
    */
   rename(layerId: string, name: string): boolean {
     const trimmed = name.trim().slice(0, 100);
-    if (!trimmed) return false;
+    if (!trimmed || layerId === IMAGE_MASK_ID) return false;
     return setLayerProps(this.s, layerId, { name: trimmed });
   }
 

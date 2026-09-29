@@ -5,11 +5,15 @@
  * the overlay opacity control; the Background row is locked and not
  * selectable but has an eye and a solo button like the others. Text layers get a "T" badge on the thumbnail. The current mask
  * has a thick left bar in its own colour; paint/text/mask rows have a small
- * solo button (view only). Rows are
+ * solo button (view only). The Image Mask row (M13a, `imageMask` kind) is a
+ * mask row without rename or lock (it is never edited) and is not dragged
+ * (`layerDrag.ts` only moves paint / mask rows); as the M13b Input Mask its
+ * tooltips follow the name and a hint line can show under it. Rows are
  * reused across updates (keyed by layer id) so a double-click survives the
  * re-render the first click causes.
  */
 
+import { INPUT_MASK_NAME } from "../document/imageMask";
 import type { SelectionMode } from "../engine/selection";
 import { layerSelectMode } from "./moveCursors";
 import type { OptionControl } from "./optionControls";
@@ -18,7 +22,16 @@ import { startInlineRename } from "./inlineRename";
 import { Thumbnail } from "./thumbnails";
 
 /** Kind of row. */
-export type RowKind = "paint" | "mask" | "background";
+export type RowKind = "paint" | "mask" | "imageMask" | "background";
+
+/** Tooltip of the Image Mask row's name. */
+export const IMAGE_MASK_TOOLTIP = "From the image's transparency. A connected mask input will replace it.";
+
+/** Tooltip of the row's name while it shows the `mask` input (M13b). */
+export const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces the image's transparency; disconnect it to use that again).";
+
+/** CSS class suffix per row kind (`cps-layer-<suffix>`). */
+const ROW_CLASS: Readonly<Record<RowKind, string>> = { paint: "paint", mask: "mask", imageMask: "image-mask", background: "background" };
 
 /** Display state of a row. */
 export interface RowModel {
@@ -38,6 +51,8 @@ export interface RowModel {
   current?: boolean;
   /** Editable text layer ("T" badge on the thumbnail). */
   text?: boolean;
+  /** Small note under the row (M13b: the Input Mask waiting for a run). */
+  hint?: string;
   /**
    * Solo display (view only): `"on"` = this row is soloed, `"dimmed"` =
    * another row of its group is soloed, `"off"` = its group has no solo.
@@ -77,6 +92,7 @@ export class LayerRow {
   private readonly invertButton: HTMLButtonElement | null = null;
   private readonly textBadge: HTMLSpanElement | null = null;
   private readonly soloButton: HTMLButtonElement | null = null;
+  private readonly hintEl: HTMLDivElement | null = null;
   private model: RowModel | null = null;
   private editor: HTMLInputElement | null = null;
   private icons = { eye: "", lock: "" };
@@ -94,7 +110,8 @@ export class LayerRow {
     maskOpacity?: OptionControl,
   ) {
     this.element = document.createElement("div");
-    this.element.className = `cps-layer-row cps-layer-${kind}`;
+    this.element.className = `cps-layer-row cps-layer-${ROW_CLASS[kind]}`;
+    const maskLike = kind === "mask" || kind === "imageMask";
     this.element.dataset["layerId"] = id;
     const main = document.createElement("div");
     main.className = "cps-layer-main";
@@ -121,11 +138,12 @@ export class LayerRow {
     main.appendChild(this.lock);
     this.element.appendChild(main);
 
-    if (kind === "background") {
+    if (kind === "background" || kind === "imageMask") {
       this.lock.disabled = true;
-      this.lock.title = "The background (input image) is locked";
+      this.lock.title = kind === "background" ? "The background (input image) is locked" : "The Image Mask can't be edited (duplicate it to edit)";
       setIcon(this.lock, "lock", 14);
-    } else {
+    }
+    if (kind !== "background") {
       this.element.addEventListener("click", (event) => {
         if (isControl(event.target)) return;
         const mode = layerSelectMode({ ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
@@ -138,7 +156,7 @@ export class LayerRow {
       });
     }
 
-    if (kind === "mask") {
+    if (maskLike) {
       const extra = document.createElement("div");
       extra.className = "cps-layer-extra";
       const swatch = button("cps-layer-swatch", () => actions.pickColor(id, swatch));
@@ -150,6 +168,12 @@ export class LayerRow {
       this.element.appendChild(extra);
       this.swatch = swatch;
       this.invertButton = invert;
+    }
+    if (kind === "imageMask") {
+      this.hintEl = document.createElement("div");
+      this.hintEl.className = "cps-layer-hint";
+      this.hintEl.hidden = true;
+      this.element.appendChild(this.hintEl);
     }
   }
 
@@ -173,7 +197,7 @@ export class LayerRow {
     el.classList.toggle("cps-current-mask", current);
     if (current && model.color) el.style.setProperty("--cps-mask-color", model.color);
     else el.style.removeProperty("--cps-mask-color");
-    el.title = current ? "Current mask (Quick Mask paints into it)" : "";
+    el.title = current && this.kind === "mask" ? "Current mask (Quick Mask paints into it)" : "";
     const solo = model.solo ?? "off";
     if (this.soloButton) {
       this.soloButton.classList.toggle("cps-active", solo === "on");
@@ -186,7 +210,13 @@ export class LayerRow {
             : "Solo: show only this layer in its group (view only)";
     }
     if (!this.editor) this.nameEl.textContent = model.name;
-    this.nameEl.title = this.kind === "background" ? "Input image" : `${model.name} (double-click to rename)`;
+    this.nameEl.title =
+      this.kind === "background" ? "Input image" : this.kind === "imageMask" ? imageMaskTooltip(model.name) : `${model.name} (double-click to rename)`;
+    if (this.kind === "imageMask") this.lock.title = `The ${model.name} can't be edited (duplicate it to edit)`;
+    if (this.hintEl) {
+      this.hintEl.textContent = model.hint ?? "";
+      this.hintEl.hidden = !model.hint;
+    }
     if (this.eye) {
       const icon = model.visible ? "eye" : "eyeOff";
       if (icon !== this.icons.eye) setIcon(this.eye, icon, 14);
@@ -200,7 +230,7 @@ export class LayerRow {
           ? model.visible
             ? "Hide background (shows transparency; outputs use the background colour instead of the image)"
             : "Show background (input image)"
-          : this.kind === "mask"
+          : this.kind !== "paint"
           ? model.visible
             ? "Hide mask (also excludes it from the MASK output)"
             : "Show mask (hidden masks are excluded from the MASK output)"
@@ -208,7 +238,7 @@ export class LayerRow {
             ? "Hide layer"
             : "Show layer";
     }
-    if (this.kind !== "background") {
+    if (this.kind === "paint" || this.kind === "mask") {
       const icon = model.locked ? "lock" : "unlock";
       if (icon !== this.icons.lock) setIcon(this.lock, icon, 14);
       this.icons.lock = icon;
@@ -227,7 +257,7 @@ export class LayerRow {
 
   /** Begin inline renaming. */
   startRename(): void {
-    if (this.editor || this.kind === "background") return;
+    if (this.editor || this.kind === "background" || this.kind === "imageMask") return;
     this.actions.renaming(true);
     this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
@@ -236,6 +266,11 @@ export class LayerRow {
       this.actions.renaming(false);
     });
   }
+}
+
+/** Name tooltip of the Image Mask / Input Mask row (by its name). */
+function imageMaskTooltip(name: string): string {
+  return name === INPUT_MASK_NAME ? INPUT_MASK_TOOLTIP : IMAGE_MASK_TOOLTIP;
 }
 
 function button(className: string, onClick: (event: MouseEvent) => void): HTMLButtonElement {
