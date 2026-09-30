@@ -6,6 +6,8 @@
  * contiguous, anti-alias; sample defaults to the background). The modifiers at pointer-down pick
  * the mode (`selectionModifiers.ts`: Shift add, Alt subtract, Shift+Alt
  * intersect); Alt is never the eyedropper. One `selection` history entry.
+ * "Current layer" = the current target (under Quick Mask the current mask's
+ * coverage); a hidden target refuses with a note and keeps the selection.
  */
 
 import type { Editor } from "../engine/editor";
@@ -66,6 +68,8 @@ export class MagicWandTool implements Tool {
       antiAlias: v.antiAlias,
       sample: v.sample,
     });
+    // Hidden current target: the note is shown, the selection stays.
+    if (sel === "blocked") return;
     // Nothing matched (e.g. outside the image and bounds): replace deselects, like Photoshop.
     editor.selection.apply(sel, mode);
   }

@@ -21,10 +21,23 @@ describe("sampleTarget", () => {
     expect(sampleTarget("layer", null)).toEqual({ kind: "scene", source: "all" });
   });
 
+  it("layer on a mask layer (cmask / Image Mask row) reads its coverage; all reads the visible masks' union", () => {
+    const mask = { id: "m1", kind: "mask" } as Layer;
+    expect(sampleTarget("layer", mask)).toEqual({ kind: "cmask", layer: mask });
+    expect(sampleTarget("all", mask)).toEqual({ kind: "masks" });
+    expect(sampleTarget("background", mask)).toEqual({ kind: "scene", source: "background" });
+  });
+
   it("all / background render the scene", () => {
     expect(sampleTarget("all", layer)).toEqual({ kind: "scene", source: "all" });
     expect(sampleTarget("background", layer)).toEqual({ kind: "scene", source: "background" });
     expect(sampleTarget("background", null)).toEqual({ kind: "scene", source: "background" });
+  });
+
+  it("the lmask-only view's mask wins over every option", () => {
+    const masked = { ...layer, layerMask: { file: null, enabled: true, invert: false, outside: "reveal" } } as Layer;
+    for (const s of ["layer", "all", "background"] as const) expect(sampleTarget(s, layer, masked)).toEqual({ kind: "lmask", layer: masked });
+    expect(sampleTarget("all", layer, null)).toEqual({ kind: "scene", source: "all" });
   });
 });
 

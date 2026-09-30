@@ -5,7 +5,8 @@
  * (background included; the default) or only the background, as a point
  * or a 3x3 / 5x5 average. A fully
  * transparent sample leaves the colour unchanged. Quick Mask does not
- * matter: it always picks colours.
+ * matter: it always picks colours. On a targeted layer mask (M14) it is
+ * refused with a note (the mask swatches are black / white only).
  *
  * While dragging, {@link EyedropperTool.overlay} describes a loupe ring
  * (sampled colour on top, the colour before the drag below).
@@ -17,6 +18,7 @@
 
 import type { ColorSlot } from "../engine/colors";
 import type { Editor } from "../engine/editor";
+import { LAYER_MASK_EYEDROPPER_NOTE } from "../engine/layerMask";
 import type { SampleSource } from "../engine/pixelOps";
 import { SAMPLE_CHOICES } from "./fill";
 import { OptionSet } from "./options";
@@ -87,6 +89,11 @@ export class EyedropperTool implements Tool {
   onPointerDown(editor: Editor, samples: readonly ToolPointer[]): void {
     const first = samples[0];
     if (!first) return;
+    // M14: the mask swatches only hold black / white -- refused (the real colours stay untouched).
+    if (editor.layerMask.targeted) {
+      editor.events.emit("note", LAYER_MASK_EYEDROPPER_NOTE);
+      return;
+    }
     const slot: ColorSlot = first.altKey && !this.isTemporary ? "bg" : "fg";
     const previous = editor.colors[slot];
     this.picking = { slot, previous, color: previous };

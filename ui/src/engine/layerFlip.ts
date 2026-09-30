@@ -5,12 +5,15 @@
  * content bbox, so the bounds never change -- as ONE patch undo step. The
  * pixel-edit gate runs first (lock / hidden notes, text rasterize prompt).
  * With a float (or a selection, lifted first) the float gets an exact
- * mirror matrix and stays floating ({@link flipOutsideSession}).
+ * mirror matrix and stays floating ({@link flipOutsideSession}). A layer's
+ * lmask mirrors with it (M14b, `layerMaskCarry.flipMaskPatch`); a selection
+ * flip follows the target like any float (pixels or the lmask's pixels).
  */
 
 import { activeEditLayer } from "../document/masks";
 import { isEmptyRect } from "../geometry/rect";
 import type { EditorState } from "./editorState";
+import { flipMaskPatch } from "./layerMaskCarry";
 import { layerContentRect } from "./layerTranslate";
 import { preparePixelEdit } from "./rasterize";
 import type { FloatOps } from "./floatOps";
@@ -28,7 +31,7 @@ export const EMPTY_LAYER_NOTE = "The layer is empty.";
  */
 export function flipLayer(s: EditorState, axis: "h" | "v"): boolean {
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+  if (!layer || preparePixelEdit(s, layer, "whole") === "blocked") return false;
   const rect = layerContentRect(s, layer.id);
   const before = isEmptyRect(rect) ? null : s.store.read(layer.id, rect);
   if (!before) {
@@ -45,6 +48,12 @@ export function flipLayer(s: EditorState, axis: "h" | "v"): boolean {
     s.history.push({ kind: "patch", layerId: layer.id, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
   }
   s.runtime.touch(layer.id);
+  // The lmask mirrors with its layer, same centre, same step (M14b).
+  const maskPatch = flipMaskPatch(s, layer, before.rect, axis);
+  if (maskPatch) {
+    if (after) s.history.joinNext();
+    s.history.push(maskPatch);
+  }
   s.afterEdit();
   return true;
 }

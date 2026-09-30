@@ -104,14 +104,22 @@ export class HostSync {
       shell.popoverHost,
     );
 
+    // M14: while a layer mask is targeted the swatches are the black / white mask swatches (no picker).
     this.swatches = new SwatchWidget({
       pick: (slot, anchor) => {
-        const colors = this.getSession()?.editor.colors;
-        if (colors)
-          this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
+        const editor = this.getSession()?.editor;
+        if (!editor || editor.layerMask.targeted) return;
+        const colors = editor.colors;
+        this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
       },
-      swap: () => this.getSession()?.editor.colors.swap(),
-      reset: () => this.getSession()?.editor.colors.reset(),
+      swap: () => {
+        const editor = this.getSession()?.editor;
+        if (editor && !editor.layerMask.swapSwatches()) editor.colors.swap();
+      },
+      reset: () => {
+        const editor = this.getSession()?.editor;
+        if (editor && !editor.layerMask.resetSwatches()) editor.colors.reset();
+      },
     });
     shell.rail.swatchSlot.appendChild(this.swatches.element);
 
@@ -233,6 +241,21 @@ export class HostSync {
     this.rail.setQuickMask(targeting, color);
     this.shell.root.classList.toggle("cps-quickmask", targeting);
     this.optionsBar.setMask({ targeting, color });
+    // M14: the layer mask controls and swatches come and go with the edit target (`tools/layerMaskBar.ts`).
+    this.syncOptions();
+    this.syncSwatches();
+  }
+
+  /**
+   * Show the FG/BG colours, or the black / white mask swatches while a
+   * layer mask is targeted (M14; the real colours stay untouched).
+   */
+  syncSwatches(): void {
+    const editor = this.getSession()?.editor;
+    if (!editor) return;
+    const onMask = editor.layerMask.targeted !== null;
+    this.swatches.setMaskMode(onMask);
+    this.swatches.setColors(onMask ? editor.layerMask.swatches : editor.colors.current);
   }
 
   /** Sync undo/redo button enable state. */

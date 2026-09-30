@@ -6,6 +6,7 @@
 
 import type { Rect, Size } from "../geometry/rect";
 import type { ImageMask } from "./imageMask";
+import type { LayerMask } from "./layerMask";
 import type { TextData } from "./textData";
 
 export type { TextData } from "./textData";
@@ -40,6 +41,8 @@ export interface Layer {
   invert?: boolean;
   /** Text layers only (`kind: "text"`): editable text, see `textData.ts`. */
   textData?: TextData;
+  /** Paint layers only (M14): the layer mask, see `layerMask.ts`. */
+  layerMask?: LayerMask;
 }
 
 /** Independent processing of Main or one region, after region slicing. */

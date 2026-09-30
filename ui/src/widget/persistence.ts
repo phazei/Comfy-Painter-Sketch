@@ -15,6 +15,8 @@
  *
  * The M13a Image Mask uploads the same way (PNG) when its coverage is dirty,
  * i.e. after its source changed (`imageMaskSync.ts`); it is never edited.
+ * M14 layer masks upload and restore like mask layers too (PNG,
+ * `Editor.layerMask`), their file in the layer's `layerMask.file`.
  *
  * Upload timing (saved-file contract): the owner calls {@link LayerUploader.flush}
  * on disengage / fullscreen exit / Ctrl+S / queue; {@link LayerUploader.schedule}
@@ -28,7 +30,7 @@
 import { api } from "@comfy/scripts/api.js";
 
 import { DOCUMENT_SUBFOLDER } from "../document/types";
-import type { LayerKind } from "../document/types";
+import type { Layer, LayerKind } from "../document/types";
 import type { Editor } from "../engine/editor";
 import { log } from "../log";
 import { readSetting } from "./comfyApi";
@@ -160,6 +162,7 @@ export class LayerUploader {
         failures.push(error);
       }
     }
+    await this.uploadLayerMasks(paintQuality, failures);
     await this.uploadImageMask(paintQuality, failures);
     if (this.disposed) return;
     if (failures.length) {
@@ -190,6 +193,24 @@ export class LayerUploader {
       this.timer = null;
       this.flushQuietly();
     }, this.retryDelay);
+  }
+
+  /**
+   * M14: dirty layer masks, like mask layers (PNG, same folder and naming;
+   * a fully hidden mask stores no file).
+   */
+  private async uploadLayerMasks(paintQuality: number, failures: unknown[]): Promise<void> {
+    for (const job of this.editor.layerMask.uploads()) {
+      if (this.disposed) return;
+      try {
+        const file = await this.uploadLayer({ id: job.layerId, name: job.name, kind: "mask", file: job.file }, paintQuality, job.canvas);
+        if (this.disposed) return;
+        if (file) this.knownFiles.add(file);
+        this.editor.layerMask.markUploaded(job.layerId, job.version, file);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
   }
 
   /**
@@ -289,13 +310,15 @@ function isUploadResponse(value: unknown): value is { name: string; subfolder?: 
  */
 export async function restoreLayers(editor: Editor, isAlive: () => boolean): Promise<void> {
   const layers = editor.doc.layers.filter((l) => l.file);
-  if (!layers.length) return;
+  const masks = editor.doc.layers.filter((l) => l.layerMask?.file);
+  if (!layers.length && !masks.length) return;
   const bounds = editor.bounds;
   const problems: RestoreProblem[] = [];
   editor.beginLoading();
   try {
-    await Promise.all(
-      layers.map(async (layer) => {
+    await Promise.all([
+      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems)),
+      ...layers.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
         const url = viewUrl(item, (route) => api.apiURL(route));
@@ -317,12 +340,38 @@ export async function restoreLayers(editor: Editor, isAlive: () => boolean): Pro
           if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
       }),
-    );
+    ]);
   } finally {
     if (isAlive()) editor.endLoading();
   }
   const summary = isAlive() ? restoreSummary(problems) : null;
   if (summary) notify(summary.severity, summary.message, { key: `restore:${editor.doc.docId}:${summary.message}` });
+}
+
+/**
+ * Restore one layer mask (M14). A failed load shows the layer unmasked (as
+ * Python ignores an unreadable mask) and keeps the file reference.
+ */
+async function restoreLayerMask(editor: Editor, layer: Readonly<Layer>, isAlive: () => boolean, problems: RestoreProblem[]): Promise<void> {
+  const file = layer.layerMask?.file ?? null;
+  const item = parseAnnotatedFilename(file, "input");
+  if (!item) return;
+  const name = `${layer.name} mask`;
+  try {
+    const image = await fetchImage(viewUrl(item, (route) => api.apiURL(route)));
+    if (!isAlive()) return;
+    const b = editor.bounds;
+    if (image.naturalWidth !== b.width || image.naturalHeight !== b.height) {
+      log.warn(`layer mask "${name}" file is ${image.naturalWidth}x${image.naturalHeight}, expected ${b.width}x${b.height}:`, file);
+      problems.push({ name, kind: "stale" });
+    }
+    editor.layerMask.restore(layer.id, image);
+  } catch (error) {
+    if (!isAlive()) return;
+    log.warn(`could not restore layer mask "${name}" from ${file}:`, error);
+    editor.layerMask.restoreFailed(layer.id);
+    problems.push({ name, kind: classifyError(error) });
+  }
 }
 
 /**

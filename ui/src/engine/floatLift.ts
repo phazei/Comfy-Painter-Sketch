@@ -5,13 +5,23 @@
  * layer at once. A whole-layer lift (Free Transform without a selection)
  * takes every pixel. All functions are stateless over {@link EditorState};
  * `FloatOps` owns the resulting {@link FloatState}.
+ *
+ * Layer masks (M14b, `layerMaskCarry.ts`): a selection lift takes the
+ * targeted part -- the layer's pixels (the lmask stays put) or, with the
+ * lmask targeted, the mask's own pixels as grayscale. A whole-layer lift
+ * always carries the layer's lmask along ({@link FloatState.carry}).
  */
 
 import { activeEditLayer } from "../document/masks";
+import type { Layer } from "../document/types";
 import { intersectRect, isEmptyRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 import type { EditorState } from "./editorState";
 import { liftPixels } from "./floatMath";
+import { selectedSurfaceKey } from "./layerMask";
+import type { EditKind } from "./layerMask";
+import { liftCarry, liftMaskPixels, maskFloatSurfaces } from "./layerMaskCarry";
+import type { MaskCarry } from "./layerMaskCarry";
 import { EMPTY_LAYER_NOTE } from "./layerFlip";
 import { layerContentRect } from "./layerTranslate";
 import { editBlockNote, preparePixelEdit } from "./rasterize";
@@ -19,6 +29,7 @@ import { coverageFor, selectionExtent } from "./selection";
 import type { Selection } from "./selection";
 import { createSurface } from "./surface";
 import type { Surface } from "./surface";
+import { translation } from "./transformMath";
 import type { Affine, TransformParams } from "./transformMath";
 
 /** Note when the selection holds no pixels of the layer. */
@@ -26,6 +37,7 @@ export const EMPTY_FLOAT_NOTE = "No pixels are selected.";
 
 /** One floating selection. */
 export interface FloatState {
+  /** Store key the float belongs to: a layer id, or a layer mask key (lmask-targeted lift, M14b). */
   layerId: string;
   /** Lifted document rect (inside the bounds at lift time). */
   area: Rect;
@@ -41,10 +53,14 @@ export interface FloatState {
   liftM?: Affine;
   /** Session parameters that produced `xf` (Free Transform), when known. */
   params?: TransformParams;
-  /** Floating pixels over `area` (straight alpha). */
+  /** Floating pixels over `area` (straight alpha; lmask floats: value in RGB, coverage in alpha). */
   pixels: ImageData;
-  /** `pixels` on a canvas (display). */
+  /** `pixels` on a canvas (display; lmask floats: the value as mask pixels). */
   surface: Surface;
+  /** lmask float (M14b): the coverage as mask pixels (display, `layerMaskCarry.ts`). */
+  cover?: Surface;
+  /** Whole-layer lift of a layer with an lmask: the mask travelling with it (M14b). */
+  carry?: MaskCarry;
   /** Current offset, whole document px. */
   dx: number;
   dy: number;
@@ -59,7 +75,7 @@ export interface FloatState {
    * `null` while a session runs (smoothed canvas preview). Always derived
    * from `pixels` (the ORIGINAL lift), never fed back.
    */
-  baked: { surface: Surface; rect: Rect; m: Affine } | null;
+  baked: { surface: Surface; rect: Rect; m: Affine; cover?: Surface } | null;
   /** Offset at drag start while a drag is in progress. */
   dragBase: { dx: number; dy: number } | null;
   /** Display cache: layer + float, sized to the bounds. */
@@ -80,13 +96,16 @@ export function checkLift(s: EditorState): "ok" | "blocked" | "confirm" {
   if (s.loading || s.stroke.active || !sel) return "blocked";
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!layer) return "blocked";
-  const note = editBlockNote(s, layer);
+  const key = selectedSurfaceKey(s, layer);
+  const note = editBlockNote(s, layer, liftKind(layer, key));
   if (note) {
     s.events.emit("note", note);
     return "blocked";
   }
   if (layer.kind === "text") return "confirm";
-  const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
+  // A mask has a value everywhere: any selected part of it lifts.
+  const content = key === layer.id ? layerContentRect(s, layer.id) : s.store.bounds;
+  const area = intersectRect(selectionExtent(sel, s.store.bounds), content);
   if (isEmptyRect(area)) return empty(s, EMPTY_FLOAT_NOTE) || "blocked";
   return "ok";
 }
@@ -97,7 +116,7 @@ export function checkLift(s: EditorState): "ok" | "blocked" | "confirm" {
  */
 export function prepareLift(s: EditorState): void {
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (layer) preparePixelEdit(s, layer);
+  if (layer) preparePixelEdit(s, layer, "whole");
 }
 
 /**
@@ -110,27 +129,37 @@ export function prepareLift(s: EditorState): void {
 export function liftFloat(s: EditorState, copy: boolean, sel: Selection | null): FloatState | null {
   if (s.loading || s.stroke.active) return null;
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+  if (!layer) return null;
+  // A selection lift takes the targeted part (lmask or pixels, M14b); a whole-layer lift the pixels + carry.
+  const key = sel ? selectedSurfaceKey(s, layer) : layer.id;
+  const gray = key !== layer.id;
+  if (preparePixelEdit(s, layer, liftKind(layer, key)) === "blocked") return null;
   const note = sel ? EMPTY_FLOAT_NOTE : EMPTY_LAYER_NOTE;
   const content = layerContentRect(s, layer.id);
   // A selection lift takes the whole selection rect (transparent parts
   // included) so box, pixels and coverage stay aligned with the outline.
   const area = sel ? selectionExtent(sel, s.store.bounds) : content;
-  const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
+  const read = isEmptyRect(area) ? null : s.store.read(key, area);
   if (!read) return empty(s, note) || null;
   const coverage = sel ? coverageFor(sel, read.rect) : new Uint8Array(read.rect.width * read.rect.height).fill(255);
-  const { float, rest } = liftPixels(read.data.data, coverage, !copy);
-  if (!hasAlpha(float)) return empty(s, note) || null;
+  const { float, rest } = gray ? liftMaskPixels(read.data.data, coverage, !copy) : liftPixels(read.data.data, coverage, !copy);
+  if (gray ? !coverage.some((c) => c > 0) : !hasAlpha(float)) return empty(s, note) || null;
   const w = read.rect.width;
   const h = read.rect.height;
   const pixels = new ImageData(float, w, h);
   if (!copy) {
-    s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
-    s.runtime.bump(layer.id);
+    s.store.write(key, read.rect.x, read.rect.y, new ImageData(rest, w, h));
+    s.runtime.bump(key);
   }
-  const surface = createSurface(w, h);
-  surface.ctx.putImageData(pixels, 0, 0);
-  return { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, selBase: sel, xf: null, baked: null, dragBase: null, preview: null };
+  const shown = gray ? maskFloatSurfaces(float, w, h) : null;
+  const surface = shown?.value ?? createSurface(w, h);
+  if (!shown) surface.ctx.putImageData(pixels, 0, 0);
+  const carry = sel ? null : liftCarry(s, layer);
+  return {
+    layerId: key, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, selBase: sel, xf: null, baked: null, dragBase: null, preview: null,
+    ...(shown ? { cover: shown.cover } : {}),
+    ...(carry ? { carry } : {}),
+  };
 }
 
 /**
@@ -144,7 +173,7 @@ export function liftKept(s: EditorState): FloatState | null {
   if (s.loading || s.stroke.active || s.selection.current) return null;
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!layer || layer.kind === "text" || !s.kept.get(layer.id, s.runtime.revision(layer.id))) return null;
-  if (preparePixelEdit(s, layer) === "blocked") return null;
+  if (preparePixelEdit(s, layer, "whole") === "blocked") return null;
   // The gate may have settled something: look again.
   const kept = s.kept.get(layer.id, s.runtime.revision(layer.id));
   const content = layerContentRect(s, layer.id);
@@ -156,9 +185,12 @@ export function liftKept(s: EditorState): FloatState | null {
   const { width: pw, height: ph } = kept.area;
   const surface = createSurface(pw, ph);
   surface.ctx.putImageData(kept.pixels, 0, 0);
+  // The lmask restarts from its own kept original when that is valid too (`liftCarry`).
+  const carry = liftCarry(s, layer);
   return {
     layerId: layer.id, area: { ...kept.area }, original: read.data, holeRect: read.rect, liftM: kept.m, params: kept.params, pixels: kept.pixels, surface,
     dx: 0, dy: 0, selBefore: null, selBase: null, xf: kept.m, baked: null, dragBase: null, preview: null,
+    ...(carry ? { carry } : {}),
   };
 }
 
@@ -169,6 +201,20 @@ export function liftKept(s: EditorState): FloatState | null {
  */
 export function holeOf(f: Readonly<FloatState>): Rect {
   return f.holeRect ?? f.area;
+}
+
+/**
+ * A float's matrix at lift time (a commit there is a cancel).
+ * @param f - Float.
+ * @returns Float-local -> document matrix.
+ */
+export function liftMatrix(f: Readonly<FloatState>): Affine {
+  return f.liftM ?? translation(f.area.x, f.area.y);
+}
+
+/** Gate kind of a lift: lmask pixels are a mask-aware edit (lmask-only view exception applies). */
+function liftKind(layer: Layer, key: string): EditKind {
+  return key === layer.id ? "whole" : "paint";
 }
 
 function empty(s: EditorState, note: string): false {

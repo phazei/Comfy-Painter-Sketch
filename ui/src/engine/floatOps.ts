@@ -31,11 +31,17 @@
  * selection float ends, the float stays with its matrix and a resampled
  * display ({@link FloatOps.bake}); a later session restarts from the lifted
  * pixels with the cumulative matrix. Lifting itself is in `floatLift.ts`.
+ *
+ * Layer masks (M14b): an lmask-targeted float belongs to the mask key
+ * (`layerId`); a whole-layer float carries the layer's lmask (`carry`,
+ * shown through {@link FloatOps.preview} for the mask key, landed and kept
+ * with the layer -- `layerMaskCarry.ts`).
  */
 
 import type { EditorState } from "./editorState";
 import { bakeFloat, dropBake, floatPreviewCanvas, releaseFloat, writeFloatPatch } from "./floatCommit";
-import { checkLift, holeOf, liftFloat, liftKept, prepareLift } from "./floatLift";
+import { checkLift, holeOf, liftFloat, liftKept, liftMatrix, prepareLift } from "./floatLift";
+import { carryMatrix, carryPreviewCanvas } from "./layerMaskCarry";
 import { layerContentRect } from "./layerTranslate";
 import { isEmptyRect } from "../geometry/rect";
 import type { FloatState } from "./floatLift";
@@ -199,7 +205,7 @@ export class FloatOps {
       f.selBase = sel;
       s.selection.set(sel);
     }
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     s.events.emit("render", undefined);
   }
 
@@ -224,7 +230,7 @@ export class FloatOps {
     if (!f || !m || !f.xf) return;
     dropBake(f);
     f.baked = bakeFloat(f, m);
-    this.s.runtime.bump(f.layerId);
+    this.bump(f);
     this.s.events.emit("render", undefined);
   }
 
@@ -286,19 +292,22 @@ export class FloatOps {
     if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
     const m = this.matrix() ?? translation(f.area.x, f.area.y);
-    if (!f.inserted && affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
+    if (!f.inserted && affineEquals(m, liftMatrix(f))) {
       this.cancel();
       return false;
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
-    // Kept original (M11b): only when the float is ALL the layer will hold.
-    const keep = f.xf !== null && isEmptyRect(layerContentRect(s, f.layerId));
+    // Kept original (M11b): only when the float is ALL the layer will hold (never an lmask float).
+    const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
     writeFloatPatch(s, f, m);
     releaseFloat(f);
     if (keep) {
       const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : undefined;
       s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
+      // The carried lmask keeps its own original (M14b), valid while the mask's revision holds.
+      const c = f.carry;
+      if (c) s.kept.keep(c.key, { pixels: c.pixels, area: { ...c.area }, m: carryMatrix(c, liftMatrix(f), m), revision: s.runtime.revision(c.key) });
     }
     f.onEnd?.(true);
     s.afterEdit();
@@ -317,7 +326,7 @@ export class FloatOps {
     this.f = null;
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     s.selection.set(f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
@@ -347,16 +356,24 @@ export class FloatOps {
     s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
     f.dx = dx;
     f.dy = dy;
-    // New revision: display caches keyed by it (mask tint, thumbnails) refresh.
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     if (f.selBase) s.selection.set(offsetSelection(f.selBase, dx, dy));
     s.events.emit("render", undefined);
   }
 
+  /** New revision of the float's key (and its carried lmask): display caches keyed by it (mask tint, masked layer, thumbnails) refresh. */
+  private bump(f: Readonly<FloatState>): void {
+    this.s.runtime.bump(f.layerId);
+    if (f.carry) this.s.runtime.bump(f.carry.key);
+  }
 
+  /** Display of a store key while floating: the float's own key, or its carried lmask (M14b). */
   private preview(layerId: string): HTMLCanvasElement | null {
     const f = this.f;
-    if (!f || f.layerId !== layerId) return null;
-    return floatPreviewCanvas(this.s, f, this.matrix() ?? translation(f.area.x, f.area.y));
+    if (!f) return null;
+    const m = this.matrix() ?? translation(f.area.x, f.area.y);
+    if (f.layerId === layerId) return floatPreviewCanvas(this.s, f, m);
+    if (f.carry?.key === layerId) return carryPreviewCanvas(this.s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
+    return null;
   }
 }

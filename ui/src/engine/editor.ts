@@ -24,6 +24,8 @@
  * - `selectionFollow.ts` -- outline-only selection drags ({@link Editor.selectionMove})
  * - `clipboardOps.ts` -- copy / cut / paste pixels ({@link Editor.clipboard})
  * - `imageMaskOps.ts` -- the M13a Image Mask row ({@link Editor.imageMask})
+ * - `layerMaskOps.ts` / `layerMask.ts` -- M14 layer masks ({@link Editor.layerMask});
+ *   `layerMaskCarry.ts` -- M14b: masks in moves / transforms / flips / floats
  *
  * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
@@ -63,6 +65,7 @@ import { RegionOps } from "./regionOps";
 import { ResolutionOps } from "./resolutionOps";
 import { SourceInsertOps } from "./sourceInsert";
 import { ImageMaskOps } from "./imageMaskOps";
+import { LayerMaskOps } from "./layerMaskOps";
 import { findAnyLayer } from "../document/imageMask";
 
 export type { EditorEvents, FrameSource, HistoryEntry, LayerRuntime } from "./editorTypes";
@@ -104,6 +107,8 @@ export class Editor extends EditorBase {
   readonly insert: SourceInsertOps;
   /** Image Mask row (M13a): background alpha, restore / upload bookkeeping, Duplicate. */
   readonly imageMask: ImageMaskOps;
+  /** Layer masks (M14): add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
+  readonly layerMask: LayerMaskOps;
 
   private readonly maskOps: EditorMaskOps;
 
@@ -126,10 +131,19 @@ export class Editor extends EditorBase {
     this.regionOps = new RegionOps(this.s);
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
-    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r));
+    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r), this.float);
     this.resolution = new ResolutionOps(this.s);
     this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
     this.imageMask = new ImageMaskOps(this.s);
+    this.layerMask = new LayerMaskOps(
+      this.s,
+      (sel, mode) => this.selection.apply(sel, mode),
+      (id) => {
+        this.layerOps.setActiveLayer(id);
+        this.setPaintTarget("paint");
+      },
+      (key) => this.savedLayerCanvas(key),
+    );
   }
 
   // ── Read access ─────────────────────────────────────────────────────────
@@ -395,6 +409,7 @@ export class Editor extends EditorBase {
     this.s.stroke.dispose();
     this.s.store.dispose();
     this.s.imageMask.dispose();
+    this.s.layerMasks.dispose();
     this.display.dispose();
     this.pixelOps.dispose();
     this.s.selection.dispose();

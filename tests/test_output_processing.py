@@ -134,7 +134,8 @@ class TestOffImageRegions(unittest.TestCase):
                        layers=[Layer("p", "paint", True, 0.7, "p.png", False)])
         image, _ = run_composite(base, doc, {"p": paint}, False)
         render = viewport_renderer(base, doc, {"p": paint}, False, RED)
-        view, _ = render((-2, -1, 5, 4))
+        view, _, straight = render((-2, -1, 5, 4))
+        self.assertIsNone(straight)
         torch.testing.assert_close(view[:, 1:, 2:], image[:, 0:4, 0:5])
 
 

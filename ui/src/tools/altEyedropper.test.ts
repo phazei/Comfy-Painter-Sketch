@@ -33,6 +33,7 @@ describe("Alt = temporary eyedropper", () => {
     const editor = {
       colors: { fg: "#000000", bg: "#ffffff", set: (slot: string, hex: string) => set.push([slot, hex]) },
       pixelOps: { sampleColor: () => "#123456" },
+      layerMask: { targeted: null },
     } as unknown as Editor;
     const alt: ToolPointer = { x: 1, y: 1, pressure: 1, pointerType: "mouse", shiftKey: false, altKey: true, ctrlKey: false };
     const eyedropper = createEyedropperTool();
@@ -43,5 +44,23 @@ describe("Alt = temporary eyedropper", () => {
     eyedropper.temporary.onPointerDown(editor, [alt]);
     expect(set[0]).toEqual(["bg", "#123456"]);
     expect(set[set.length - 1]).toEqual(["fg", "#123456"]);
+  });
+
+  it("is refused with a note while a layer mask is targeted (M14)", () => {
+    const set: Array<[string, string]> = [];
+    const notes: string[] = [];
+    const editor = {
+      colors: { fg: "#000000", bg: "#ffffff", set: (slot: string, hex: string) => set.push([slot, hex]) },
+      pixelOps: { sampleColor: () => "#123456" },
+      layerMask: { targeted: "layer1" },
+      events: { emit: (_kind: string, text: string) => notes.push(text) },
+    } as unknown as Editor;
+    const click: ToolPointer = { x: 1, y: 1, pressure: 1, pointerType: "mouse", shiftKey: false, altKey: false, ctrlKey: false };
+    const eyedropper = createEyedropperTool();
+    eyedropper.temporary.onPointerDown(editor, [click]);
+    eyedropper.temporary.onPointerUp(editor, click);
+    expect(set).toEqual([]);
+    expect(eyedropper.temporary.overlay()).toBeNull();
+    expect(notes).toHaveLength(1);
   });
 });

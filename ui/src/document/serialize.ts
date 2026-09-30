@@ -3,6 +3,7 @@
  */
 
 import { serializeImageMask } from "./imageMask";
+import { serializeLayerMask } from "./layerMask";
 import { isIdentityPlacement } from "./placement";
 import { cloneOutputOptions } from "./outputOptions";
 import { cloneRegion } from "./regions";
@@ -49,6 +50,8 @@ function serializeLayer(layer: Layer): Record<string, unknown> {
   if (layer.color !== undefined) out["color"] = layer.color;
   if (layer.invert !== undefined) out["invert"] = layer.invert;
   if (layer.kind === "text" && layer.textData !== undefined) out["textData"] = serializeTextData(layer.textData);
+  // M14: only while the layer has one (older manifests stay byte-identical).
+  if (layer.layerMask) out["layerMask"] = serializeLayerMask(layer.layerMask);
   return out;
 }
 
@@ -67,6 +70,10 @@ export function cloneDocument(doc: PainterDocument): PainterDocument {
     ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     ...(doc.placement ? { placement: { ...doc.placement } } : {}),
     ...(doc.imageMask ? { imageMask: { ...doc.imageMask } } : {}),
-    layers: doc.layers.map((l) => ({ ...l, ...(l.textData ? { textData: { ...l.textData } } : {}) })),
+    layers: doc.layers.map((l) => ({
+      ...l,
+      ...(l.textData ? { textData: { ...l.textData } } : {}),
+      ...(l.layerMask ? { layerMask: { ...l.layerMask } } : {}),
+    })),
   };
 }

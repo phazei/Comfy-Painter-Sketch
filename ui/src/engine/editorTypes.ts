@@ -4,6 +4,7 @@
  */
 
 import type { LayerChange } from "../document/layerList";
+import type { LayerMask } from "../document/layerMask";
 import type { LayerKind, Placement, TextData } from "../document/types";
 import type { Rect, Size } from "../geometry/rect";
 import type { Selection } from "./selection";
@@ -35,6 +36,8 @@ export interface DocSnapshot {
   text?: ReadonlyMap<string, TextData>;
   /** Region geometry/reference and Main processing (no pixels). */
   outputs?: OutputMetadata;
+  /** Layer masks (M14) by layer id, pixels covering `bounds`; layers not listed have none (Clear removes them). */
+  layerMasks?: ReadonlyMap<string, { mask: LayerMask; data: ImageData }>;
 }
 
 /** Whole-layer pixels kept by a structural entry (document coords). */
@@ -43,6 +46,25 @@ export interface LayerPixels {
   x: number;
   y: number;
   data: ImageData;
+  /** The layer's mask pixels (M14), same origin and size as `data`. */
+  mask?: ImageData;
+}
+
+/** One side of a layer-mask entry: the record and its pixels. */
+export interface LayerMaskSide {
+  /** `null` = the layer has no mask on this side. */
+  mask: LayerMask | null;
+  /** Mask pixels to install; `null` = fill with `mask.outside` (or none needed: invert only). */
+  pixels: LayerPixels | null;
+}
+
+/** Layer mask added / deleted / inverted (M14; pixel edits are plain patches on its key). */
+export interface LayerMaskEntry {
+  kind: "layerMask";
+  layerId: string;
+  before: LayerMaskSide;
+  after: LayerMaskSide;
+  bytes: number;
 }
 
 /**
@@ -77,6 +99,11 @@ export interface TranslateEntry {
    * first grows bounds (exact, uncapped) to cover the side it lands on.
    */
   content: Rect;
+  /**
+   * The layer's lmask moved along (M14b): its content bbox (values other
+   * than its `outside`) BEFORE the move; the vacated part gets `outside`.
+   */
+  mask?: Rect;
   /** Small fixed metadata cost. */
   bytes: number;
   /** Gesture key: consecutive nudges with the same key merge into this entry. */
@@ -122,6 +149,7 @@ export type HistoryEntry =
   | TranslateEntry
   | TextEntry
   | GroupEntry
+  | LayerMaskEntry
   | { kind: "outputs"; before: OutputMetadata; after: OutputMetadata; bytes: number }
   /** Selection change (new / all / deselect / invert); no pixels. */
   | { kind: "selection"; before: Selection | null; after: Selection | null; bytes: number };
@@ -191,4 +219,4 @@ export function imageMaskNote(name: string): string {
 export const IMAGE_MASK_NOTE = imageMaskNote("Image Mask");
 
 /** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
-export const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
+export const HIDDEN_MASK_NOTE = "The mask is hidden.";

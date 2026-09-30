@@ -10,12 +10,12 @@ import type { Tool, ToolPointer } from "./types";
 
 const PICKED: Selection = { rect: { x: 0, y: 0, width: 1, height: 1 }, data: new Uint8Array([255]), outside: 0 };
 
-function fakeEditor(active: boolean) {
+function fakeEditor(active: boolean, result: Selection | null | "blocked" = PICKED) {
   const requests: WandRequest[] = [];
   const calls: Array<{ sel: Selection | null; mode: SelectionMode }> = [];
   const editor = {
     loading: false,
-    pixelOps: { wandSelection: (req: WandRequest) => (requests.push(req), PICKED) },
+    pixelOps: { wandSelection: (req: WandRequest) => (requests.push(req), result) },
     selection: { active, apply: (sel: Selection | null, mode: SelectionMode) => calls.push({ sel, mode }) },
   };
   return { editor: editor as unknown as Editor, requests, calls };
@@ -56,5 +56,16 @@ describe("magic wand", () => {
     expect(b.calls[0]?.mode).toBe("subtract");
     t.onPointerDown(b.editor, [at(1, 1, true, true)]);
     expect(b.calls[1]?.mode).toBe("intersect");
+  });
+
+  it("a refused pick (hidden target) leaves the selection alone; no match still deselects", () => {
+    const t = createMagicWandTool();
+    const blocked = fakeEditor(true, "blocked");
+    t.onPointerDown(blocked.editor, [at(1, 1)]);
+    expect(blocked.requests).toHaveLength(1);
+    expect(blocked.calls).toEqual([]);
+    const none = fakeEditor(true, null);
+    t.onPointerDown(none.editor, [at(1, 1)]);
+    expect(none.calls).toEqual([{ sel: null, mode: "replace" }]);
   });
 });

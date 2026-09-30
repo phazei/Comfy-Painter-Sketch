@@ -17,6 +17,8 @@
 import { IMAGE_MASK_ID } from "../document/imageMask";
 import type { Layer } from "../document/types";
 import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, imageMaskNote, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { editsViewedMask, layerMaskBlockNote } from "./layerMask";
+import type { EditKind } from "./layerMask";
 import { shownOnStage } from "./solo";
 import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
@@ -53,16 +55,41 @@ export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
  * Why `layer` can't be edited right now, or `null`. The Image Mask row
  * (M13a, and the M13b Input Mask) never is. Order otherwise: hidden (eye) > hidden by another layer's
  * solo > locked -- showing it is the first fix. A soloed layer with its eye
- * off stays blocked (eye state wins).
+ * off stays blocked (eye state wins). Exception (M14): in the lmask-only
+ * view, the viewed layer's targeted mask is editable while the layer is
+ * hidden (`editsViewedMask`); lock still refuses.
+ * Layer masks (M14, `layerMask.ts`) come last: other pixel tools refuse on
+ * a targeted mask (`kind: "other"`); whole-layer operations (`kind:
+ * "whole"`) carry the mask (M14b) and never get the lmask-only view exception.
  * @param s - Editor state (solos).
  * @param layer - Layer to edit.
+ * @param kind - What the edit is (default: a mask-aware pixel edit).
  * @returns Note text, or `null` if editing is allowed.
  */
-export function editBlockNote(s: EditorState, layer: Layer): string | null {
+export function editBlockNote(s: EditorState, layer: Layer, kind: EditKind = "paint"): string | null {
   if (layer.id === IMAGE_MASK_ID) return imageMaskNote(layer.name);
+  // The lmask-only view edits its mask even with the layer hidden (M14); lock still refuses.
+  const viewedMask = kind !== "whole" && editsViewedMask(s, layer);
+  const hidden = viewedMask ? null : hiddenNote(s, layer);
+  if (hidden) return hidden;
+  const maskNote = layerMaskBlockNote(s, layer, kind);
+  if (maskNote) return maskNote;
+  if (layer.locked) return LOCKED_LAYER_NOTE;
+  return null;
+}
+
+/**
+ * The hidden part of {@link editBlockNote}: eye off (masks, incl. the Image
+ * Mask row, get the mask note), else hidden by another layer's solo. Also
+ * used on its own by sampling "Current layer" (magic wand), which edits
+ * nothing but must not read a layer the user can't see.
+ * @param s - Editor state (solos).
+ * @param layer - Layer (paint, text, mask or the Image Mask row).
+ * @returns Note text, or `null` when the layer is shown.
+ */
+export function hiddenNote(s: EditorState, layer: Layer): string | null {
   if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
   if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
-  if (layer.locked) return LOCKED_LAYER_NOTE;
   return null;
 }
 
@@ -71,14 +98,15 @@ export function editBlockNote(s: EditorState, layer: Layer): string | null {
  * rasterize prompt for text layers.
  * @param s - Editor state.
  * @param layer - Layer about to be modified.
+ * @param kind - What the edit is ({@link editBlockNote}).
  * @returns `"proceed"` (edit now), `"blocked"` (abort; note or Cancel shown),
  *   or `"rasterized"` (the layer is paint now; the next edit on it joins
  *   the rasterize undo step -- synchronous callers may proceed right away).
  */
-export function preparePixelEdit(s: EditorState, layer: Layer): PixelEditPlan {
+export function preparePixelEdit(s: EditorState, layer: Layer, kind: EditKind = "paint"): PixelEditPlan {
   // A floating selection lands before any other pixel edit (M10a).
   s.settleFloat();
-  const note = editBlockNote(s, layer);
+  const note = editBlockNote(s, layer, kind);
   if (note) {
     s.events.emit("note", note);
     return "blocked";

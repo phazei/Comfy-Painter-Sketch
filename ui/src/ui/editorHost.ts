@@ -253,11 +253,10 @@ export class EditorHost {
         editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.sync.syncOptions(), this.view.requestOverlay())),
         // Free Transform: bar swaps to the session options and back; handles + cursor follow.
         editor.events.on("transform", () => (this.sync.syncOptions(), this.view.requestOverlay())),
-        editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),
+        editor.colors.events.on("change", () => this.sync.syncSwatches()),
         // Tool switch: chrome (rail, options, Move drawing toggle) + stage cursor/ring now.
         tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay())),
       );
-      this.sync.swatches.setColors(editor.colors.current);
       this.sync.syncTools();
       this.sync.syncMask();
       this.sync.syncHistory();

@@ -48,9 +48,15 @@ Image Mask (M13a):
     px, exactly the run-time image size) joins the union like a visible mask
     layer: placed at the image origin (0 outside the image), its own invert,
     then the max. Only when visible and not stale (M13b: or ``input_mask.py``).
+
+Transparency in outputs (M14c, SPEC.md Decisions Log): with the Background eye
+off the layers composite over a transparent base (:func:`run_transparent_composite`);
+``T = 1 - alpha`` joins the MASK after ``invert_mask`` (max, never inverted).
+With the eye on the composite is opaque and none of this runs.
 """
 
 import logging
+from collections.abc import Iterator
 
 import torch
 import torch.nn.functional as F
@@ -208,30 +214,74 @@ def composite_paint_layers(
         ``[B, H, W, 3]`` float32 composited canvas.
     """
     B, H, W = base_rgb.shape[:3]
+    out = base_rgb.clone()
+    for layer_rgb, eff_a in _placed_paint(layers, layer_tensors, bounds, frame, placement, W, H,
+                                          image_size, origin):
+        # Broadcast: [H, W, 3] -> [1, H, W, 3] over [B, H, W, 3]
+        out = layer_rgb.unsqueeze(0) * eff_a.unsqueeze(0) + out * (1.0 - eff_a.unsqueeze(0))
+    return out
+
+
+def _placed_paint(
+    layers: list[Layer],
+    layer_tensors: dict[str, torch.Tensor | None],
+    bounds: Bounds,
+    frame: Frame,
+    placement: Placement,
+    W: int,
+    H: int,
+    image_size: tuple[int, int] | None,
+    origin: tuple[int, int],
+) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
+    """Yield ``(rgb [H, W, 3], effective alpha [H, W, 1])`` of each visible paint/text layer, bottom -> top.
+
+    Effective alpha = the placed straight alpha (already multiplied by any M14
+    layer mask) times the layer opacity. Arguments as in :func:`composite_paint_layers`.
+    """
     iw, ih = image_size or (W, H)
     s, ox, oy = _layout(iw, ih, frame, placement)
-
-    out = base_rgb.clone()
-
     for layer in layers:
-        if layer.kind not in ("paint", "text"):
-            continue
-        if not layer.visible:
+        if layer.kind not in ("paint", "text") or not layer.visible:
             continue
         rgba = layer_tensors.get(layer.id)
         if rgba is None:
             continue
-
         placed = _place_layer(rgba, bounds, W, H, s, ox, oy, origin)  # [H, W, 4]
+        yield placed[:, :, :3], placed[:, :, 3:4] * layer.opacity
 
-        layer_rgb = placed[:, :, :3]   # [H, W, 3]
-        layer_a   = placed[:, :, 3:4]  # [H, W, 1]  -- straight alpha
-        eff_a = layer_a * layer.opacity  # effective alpha
 
-        # Broadcast: [H, W, 3] -> [1, H, W, 3] over [B, H, W, 3]
-        out = layer_rgb.unsqueeze(0) * eff_a.unsqueeze(0) + out * (1.0 - eff_a.unsqueeze(0))
+def composite_premultiplied(
+    doc: Document,
+    layer_tensors: dict[str, torch.Tensor | None],
+    W: int,
+    H: int,
+    image_size: tuple[int, int] | None = None,
+    origin: tuple[int, int] = (0, 0),
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Composite the visible paint/text layers over a transparent base (M14c).
 
-    return out
+    Same "over" as :func:`composite_paint_layers`, on premultiplied colour:
+    ``P = rgb * a + P * (1 - a)``, ``A = a + A * (1 - a)``. Over a solid colour
+    ``bg`` this flattens to ``P + bg * (1 - A)``, identical to compositing over it.
+    Computed once (layers are the same for every batch image).
+
+    Args:
+        doc:           Parsed document.
+        layer_tensors: Loaded layer RGBA tensors by layer id.
+        W, H:          Canvas size.
+        image_size:    ``(W, H)`` of the run-time image; default = canvas size.
+        origin:        Image px of the canvas top-left (viewport canvases).
+
+    Returns:
+        ``(premultiplied rgb [H, W, 3], alpha [H, W, 1])``.
+    """
+    premult = torch.zeros((H, W, 3), dtype=torch.float32)
+    alpha = torch.zeros((H, W, 1), dtype=torch.float32)
+    for layer_rgb, eff_a in _placed_paint(doc.layers, layer_tensors, doc.bounds, doc.frame,
+                                          doc.placement, W, H, image_size, origin):
+        premult = layer_rgb * eff_a + premult * (1.0 - eff_a)
+        alpha = eff_a + alpha * (1.0 - eff_a)
+    return premult, alpha
 
 
 # ── Mask combine ──────────────────────────────────────────────────────────────
@@ -398,3 +448,46 @@ def run_composite(
     mask = mask_hw.expand(B, -1, -1)
 
     return image, mask
+
+
+def run_transparent_composite(
+    background: tuple[float, float, float],
+    batch: int,
+    W: int,
+    H: int,
+    doc: Document,
+    layer_tensors: dict[str, torch.Tensor | None],
+    invert_mask: bool,
+    image_size: tuple[int, int] | None = None,
+    origin: tuple[int, int] = (0, 0),
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """:func:`run_composite` with the Background eye off: the composite's own transparency (M14c).
+
+    The base is transparent instead of the input image. IMAGE = the layers
+    flattened onto ``background``; MASK = ``max(mask layers incl. invert_mask,
+    T)`` with ``T = 1 - A`` added after ``invert_mask`` (never inverted), the
+    same max union as the mask layers. ``straight`` is the un-premultiplied
+    layer colour (``P / A``; ``background`` where ``A = 0``) for outputs that
+    blend by their mask (Fill, Alpha), so soft edges carry no background fringe.
+
+    Args:
+        background:    ``background`` widget colour (RGB floats).
+        batch:         Batch size ``B`` (the result is the same for every image).
+        W, H:          Canvas size.
+        doc, layer_tensors, invert_mask, image_size, origin: as :func:`run_composite`.
+
+    Returns:
+        ``(IMAGE [B, H, W, 3], MASK [B, H, W], straight [1, H, W, 3])``.
+    """
+    premult, alpha = composite_premultiplied(doc, layer_tensors, W, H, image_size, origin)
+    bg = premult.new_tensor(background)
+    image = (premult + bg * (1.0 - alpha)).unsqueeze(0).expand(batch, -1, -1, -1).contiguous()
+    colour = premult / alpha.clamp_min(1e-12)
+    straight = torch.where(alpha > 0, colour.clamp(0.0, 1.0), bg).unsqueeze(0)
+
+    mask_hw = combine_mask_layers(
+        doc.layers, layer_tensors, doc.bounds, doc.frame, W, H, invert_mask, doc.placement,
+        image_size, origin, _image_mask_input(doc, layer_tensors),
+    )
+    mask = torch.max(mask_hw, 1.0 - alpha[:, :, 0]).expand(batch, -1, -1)
+    return image, mask, straight

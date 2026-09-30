@@ -9,6 +9,7 @@
  * gate of `rasterize.ts` first (lock / hidden / text layers).
  */
 
+import { layerMaskKey } from "../document/layerMask";
 import { targetLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
@@ -22,6 +23,8 @@ import type { HistoryEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import type { FrameOps } from "./frameOps";
 import { applyLayersEntry } from "./layerHistory";
+import { maskStrokeStyle, surfaceAlive, targetedMaskLayer } from "./layerMask";
+import { applyLayerMaskEntry } from "./layerMaskOps";
 import { applyTranslateEntry } from "./layerTranslate";
 import { preparePixelEdit } from "./rasterize";
 import { applyTextEntry } from "./textLayer";
@@ -94,11 +97,17 @@ export class PaintOps {
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer) return false;
     // A rasterize prompt silently ends this press (see rasterize.ts); the next stroke joins it.
-    if (preparePixelEdit(s, layer) !== "proceed") return false;
-    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
-    s.strokeLayerId = layer.id;
+    // Shapes can't paint a layer mask (the gate refuses them there).
+    if (preparePixelEdit(s, layer, style.shape ? "other" : "paint") !== "proceed") return false;
+    // M14: a targeted layer mask takes the stroke (colour ignored; `layerMask.ts`).
+    const onMask = targetedMaskLayer(s)?.id === layer.id;
+    const strokeStyle = onMask
+      ? maskStrokeStyle(style, s.layerMasks.fgWhite)
+      : layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
+    const surfaceId = onMask ? layerMaskKey(layer.id) : layer.id;
+    s.strokeLayerId = surfaceId;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle, s.strokeDiameter);
+    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter);
     s.events.emit("history", undefined);
     return true;
   }
@@ -234,7 +243,12 @@ export class PaintOps {
       for (const part of parts) this.applyEntry(part, side);
       return;
     }
-    if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+    if (entry.kind === "layerMask") {
+      applyLayerMaskEntry(s, entry, side === "after");
+      return;
+    }
+    // A patch: a layer's pixels, or a layer mask's (its key; M14).
+    if (!surfaceAlive(s, entry.layerId)) return;
     const data = side === "before" ? entry.before : entry.after;
     s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
     s.store.write(entry.layerId, entry.x, entry.y, data);

@@ -29,6 +29,8 @@ import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import { imageMaskSelection } from "./imageMaskOps";
+import { targetedMaskLayer } from "./layerMask";
+import { paintMaskArea } from "./layerMaskOps";
 import { blendCoverage, hexToRgb } from "./pixelColor";
 import { preparePixelEdit } from "./rasterize";
 import {
@@ -184,23 +186,27 @@ export class SelectionOps {
 
   /**
    * Delete/Backspace: clear the selected pixels of the paint target (on the
-   * mask target this removes mask coverage).
+   * mask target this removes mask coverage; on a targeted layer mask it
+   * clears the white too, i.e. reveals).
    * @returns `true` if pixels changed.
    */
   clearSelected(): boolean {
     const layer = this.editableTarget();
+    if (layer && this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, false);
     return layer ? this.editPixels(layer, (px, rect, cov, stride) => eraseCoverage(px, rect, cov, stride)) : false;
   }
 
   /**
    * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
-   * target (on the mask target: add coverage, colour ignored).
+   * target (on the mask target: add coverage, colour ignored; on a targeted
+   * layer mask the same: paint white = hide, swatches ignored).
    * @param color - CSS hex colour.
    * @returns `true` if pixels changed.
    */
   fillSelected(color: string): boolean {
     const layer = this.editableTarget();
     if (!layer) return false;
+    if (this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, true);
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
   }
@@ -242,6 +248,11 @@ export class SelectionOps {
       return false;
     }
     return true;
+  }
+
+  /** Whether pixel commands on `layer` go to its targeted layer mask (M14). */
+  private onLayerMask(layer: Layer): boolean {
+    return targetedMaskLayer(this.s)?.id === layer.id;
   }
 
   private editableTarget(): Layer | null {

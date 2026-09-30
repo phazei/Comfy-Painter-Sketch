@@ -22,6 +22,7 @@ import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import type { Point } from "../geometry/rect";
 import { editBlockNote } from "./rasterize";
+import { layerMaskBlockNote, targetedMaskLayer } from "./layerMask";
 import type { EditorState } from "./editorState";
 import { emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
 import type { LayerOps } from "./layerOps";
@@ -111,6 +112,13 @@ export class TextOps {
     this.commit();
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
+    // M14: text can't paint a layer mask (the brush, eraser and fill can).
+    const masked = targetedMaskLayer(s);
+    const note = masked ? layerMaskBlockNote(s, masked, "other") : null;
+    if (note) {
+      s.events.emit("note", note);
+      return null;
+    }
     const textData: TextData = { ...style, text: "", x: at.x, y: at.y };
     const layer = createTextLayer(textData);
     if (!this.layers.addLayer(layer)) return null;

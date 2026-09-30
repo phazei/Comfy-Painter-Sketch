@@ -37,6 +37,14 @@ export class LayerRuntimeTable {
   }
 
   /**
+   * {@link remove} every entry whose id matches (layer masks that went with their layer).
+   * @param drop - Predicate on the entry id.
+   */
+  removeWhere(drop: (id: string) => boolean): void {
+    for (const id of [...this.entries.keys()]) if (drop(id)) this.remove(id);
+  }
+
+  /**
    * (Re)install a layer that is (again) part of the document (new layer,
    * undo of a delete). The version continues past any earlier life of the
    * id, so an upload started before the delete can never mark the restored

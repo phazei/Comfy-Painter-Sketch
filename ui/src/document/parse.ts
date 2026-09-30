@@ -14,6 +14,7 @@ import type { Rect, Size } from "../geometry/rect";
 import { createId, createPaintLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_OPACITY } from "./create";
 import { createImageMask } from "./imageMask";
 import type { ImageMask } from "./imageMask";
+import { readLayerMask } from "./layerMask";
 import { log } from "../log";
 import { readPlacement } from "./placement";
 import { readTextData } from "./textData";
@@ -234,6 +235,11 @@ function readLayer(value: unknown): Layer | null {
   };
   if (typeof value["color"] === "string") layer.color = value["color"];
   if (typeof value["invert"] === "boolean") layer.invert = value["invert"];
+  // M14: paint layers only (as saved; Python checks the saved kind too).
+  if (kind === "paint") {
+    const { mask } = readLayerMask(value["layerMask"]);
+    if (mask) layer.layerMask = mask;
+  }
   if (layer.kind === "text") {
     // Lenient: unusable text data keeps the layer (and its pixels) as paint.
     const textData = readTextData(value["textData"]);

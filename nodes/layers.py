@@ -25,6 +25,10 @@ The M13a Image Mask file (same folder and naming) is image-px sized instead
 of bounds-sized: :func:`load_image_mask` returns its alpha only when it
 matches the run-time image size.
 
+M14 layer mask files (same folder and naming, bounds-sized like their layer)
+load as their alpha plane with :func:`load_layer_mask`; ``layer_masks.py``
+places and applies them.
+
 Callers (composite.py) never see PIL objects; they only see torch tensors or
 None for missing/skipped files.
 
@@ -153,6 +157,27 @@ def load_image_mask(mask: ImageMask, image_size: tuple[int, int]) -> torch.Tenso
         )
         return None
     alpha = np.array(pil_img.getchannel("A"), dtype=np.float32) / 255.0  # [H, W]
+    return torch.from_numpy(alpha)
+
+
+def load_layer_mask(file_val: str) -> torch.Tensor | None:
+    """Load an M14 layer mask file as its ``[h, w]`` float32 alpha plane (unscaled).
+
+    Same safety checks as layer files (``painter-sketch/`` only, exists,
+    readable). Placement and the ``outside`` value are applied by
+    :func:`~layer_masks.mask_plane`.
+
+    Args:
+        file_val: The record's annotated ``file``.
+
+    Returns:
+        ``[h, w]`` tensor in ``[0, 1]``, or ``None`` when unsafe / missing /
+        unreadable (the mask is then ignored, logged once).
+    """
+    pil_img = _open_rgba(file_val, "layer mask")
+    if pil_img is None:
+        return None
+    alpha = np.array(pil_img.getchannel("A"), dtype=np.float32) / 255.0
     return torch.from_numpy(alpha)
 
 

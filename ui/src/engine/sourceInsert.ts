@@ -174,8 +174,14 @@ export class SourceInsertOps {
   }
 }
 
-/** 1 px rect at the session centre, clamped into the bounds. */
-function holeAt(bounds: Rect, p: TransformParams): Rect {
+/**
+ * 1 px "hole" of a float without a lift position: at the session centre,
+ * clamped into the bounds (keeps the commit patch small).
+ * @param bounds - Paint bounds.
+ * @param p - Session parameters.
+ * @returns Document rect.
+ */
+export function holeAt(bounds: Rect, p: TransformParams): Rect {
   const clamp = (v: number, lo: number, size: number): number => Math.min(lo + size - 1, Math.max(lo, Math.floor(v)));
   return { x: clamp(p.cx, bounds.x, bounds.width), y: clamp(p.cy, bounds.y, bounds.height), width: 1, height: 1 };
 }

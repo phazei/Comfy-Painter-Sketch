@@ -10,14 +10,18 @@
  * - {@link drawFloatPreview}: the layer with its float drawn on top --
  *   plain floats at their offset (exact), transformed ones through the
  *   matrix with canvas smoothing (cheap, no `getImageData`).
+ * - Layer masks (M14b, `layerMaskCarry.ts`): an lmask float lands by
+ *   replacing (`landMaskPixels`) and shows as coverage `destination-out` +
+ *   value `lighter`; a carried lmask lands in the same undo step.
  */
 
 import { intersectRect, unionRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 import type { EditorState } from "./editorState";
 import { compositeOver, copyPixels } from "./floatMath";
-import { holeOf } from "./floatLift";
+import { holeOf, liftMatrix } from "./floatLift";
 import type { FloatState } from "./floatLift";
+import { carryMatrix, landMaskPixels, maskFloatSurfaces, releaseCarry, writeCarryPatch } from "./layerMaskCarry";
 import { recordSelectionMove } from "./selectionFollow";
 import { transformedAabb } from "./transformMath";
 import type { Affine } from "./transformMath";
@@ -56,7 +60,8 @@ export function writeFloatPatch(s: EditorState, f: Readonly<FloatState>, m: Affi
   const next = new Uint8ClampedArray(current.data.data);
   const at = plain ? dest : intersectRect(dest, r);
   const src = plain ? f.pixels.data : resampleRgba(f.pixels.data, f.area.width, f.area.height, m, at);
-  compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  if (f.cover) landMaskPixels(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  else compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
   s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
   // Re-read so the patch holds exactly what the canvas stores.
   const after = s.store.read(f.layerId, r);
@@ -65,6 +70,8 @@ export function writeFloatPatch(s: EditorState, f: Readonly<FloatState>, m: Affi
     const bytes = before.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
     recordSelectionMove(s, f.selBefore, s.selection.current, true);
+    // The carried lmask lands with the layer, same step (M14b).
+    if (f.carry) writeCarryPatch(s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
   }
   s.runtime.touch(f.layerId);
 }
@@ -75,13 +82,17 @@ export function writeFloatPatch(s: EditorState, f: Readonly<FloatState>, m: Affi
  * @param m - Its full float-local -> document matrix.
  * @returns Surface over the matrix's bounds.
  */
-export function bakeFloat(f: Readonly<FloatState>, m: Affine): { surface: Surface; rect: Rect; m: Affine } {
+export function bakeFloat(f: Readonly<FloatState>, m: Affine): { surface: Surface; rect: Rect; m: Affine; cover?: Surface } {
   const rect = transformedAabb(m, f.area.width, f.area.height);
-  const surface = createSurface(Math.max(1, rect.width), Math.max(1, rect.height));
-  if (rect.width > 0 && rect.height > 0) {
-    const px = resampleRgba(f.pixels.data, f.area.width, f.area.height, m, rect);
-    surface.ctx.putImageData(new ImageData(px, rect.width, rect.height), 0, 0);
+  const w = Math.max(1, rect.width);
+  const h = Math.max(1, rect.height);
+  const px = rect.width > 0 && rect.height > 0 ? resampleRgba(f.pixels.data, f.area.width, f.area.height, m, rect) : new Uint8ClampedArray(w * h * 4);
+  if (f.cover) {
+    const shown = maskFloatSurfaces(px, w, h);
+    return { surface: shown.value, cover: shown.cover, rect, m };
   }
+  const surface = createSurface(w, h);
+  surface.ctx.putImageData(new ImageData(px, w, h), 0, 0);
   return { surface, rect, m };
 }
 
@@ -110,6 +121,7 @@ export function floatPreviewCanvas(s: EditorState, f: FloatState, m: Affine): HT
  */
 export function dropBake(f: FloatState): void {
   if (f.baked) releaseSurface(f.baked.surface);
+  if (f.baked?.cover) releaseSurface(f.baked.cover);
   f.baked = null;
 }
 
@@ -119,6 +131,8 @@ export function dropBake(f: FloatState): void {
  */
 export function releaseFloat(f: FloatState): void {
   releaseSurface(f.surface);
+  if (f.cover) releaseSurface(f.cover);
+  if (f.carry) releaseCarry(f.carry);
   dropBake(f);
   if (f.preview) releaseSurface(f.preview.surface);
   f.preview = null;
@@ -141,19 +155,35 @@ function isWholeShift(from: Affine, to: Affine): boolean {
  */
 export function drawFloatPreview(ctx: CanvasRenderingContext2D, layer: HTMLCanvasElement, f: Readonly<FloatState>, m: Affine, bounds: Rect): void {
   ctx.drawImage(layer, 0, 0);
+  const cover = f.cover;
+  if (!cover) {
+    drawPlaced(ctx, f, m, bounds, f.surface.canvas, f.baked?.surface.canvas);
+    return;
+  }
+  // lmask float (M14b): the coverage clears what it covers, the value adds in (`d (1 - c) + v c`).
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  drawPlaced(ctx, f, m, bounds, cover.canvas, f.baked?.cover?.canvas);
+  ctx.globalCompositeOperation = "lighter";
+  drawPlaced(ctx, f, m, bounds, f.surface.canvas, f.baked?.surface.canvas);
+  ctx.restore();
+}
+
+/** Draw a float canvas (or its baked counterpart) at the float's placement. */
+function drawPlaced(ctx: CanvasRenderingContext2D, f: Readonly<FloatState>, m: Affine, bounds: Rect, canvas: HTMLCanvasElement, bakedCanvas: HTMLCanvasElement | undefined): void {
   if (isPlainPlacement(f, m)) {
-    ctx.drawImage(f.surface.canvas, m.e - bounds.x, m.f - bounds.y);
+    ctx.drawImage(canvas, m.e - bounds.x, m.f - bounds.y);
     return;
   }
   const baked = f.baked;
-  if (baked && isWholeShift(baked.m, m)) {
+  if (baked && bakedCanvas && isWholeShift(baked.m, m)) {
     // Exact resample, moved by whole px since (resampling is shift-invariant).
-    ctx.drawImage(baked.surface.canvas, baked.rect.x + Math.round(m.e - baked.m.e) - bounds.x, baked.rect.y + Math.round(m.f - baked.m.f) - bounds.y);
+    ctx.drawImage(bakedCanvas, baked.rect.x + Math.round(m.e - baked.m.e) - bounds.x, baked.rect.y + Math.round(m.f - baked.m.f) - bounds.y);
     return;
   }
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.setTransform(m.a, m.b, m.c, m.d, m.e - bounds.x, m.f - bounds.y);
-  ctx.drawImage(f.surface.canvas, 0, 0);
+  ctx.drawImage(canvas, 0, 0);
   ctx.restore();
 }

@@ -18,7 +18,9 @@
  *
  * Pastes: 1 source px = 1 IMAGE px (internal copies keep their own size),
  * placed by `engine/pastePlacement.ts` (drops: at the drop point, clamped), a new "Pasted" layer, one
- * undo step each (the selection is dropped in it). Sources:
+ * undo step each (the selection is dropped in it). In the lmask-only view
+ * every source (and drop) goes into the viewed lmask instead, as an lmask
+ * float (`ClipboardOps.paste`, M14b). Sources:
  * - Ctrl+V / Paste button "System": `pasteChoice.ts` (system image, else
  *   the internal copy, else clipspace).
  * - Ctrl+Shift+V: the internal copy in place, handled on keydown (the

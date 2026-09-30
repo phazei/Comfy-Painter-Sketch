@@ -2,18 +2,27 @@
  * Pixel storage: one offscreen canvas per layer, all sized to the document's
  * `bounds`. Canvas pixel `(px, py)` is document point
  * `(bounds.x + px, bounds.y + py)` -- the same mapping as the saved PNGs.
+ * Layer masks (M14) live here too, under `layerMaskKey(layerId)`; a mask
+ * whose `outside` hides is marked with {@link LayerStore.setHideOutside}
+ * so bounds growth / resampling fill the new area white (hidden, like mask
+ * layer coverage) instead of transparent (shown).
  */
 
 import { intersectRect, isEmptyRect, rectEquals } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
-import { createSurface, rebaseSurface, releaseSurface } from "./surface";
+import { createSurface, fillOutside, rebaseSurface, releaseSurface } from "./surface";
 import type { Surface } from "./surface";
+
+/** Fill of hiding layer-mask surfaces beyond their old pixels. */
+const HIDE_FILL = "#ffffff";
 
 /**
  * Layer canvases for one document.
  */
 export class LayerStore {
   private surfaces = new Map<string, Surface>();
+  /** Surfaces whose area beyond the stored pixels is white (hiding layer masks). */
+  private readonly hideOutside = new Set<string>();
   private currentBounds: Rect;
 
   /**
@@ -60,7 +69,30 @@ export class LayerStore {
       if (keep.has(id)) continue;
       releaseSurface(surface);
       this.surfaces.delete(id);
+      this.hideOutside.delete(id);
     }
+  }
+
+  /**
+   * Whether growth / resampling fills a surface's new area white (a layer
+   * mask whose `outside` hides) instead of leaving it transparent.
+   * @param id - Surface key.
+   * @param hide - Fill white outside.
+   */
+  setHideOutside(id: string, hide: boolean): void {
+    if (hide) this.hideOutside.add(id);
+    else this.hideOutside.delete(id);
+  }
+
+  /**
+   * Remove one surface (a deleted layer mask).
+   * @param id - Surface key.
+   */
+  drop(id: string): void {
+    const surface = this.surfaces.get(id);
+    if (surface) releaseSurface(surface);
+    this.surfaces.delete(id);
+    this.hideOutside.delete(id);
   }
 
   /**
@@ -71,7 +103,8 @@ export class LayerStore {
   rebase(bounds: Rect): void {
     if (rectEquals(bounds, this.currentBounds)) return;
     for (const [id, surface] of this.surfaces) {
-      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds));
+      const fill = this.hideOutside.has(id) ? HIDE_FILL : undefined;
+      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds, fill));
       releaseSurface(surface);
     }
     this.currentBounds = { ...bounds };
@@ -89,15 +122,11 @@ export class LayerStore {
     const from = this.currentBounds;
     for (const [id, surface] of this.surfaces) {
       const next = createSurface(bounds.width, bounds.height);
+      const place = { x: from.x * factor + tx - bounds.x, y: from.y * factor + ty - bounds.y, width: from.width * factor, height: from.height * factor };
+      if (this.hideOutside.has(id)) fillOutside(next, place, HIDE_FILL);
       next.ctx.imageSmoothingEnabled = true;
       next.ctx.imageSmoothingQuality = "high";
-      next.ctx.drawImage(
-        surface.canvas,
-        from.x * factor + tx - bounds.x,
-        from.y * factor + ty - bounds.y,
-        from.width * factor,
-        from.height * factor,
-      );
+      next.ctx.drawImage(surface.canvas, place.x, place.y, place.width, place.height);
       releaseSurface(surface);
       this.surfaces.set(id, next);
     }
@@ -164,6 +193,7 @@ export class LayerStore {
     for (const [id, surface] of this.surfaces) {
       copy.ensure(id).ctx.drawImage(surface.canvas, 0, 0);
     }
+    for (const id of this.hideOutside) copy.hideOutside.add(id);
     return copy;
   }
 

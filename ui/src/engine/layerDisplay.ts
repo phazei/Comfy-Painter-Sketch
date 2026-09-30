@@ -7,6 +7,9 @@
  * shows inside its layer (`EditorState.floatPreview`, `floatOps.ts`). Solo (`solo.ts`,
  * view only) decides which layers count as shown here. The M13a Image Mask
  * is the bottom overlay, drawn over the image rect (`imageMaskOps.ts`).
+ * A paint layer with an enabled layer mask (M14) is drawn through its cached
+ * masked composite; the Alt+click mask view replaces the whole list with the
+ * mask alone (`layerMask.ts`).
  */
 
 import { maskDisplayColor } from "../document/masks";
@@ -14,6 +17,7 @@ import type { Point } from "../geometry/rect";
 import type { CompositeLayer, MaskOverlay } from "./compositor";
 import type { EditorState } from "./editorState";
 import { imageMaskApplies } from "./imageMaskOps";
+import { maskedSource, maskViewSource } from "./layerMask";
 import { MaskTint } from "./maskTint";
 import { shownOnStage } from "./solo";
 
@@ -34,11 +38,16 @@ export class LayerDisplay {
    */
   compositeLayers(): CompositeLayer[] {
     const s = this.s;
+    // M14 Alt+click view: the mask alone, grayscale (display only).
+    const view = maskViewSource(s);
+    if (view) return [{ source: view, opacity: 1 }];
     const out: CompositeLayer[] = [];
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
-      const source = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+      const raw = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+      // An enabled layer mask shows the layer through its cached masked composite (`layerMask.ts`).
+      const source = layer.layerMask ? maskedSource(s, layer, raw, true) : raw;
       const offset = this.moveOffset(layer.id);
       out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
     }
@@ -57,6 +66,7 @@ export class LayerDisplay {
    */
   maskOverlays(): MaskOverlay[] {
     const s = this.s;
+    if (s.layerMasks.view !== null) return [];
     const image = this.imageMaskOverlay();
     const out: MaskOverlay[] = image ? [image] : [];
     const bounds = s.store.bounds;

@@ -6,6 +6,7 @@
  * cleared. Geometry in `drawingResolution.ts` (pure, tested).
  */
 
+import { layerMaskKey } from "../document/layerMask";
 import type { FrameSource } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { imageFits, matchGeometry, resolutionInfo, scaleTextData } from "./drawingResolution";
@@ -93,6 +94,8 @@ export class ResolutionOps {
     for (const layer of s.doc.layers) {
       if (s.runtime.get(layer.id)?.hasContent) s.runtime.touch(layer.id);
       else s.runtime.bump(layer.id);
+      // Layer masks (M14) were resampled with their layer: always a new file.
+      if (layer.layerMask) s.runtime.touch(layerMaskKey(layer.id));
     }
     s.history.clear();
     s.selection.set(null); // document coords changed meaning

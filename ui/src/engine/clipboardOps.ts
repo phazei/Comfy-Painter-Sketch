@@ -19,21 +19,38 @@
  *   An active selection is dropped (Photoshop), in the same undo step.
  * - Copy merged under Quick Mask: the visible masks' effective union as
  *   grayscale (same format as a single-mask copy).
+ * - Layer masks (M14b): with the pixels targeted, copy takes the masked
+ *   result (layer x the shown part of its enabled lmask) and cut clears the
+ *   layer's pixels only (the lmask stays). With the lmask targeted, copy /
+ *   cut act on the lmask like on a mask layer: grayscale, cut reveals
+ *   (clears to black). Paste makes a new paint layer (as with a mask layer
+ *   current) -- except in the lmask-only view (Alt+click), where every
+ *   paste / drop goes INTO the viewed lmask ({@link ClipboardOps.paste}):
+ *   luminance x alpha (`imageToMaskGray`) as an lmask float at the normal
+ *   placement (move, then commit / cancel like any lmask float; the dropped
+ *   selection is part of its step), or -- past the paint area -- in a Free
+ *   Transform session on that float.
  *
  * Every command settles a floating selection first.
  */
 
 import { createPaintLayer } from "../document/create";
 import { isPaintLike, paintInsertIndex } from "../document/layerList";
+import { layerMaskKey } from "../document/layerMask";
 import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { boundsCap } from "./bounds";
-import { applyCoverage, cropToCap, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
+import { applyCoverage, cropToCap, imageToMaskGray, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
 import { readDocRegion, visibleScene } from "./docComposite";
 import type { EditorState } from "./editorState";
+import type { FloatState } from "./floatLift";
+import type { FloatOps } from "./floatOps";
 import { documentMap, imageRectToDoc } from "./frameMap";
+import { selectedSurfaceKey, targetedMaskLayer } from "./layerMask";
+import type { EditKind } from "./layerMask";
+import { applyMaskAlpha, maskFloatSurfaces } from "./layerMaskCarry";
 import type { LayerOps } from "./layerOps";
 import { layerContentRect } from "./layerTranslate";
 import { LOCKED_LAYER_NOTE } from "./editorTypes";
@@ -41,8 +58,9 @@ import { editBlockNote, preparePixelEdit } from "./rasterize";
 import { coverageFor, eraseCoverage, selectionExtent } from "./selection";
 import { recordSelectionMove } from "./selectionFollow";
 import { shownOnStage } from "./solo";
+import { holeAt } from "./sourceInsert";
 import { createSurface, releaseSurface } from "./surface";
-import { translation } from "./transformMath";
+import { paramsMatrix, transformedAabb, translation } from "./transformMath";
 import { alphaBounds } from "./translateMath";
 
 /** Note when a copy/cut finds no pixels. */
@@ -66,8 +84,11 @@ export type PastePlacement = { centre: Point } | { topLeft: Point };
 
 /** What {@link ClipboardOps.paste} did. */
 export interface PasteResult {
+  /** The new layer (or, pasted into the lmask-only view, the layer owning the lmask). */
   layerId: string;
   name: string;
+  /** Pasted into the viewed lmask as an lmask float (M14b), no new layer. */
+  intoMask?: true;
   /** The paste reached past the paint-area cap: it runs in a Free Transform session (nothing cropped yet). */
   transform: boolean;
   /** The pixels were resampled once (source px != document px). */
@@ -83,12 +104,14 @@ export class ClipboardOps {
    * @param layers - Layer commands (undoable insert + solo rule).
    * @param paintTargetOff - Turns Quick Mask off (`Editor.setPaintTarget("paint")`).
    * @param insertPlaced - `SourceInsertOps.insertPlaced` (oversized pastes).
+   * @param float - Float commands (pastes into the lmask-only view float on the lmask).
    */
   constructor(
     private readonly s: EditorState,
     private readonly layers: LayerOps,
     private readonly paintTargetOff: () => void,
     private readonly insertPlaced: (pixels: ImageData, name: string, rect: Rect) => string | null,
+    private readonly float: FloatOps,
   ) {}
 
   /** Image px per document px (the frame map scale). */
@@ -107,7 +130,7 @@ export class ClipboardOps {
     s.settleFloat();
     const layer = merged ? undefined : this.editLayer();
     // Copying a layer you can't see is refused like an edit (locked is fine to copy).
-    const block = layer ? editBlockNote(s, layer) : null;
+    const block = layer ? editBlockNote(s, layer, this.kind(layer)) : null;
     if (block && block !== LOCKED_LAYER_NOTE) {
       s.events.emit("note", block);
       return null;
@@ -127,7 +150,7 @@ export class ClipboardOps {
     if (s.loading || s.stroke.active) return null;
     s.settleFloat();
     const layer = this.editLayer();
-    if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+    if (!layer || preparePixelEdit(s, layer, this.kind(layer)) === "blocked") return null;
     const area = this.layerArea(layer);
     const clip = area ? this.copyLayer(layer) : null;
     if (!clip || !area) {
@@ -139,12 +162,13 @@ export class ClipboardOps {
   }
 
   /**
-   * Ctrl+V / drop: a new paint layer holding `source`.
+   * Ctrl+V / drop: a new paint layer holding `source` -- or, in the
+   * lmask-only view, an lmask float on the viewed lmask ({@link pasteIntoMask}).
    * @param source - Decoded image (ImageBitmap, canvas, ...).
    * @param size - Its pixel size.
    * @param docPerSource - Document px per source px (`1 / imageScale` for image px).
    * @param at - Centre point or top-left, document coords.
-   * @returns What happened, or `null` (loading / nothing fits).
+   * @returns What happened, or `null` (loading / nothing fits / blocked).
    */
   paste(source: CanvasImageSource, size: Size, docPerSource: number, at: PastePlacement): PasteResult | null {
     const s = this.s;
@@ -153,15 +177,12 @@ export class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    const viewed = targetedMaskLayer(s);
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, cropped ? null : rect);
     if (cropped) return this.pasteInTransform(source, size, full);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
-    const surface = createSurface(rect.width, rect.height);
-    surface.ctx.imageSmoothingEnabled = resampled;
-    surface.ctx.imageSmoothingQuality = "high";
-    surface.ctx.drawImage(source, full.x - rect.x, full.y - rect.y, full.width, full.height);
-    const data = surface.ctx.getImageData(0, 0, rect.width, rect.height);
-    releaseSurface(surface);
+    const data = drawSource(source, rect, full, resampled);
     const index = s.target === "mask" ? topPaintIndex(s.doc.layers) : paintInsertIndex(s.doc);
     if (s.target === "mask") this.paintTargetOff();
     const layer = createPaintLayer(pastedLayerName(s.doc.layers));
@@ -182,15 +203,69 @@ export class ClipboardOps {
 
   /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
   private pasteInTransform(source: CanvasImageSource, size: Size, full: Rect): PasteResult | null {
-    const surface = createSurface(size.width, size.height);
-    surface.ctx.drawImage(source, 0, 0);
-    const pixels = surface.ctx.getImageData(0, 0, size.width, size.height);
-    releaseSurface(surface);
+    const pixels = drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     const name = pastedLayerName(this.s.doc.layers);
     const id = this.insertPlaced(pixels, name, full);
     if (!id) return null;
     this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
     return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
+  }
+
+  /**
+   * A paste in the lmask-only view (M14b): the image as lmask values
+   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
+   * the paint area (`rect` null) -- the full image in a Free Transform
+   * session (native size at `full`, cropped on commit), like an oversized
+   * paste. The float always lands on commit (it has no lift position); the
+   * selection is dropped now and joins the commit's step (cancel brings it back).
+   */
+  private pasteIntoMask(layer: Layer, source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null): PasteResult | null {
+    const s = this.s;
+    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
+    const key = layerMaskKey(layer.id);
+    const resampled = full.width !== size.width || full.height !== size.height;
+    const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
+    imageToMaskGray(pixels.data);
+    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, full);
+    if (!f) return null;
+    const sel = s.selection.current;
+    f.inserted = true;
+    f.onEnd = (landed) => {
+      if (landed) recordSelectionMove(s, sel, s.selection.current, true);
+      else s.selection.set(sel);
+    };
+    s.selection.set(null);
+    if (!this.float.adoptInserted(f)) return null;
+    // The float shows at once (lmask-only view / masked composite caches follow the revision).
+    s.runtime.bump(key);
+    if (!rect) {
+      this.float.transform.enter();
+      s.events.emit("note", PASTE_TRANSFORM_NOTE);
+    }
+    s.events.emit("render", undefined);
+    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, intoMask: true };
+  }
+
+  /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
+  private maskFloatAt(key: string, pixels: ImageData, rect: Rect): FloatState | null {
+    const s = this.s;
+    s.ensureBounds(rect, true);
+    const read = s.store.read(key, rect);
+    if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
+    return maskFloat(key, pixels, { ...rect }, read.data, null);
+  }
+
+  /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
+  private maskFloatPlaced(key: string, pixels: ImageData, full: Rect): FloatState | null {
+    const s = this.s;
+    const { width: w, height: h } = pixels;
+    const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
+    const m = paramsMatrix(params, w, h);
+    s.ensureBounds(transformedAabb(m, w, h), true);
+    const hole = holeAt(s.store.bounds, params);
+    const read = s.store.read(key, hole);
+    if (!read) return null;
+    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params };
   }
 
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
@@ -199,27 +274,38 @@ export class ClipboardOps {
     return activeEditLayer(s.doc, s.target, s.currentMaskId);
   }
 
-  /** Document area of a layer copy: the selection extent, or the content bbox. */
+  /** Gate kind: copy / cut of a targeted lmask is a mask-aware edit (lmask-only view exception). */
+  private kind(layer: Layer): EditKind {
+    return selectedSurfaceKey(this.s, layer) === layer.id ? "whole" : "paint";
+  }
+
+  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask, M14b). */
   private layerArea(layer: Layer): Rect | null {
     const s = this.s;
     const sel = s.selection.current;
-    const area = sel ? selectionExtent(sel, s.store.bounds) : layerContentRect(s, layer.id);
+    const area = sel ? selectionExtent(sel, s.store.bounds) : layerContentRect(s, selectedSurfaceKey(s, layer));
     return isEmptyRect(area) ? null : area;
   }
 
   private copyLayer(layer: Layer | undefined): ClipImage | null {
     const s = this.s;
     if (!layer) return null;
+    const key = selectedSurfaceKey(s, layer);
+    const gray = layer.kind === "mask" || key !== layer.id;
     const area = this.layerArea(layer);
-    const read = area ? s.store.read(layer.id, area) : null;
+    const read = area ? s.store.read(key, area) : null;
     if (!read) return null;
     const sel = s.selection.current;
     const coverage = sel ? coverageFor(sel, read.rect) : null;
     const px = read.data.data;
-    const any = layer.kind === "mask" ? maskToGray(px, coverage) : applyCoverage(px, coverage);
+    // The pixels as shown: through the layer's enabled lmask (M14b).
+    const lm = gray ? undefined : layer.layerMask;
+    const mask = lm?.enabled ? s.store.read(layerMaskKey(layer.id), read.rect) : null;
+    if (lm && mask) applyMaskAlpha(px, mask.data.data, lm.invert);
+    const any = gray ? maskToGray(px, coverage) : applyCoverage(px, coverage);
     if (!any) return null;
     // A mask copy keeps the selection's shape (opaque black outside the mask).
-    return layer.kind === "mask" ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
+    return gray ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
   }
 
   private copyMerged(): ClipImage | null {
@@ -273,25 +359,46 @@ export class ClipboardOps {
     return { data, rect: { ...rect }, imageScale: this.imageScale };
   }
 
-  /** Clear the selected (or all) pixels of `area` on a layer as one patch. */
+  /** Clear the selected (or all) pixels of `area` on a layer (or its targeted lmask: reveal) as one patch. */
   private clearArea(layer: Layer, area: Rect): void {
     const s = this.s;
-    const before = s.store.read(layer.id, area);
+    const key = selectedSurfaceKey(s, layer);
+    const before = s.store.read(key, area);
     if (!before) return;
     const rect = intersectRect(before.rect, area);
     const sel = s.selection.current;
     const coverage = sel ? coverageFor(sel, rect) : new Uint8Array(rect.width * rect.height).fill(255);
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     eraseCoverage(next.data, { x: 0, y: 0, width: rect.width, height: rect.height }, coverage, rect.width);
-    s.store.write(layer.id, rect.x, rect.y, next);
-    const after = s.store.read(layer.id, rect);
+    s.store.write(key, rect.x, rect.y, next);
+    const after = s.store.read(key, rect);
     if (after) {
       const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
+      s.history.push({ kind: "patch", layerId: key, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
     }
-    s.runtime.touch(layer.id);
+    s.runtime.touch(key);
     s.afterEdit();
   }
+}
+
+/** Pixels over `rect` of `source` drawn at `full` (document px; smoothed when resampled). */
+function drawSource(source: CanvasImageSource, rect: Rect, full: Rect, resampled: boolean): ImageData {
+  const surface = createSurface(rect.width, rect.height);
+  surface.ctx.imageSmoothingEnabled = resampled;
+  surface.ctx.imageSmoothingQuality = "high";
+  surface.ctx.drawImage(source, full.x - rect.x, full.y - rect.y, full.width, full.height);
+  const data = surface.ctx.getImageData(0, 0, rect.width, rect.height);
+  releaseSurface(surface);
+  return data;
+}
+
+/** An lmask float of gray pixels (value in RGB, coverage in alpha) over `area`, nothing lifted. */
+function maskFloat(key: string, pixels: ImageData, area: Rect, original: ImageData, xf: FloatState["xf"]): FloatState {
+  const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
+  return {
+    layerId: key, area, original, pixels, surface: shown.value, cover: shown.cover,
+    dx: 0, dy: 0, selBefore: null, selBase: null, xf, baked: null, dragBase: null, preview: null,
+  };
 }
 
 /** Index above the top-most paint-like layer (paste while a mask is current). */

@@ -20,6 +20,10 @@ export interface RowFlags {
   current: boolean;
   /** Solo display state. */
   solo: SoloMark;
+  /** M14: strokes on this layer edit its mask. */
+  maskTarget?: boolean;
+  /** M14: its mask is shown alone (Alt+click view). */
+  maskViewing?: boolean;
 }
 
 /**
@@ -55,6 +59,13 @@ export function rowModel(layer: Readonly<Layer>, flags: RowFlags): RowModel {
     model.current = flags.current;
   }
   if (layer.kind === "text") model.text = true;
+  if (layer.kind !== "mask") {
+    const m = layer.layerMask;
+    model.maskSlot = {
+      canHave: layer.kind === "paint",
+      mask: m ? { enabled: m.enabled, targeted: flags.maskTarget === true, viewing: flags.maskViewing === true } : null,
+    };
+  }
   return model;
 }
 

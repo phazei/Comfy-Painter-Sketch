@@ -248,6 +248,19 @@
   background: #fff;
 }
 
+/* Layer mask swatches (M14): black / white only, no picker; default = white over black. */
+.cps-swatches.cps-mask-swatches .cps-swatch {
+  cursor: default;
+}
+
+.cps-swatches.cps-mask-swatches .cps-reset-fg {
+  background: #fff;
+}
+
+.cps-swatches.cps-mask-swatches .cps-reset-bg {
+  background: #000;
+}
+
 /* Colours do not apply while painting the mask. */
 .cps-root.cps-quickmask .cps-swatches {
   filter: grayscale(1);

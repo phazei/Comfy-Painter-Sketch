@@ -9,5 +9,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    // `?inline` CSS is empty in tests unless processed; layer-row rules are checked (layerNameClamp.test.ts).
+    css: { include: [/layers\.css/] },
   },
 });

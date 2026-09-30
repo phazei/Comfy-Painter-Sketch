@@ -31,6 +31,7 @@ Layer model:
     blendMode      -- "normal" only in v1
     file           -- "painter-sketch/<name>.<webp|png> [input]" or null
     invert         -- bool, mask layers only (non-boolean -> False)
+    layerMask?     -- {file, enabled, invert, outside}, paint layers only (M14, layer_masks.py)
 """
 
 import json
@@ -39,6 +40,7 @@ import math
 from dataclasses import dataclass, field
 
 from .document_regions import OutputOptions, Region, parse_output_options, parse_regions
+from .layer_masks import LayerMask, parse_layer_mask
 
 log = logging.getLogger("paintersketch.document")
 
@@ -84,6 +86,7 @@ class Layer:
     opacity: float      # clamped to [0, 1]
     file: str | None    # annotated path or None
     invert: bool        # mask layers: invert alpha before union
+    layer_mask: LayerMask | None = None  # M14, paint layers only (layer_masks.py)
 
 
 @dataclass(frozen=True)
@@ -287,6 +290,8 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
         opacity=opacity,
         file=file_val,
         invert=invert,
+        # M14: paint layers only, like the editor (text / mask layers never have one).
+        layer_mask=parse_layer_mask(raw.get("layerMask")) if kind == "paint" else None,
     )
 
 

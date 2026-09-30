@@ -79,6 +79,13 @@
   background: var(--cps-border);
 }
 
+/* Static caption option (e.g. "Layer Mask:"). */
+.cps-bar-label {
+  flex: none;
+  color: var(--cps-fg-muted);
+  user-select: none;
+}
+
 /* Number option: scrubby label + value button. */
 .cps-num,
 .cps-select {

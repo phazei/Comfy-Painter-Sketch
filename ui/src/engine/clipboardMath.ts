@@ -5,6 +5,7 @@
  *
  * - {@link applyCoverage}: selection coverage -> alpha (copy of selected pixels).
  * - {@link maskToGray}: mask coverage -> opaque grayscale (what other apps expect).
+ * - {@link imageToMaskGray}: a pasted image -> lmask float values (luminance x alpha).
  * - {@link pasteRect} / {@link cropToCap}: where a pasted image lands (document px)
  *   and how much of it fits in the paint-area cap.
  * - {@link pastedLayerName}: "Pasted", "Pasted 2", ...
@@ -88,6 +89,24 @@ export function unionMaskCoverage(union: Uint8Array, area: Rect, read: Rect | nu
       const i = y * area.width + x;
       if (v > (union[i] as number)) union[i] = v;
     }
+  }
+}
+
+/**
+ * A pasted image -> lmask float pixels (paste into the lmask-only view,
+ * M14b), in place: value = Rec.709 luminance x alpha (transparent = black =
+ * shown) in RGB, coverage 255 (the paste replaces what it lands on). Our own
+ * lmask copy (opaque grayscale) keeps its values exactly.
+ * @param rgba - Straight-alpha RGBA (modified).
+ */
+export function imageToMaskGray(rgba: Uint8ClampedArray): void {
+  for (let p = 0; p < rgba.length; p += 4) {
+    const lum = 0.2126 * (rgba[p] as number) + 0.7152 * (rgba[p + 1] as number) + 0.0722 * (rgba[p + 2] as number);
+    const v = Math.round((lum * (rgba[p + 3] as number)) / 255);
+    rgba[p] = v;
+    rgba[p + 1] = v;
+    rgba[p + 2] = v;
+    rgba[p + 3] = 255;
   }
 }
 

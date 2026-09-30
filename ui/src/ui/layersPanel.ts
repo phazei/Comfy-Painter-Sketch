@@ -11,8 +11,10 @@
  * active layer and turns Quick Mask off; clicking a mask row makes it the
  * current mask and turns Quick Mask on (so `Q`, the rail button and the panel
  * stay in sync). The current mask always has a left bar in its colour; solo
- * buttons (view only) dim the eyes of the other rows in a soloed group. All
- * edits go through the editor; the panel re-renders from editor events only.
+ * buttons (view only) dim the eyes of the other rows in a soloed group. Paint
+ * rows carry the M14 layer mask slot (add icon / mask thumbnail; its clicks
+ * select the row first). All edits go through the editor; the panel
+ * re-renders from editor events only.
  */
 
 import type { Editor } from "../engine/editor";
@@ -197,7 +199,10 @@ export class LayersPanel {
         const isCurrentMask = kind !== "paint" && layer.id === maskId;
         const selected = kind !== "paint" ? targeting && isCurrentMask : !targeting && active;
         const solo = soloMark(layer, editor.solo);
-        row.update({ ...rowModel(layer, { selected, standby: targeting && active, current: isCurrentMask, solo }), ...(hint ? { hint } : {}) });
+        const maskTarget = editor.layerMask.target(layer.id) === "mask";
+        const maskViewing = editor.layerMask.viewing === layer.id;
+        const flags = { selected, standby: targeting && active, current: isCurrentMask, solo, maskTarget, maskViewing };
+        row.update({ ...rowModel(layer, flags), ...(hint ? { hint } : {}) });
         wanted.push(row);
       };
       for (let i = doc.layers.length - 1; i >= 0; i--) {
@@ -287,6 +292,13 @@ export class LayersPanel {
       const invert = mask && layer.invert === true;
       const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
       row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
+      // M14: the layer mask thumbnail (grayscale, invert applied), same framing and throttle.
+      const lm = layer.layerMask;
+      const maskCanvas = lm ? editor.layerMask.canvas(layer.id) : null;
+      if (lm && maskCanvas && row.maskSlot) {
+        const maskKey = `${editor.layerMask.revision(layer.id)}|${geometry}|${lm.invert}`;
+        row.maskSlot.thumb.update(maskKey, imageSize, { kind: "layer", canvas: maskCanvas, region, mask: true, invert: lm.invert });
+      }
     }
     if (doc.imageMask) refreshImageMaskThumb(editor, this.rows.get(doc.imageMask.id));
     const bg = this.rows.get(BACKGROUND_ID);
@@ -310,14 +322,31 @@ export class LayersPanel {
 
   private rowActions(): RowActions {
     return {
-      select: (id) =>
+      // The lmask-only view follows these in the engine (`LayerMaskOps`): it ends on a
+      // cmask row / a paint row targeting its pixels and moves to a row targeting its mask.
+      select: (id) => {
+        // The Background row isn't selectable; a click on it only ends the lmask-only view.
+        if (id === BACKGROUND_ID) return this.editor?.layerMask.endView();
         this.withEditor((e) => {
           if (e.selectMask(id)) return;
           e.layerOps.setActiveLayer(id);
           e.setPaintTarget("paint");
-        }),
+        });
+      },
       // Selection only: the current layer, Quick Mask and solo stay as they are.
       loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
+      // ── M14 layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
+      targetLayer: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "layer")),
+      targetMask: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "mask")),
+      addLayerMask: (id, hideAll) =>
+        this.withEditor((e) => {
+          selectPaint(e, id);
+          e.layerMask.add(id, hideAll ? "hide" : e.selection.active ? "selection" : "reveal");
+        }),
+      toggleMaskEnabled: (id) => this.withEditor((e) => e.layerMask.setEnabled(id, e.layerMask.info(id)?.enabled === false)),
+      toggleMaskView: (id) => this.withEditor((e) => e.layerMask.toggleView(id)),
+      // Soft coverage (a grayscale mask, not a pixel layer); selection only, like row Ctrl+click.
+      maskSelection: (id, mode) => this.withEditor((e) => e.layerMask.toSelection(id, mode)),
       toggleVisible: (id) =>
         this.withEditor((e) =>
           id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer(e, id)?.visible),
@@ -386,4 +415,10 @@ export class LayersPanel {
 /** A layer or the Image Mask row by id. */
 function findLayer(editor: Editor, id: string): Readonly<Layer> | undefined {
   return findAnyLayer(editor.doc, id);
+}
+
+/** Make a paint layer the active one with Quick Mask off (a paint row click). */
+function selectPaint(editor: Editor, id: string): void {
+  editor.layerOps.setActiveLayer(id);
+  editor.setPaintTarget("paint");
 }

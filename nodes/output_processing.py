@@ -5,7 +5,8 @@ SPEC.md "Output regions (M9) -- agreed design": the main node composites once,
 then every output (Main and each of the six region slots) starts from that one
 composite + final mask and applies its own output options (None / Fill / Crop / Border,
 then the M13c Alpha checkbox: RGBA IMAGE, alpha = 1 - that output's final MASK).
-Main's options never affect regions.
+Main's options never affect regions. M14c: with the Background eye off the
+composite's transparency is part of every output's mask (regions get their crop).
 
 Region geometry:
     - Rects are image px from the top-left and are never rescaled (the input
@@ -27,7 +28,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .composite import run_composite
+from .composite import run_composite, run_transparent_composite
 from .document import Document
 from .document_regions import REGION_SLOTS, OutputOptions, Region, RegionRect
 
@@ -112,6 +113,7 @@ def inside_image(edges: Edges, width: int, height: int) -> bool:
 
 def apply_output_options(
     image: torch.Tensor, mask: torch.Tensor, options: OutputOptions,
+    straight: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply None / Fill / Crop / Border, then the M13c alpha, keeping the batch dimension.
 
@@ -123,15 +125,25 @@ def apply_output_options(
     gets a 4th channel ``1 - mask`` of the returned MASK, so a masked border
     is transparent and an unmasked one opaque.
 
+    M14c: with the Background eye off, ``mask`` already holds the composite's
+    transparency and ``straight`` is the un-premultiplied layer colour; outputs
+    that blend by their mask (Fill, Alpha) start from ``straight`` so soft
+    edges are not tinted by the background colour. Others keep ``image``
+    (holes flattened onto the background colour).
+
     Args:
-        image:   ``[B, H, W, 3]`` IMAGE.
-        mask:    ``[B, H, W]`` final MASK (incl. ``invert_mask`` and the
-                 Image / Input Mask).
-        options: This output's options.
+        image:    ``[B, H, W, 3]`` IMAGE.
+        mask:     ``[B, H, W]`` final MASK (incl. ``invert_mask``, the
+                  Image / Input Mask and M14c transparency).
+        options:  This output's options.
+        straight: ``[1 | B, H, W, 3]`` un-premultiplied colour, or ``None``
+                  (Background visible: no transparency).
 
     Returns:
         ``(image [B, h, w, 3 | 4], mask [B, h, w])`` after the options.
     """
+    if straight is not None and (options.alpha or options.apply_mask == "fill"):
+        image = straight.expand(image.shape)
     image, mask = _modify(image, mask, options)
     if options.alpha and options.apply_mask != "fill":
         image = with_alpha(image, mask)
@@ -208,8 +220,8 @@ def _add_border(
 
 # ── Region rendering ──────────────────────────────────────────────────────────
 
-ViewportRenderer = Callable[[Edges], tuple[torch.Tensor, torch.Tensor]]
-"""Renders ``(image, mask)`` for image-px edges that reach outside the image."""
+ViewportRenderer = Callable[[Edges], tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]]
+"""Renders ``(image, mask, straight | None)`` for image-px edges that reach outside the image."""
 
 
 def viewport_renderer(
@@ -218,6 +230,7 @@ def viewport_renderer(
     layer_tensors: dict[str, torch.Tensor | None],
     invert_mask: bool,
     background: tuple[float, float, float],
+    transparent: bool = False,
 ) -> ViewportRenderer:
     """Build a renderer that composites an arbitrary image-px area.
 
@@ -227,35 +240,46 @@ def viewport_renderer(
         layer_tensors: Loaded layer RGBA tensors by layer id.
         invert_mask:   Node ``invert_mask``.
         background:    ``background`` widget colour as RGB floats.
+        transparent:   M14c, Background eye off: composite over a transparent
+                       base (``base_rgb`` only gives the batch size); the
+                       transparency joins the mask and ``straight`` is returned.
 
     Returns:
-        A function mapping edges to ``(image [B,h,w,3], mask [B,h,w])``.
+        A function mapping edges to ``(image [B,h,w,3], mask [B,h,w],
+        straight [1,h,w,3] | None)``.
     """
     batch, height, width = base_rgb.shape[:3]
 
-    def render(edges: Edges) -> tuple[torch.Tensor, torch.Tensor]:
+    def render(edges: Edges) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         left, top, right, bottom = edges
+        if transparent:
+            return run_transparent_composite(
+                background, batch, right - left, bottom - top, doc, layer_tensors, invert_mask,
+                image_size=(width, height), origin=(left, top))
         canvas = base_rgb.new_tensor(background).expand(batch, bottom - top, right - left, 3).clone()
         x0, y0 = max(0, left), max(0, top)
         x1, y1 = min(width, right), min(height, bottom)
         if x1 > x0 and y1 > y0:
             canvas[:, y0 - top:y1 - top, x0 - left:x1 - left] = base_rgb[:, y0:y1, x0:x1]
-        return run_composite(canvas, doc, layer_tensors, invert_mask,
-                             image_size=(width, height), origin=(left, top))
+        image, mask = run_composite(canvas, doc, layer_tensors, invert_mask,
+                                    image_size=(width, height), origin=(left, top))
+        return image, mask, None
 
     return render
 
 
 def render_region(
     region: Region, image: torch.Tensor, mask: torch.Tensor, render: ViewportRenderer,
+    straight: torch.Tensor | None = None,
 ) -> RegionOutput:
     """Produce one region's processed output from the one composite.
 
     Args:
-        region: Parsed region.
-        image:  Main composite ``[B, H, W, 3]`` (before Main's options).
-        mask:   Final mask ``[B, H, W]``.
-        render: Viewport renderer for regions reaching outside the image.
+        region:   Parsed region.
+        image:    Main composite ``[B, H, W, 3]`` (before Main's options).
+        mask:     Final mask ``[B, H, W]`` (M14c: incl. transparency).
+        render:   Viewport renderer for regions reaching outside the image.
+        straight: M14c un-premultiplied colour ``[1, H, W, 3]``, or ``None``.
 
     Returns:
         The region's :class:`RegionOutput`.
@@ -265,21 +289,24 @@ def render_region(
     left, top, right, bottom = edges
     if inside_image(edges, width, height):
         region_image, region_mask = image[:, top:bottom, left:right], mask[:, top:bottom, left:right]
+        region_straight = None if straight is None else straight[:, top:bottom, left:right]
     else:
-        region_image, region_mask = render(edges)
-    return RegionOutput(*apply_output_options(region_image, region_mask, region.output))
+        region_image, region_mask, region_straight = render(edges)
+    return RegionOutput(*apply_output_options(region_image, region_mask, region.output, region_straight))
 
 
 def build_regions(
     image: torch.Tensor, mask: torch.Tensor, doc: Document | None, render: ViewportRenderer,
+    straight: torch.Tensor | None = None,
 ) -> PainterRegions:
     """Build the ``PS_REGIONS`` value for all six slots.
 
     Args:
-        image:  Main composite ``[B, H, W, 3]`` (before Main's options).
-        mask:   Final mask ``[B, H, W]``.
-        doc:    Parsed document, or ``None`` (all slots empty).
-        render: Viewport renderer for regions reaching outside the image.
+        image:    Main composite ``[B, H, W, 3]`` (before Main's options).
+        mask:     Final mask ``[B, H, W]`` (M14c: incl. transparency).
+        doc:      Parsed document, or ``None`` (all slots empty).
+        render:   Viewport renderer for regions reaching outside the image.
+        straight: M14c un-premultiplied colour ``[1, H, W, 3]``, or ``None``.
 
     Returns:
         :class:`PainterRegions` with ``None`` for empty slots.
@@ -288,6 +315,6 @@ def build_regions(
         return EMPTY_REGIONS
     by_slot = {region.slot: region for region in doc.regions}
     return PainterRegions(slots=tuple(
-        render_region(by_slot[slot], image, mask, render) if slot in by_slot else None
+        render_region(by_slot[slot], image, mask, render, straight) if slot in by_slot else None
         for slot in range(1, REGION_SLOTS + 1)
     ))

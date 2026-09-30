@@ -1,6 +1,7 @@
 /**
  * Declarative tool options: each tool lists option descriptors (number,
- * toggle, select, command button, free text with suggestions) and the
+ * toggle, select, command button, free text with suggestions, static
+ * label) and the
  * options bar renders them generically -- no
  * per-tool UI code. Numbers are described in DISPLAY units (e.g. hardness
  * 0..100 %) with a `scale` to the stored value (0..1). Pure helpers here do
@@ -87,8 +88,16 @@ export interface TextOption extends BaseOption {
   previewFont?: boolean;
 }
 
+/**
+ * Static caption in the bar (e.g. "Layer Mask:" before the layer mask
+ * controls); holds no value (`get` / `set` are never used for it).
+ */
+export interface LabelOption extends BaseOption {
+  kind: "label";
+}
+
 /** Any option descriptor. */
-export type OptionDescriptor = NumberOption | ToggleOption | SelectOption | ButtonOption | TextOption;
+export type OptionDescriptor = NumberOption | ToggleOption | SelectOption | ButtonOption | TextOption | LabelOption;
 
 /**
  * Descriptors sharing `group === id` shown behind one icon button (which
@@ -245,6 +254,8 @@ export function coerceOption(desc: OptionDescriptor, value: OptionValue): Option
       const clean = value.replace(/\s+/g, " ").trim();
       return clean && clean.length <= (desc.maxLength ?? 100) ? clean : undefined;
     }
+    case "label":
+      return undefined;
   }
 }
 

@@ -167,6 +167,12 @@ ui/src/
   geometry, drawing, overlay, the `PainterSketch Regions` helper (`regions.ts`,
   `regionOps`, `regionOverlay`, `document_regions.py`). Main is an output, not a
   region.
+- **Naming: cmask vs lmask.** Never say just "mask". A *cmask* is a standalone
+  ComfyUI-style mask row (mask layers, plus the fixed Image/Input Mask row); cmasks
+  feed the MASK outputs. An *lmask* is a paint layer's layer mask (M14); it only
+  hides part of that layer and never reaches MASK. Both use the ComfyUI polarity
+  (white = masked / hidden). Ctrl+click on a cmask selects its white part; on an
+  lmask, its black (shown) part.
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
 - **The brush model is measured, not designed** (SPEC "Brush engine"): the tip

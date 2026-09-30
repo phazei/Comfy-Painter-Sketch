@@ -45,6 +45,8 @@ const PATHS: Readonly<Record<string, string>> = {
   solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
   // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
   maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
+  // "Add layer mask" (M14, row icon): a filled-looking frame with a circle, Photoshop's mask glyph.
+  layerMaskAdd: "M3 5h18v14H3zM12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8",
   duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
   trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
   // Half-filled circle outline: "invert".

@@ -337,7 +337,7 @@ wrapping, type-mask text, searchable installed-font picker.
 Planned order after M7a: M8 -> M9 -> M10 -> M11 -> M12, then M7b release polish.
 Details per milestone are in the Milestones section.
 
-### Output regions (M9) -- agreed design (2026-09-26, rev. 2)
+### Output regions (M9) -- agreed design (2026-09-26, rev. 2; done, browser-verified)
 An overnight first pass (another model, plan not reviewed) built 14 dynamic outputs on
 the main node, proportional region scaling and wire-disconnect rules. After testing,
 the user and coordinator replaced that design with the one below. Do not bring back
@@ -429,7 +429,7 @@ border shows width, colour swatch and a "Mask border" checkbox inline. Manifest 
   cap raised to 16384 (as the editor); the editor skips a single malformed layer with
   a toast instead of dropping the document (as Python); Python ignores non-boolean
   `invert` and non-numeric `opacity` (as the editor).
-### Floating selections + clipboard (M10) -- agreed design (2026-09-26)
+### Floating selections + clipboard (M10) -- agreed design (2026-09-26; done, browser-verified)
 **Floats** (transient editor state, never a document layer, never saved; drawn above
 their own layer; whole-pixel moves, no resampling).
 - Move tool (`V`) with a selection: drag starting **inside** the selection lifts the
@@ -499,7 +499,7 @@ text is rasterized (prompt). No Merge Visible, no multi-select (repeat Ctrl+E).
   `textData`. Upscale only. Not undoable: a confirm explains it clears the undo
   history, then history is cleared.
 
-### Free Transform (M11) -- agreed design (2026-09-27)
+### Free Transform (M11) -- agreed design (2026-09-27; done, browser-verified)
 **Targets** (**Ctrl+Alt+T** -- Chrome reserves Ctrl+T; Photopea convention -- from any tool while the editor owns the keyboard, or the Transform
 button): with a selection -> lift the selected pixels of the current layer as a float
 (M10 lift) and transform it; without -> the current layer's whole content; an active
@@ -534,7 +534,7 @@ cumulative matrix in memory until any other edit of that layer; a later Ctrl+T o
 transforms from that original (5 x 10 deg = one 50 deg resample). Not saved; freed on
 reload, layer delete, or memory pressure. Pastes benefit the same way.
 
-### Image sources (M12) -- agreed design (2026-09-27)
+### Image sources (M12) -- agreed design (2026-09-27; done, browser-verified)
 - One optional input `layer_source` (IMAGE), below `image` in the socket row (no extra node height). No Autogrow, no helper node, no input regions.
 - Session history: the last 10 distinct images seen on `layer_source`, newest first; a repeat moves to the top. Session only (in memory, per node instance), never in the manifest or workflow.
 - Sources: the upstream preview before a run (LoadImage-style, same lookup as the background), else the preview Python returns after a run (first image of a batch).
@@ -543,7 +543,7 @@ reload, layer delete, or memory pressure. Pastes benefit the same way.
 - No manifest change.
 - Later (after M12): the user's custom folder loader sometimes shows the `input/` default after a page refresh -- check the upstream lookup order (widget value vs the loader's own preview).
 
-### Image Mask / Input Mask (M13) -- agreed design (2026-09-28)
+### Image Mask / Input Mask (M13) -- agreed design (2026-09-28; done, browser-verified)
 - One fixed mask row (layer-row scaffolding), directly above Background. Never deleted, reordered or painted on; eye (on by default), overlay colour, invert. Ctrl+click = selection; Duplicate = an ordinary editable mask layer.
 - Name follows the source: "Image Mask" (from the background image's alpha) or "Input Mask" (from a `mask` input, later step). Tooltip: a connected mask input replaces the image's alpha.
 - M13a, image alpha: shown only when the upstream background file has alpha (any pixel < 255). The editor fetches it with `/view?...&channel=a` (the background itself uses `channel=rgb`). Coverage = 255 - alpha (LoadImage's MASK polarity).
@@ -553,23 +553,24 @@ reload, layer delete, or memory pressure. Pastes benefit the same way.
   - Python: mask size != image -> resized to the image (ComfyUI convention). Batch: mask n for image n when counts match, else the first mask for all. LoadImage's 64x64 all-zero placeholder = no mask. A 4-channel IMAGE is used as RGB (alpha ignored).
 - M13c: per-output "Alpha" checkbox next to the Modify dropdown (not a dropdown choice): that output's IMAGE gets 4 channels, alpha = 1 - that output's final mask (after Modify). Combines with None, Crop to mask and Add border; hidden while Modify = Fill mask (fill and alpha cancel out; value kept). Add border: the border's alpha follows "Mask border" (masked = transparent). MASK output unchanged. Manifest: additive per-output `alpha: true` (written only when on). Tooltip: some downstream nodes use RGB only and drop the alpha.
 
-### Layer masks (M14) -- agreed design (2026-09-28)
+### Layer masks (M14) -- agreed design (2026-09-28; done, browser-verified)
 Editing masks, not output masks: they hide part of a paint layer non-destructively and never reach the MASK outputs.
 - **Scope:** paint layers only (not text, mask layers, Image/Input Mask or Background). A rasterized text layer is a paint layer and can get one. One mask per layer, always linked to it.
-- **Pixels:** 8-bit grayscale, white = show, black = hide, grey = partial. Same extent as the layer; the area outside the stored pixels uses the mask's `outside` value (show, or hide for a hide-all mask).
+- **Pixels:** 8-bit grayscale in the ComfyUI mask convention (same as our mask layers): **white = hidden, black = shown**, grey = partial. Stored, shown in the thumbnail and in the Alt view that way. Same extent as the layer; the area outside the stored pixels uses the mask's `outside` value (show, or hide for a hide-all mask).
 - **Row:** a tiny "add layer mask" icon right of the layer thumbnail (no footer button -- it would be confused with Add Mask). Click = a mask that shows all; with a selection = shows only the selection; Alt+click = hides all. Once added, the icon becomes the mask thumbnail.
 - **Target:** click the layer thumbnail = edit pixels; click the mask thumbnail = edit the mask (highlighted frame). One target at a time; clicking elsewhere on the row keeps the layer's current target.
-- **Mask thumbnail modifiers:** Shift+click = off/on (red X, layer shows unmasked); Alt+click = view the mask alone as grayscale in the stage (Alt+click again, or clicking a thumbnail, ends it); Ctrl+click = selection from the mask (+Shift add, +Alt subtract, +Shift+Alt intersect, like rows).
-- **Options bar while the mask is targeted:** Invert (a setting, like mask layers; not a pixel change), Apply (bake into the layer pixels, one undo step), Delete (remove, undoable).
-- **Painting on the mask:** the colour is ignored.
-  - Brush hides at its size / hardness / opacity / flow. It has a hide/reveal state; **X toggles it while a layer mask is targeted** (same brush settings, like Photoshop's X with black/white). Elsewhere X keeps its normal meaning.
-  - Eraser always reveals.
-  - Fill = hide the selection (or the whole mask with no selection). Delete with a selection = hide it.
+- **Mask thumbnail modifiers:** Shift+click = off/on (red X, layer shows unmasked); Alt+click = view the mask alone as grayscale in the stage (Alt+click again, or clicking a thumbnail, ends it); Ctrl+click = selection of the lmask's SHOWN (black) part, soft (+Shift add, +Alt subtract, +Shift+Alt intersect) -- the inverse of a cmask's Ctrl+click (white), so selection -> add lmask -> Ctrl+click round-trips.
+- **lmask-only view (Alt+click):** stays on (following the new layer) when clicking another paint layer's lmask thumbnail or a paint layer row whose target is its lmask; ends on a paint layer without an lmask or targeting its pixels, any cmask row (incl. Image/Input Mask), and a click on the Background row. While in it, that layer's lmask is editable even if the layer's eye is off (Photoshop); outside the view a hidden layer's lmask is refused like its pixels.
+- **Options bar while the mask is targeted:** a "Layer Mask:" label, then Invert (a setting, like mask layers; not a pixel change), Apply (bake into the layer pixels, one undo step), Delete (remove, undoable).
+- **Painting on the mask:** while a layer mask is targeted, the colour swatches are replaced by black/white mask swatches (same look; only black or white). The brush and fill paint the foreground swatch: white hides, black reveals, at the tool's opacity / flow / hardness. **X swaps them** (the normal swatch swap). The real colours are untouched and return when the target leaves the mask.
+  - Bucket / magic wand sampling (Photoshop, user-checked): in lmask-only view both sample only the lmask's grayscale, whatever the sample option. Otherwise "current layer" = the layer's raw pixels (lmask not applied), "all" = the visible composite with lmasks applied. The bucket floods like a normal fill and writes the foreground mask swatch into the flooded area.
+  - Eraser always reveals (clears coverage).
+  - Delete / Alt+Backspace behave as on mask layers.
   - Selections clip mask painting as usual. Other pixel tools (shapes, line, text) refuse with a note.
 - **Display:** the live composite while editing (no auto solo, no red overlay); the solo button still works manually. Alt+click view for the mask alone.
 - **Engine:** one mask canvas per masked layer; the compositor caches the masked layer and rebuilds only when the layer or its mask changes. Undo uses the existing dirty-rect patches.
 - **Saved:** additive per-layer manifest field `layerMask: { file, enabled, invert, outside }` + a PNG like mask layers (no version bump if old documents load unchanged). Python applies it when compositing, matching the editor; `fingerprint_inputs` includes the file.
-- **M14b interactions:** Move, Free Transform (incl. kept original) and flip carry the mask with the layer. Merge Down uses the masked result with a note ("Layer mask applied"; undo reverts). Copy / cut copy the masked result. Ctrl+click on the layer row = the layer's own pixels (mask ignored). Lifting a selection float from a masked layer: decide in M14b.
+- **M14b interactions:** Move, Free Transform (incl. kept original) and flip carry the mask with the layer. Merge Down uses the masked result with a note ("Layer mask applied"; undo reverts). Copy / cut copy the masked result. Ctrl+click on the layer row = the layer's own pixels (mask ignored). Selection floats (Photoshop, user-checked): with the layer's pixels targeted, a selection move / transform / flip lifts the pixels only and the lmask stays put; with the lmask targeted, it lifts the lmask's pixels (the layer stays). Whole-layer Move, Free Transform (incl. kept original) and flip always carry the lmask. Apply (options bar) bakes the lmask into the pixels (one undo step) and removes it.
 
 ## Milestones
 ### M0 -- Scaffold
@@ -688,24 +689,32 @@ Design: "Free Transform (M11) -- agreed design".
 - [x] M13c: per-output Alpha checkbox (RGBA IMAGE)
 
 ### M14 -- Layer masks
-- [ ] M14a: add (show all / selection / hide all), mask thumbnail + target, off/on, invert, Alt view, Ctrl+click selection
-- [ ] M14a: painting (brush hide/reveal + X, eraser reveals, fill, Delete), selection clip, other tools refuse
-- [ ] M14a: compositor cache, undo, manifest `layerMask` + PNG, Python applies it
-- [ ] M14b: Move / Free Transform / flip carry the mask; Merge Down + copy use the masked result; Apply / Delete; floats
+- [x] M14a: add (show all / selection / hide all), mask thumbnail + target, off/on, invert, Alt view, Ctrl+click selection
+- [x] M14a: painting (black/white mask swatches + X, eraser reveals, fill, Delete), selection clip, other tools refuse
+- [x] M14a: compositor cache, undo, manifest `layerMask` + PNG, Python applies it
+- [x] M14b: Move / Free Transform / flip carry the mask; Merge Down + copy use the masked result; Apply; floats (remove the interim `"whole"` gate)
+- [x] M14c: composite transparency joins the output masks (see Decisions Log 2026-09-28 "Transparency in outputs")
 
 ### M7b -- Release polish (last)
 - [ ] README: real feature list, drawing-vs-image model (fit, paint area, Match image resolution), shortcuts table, screenshots/GIF, install, storage + cleanup explanation
 - [ ] Example workflows (`example_workflows/`): e.g. LoadImage -> PainterSketch -> inpaint (Crop to mask); regions -> per-person prompts
+- [ ] Selection "add" cursor badge (+) looks too much like the copy-move cursor (+); make them distinct
+- [ ] Maybe: cursor hints for lmask thumbnail modifiers (Alt+click = eye in a square, Shift+click = red X)
+- [ ] "Not allowed" cursor (circle with a cross) over the canvas when the current tool can't edit the current target (hidden, locked, wrong target kind)
+- [ ] Maybe: while soloed, a hidden layer is editable (you can see it)
+- [ ] Maybe: small mask glyph by the brush ring while painting on a mask / layer mask (overlay-drawn, not a CSS cursor)
 - [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
 
 ### Handoff notes (for the next session)
 - M0-M6, M7a and M8-M13 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.
 - Terminology: "view" = pan/zoom of the stage; "Move drawing" = whole-drawing placement (layers-footer toggle); "Move layer" = the `V` tool.
-- Next: M14 layer masks (designed, not started), then M7b release polish. File size: aim < 500 lines, hard limit 600 (AGENTS.md); no split tasks. The user will not publicly release until M8-M14 are done.
+- Next: M7b release polish (M14 done). File size: aim < 500 lines, hard limit 600 (AGENTS.md); no split tasks. The user will not publicly release until M8-M14 are done.
 - M8 as built: current mask = `editorState.currentMaskId` (`document/masks.ts` fallback to the top mask); mask palette in `defaults/maskDefaults.ts`; solo in `engine/solo.ts` (display + "all" sampling only); every edit gate goes through `editBlockNote` in `engine/rasterize.ts` (eye-hidden > hidden by solo > locked). M9 regions will use all visible masks (union) per SPEC.
 - M9 as built: design in "Output regions (M9) -- agreed design"; naming rule output vs region in AGENTS.md; main node IMAGE/MASK/regions + `PainterSketch Regions` helper (labels via `widget/regionsNode.ts` + `documentEvents.ts`); editor side `engine/regionOps.ts`, hidden `tools/region.ts`, `ui/outputsPanel.ts` / `outputCard.ts` / `outputOptionsRow.ts` / `regionOverlay.ts` / `regionMode.ts`; Python `nodes/output_processing.py`, `document_regions.py`, `painter_sketch_regions.py`.
-- Largest files: see the Next line above. User messages go through `notify` (AGENTS.md).
+- M12 as built: `widget/sourceHistory.ts` (session history, 10), `widget/layerSourceWatch.ts`, `ui/imagesPanel.ts`, `ui/sourceInsertAction.ts`, `engine/sourceInsert.ts` (insert = empty layer + transform session; also oversized pastes), `engine/pastePlacement.ts` (Photoshop placement rule); Python ui key `layer_source` (`nodes/previews.py`).
+- M13 as built: background URL rules `widget/viewUrl.ts` (`channel=rgb` / `channel=a`), `widget/backgroundRule.ts` (only the connected upstream's image), `widget/imageSource.ts`; width/height sync `widget/frameSync.ts` + `sizeWidgets.ts`; Image/Input Mask row `document/imageMask.ts`, `engine/imageMask.ts`, `imageMaskOps.ts`, `widget/imageMaskSync.ts`, `inputMaskRule.ts`, `inputMaskSync.ts`, `ui/imageMaskRow.ts`; Python `nodes/input_mask.py`; Alpha output `with_alpha` in `nodes/output_processing.py`, UI `ui/outputOptionsRow.ts`.
+- M14 as built: lmask `document/layerMask.ts`, `engine/layerMask.ts` (gates), `layerMaskOps.ts` (add/apply/paint/view), `layerMaskCarry.ts` (move/transform/flip/floats), `tools/layerMaskBar.ts`, `ui/layerMaskThumb.ts`; sampling targets in `engine/pixelOps.ts` (`sampleTarget`, `lmaskGray`, `visibleMasksGray`), hidden notes `hiddenNote` in `rasterize.ts`; Python `nodes/layer_masks.py`; transparency `run_transparent_composite` in `nodes/composite.py`. Layers panel dividers `ui/layerSections.ts`.- Largest files: see the Next line above. User messages go through `notify` (AGENTS.md).
 
 #### Brush engine (2026-09-25/26, after M7a)
 Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at PS's model from screenshots went wrong (details in the Decisions Log); on 2026-09-26 the model was **measured** from PS's own lossless exports and the engine rebuilt on it. Do not re-derive the model from eyeballing screenshots: the measurements below are the ground truth (`300px*.png` in the repo root at the time; keep them out of git or move them).
@@ -766,6 +775,24 @@ Unplanned work driven by comparisons with Photoshop. Two sessions of guessing at
 None right now.
 
 ## Decisions Log
+
+- 2026-09-28: M14c code done (browser-verified). `nodes/composite.py` computes colour + alpha in one pass (`run_transparent_composite`) only when the Background eye is off; MASK = max(cmasks after invert_mask, 1 - A). Alpha on and Fill mask use the un-premultiplied colour (P / A; background colour where A = 0), so no background-colour fringe; plain IMAGE / Crop / Border without Alpha keep the flattened image. No frontend change (the editor already shows a checkerboard).
+
+- 2026-09-28: Sample = current layer means the actual target: with a cmask targeted, wand and bucket sample its effective coverage as opaque gray (the wand sampled the last paint layer). A hidden target with current-layer sampling: the wand refuses with the hidden note (shared `hiddenNote`); the bucket refuses a hidden target always (edit gate). lmask-only view exception kept. With a cmask targeted, sample = all = the union of visible cmasks' coverage (user: consistency). Hidden cmask note shortened to "The mask is hidden." (browser-verified)
+
+- 2026-09-28: Fixed lmask sampling: the bucket on an lmask filled the whole lmask without sampling; the wand in lmask-only view sampled the visible layers. New `lmask` sample target (`lmaskGray`, opaque gray, Invert and `outside` applied) used in lmask-only view. (browser-verified)
+
+- 2026-09-28: Paste into an lmask: while in lmask-only view, Ctrl+V / Ctrl+Shift+V / drops paste into that lmask as a float (Rec.709 luminance x alpha; raw values, lmask Invert ignored so copies round-trip; normal placement; oversized -> Free Transform). Outside the view paste is unchanged. (browser-verified)
+
+- 2026-09-28: M14b code done (browser-verified). `engine/layerMaskCarry.ts`: whole-layer move/transform/flip carry the lmask (own kept original; one undo step). lmask-target floats lift grayscale and replace what they land on; vacated area reveals. Merge Down applies an enabled upper lmask (disabled = ignored); a lower lmask stays. Copy on pixels = masked result; on the lmask = grayscale; cut on the lmask reveals; paste always makes a new paint layer. Apply also bakes a disabled lmask (user-confirmed: clicking Apply means apply).
+
+- 2026-09-28: Transparency in outputs (M14c, agreed): transparency = 1 - composite alpha (only possible with the Background eye off). It joins the cmask union AFTER `invert_mask` (never inverted), for Main and every region, so Fill mask fills holes, Alpha makes them transparent, Crop/Border treat them as masked (a hole can grow the crop -- accepted). Plain IMAGE keeps the background colour under holes. With Alpha on, RGB under partial transparency is the layers' own (un-premultiplied) colour, not blended with the background colour (no fringe). Mirrors LoadImage (RGB + MASK from alpha).
+
+- 2026-09-28: Terms: **cmask** = standalone mask rows (Mask N, Image/Input Mask), **lmask** = a paint layer's layer mask. lmask Ctrl+click selects the shown (black) part; lmask-only view stick/end rules; hidden layer's lmask editable only in lmask-only view. Built: Alt+click on an lmask thumb also makes it the target; the view follows the active layer while its target is its lmask (Quick Mask off); solo-hidden layers are editable in the view too; adding an lmask from a selection grows bounds to cover it. (browser-verified)
+
+- 2026-09-28: Layer masks switched to the ComfyUI mask convention (white = hidden), matching our mask layers -- the Photoshop polarity was confusing next to them. The brush's Hide/Reveal state is replaced by black/white mask swatches in place of the colour swatches (X swaps). "Layer Mask:" label in the options bar. Layer names wrap to 2 lines, then ellipsis, vertically centred. Built: `outside` reveal=0/hide=1; `file: null` = all shown; clicking a mask swatch does nothing; eyedropper refused on a mask target; Delete reveals / Alt+Backspace hides (as mask layers). (browser-verified)
+
+- 2026-09-28: M14a code done (browser-verified). Ctrl+click on the mask thumbnail = soft coverage (row Ctrl+click stays hard). Enable not undoable (like the eye); add/delete/invert/strokes are. `layerMask` written only when present, `file: null` = fully hidden; no version bump. Interim gate for M14b: the `"whole"` branch of `layerMaskBlockNote` (`engine/layerMask.ts`) via `editBlockNote`/`preparePixelEdit` kinds -- callers moveOps, mergeDown, floatLift (covers Free Transform), layerFlip, clipboard copy/cut. Bucket hides at its opacity; Alt+Backspace hides.
 
 - 2026-09-28: File-size rule changed (user): aim < 500 lines, hard limit 600; no split tasks, no new modules just to save lines. A 30+-file split was reverted.
 
@@ -894,10 +921,10 @@ None right now.
 - 2026-09-24: Storage revised after measurements: masks PNG, paint lossy WebP default 99 (100 = PNG); cleanup settings row shows file stats.
 - 2026-09-24: Storage: WebP layers (masks lossless-verified via VP8L sniff, paint quality setting default 100 = lossless), upload on focus loss / 5 s idle / queue / Ctrl+S, settings-panel cleanup button with the one server route.
 - 2026-09-24: M3 browser round 1 fixes: click-to-engage focus rule + white rail edge as focus indicator; slider popover drag fixed; pressure options moved behind a stylus button (declarative option groups, nested popovers); background colour alpha ignored in both editor and Python (`#rgba`/`#rrggbbaa` accepted); `document` tooltip removed; graph undo no longer blanks the node (element/session hand-off) and never rolls back paint.
-- 2026-09-24: M3 code landed (browser check pending). Shell regions (rail / options bar / stage / side panel / in-root popover host); declarative tool options with scrubby labels; `editor.ts` split into ~7 engine modules. Layers panel with a `layers` history entry type. Fullscreen moves the editor root (child of a stable `.cps-widget` wrapper) into a body overlay (z-index 1790: above ComfyUI menus, below PrimeVue dialogs/toasts). In fullscreen, keys we don't use are swallowed except browser keys (F1-F24, Ctrl+R/W/T/N/L/Tab/PgUp/PgDn, devtools, Alt+arrows) and Ctrl+S / Ctrl+Enter. Clicking editor buttons no longer takes focus from the hidden key-sink input.
+- 2026-09-24: M3 code landed (browser-verified). Shell regions (rail / options bar / stage / side panel / in-root popover host); declarative tool options with scrubby labels; `editor.ts` split into ~7 engine modules. Layers panel with a `layers` history entry type. Fullscreen moves the editor root (child of a stable `.cps-widget` wrapper) into a body overlay (z-index 1790: above ComfyUI menus, below PrimeVue dialogs/toasts). In fullscreen, keys we don't use are swallowed except browser keys (F1-F24, Ctrl+R/W/T/N/L/Tab/PgUp/PgDn, devtools, Alt+arrows) and Ctrl+S / Ctrl+Enter. Clicking editor buttons no longer takes focus from the hidden key-sink input.
 - 2026-09-24: M2 browser-verified. Hidden mask layers stay excluded from `MASK`; queueing with a hidden, painted mask shows the note "The mask is hidden; show it to output it."
 - 2026-09-24: M2 code landed. New docs include a "Mask" layer (older docs get one lazily). Quick Mask paints white+alpha coverage. Overlay = tint of coverage (after per-layer invert) above paint; node `invert_mask` affects output only. Interim mask eye toggle until the M3 layers panel.
 - 2026-09-24: Whole-drawing Move tool planned as the first M5 item (non-destructive placement, not undoable -- Esc/Reset instead, no rotation).
 - 2026-09-24: M1 browser-verified. Fix: upstream size changes no longer resample layers (repeated A->B->A shrank paint); display maps doc -> image via `engine/frameMap.ts`. Clear button pulled forward from M3. Sticky fit + pan clamp + Fit button.
-- 2026-09-24: M1 code landed (browser check pending). `docId` added to the document. Undo patches in frame coords; bounds growth is not an undo step; scale-to-fit is one undo entry. Live sessions kept in a module map (max 6 detached) so tab switches keep unsaved strokes + undo. An inverted mask layer with no paint = full mask.
+- 2026-09-24: M1 code landed (browser-verified). `docId` added to the document. Undo patches in frame coords; bounds growth is not an undo step; scale-to-fit is one undo entry. Live sessions kept in a module map (max 6 detached) so tab switches keep unsaved strokes + undo. An inverted mask layer with no paint = full mask.
 - 2026-09-24: M0 code landed. Document widget via `getCustomWidgets` (`PAINTERSKETCH`); local TS types (official types package is empty). Installed ComfyUI frontend is 1.52.7; source reference is 1.55.x.

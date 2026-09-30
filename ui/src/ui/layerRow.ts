@@ -8,7 +8,9 @@
  * solo button (view only). The Image Mask row (M13a, `imageMask` kind) is a
  * mask row without rename or lock (it is never edited) and is not dragged
  * (`layerDrag.ts` only moves paint / mask rows); as the M13b Input Mask its
- * tooltips follow the name and a hint line can show under it. Rows are
+ * tooltips follow the name and a hint line can show under it. Paint rows
+ * have the M14 layer mask slot right of the thumbnail (`layerMaskThumb.ts`);
+ * with a mask, the thumbnail being edited (pixels or mask) is framed. Rows are
  * reused across updates (keyed by layer id) so a double-click survives the
  * re-render the first click causes.
  */
@@ -19,6 +21,8 @@ import { layerSelectMode } from "./moveCursors";
 import type { OptionControl } from "./optionControls";
 import { setIcon } from "./icons";
 import { startInlineRename } from "./inlineRename";
+import { LayerMaskSlot } from "./layerMaskThumb";
+import type { MaskSlotActions, MaskSlotModel } from "./layerMaskThumb";
 import { Thumbnail } from "./thumbnails";
 
 /** Kind of row. */
@@ -29,6 +33,13 @@ export const IMAGE_MASK_TOOLTIP = "From the image's transparency. A connected ma
 
 /** Tooltip of the row's name while it shows the `mask` input (M13b). */
 export const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces the image's transparency; disconnect it to use that again).";
+
+/**
+ * Class of every row's name: wraps to at most 2 lines, then an ellipsis,
+ * vertically centred; lifted (`cps-renaming`) while the one-line rename
+ * field is open (`styles/layers.css`).
+ */
+export const LAYER_NAME_CLAMP_CLASS = "cps-layer-name-clamp";
 
 /** CSS class suffix per row kind (`cps-layer-<suffix>`). */
 const ROW_CLASS: Readonly<Record<RowKind, string>> = { paint: "paint", mask: "mask", imageMask: "image-mask", background: "background" };
@@ -58,14 +69,19 @@ export interface RowModel {
    * another row of its group is soloed, `"off"` = its group has no solo.
    */
   solo?: SoloMark;
+  /** Paint rows (M14): layer mask slot; with a mask, the layer thumbnail frames the pixel target. */
+  maskSlot?: MaskSlotModel;
 }
 
 /** Solo display state of a row. */
 export type SoloMark = "on" | "dimmed" | "off";
 
 /** Row callbacks (ids are layer ids). */
-export interface RowActions {
+export interface RowActions extends MaskSlotActions {
+  /** Plain row click (also the Background row, which isn't selectable: it only ends the lmask-only view). */
   select(id: string): void;
+  /** Plain click on a masked layer's thumbnail: edit its pixels (M14). */
+  targetLayer(id: string): void;
   /** Ctrl(+Shift/Alt)+click: load the layer's pixels as the selection. */
   loadSelection(id: string, mode: SelectionMode): void;
   toggleVisible(id: string): void;
@@ -93,6 +109,9 @@ export class LayerRow {
   private readonly textBadge: HTMLSpanElement | null = null;
   private readonly soloButton: HTMLButtonElement | null = null;
   private readonly hintEl: HTMLDivElement | null = null;
+  /** Paint rows: add-mask icon / mask thumbnail (M14). */
+  readonly maskSlot: LayerMaskSlot | null = null;
+  private readonly thumbBox: HTMLSpanElement;
   private model: RowModel | null = null;
   private editor: HTMLInputElement | null = null;
   private icons = { eye: "", lock: "" };
@@ -118,6 +137,8 @@ export class LayerRow {
     const thumbBox = document.createElement("span");
     thumbBox.className = "cps-layer-thumb-box";
     thumbBox.appendChild(this.thumb.canvas);
+    this.thumbBox = thumbBox;
+    main.appendChild(thumbBox);
     if (kind === "paint") {
       this.textBadge = document.createElement("span");
       this.textBadge.className = "cps-layer-text-badge";
@@ -125,10 +146,20 @@ export class LayerRow {
       this.textBadge.hidden = true;
       setIcon(this.textBadge, "text", 12);
       thumbBox.appendChild(this.textBadge);
+      // M14: a plain click on a masked layer's thumbnail edits its pixels
+      // (other clicks, e.g. Ctrl+click, reach the row as before).
+      thumbBox.addEventListener("click", (event) => {
+        if (!this.model?.maskSlot?.mask || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.stopPropagation();
+        actions.targetLayer(id);
+      });
+      this.maskSlot = new LayerMaskSlot(id, actions);
+      main.appendChild(this.maskSlot.element);
     }
     this.nameEl = document.createElement("span");
-    this.nameEl.className = "cps-layer-name";
-    main.append(thumbBox, this.nameEl);
+    // Up to 2 lines, then an ellipsis (CSS); the full name is in the tooltip.
+    this.nameEl.className = `cps-layer-name ${LAYER_NAME_CLAMP_CLASS}`;
+    main.appendChild(this.nameEl);
 
     this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
     setIcon(this.soloButton, "solo", 11);
@@ -143,7 +174,12 @@ export class LayerRow {
       this.lock.title = kind === "background" ? "The background (input image) is locked" : "The Image Mask can't be edited (duplicate it to edit)";
       setIcon(this.lock, "lock", 14);
     }
-    if (kind !== "background") {
+    // The Background row isn't selectable, but any click on it still goes to `select` (it ends the lmask-only view).
+    if (kind === "background") {
+      this.element.addEventListener("click", (event) => {
+        if (!isControl(event.target)) actions.select(id);
+      });
+    } else {
       this.element.addEventListener("click", (event) => {
         if (isControl(event.target)) return;
         const mode = layerSelectMode({ ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
@@ -193,6 +229,9 @@ export class LayerRow {
     el.classList.toggle("cps-standby", model.standby);
     el.classList.toggle("cps-hidden-layer", !model.visible);
     if (this.textBadge) this.textBadge.hidden = model.text !== true;
+    if (this.maskSlot) this.maskSlot.update(model.maskSlot ?? { canHave: false, mask: null });
+    const slotMask = model.maskSlot?.mask;
+    this.thumbBox.classList.toggle("cps-target", !!slotMask && !slotMask.targeted);
     const current = model.current === true;
     el.classList.toggle("cps-current-mask", current);
     if (current && model.color) el.style.setProperty("--cps-mask-color", model.color);
@@ -259,8 +298,11 @@ export class LayerRow {
   startRename(): void {
     if (this.editor || this.kind === "background" || this.kind === "imageMask") return;
     this.actions.renaming(true);
+    // The rename field stays one line: the 2-line clamp is lifted while it's open.
+    this.nameEl.classList.add("cps-renaming");
     this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
+      this.nameEl.classList.remove("cps-renaming");
       this.nameEl.textContent = this.model?.name ?? "";
       if (value !== null) this.actions.rename(this.id, value);
       this.actions.renaming(false);

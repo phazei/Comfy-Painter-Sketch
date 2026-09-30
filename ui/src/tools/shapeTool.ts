@@ -121,7 +121,7 @@ export abstract class ShapeTool<V extends ShapeBaseOptions> implements Tool {
     const first = samples[0];
     if (!first || this.drag) return;
     const { fg, bg } = editor.colors;
-    if (!editor.beginStroke({ mode: "paint", opacity: this.values.opacity, hardness: 1, color: fg }, 1)) return;
+    if (!editor.beginStroke({ mode: "paint", opacity: this.values.opacity, hardness: 1, color: fg, shape: true }, 1)) return;
     this.drag = { start: { x: first.x, y: first.y }, width: imageLengthToDoc(editor.frameMap, this.values.width), fg, bg };
     this.update(editor, samples.at(-1) ?? first);
   }

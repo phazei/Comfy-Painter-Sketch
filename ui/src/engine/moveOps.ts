@@ -158,7 +158,7 @@ export class LayerMoveOps {
 
 /** Why a layer can't be moved, or `null`. */
 function blockedNote(s: EditorState, layer: Layer): string | null {
-  const note = editBlockNote(s, layer);
+  const note = editBlockNote(s, layer, "whole");
   if (note) return note;
   if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
   return null;

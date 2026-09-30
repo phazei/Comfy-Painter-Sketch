@@ -68,7 +68,10 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   // pressure options are the tools' initial values (in-session edits win).
   ed.setMaskStyleProvider(readFirstMaskStyle);
   const knownFiles = new Set<string>();
-  for (const layer of ed.doc.layers) if (layer.file) knownFiles.add(layer.file);
+  for (const layer of ed.doc.layers) {
+    if (layer.file) knownFiles.add(layer.file);
+    if (layer.layerMask?.file) knownFiles.add(layer.layerMask.file);
+  }
   const imageMaskFile = ed.doc.imageMask?.file;
   if (imageMaskFile) knownFiles.add(imageMaskFile);
   const session: EditorSession = {
@@ -108,12 +111,13 @@ export function findSession(docId: string): EditorSession | undefined {
 
 /**
  * Identity of a manifest's saved state: frame + per-layer files + output
- * metadata + the Image Mask file (M13a).
+ * metadata + the Image Mask file (M13a) + layer mask records (M14).
  * @param doc - Document.
  * @returns Signature string.
  */
 export function fileSignature(doc: PainterDocument): string {
-  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc), doc.imageMask?.file ?? null]);
+  const layers = doc.layers.map((l) => (l.layerMask ? [l.id, l.file, l.layerMask] : [l.id, l.file]));
+  return JSON.stringify([doc.frame, layers, outputMetadataSignature(doc), doc.imageMask?.file ?? null]);
 }
 
 /**

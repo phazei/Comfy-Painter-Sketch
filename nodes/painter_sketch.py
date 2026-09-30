@@ -10,11 +10,15 @@ Execution flow:
        document frame is mapped onto it, never used as the output size).
     2. Build a ``[B, H, W, 3]`` base-image tensor (input image or background fill).
     3. Parse the document manifest -> :class:`~document.Document`.
-    4. Load each layer file -> RGBA tensor, and a visible M13a Image Mask
+    4. Load each layer file -> RGBA tensor (M14: masked by its layer mask,
+       :mod:`layer_masks`), and a visible M13a Image Mask
        matching the input image size -> coverage (via :mod:`layers`); a
        connected ``mask`` (M13b, :mod:`input_mask`) replaces that coverage.
-    5. Composite paint/text layers over the base -> IMAGE (via :mod:`composite`).
-    6. Combine mask layers -> MASK (via :mod:`composite`).
+    5. Composite paint/text layers over the base -> IMAGE (via :mod:`composite`);
+       with the Background eye off over a transparent base, flattened onto
+       the ``background`` colour (M14c).
+    6. Combine mask layers -> MASK (via :mod:`composite`); M14c: plus the
+       composite's transparency, after ``invert_mask``.
     7. Apply Main's output options; build the region slots from the same
        composite (:mod:output_processing); preview the first input frame.
 
@@ -37,10 +41,11 @@ from typing_extensions import override
 from comfy_api.latest import io
 import folder_paths
 
-from .composite import IMAGE_MASK_KEY, run_composite
+from .composite import IMAGE_MASK_KEY, run_composite, run_transparent_composite
 from .document import FRAME_MAX, parse_document
 from .input_mask import mask_without_document, prepare_input_mask, row_settings
-from .layers import load_image_mask, load_layer_rgba
+from .layer_masks import apply_layer_masks
+from .layers import load_image_mask, load_layer_mask, load_layer_rgba
 from .output_processing import (
     EMPTY_REGIONS, apply_output_options, build_regions, viewport_renderer,
 )
@@ -103,20 +108,6 @@ def _make_background(w: int, h: int, hex_color: str) -> torch.Tensor:
 
 
 # ── Node ─────────────────────────────────────────────────────────────────────
-
-def _fill_like(base_rgb: torch.Tensor, hex_color: str) -> torch.Tensor:
-    """``background`` colour broadcast to the shape of ``base_rgb`` ([B, H, W, 3]).
-
-    Args:
-        base_rgb: Base image batch (shape, dtype and device are copied).
-        hex_color: ``background`` widget colour.
-
-    Returns:
-        A new tensor of the same shape filled with the colour.
-    """
-    color = base_rgb.new_tensor(_hex_to_rgb(hex_color))
-    return color.expand(base_rgb.shape).clone()
-
 
 class PainterSketch(io.ComfyNode):
     """PainterSketch: in-node paint editor that outputs IMAGE + MASK.
@@ -264,6 +255,9 @@ class PainterSketch(io.ComfyNode):
             layer_tensors = {
                 layer.id: load_layer_rgba(layer, doc.bounds) for layer in doc.layers
             }
+            # M14: layer masks apply to their paint layer before any compositing
+            # (Main, regions); they never touch the MASK outputs.
+            layer_tensors = apply_layer_masks(doc.layers, layer_tensors, load_layer_mask)
             # M13a: the Image Mask is the input image's alpha; without an
             # image (widgets fill) there is nothing it belongs to. M13b: the
             # Input Mask takes its place (the record's file is ignored).
@@ -274,14 +268,20 @@ class PainterSketch(io.ComfyNode):
                 layer_tensors[IMAGE_MASK_KEY] = coverage
             elif image is not None and record is not None and record.visible:
                 layer_tensors[IMAGE_MASK_KEY] = load_image_mask(record, (W, H))
-            # Background eye off: outputs use the ``background`` colour instead
-            # of the input image (same size, batch kept; the preview is unchanged).
-            paint_base = base_rgb if doc.background_visible else _fill_like(base_rgb, background)
-            out_image, out_mask = run_composite(paint_base, doc, layer_tensors, invert_mask)
-            main_image, main_mask = apply_output_options(out_image, out_mask, doc.main_output)
-            render = viewport_renderer(
-                paint_base, doc, layer_tensors, invert_mask, _hex_to_rgb(background))
-            regions = build_regions(out_image, out_mask, doc, render)
+            # Background eye off (M14c): layers over a transparent base; IMAGE is
+            # flattened onto the ``background`` colour, the transparency joins
+            # every output's MASK (the preview is unchanged). Eye on: opaque.
+            bg_rgb = _hex_to_rgb(background)
+            transparent = not doc.background_visible
+            if transparent:
+                out_image, out_mask, straight = run_transparent_composite(
+                    bg_rgb, B, W, H, doc, layer_tensors, invert_mask)
+            else:
+                out_image, out_mask = run_composite(base_rgb, doc, layer_tensors, invert_mask)
+                straight = None
+            main_image, main_mask = apply_output_options(out_image, out_mask, doc.main_output, straight)
+            render = viewport_renderer(base_rgb, doc, layer_tensors, invert_mask, bg_rgb, transparent)
+            regions = build_regions(out_image, out_mask, doc, render, straight)
 
         return io.NodeOutput(
             main_image, main_mask, regions,
@@ -309,8 +309,9 @@ class PainterSketch(io.ComfyNode):
           image size). ComfyUI passes a linked input as ``None`` here (only
           constants are resolved), so "linked" means the key is present.
         - A marker while ``mask`` is linked (M13b).
-        - For each layer file (and the M13a Image Mask file, unless ``mask``
-          is linked) that resolves on disk: ``(size, mtime)`` pair.
+        - For each layer file (and M14 layer mask file, and the M13a Image
+          Mask file unless ``mask`` is linked) that resolves on disk:
+          ``(size, mtime)`` pair.
           Size + mtime is cheap (single ``os.stat`` call) and catches any edit
           even when the frontend reuses a filename.  A missing file contributes
           a fixed marker so it still invalidates the cache relative to a present
@@ -352,6 +353,8 @@ class PainterSketch(io.ComfyNode):
         doc = parse_document(document)
         if doc is not None:
             files = [layer.file for layer in doc.layers]
+            # M14: layer mask files count like layer files.
+            files += [layer.layer_mask.file for layer in doc.layers if layer.layer_mask is not None]
             if doc.image_mask is not None and not mask_linked:
                 files.append(doc.image_mask.file)
             for file in files:

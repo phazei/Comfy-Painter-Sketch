@@ -4,6 +4,8 @@
  * Clear (one undoable step holding full before/after snapshots).
  */
 
+import { layerMaskKey } from "../document/layerMask";
+import type { LayerMask } from "../document/layerMask";
 import type { TextData } from "../document/types";
 import { frameRect } from "../geometry/rect";
 import type { Size } from "../geometry/rect";
@@ -11,6 +13,7 @@ import type { FrameBackground } from "./compositor";
 import type { DocSnapshot, FrameSource } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { minimumFrame } from "./drawingResolution";
+import { dropMaskSurface, installMaskSurface, resetMaskSurfaces } from "./layerMask";
 import { applyOutputs, captureOutputs, outputsKey } from "./regionHistory";
 
 /**
@@ -83,6 +86,7 @@ export class FrameOps {
       s.runtime.reset(layer.id, false);
       s.runtime.bump(layer.id);
     }
+    resetMaskSurfaces(s);
     this.rebaseHistory(frame, source);
     s.selection.set(null); // document coords changed meaning
     s.lastStrokeEnd = null;
@@ -141,6 +145,15 @@ export class FrameOps {
       // A cleared layer is empty again (it re-uploads blank, but may adopt frames).
       const rt = s.runtime.get(layer.id);
       if (rt) rt.hasContent = data !== undefined || textData !== undefined;
+      // Layer masks (M14): Clear removes them; undo brings them back.
+      const lm = state.layerMasks?.get(layer.id);
+      if (lm) {
+        layer.layerMask = { ...lm.mask };
+        installMaskSurface(s, layer.id, lm.mask, { x: state.bounds.x, y: state.bounds.y, data: lm.data });
+      } else if (layer.layerMask) {
+        delete layer.layerMask;
+        dropMaskSurface(s, layer.id);
+      }
     }
     s.syncViewFrame();
     s.events.emit("placement", undefined);
@@ -170,17 +183,23 @@ export class FrameOps {
     const s = this.s;
     const pixels = new Map<string, ImageData>();
     const text = new Map<string, TextData>();
+    const layerMasks = new Map<string, { mask: LayerMask; data: ImageData }>();
     for (const layer of s.doc.layers) {
       pixels.set(layer.id, s.store.snapshot(layer.id));
       if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
+      if (layer.layerMask) layerMasks.set(layer.id, { mask: { ...layer.layerMask }, data: s.store.snapshot(layerMaskKey(layer.id)) });
     }
     const placement = s.doc.placement ? { ...s.doc.placement } : undefined;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text, outputs: captureOutputs(s) };
+    return {
+      frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text, outputs: captureOutputs(s),
+      ...(layerMasks.size ? { layerMasks } : {}),
+    };
   }
 }
 
 function snapshotBytes(state: DocSnapshot): number {
   let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
+  if (state.layerMasks) for (const m of state.layerMasks.values()) bytes += m.data.data.byteLength;
   return bytes;
 }

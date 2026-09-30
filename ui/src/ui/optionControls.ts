@@ -9,6 +9,7 @@
  * - select: label + `<select>`.
  * - button: command pill (`set(key, true)` performs it; dim while `get(key) === false`).
  * - text: suggestion menu + "Custom..." text field (`textOptionControl.ts`).
+ * - label: static caption (no value).
  *
  * Controls write through `ToolOptions.set` (which clamps/snaps) and call
  * `changed()`; `refresh()` re-reads values (after shortcuts etc.).
@@ -22,7 +23,7 @@ import {
   sliderToDisplay,
   toDisplay,
 } from "../tools/options";
-import type { ButtonOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
+import type { ButtonOption, LabelOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
 import { setIcon } from "./icons";
 import type { PopoverHandle, PopoverHost } from "./popover";
 import { scrubValue } from "./scrub";
@@ -66,7 +67,19 @@ export function createControl(desc: OptionDescriptor, ctx: ControlContext): Opti
       return buttonControl(desc, ctx);
     case "text":
       return textControl(desc, ctx);
+    case "label":
+      return labelControl(desc);
   }
+}
+
+// ── Label ─────────────────────────────────────────────────────────────────────
+
+function labelControl(desc: LabelOption): OptionControl {
+  const element = document.createElement("span");
+  element.className = "cps-bar-label";
+  element.textContent = desc.label;
+  if (desc.title) element.title = desc.title;
+  return { element, refresh: () => undefined };
 }
 
 // ── Number ────────────────────────────────────────────────────────────────────

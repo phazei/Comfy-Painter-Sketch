@@ -6,6 +6,7 @@
 
 import { DEFAULT_MASK_STYLE } from "../document/create";
 import type { MaskStyle } from "../document/create";
+import { layerMaskKey } from "../document/layerMask";
 import { ensureMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
@@ -20,6 +21,7 @@ import { Emitter } from "./emitter";
 import { DEFAULT_HISTORY_BYTES, HistoryStack } from "./history";
 import { ImageMaskPixels } from "./imageMask";
 import { KeptOriginals } from "./keptOriginal";
+import { initMaskSurfaces, LayerMaskState, surfaceKeys } from "./layerMask";
 import { LayerRuntimeTable } from "./layerRuntime";
 import { LayerStore } from "./layerStore";
 import { SelectionState } from "./selectionState";
@@ -44,6 +46,8 @@ export class EditorState {
   readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
   /** Image Mask coverage (M13a, image px; metadata is `doc.imageMask`). */
   readonly imageMask = new ImageMaskPixels();
+  /** Layer masks (M14): targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
+  readonly layerMasks = new LayerMaskState();
   /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
   readonly solo = new SoloState(() => {
     this.events.emit("solo", undefined);
@@ -117,6 +121,7 @@ export class EditorState {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, layer.file !== null);
     }
+    initMaskSurfaces(this);
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
     // A solo ends when its layer (or the Image Mask row) goes (every layer-list change emits `layers`).
@@ -124,10 +129,10 @@ export class EditorState {
       const rows = this.doc.imageMask ? [...this.doc.layers, this.doc.imageMask] : this.doc.layers;
       this.solo.set(pruneSolo(this.solo.current, rows));
     });
-    // Kept originals die with their layer and with any other edit of it.
-    this.events.on("layers", () => this.kept.prune(new Set(this.doc.layers.map((l) => l.id))));
+    // Kept originals (layers and their lmasks, M14b) die with their layer and with any other edit of it.
+    this.events.on("layers", () => this.kept.prune(surfaceKeys(this.doc.layers)));
     this.events.on("change", () => {
-      for (const layer of this.doc.layers) if (this.kept.has(layer.id)) this.kept.get(layer.id, this.runtime.revision(layer.id));
+      for (const key of surfaceKeys(this.doc.layers)) if (this.kept.has(key)) this.kept.get(key, this.runtime.revision(key));
     });
   }
 
@@ -174,7 +179,17 @@ export class EditorState {
       this.store.rebase(next);
       this.stroke.rebase(next);
       this.doc.bounds = { ...next };
-      for (const layer of this.doc.layers) this.runtime.resized(layer.id);
+      for (const layer of this.doc.layers) {
+        this.runtime.resized(layer.id);
+        // A mask's new area holds its `outside` value: always a new file (and a new cache).
+        // Its pixels are unchanged, so a valid kept original stays valid (M14b).
+        if (layer.layerMask) {
+          const key = layerMaskKey(layer.id);
+          const kept = this.kept.get(key, this.runtime.revision(key));
+          this.runtime.touch(key);
+          if (kept) kept.revision = this.runtime.revision(key);
+        }
+      }
     }
   }
 

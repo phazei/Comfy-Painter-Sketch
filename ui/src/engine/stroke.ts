@@ -45,6 +45,8 @@ export interface StrokeStyle {
   hardness: number;
   /** CSS colour (ignored when erasing). */
   color: string;
+  /** Shape tools (one shape, not dabs): refused on a layer mask (M14). */
+  shape?: boolean;
 }
 
 const EMPTY: Rect = { x: 0, y: 0, width: 0, height: 0 };

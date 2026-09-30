@@ -226,12 +226,82 @@
   background-size: 8px 8px;
 }
 
+/* M14 layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
+   thumbnail; the edit target's thumbnail is framed. Fixed size, so long
+   names ellipsize instead of widening the row. */
+.cps-layer-mask-slot {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.cps-layer-mask-slot[hidden],
+.cps-layer-mask-slot [hidden] {
+  display: none;
+}
+
+.cps-layer-button.cps-layer-mask-add {
+  width: 14px;
+  height: 14px;
+  opacity: 0.45;
+}
+
+.cps-layer-row:hover .cps-layer-button.cps-layer-mask-add,
+.cps-layer-button.cps-layer-mask-add:hover {
+  opacity: 1;
+}
+
+.cps-layer-thumb-box.cps-target .cps-layer-thumb {
+  outline: 2px solid var(--cps-accent);
+  outline-offset: 1px;
+}
+
+.cps-layer-mask-thumb.cps-viewing .cps-layer-thumb {
+  outline: 2px dashed var(--cps-accent);
+  outline-offset: 1px;
+}
+
+.cps-layer-mask-thumb .cps-layer-thumb {
+  background: #000;
+}
+
+/* Disabled mask: red X over the thumbnail. */
+.cps-layer-mask-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cps-danger, #e53935);
+  pointer-events: none;
+}
+
 .cps-layer-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Row names (layerRow.ts LAYER_NAME_CLAMP_CLASS): up to 2 lines, then an
+   ellipsis; centred by .cps-layer-main. 2 x 11px x 1.2 = 26.4px fits the
+   38px thumbnail box, so the row height never changes. The one-line rename
+   field lifts the clamp. */
+.cps-layer-name.cps-layer-name-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-height: 2.4em;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cps-layer-name.cps-layer-name-clamp.cps-renaming {
+  display: block;
+  max-height: none;
 }
 
 .cps-layer-row.cps-hidden-layer .cps-layer-name,

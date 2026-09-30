@@ -1092,6 +1092,35 @@ function serializeImageMask(mask) {
     height: mask.height
   };
 }
+function layerMaskKey(layerId) {
+  return `${layerId}\0mask`;
+}
+function maskOwner(key) {
+  return key.endsWith("\0mask") ? key.slice(0, -5) : null;
+}
+function canHaveLayerMask(layer) {
+  return layer.kind === "paint";
+}
+function createLayerMask(outside) {
+  return { file: null, enabled: true, invert: false, outside };
+}
+function readLayerMask(value) {
+  if (value === void 0) return { repaired: false };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return { repaired: true };
+  const raw = value;
+  const file = typeof raw["file"] === "string" && raw["file"].trim() ? raw["file"] : null;
+  const mask = {
+    file,
+    enabled: typeof raw["enabled"] === "boolean" ? raw["enabled"] : true,
+    invert: raw["invert"] === true,
+    outside: raw["outside"] === "hide" ? "hide" : "reveal"
+  };
+  const repaired = raw["file"] !== null && raw["file"] !== void 0 && file === null || typeof raw["enabled"] !== "boolean" || typeof raw["invert"] !== "boolean" || raw["outside"] !== "hide" && raw["outside"] !== "reveal";
+  return { mask, repaired };
+}
+function serializeLayerMask(mask) {
+  return { file: mask.file, enabled: mask.enabled, invert: mask.invert, outside: mask.outside };
+}
 const PLACEMENT_MIN_SCALE = 0.05;
 const PLACEMENT_MAX_SCALE = 10;
 const IDENTITY_PLACEMENT = Object.freeze({ x: 0, y: 0, scale: 1 });
@@ -1255,6 +1284,10 @@ function readLayer(value) {
   };
   if (typeof value["color"] === "string") layer.color = value["color"];
   if (typeof value["invert"] === "boolean") layer.invert = value["invert"];
+  if (kind === "paint") {
+    const { mask } = readLayerMask(value["layerMask"]);
+    if (mask) layer.layerMask = mask;
+  }
   if (layer.kind === "text") {
     const textData = readTextData(value["textData"]);
     if (textData) {
@@ -1345,6 +1378,7 @@ function serializeLayer(layer) {
   if (layer.color !== void 0) out["color"] = layer.color;
   if (layer.invert !== void 0) out["invert"] = layer.invert;
   if (layer.kind === "text" && layer.textData !== void 0) out["textData"] = serializeTextData(layer.textData);
+  if (layer.layerMask) out["layerMask"] = serializeLayerMask(layer.layerMask);
   return out;
 }
 function cloneDocument(doc) {
@@ -1356,7 +1390,11 @@ function cloneDocument(doc) {
     ...doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {},
     ...doc.placement ? { placement: { ...doc.placement } } : {},
     ...doc.imageMask ? { imageMask: { ...doc.imageMask } } : {},
-    layers: doc.layers.map((l) => ({ ...l, ...l.textData ? { textData: { ...l.textData } } : {} }))
+    layers: doc.layers.map((l) => ({
+      ...l,
+      ...l.textData ? { textData: { ...l.textData } } : {},
+      ...l.layerMask ? { layerMask: { ...l.layerMask } } : {}
+    }))
   };
 }
 const PASTED_LAYER_NAME = "Pasted";
@@ -1404,6 +1442,16 @@ function unionMaskCoverage(union, area, read, rgba, invert2) {
       const i = y * area.width + x;
       if (v > union[i]) union[i] = v;
     }
+  }
+}
+function imageToMaskGray(rgba) {
+  for (let p = 0; p < rgba.length; p += 4) {
+    const lum = 0.2126 * rgba[p] + 0.7152 * rgba[p + 1] + 0.0722 * rgba[p + 2];
+    const v = Math.round(lum * rgba[p + 3] / 255);
+    rgba[p] = v;
+    rgba[p + 1] = v;
+    rgba[p + 2] = v;
+    rgba[p + 3] = 255;
   }
 }
 function pasteRect(source, docPerSource, at) {
@@ -2048,6 +2096,8 @@ const PATHS = {
   solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
   // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
   maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
+  // "Add layer mask" (M14, row icon): a filled-looking frame with a circle, Photoshop's mask glyph.
+  layerMaskAdd: "M3 5h18v14H3zM12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8",
   duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
   trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
   // Half-filled circle outline: "invert".
@@ -2875,8 +2925,8 @@ function buildOverlay(exit) {
   button2.appendChild(label);
   button2.addEventListener("click", exit);
   overlay.appendChild(button2);
-  const stop = (event) => event.stopPropagation();
-  for (const type of OVERLAY_STOPPED) overlay.addEventListener(type, stop);
+  const stop2 = (event) => event.stopPropagation();
+  for (const type of OVERLAY_STOPPED) overlay.addEventListener(type, stop2);
   overlay.addEventListener(
     "wheel",
     (event) => {
@@ -3173,7 +3223,7 @@ function applyLayerChange(layers2, change, forward) {
     }
   }
 }
-const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
+const EMPTY$2 = { x: 0, y: 0, width: 0, height: 0 };
 function selectionMode(shift, alt) {
   if (shift && alt) return "intersect";
   if (shift) return "add";
@@ -3294,7 +3344,7 @@ function trimSelection(sel) {
       if (y > maxY) maxY = y;
     }
   }
-  if (maxX < 0) return outside ? { rect: { ...EMPTY$1, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
+  if (maxX < 0) return outside ? { rect: { ...EMPTY$2, x: rect.x, y: rect.y }, data: new Uint8Array(0), outside } : null;
   if (minX === 0 && minY === 0 && maxX === rect.width - 1 && maxY === rect.height - 1) return sel;
   const crop = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
   return {
@@ -3533,8 +3583,74 @@ class RefreshThrottle {
     this.timer = null;
   }
 }
+class LayerMaskSlot {
+  /**
+   * @param id - Layer id.
+   * @param actions - Callbacks.
+   */
+  constructor(id, actions) {
+    this.id = id;
+    this.actions = actions;
+    this.element = document.createElement("span");
+    this.element.className = "cps-layer-mask-slot";
+    this.addButton = document.createElement("button");
+    this.addButton.type = "button";
+    this.addButton.className = "cps-icon-button cps-layer-button cps-layer-mask-add";
+    this.addButton.title = "Add layer mask (reveals all, or shows only the selection; Alt+click hides all)";
+    setIcon(this.addButton, "layerMaskAdd", 12);
+    this.addButton.addEventListener("click", (event) => {
+      stop(event);
+      actions.addLayerMask(id, event.altKey);
+    });
+    this.thumbBox = document.createElement("span");
+    this.thumbBox.className = "cps-layer-thumb-box cps-layer-mask-thumb";
+    this.thumbBox.title = "Layer mask: click to edit it; Shift+click off/on; Alt+click view it alone; Ctrl+click select its shown (black) part (+Shift add, +Alt subtract)";
+    this.off = document.createElement("span");
+    this.off.className = "cps-layer-mask-off";
+    this.off.hidden = true;
+    setIcon(this.off, "close", 30);
+    this.thumbBox.append(this.thumb.canvas, this.off);
+    this.thumbBox.addEventListener("click", (event) => this.thumbClick(event));
+    this.element.append(this.addButton, this.thumbBox);
+  }
+  id;
+  actions;
+  element;
+  thumb = new Thumbnail();
+  addButton;
+  thumbBox;
+  off;
+  /**
+   * Apply display state.
+   * @param model - Mask state.
+   */
+  update(model) {
+    this.element.hidden = !model.canHave;
+    const mask = model.mask;
+    this.addButton.hidden = mask !== null;
+    this.thumbBox.hidden = mask === null;
+    this.thumbBox.classList.toggle("cps-target", mask?.targeted === true);
+    this.thumbBox.classList.toggle("cps-viewing", mask?.viewing === true);
+    this.off.hidden = mask?.enabled !== false;
+    if (!mask) this.thumb.invalidate();
+  }
+  thumbClick(event) {
+    stop(event);
+    const ctrl = event.ctrlKey || event.metaKey;
+    const mode = layerSelectMode({ ctrl, shift: event.shiftKey, alt: event.altKey });
+    if (mode) this.actions.maskSelection(this.id, mode);
+    else if (event.shiftKey) this.actions.toggleMaskEnabled(this.id);
+    else if (event.altKey) this.actions.toggleMaskView(this.id);
+    else this.actions.targetMask(this.id);
+  }
+}
+function stop(event) {
+  event.stopPropagation();
+  event.preventDefault();
+}
 const IMAGE_MASK_TOOLTIP = "From the image's transparency. A connected mask input will replace it.";
 const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces the image's transparency; disconnect it to use that again).";
+const LAYER_NAME_CLAMP_CLASS = "cps-layer-name-clamp";
 const ROW_CLASS = { paint: "paint", mask: "mask", imageMask: "image-mask", background: "background" };
 class LayerRow {
   /**
@@ -3556,6 +3672,8 @@ class LayerRow {
     const thumbBox = document.createElement("span");
     thumbBox.className = "cps-layer-thumb-box";
     thumbBox.appendChild(this.thumb.canvas);
+    this.thumbBox = thumbBox;
+    main.appendChild(thumbBox);
     if (kind === "paint") {
       this.textBadge = document.createElement("span");
       this.textBadge.className = "cps-layer-text-badge";
@@ -3563,10 +3681,17 @@ class LayerRow {
       this.textBadge.hidden = true;
       setIcon(this.textBadge, "text", 12);
       thumbBox.appendChild(this.textBadge);
+      thumbBox.addEventListener("click", (event) => {
+        if (!this.model?.maskSlot?.mask || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.stopPropagation();
+        actions.targetLayer(id);
+      });
+      this.maskSlot = new LayerMaskSlot(id, actions);
+      main.appendChild(this.maskSlot.element);
     }
     this.nameEl = document.createElement("span");
-    this.nameEl.className = "cps-layer-name";
-    main.append(thumbBox, this.nameEl);
+    this.nameEl.className = `cps-layer-name ${LAYER_NAME_CLAMP_CLASS}`;
+    main.appendChild(this.nameEl);
     this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
     setIcon(this.soloButton, "solo", 11);
     this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
@@ -3579,7 +3704,11 @@ class LayerRow {
       this.lock.title = kind === "background" ? "The background (input image) is locked" : "The Image Mask can't be edited (duplicate it to edit)";
       setIcon(this.lock, "lock", 14);
     }
-    if (kind !== "background") {
+    if (kind === "background") {
+      this.element.addEventListener("click", (event) => {
+        if (!isControl(event.target)) actions.select(id);
+      });
+    } else {
       this.element.addEventListener("click", (event) => {
         if (isControl(event.target)) return;
         const mode = layerSelectMode({ ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, alt: event.altKey });
@@ -3624,6 +3753,9 @@ class LayerRow {
   textBadge = null;
   soloButton = null;
   hintEl = null;
+  /** Paint rows: add-mask icon / mask thumbnail (M14). */
+  maskSlot = null;
+  thumbBox;
   model = null;
   editor = null;
   icons = { eye: "", lock: "" };
@@ -3642,6 +3774,9 @@ class LayerRow {
     el2.classList.toggle("cps-standby", model.standby);
     el2.classList.toggle("cps-hidden-layer", !model.visible);
     if (this.textBadge) this.textBadge.hidden = model.text !== true;
+    if (this.maskSlot) this.maskSlot.update(model.maskSlot ?? { canHave: false, mask: null });
+    const slotMask = model.maskSlot?.mask;
+    this.thumbBox.classList.toggle("cps-target", !!slotMask && !slotMask.targeted);
     const current = model.current === true;
     el2.classList.toggle("cps-current-mask", current);
     if (current && model.color) el2.style.setProperty("--cps-mask-color", model.color);
@@ -3690,8 +3825,10 @@ class LayerRow {
   startRename() {
     if (this.editor || this.kind === "background" || this.kind === "imageMask") return;
     this.actions.renaming(true);
+    this.nameEl.classList.add("cps-renaming");
     this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
+      this.nameEl.classList.remove("cps-renaming");
       this.nameEl.textContent = this.model?.name ?? "";
       if (value !== null) this.actions.rename(this.id, value);
       this.actions.renaming(false);
@@ -3873,6 +4010,8 @@ function coerceOption(desc, value) {
       const clean2 = value.replace(/\s+/g, " ").trim();
       return clean2 && clean2.length <= (desc.maxLength ?? 100) ? clean2 : void 0;
     }
+    case "label":
+      return void 0;
   }
 }
 function isOptionEnabled(desc, get) {
@@ -4214,7 +4353,16 @@ function createControl(desc, ctx) {
       return buttonControl(desc, ctx);
     case "text":
       return textControl(desc, ctx);
+    case "label":
+      return labelControl(desc);
   }
+}
+function labelControl(desc) {
+  const element = document.createElement("span");
+  element.className = "cps-bar-label";
+  element.textContent = desc.label;
+  if (desc.title) element.title = desc.title;
+  return { element, refresh: () => void 0 };
 }
 function numberControl(desc, ctx) {
   const element = document.createElement("div");
@@ -4581,6 +4729,13 @@ function rowModel(layer, flags) {
     model.current = flags.current;
   }
   if (layer.kind === "text") model.text = true;
+  if (layer.kind !== "mask") {
+    const m = layer.layerMask;
+    model.maskSlot = {
+      canHave: layer.kind === "paint",
+      mask: m ? { enabled: m.enabled, targeted: flags.maskTarget === true, viewing: flags.maskViewing === true } : null
+    };
+  }
   return model;
 }
 function el(tag, className) {
@@ -4734,7 +4889,10 @@ class LayersPanel {
         const isCurrentMask = kind !== "paint" && layer.id === maskId;
         const selected = kind !== "paint" ? targeting && isCurrentMask : !targeting && active;
         const solo = soloMark(layer, editor.solo);
-        row.update({ ...rowModel(layer, { selected, standby: targeting && active, current: isCurrentMask, solo }), ...hint ? { hint } : {} });
+        const maskTarget = editor.layerMask.target(layer.id) === "mask";
+        const maskViewing = editor.layerMask.viewing === layer.id;
+        const flags = { selected, standby: targeting && active, current: isCurrentMask, solo, maskTarget, maskViewing };
+        row.update({ ...rowModel(layer, flags), ...hint ? { hint } : {} });
         wanted.push(row);
       };
       for (let i = doc.layers.length - 1; i >= 0; i--) {
@@ -4814,6 +4972,12 @@ class LayersPanel {
       const invert2 = mask && layer.invert === true;
       const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert2}`;
       row.thumb.update(key, imageSize2, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert: invert2 });
+      const lm = layer.layerMask;
+      const maskCanvas = lm ? editor.layerMask.canvas(layer.id) : null;
+      if (lm && maskCanvas && row.maskSlot) {
+        const maskKey = `${editor.layerMask.revision(layer.id)}|${geometry}|${lm.invert}`;
+        row.maskSlot.thumb.update(maskKey, imageSize2, { kind: "layer", canvas: maskCanvas, region, mask: true, invert: lm.invert });
+      }
     }
     if (doc.imageMask) refreshImageMaskThumb(editor, this.rows.get(doc.imageMask.id));
     const bg = this.rows.get(BACKGROUND_ID);
@@ -4834,13 +4998,29 @@ class LayersPanel {
   // ── Actions ─────────────────────────────────────────────────────────────
   rowActions() {
     return {
-      select: (id) => this.withEditor((e) => {
-        if (e.selectMask(id)) return;
-        e.layerOps.setActiveLayer(id);
-        e.setPaintTarget("paint");
-      }),
+      // The lmask-only view follows these in the engine (`LayerMaskOps`): it ends on a
+      // cmask row / a paint row targeting its pixels and moves to a row targeting its mask.
+      select: (id) => {
+        if (id === BACKGROUND_ID) return this.editor?.layerMask.endView();
+        this.withEditor((e) => {
+          if (e.selectMask(id)) return;
+          e.layerOps.setActiveLayer(id);
+          e.setPaintTarget("paint");
+        });
+      },
       // Selection only: the current layer, Quick Mask and solo stay as they are.
       loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
+      // ── M14 layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
+      targetLayer: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "layer")),
+      targetMask: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "mask")),
+      addLayerMask: (id, hideAll) => this.withEditor((e) => {
+        selectPaint(e, id);
+        e.layerMask.add(id, hideAll ? "hide" : e.selection.active ? "selection" : "reveal");
+      }),
+      toggleMaskEnabled: (id) => this.withEditor((e) => e.layerMask.setEnabled(id, e.layerMask.info(id)?.enabled === false)),
+      toggleMaskView: (id) => this.withEditor((e) => e.layerMask.toggleView(id)),
+      // Soft coverage (a grayscale mask, not a pixel layer); selection only, like row Ctrl+click.
+      maskSelection: (id, mode) => this.withEditor((e) => e.layerMask.toSelection(id, mode)),
       toggleVisible: (id) => this.withEditor(
         (e) => id === BACKGROUND_ID ? e.layerOps.setBackgroundVisible(e.doc.backgroundVisible === false) : e.layerOps.setVisible(id, !findLayer$1(e, id)?.visible)
       ),
@@ -4900,6 +5080,10 @@ class LayersPanel {
 }
 function findLayer$1(editor, id) {
   return findAnyLayer(editor.doc, id);
+}
+function selectPaint(editor, id) {
+  editor.layerOps.setActiveLayer(id);
+  editor.setPaintTarget("paint");
 }
 function groupControl(group2, descriptors, ctx) {
   const button2 = document.createElement("button");
@@ -5058,26 +5242,39 @@ class SelectionActions {
     this.element.hidden = !this.editor?.selection.active;
   }
 }
+const TITLES = {
+  color: ["Foreground color (X swaps)", "Background color (X swaps)", "Swap colors (X)", "Default colors (D)"],
+  mask: [
+    "Layer mask foreground: white hides, black reveals (X swaps)",
+    "Layer mask background (X swaps)",
+    "Swap mask black / white (X)",
+    "Default mask swatches: white / black (D)"
+  ]
+};
 class SwatchWidget {
   element;
   fg;
   bg;
+  swap;
+  reset;
+  maskMode = false;
   /**
    * @param actions - Click handlers.
    */
   constructor(actions) {
     this.element = document.createElement("div");
     this.element.className = "cps-swatches";
-    this.bg = swatch("cps-swatch cps-swatch-bg", "Background color (X swaps)", () => actions.pick("bg", this.bg));
-    this.fg = swatch("cps-swatch cps-swatch-fg", "Foreground color (X swaps)", () => actions.pick("fg", this.fg));
-    const swap = swatch("cps-swatch-swap", "Swap colors (X)", () => actions.swap());
-    setIcon(swap, "swap", 11);
-    const reset = swatch("cps-swatch-reset", "Default colors (D)", () => actions.reset());
-    reset.innerHTML = '<span class="cps-reset-bg"></span><span class="cps-reset-fg"></span>';
-    this.element.append(this.bg, this.fg, swap, reset);
+    this.bg = swatch("cps-swatch cps-swatch-bg", () => actions.pick("bg", this.bg));
+    this.fg = swatch("cps-swatch cps-swatch-fg", () => actions.pick("fg", this.fg));
+    this.swap = swatch("cps-swatch-swap", () => actions.swap());
+    setIcon(this.swap, "swap", 11);
+    this.reset = swatch("cps-swatch-reset", () => actions.reset());
+    this.reset.innerHTML = '<span class="cps-reset-bg"></span><span class="cps-reset-fg"></span>';
+    this.element.append(this.bg, this.fg, this.swap, this.reset);
+    this.applyTitles();
   }
   /**
-   * Show colours.
+   * Show colours (the real FG/BG, or the mask swatches in mask mode).
    * @param colors - Current FG/BG.
    */
   setColors(colors) {
@@ -5087,6 +5284,17 @@ class SwatchWidget {
     this.bg.dataset["color"] = colors.bg;
   }
   /**
+   * Switch between the colour swatches and the layer mask swatches (titles,
+   * reset icon, cursor; the colours come from {@link setColors}).
+   * @param on - A layer mask is the edit target.
+   */
+  setMaskMode(on) {
+    if (on === this.maskMode) return;
+    this.maskMode = on;
+    this.element.classList.toggle("cps-mask-swatches", on);
+    this.applyTitles();
+  }
+  /**
    * Anchor element of a swatch (for pickers opened programmatically).
    * @param slot - Which swatch.
    * @returns The square's element.
@@ -5094,13 +5302,19 @@ class SwatchWidget {
   anchor(slot) {
     return slot === "fg" ? this.fg : this.bg;
   }
+  applyTitles() {
+    const titles = TITLES[this.maskMode ? "mask" : "color"];
+    [this.fg, this.bg, this.swap, this.reset].forEach((button2, i) => {
+      const title = titles[i] ?? "";
+      button2.title = title;
+      button2.setAttribute("aria-label", title);
+    });
+  }
 }
-function swatch(className, title, onClick) {
+function swatch(className, onClick) {
   const button2 = document.createElement("button");
   button2.type = "button";
   button2.className = className;
-  button2.title = title;
-  button2.setAttribute("aria-label", title);
   button2.addEventListener("click", onClick);
   return button2;
 }
@@ -6313,12 +6527,19 @@ class HostSync {
     );
     this.swatches = new SwatchWidget({
       pick: (slot, anchor) => {
-        const colors = this.getSession()?.editor.colors;
-        if (colors)
-          this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
+        const editor = this.getSession()?.editor;
+        if (!editor || editor.layerMask.targeted) return;
+        const colors = editor.colors;
+        this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
       },
-      swap: () => this.getSession()?.editor.colors.swap(),
-      reset: () => this.getSession()?.editor.colors.reset()
+      swap: () => {
+        const editor = this.getSession()?.editor;
+        if (editor && !editor.layerMask.swapSwatches()) editor.colors.swap();
+      },
+      reset: () => {
+        const editor = this.getSession()?.editor;
+        if (editor && !editor.layerMask.resetSwatches()) editor.colors.reset();
+      }
     });
     shell.rail.swatchSlot.appendChild(this.swatches.element);
     this.optionsBar = new OptionsBar(shell.bar, shell.popoverHost, () => this.onOptionsChanged());
@@ -6454,6 +6675,19 @@ class HostSync {
     this.rail.setQuickMask(targeting, color);
     this.shell.root.classList.toggle("cps-quickmask", targeting);
     this.optionsBar.setMask({ targeting, color });
+    this.syncOptions();
+    this.syncSwatches();
+  }
+  /**
+   * Show the FG/BG colours, or the black / white mask swatches while a
+   * layer mask is targeted (M14; the real colours stay untouched).
+   */
+  syncSwatches() {
+    const editor = this.getSession()?.editor;
+    if (!editor) return;
+    const onMask = editor.layerMask.targeted !== null;
+    this.swatches.setMaskMode(onMask);
+    this.swatches.setColors(onMask ? editor.layerMask.swatches : editor.colors.current);
   }
   /** Sync undo/redo button enable state. */
   syncHistory() {
@@ -7472,10 +7706,10 @@ function handleShortcut(event, session, effects) {
       editor.togglePaintTarget();
       return true;
     case "x":
-      editor.colors.swap();
+      if (!editor.layerMask.swapSwatches()) editor.colors.swap();
       return true;
     case "d":
-      editor.colors.reset();
+      if (!editor.layerMask.resetSwatches()) editor.colors.reset();
       return true;
     case "f":
       effects.fullscreen();
@@ -9586,7 +9820,275 @@ const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
 function imageMaskNote(name) {
   return `${name} can't be edited — duplicate it to edit.`;
 }
-const HIDDEN_MASK_NOTE = "The mask is hidden; show it to output it.";
+const HIDDEN_MASK_NOTE = "The mask is hidden.";
+function createSurface(width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
+  return { canvas, ctx };
+}
+function releaseSurface(surface) {
+  surface.canvas.width = 0;
+  surface.canvas.height = 0;
+}
+function rebaseSurface(source, from, to, fill) {
+  const next = createSurface(to.width, to.height);
+  if (fill) fillOutside(next, { x: from.x - to.x, y: from.y - to.y, width: from.width, height: from.height }, fill);
+  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
+  return next;
+}
+function fillOutside(surface, hole, fill) {
+  const { ctx, canvas } = surface;
+  ctx.save();
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.clearRect(hole.x, hole.y, hole.width, hole.height);
+  ctx.restore();
+}
+const LAYER_MASK_TOOL_NOTE = "Layer mask: use the brush, eraser or fill.";
+const LAYER_MASK_EYEDROPPER_NOTE = "Layer mask: black and white only, no eyedropper (X swaps).";
+const MASK_WHITE = "#ffffff";
+function targetedMaskLayer(s) {
+  if (s.target !== "paint") return null;
+  const layer = findPaintLayer(s.doc);
+  return layer?.layerMask && s.layerMasks.targets.has(layer.id) ? layer : null;
+}
+function selectedSurfaceKey(s, layer) {
+  return targetedMaskLayer(s)?.id === layer.id ? layerMaskKey(layer.id) : layer.id;
+}
+function editsViewedMask(s, layer) {
+  return layer.layerMask !== void 0 && s.layerMasks.view === layer.id && targetedMaskLayer(s)?.id === layer.id;
+}
+function layerMaskBlockNote(s, layer, kind) {
+  if (kind === "other" && targetedMaskLayer(s)?.id === layer.id) return LAYER_MASK_TOOL_NOTE;
+  return null;
+}
+function maskStrokeStyle(style, fgWhite) {
+  if (style.mode === "erase" || !fgWhite) return { ...style, mode: "erase" };
+  return { ...style, mode: "paint", color: MASK_WHITE };
+}
+function surfaceKeys(layers2) {
+  const keys = /* @__PURE__ */ new Set();
+  for (const layer of layers2) {
+    keys.add(layer.id);
+    if (layer.layerMask) keys.add(layerMaskKey(layer.id));
+  }
+  return keys;
+}
+function surfaceAlive(s, key) {
+  return s.doc.layers.some((l) => l.id === key || l.layerMask !== void 0 && layerMaskKey(l.id) === key);
+}
+function installMaskSurface(s, layerId, mask, pixels) {
+  const key = layerMaskKey(layerId);
+  if (pixels) s.ensureBounds({ x: pixels.x, y: pixels.y, width: pixels.data.width, height: pixels.data.height }, false);
+  s.store.drop(key);
+  const surface = s.store.ensure(key);
+  const b = s.store.bounds;
+  const hole = pixels ? { x: pixels.x - b.x, y: pixels.y - b.y, width: pixels.data.width, height: pixels.data.height } : { x: 0, y: 0, width: 0, height: 0 };
+  if (mask.outside === "hide") fillOutside(surface, hole, MASK_WHITE);
+  if (pixels) s.store.write(key, pixels.x, pixels.y, pixels.data);
+  s.store.setHideOutside(key, mask.outside === "hide");
+  s.runtime.reinstate(key, true);
+}
+function dropMaskSurface(s, layerId) {
+  const key = layerMaskKey(layerId);
+  if (s.strokeLayerId === key && s.stroke.active) s.cancelStroke();
+  s.store.drop(key);
+  s.runtime.remove(key);
+  s.layerMasks.targets.delete(layerId);
+  if (s.layerMasks.view === layerId) s.layerMasks.view = null;
+}
+function initMaskSurfaces(s) {
+  for (const layer of s.doc.layers) {
+    const mask = layer.layerMask;
+    if (!mask) continue;
+    if (!canHaveLayerMask(layer)) {
+      delete layer.layerMask;
+      continue;
+    }
+    const key = layerMaskKey(layer.id);
+    s.store.setHideOutside(key, mask.outside === "hide");
+    s.runtime.reset(key, mask.file !== null);
+    s.store.ensure(key);
+  }
+}
+function resetMaskSurfaces(s) {
+  for (const layer of s.doc.layers) {
+    if (!layer.layerMask) continue;
+    layer.layerMask = { ...layer.layerMask, file: null };
+    installMaskSurface(s, layer.id, layer.layerMask, null);
+  }
+}
+class MaskedLayerCache {
+  surface = null;
+  key = null;
+  /** Full rebuilds so far (tests: cache invalidation). */
+  rebuilds = 0;
+  /**
+   * Bring the composite up to date.
+   * @param layer - Layer pixels (or its live stroke preview), bounds-sized.
+   * @param mask - Mask pixels (or its live stroke preview), bounds-sized.
+   * @param key - Current inputs.
+   * @param dirty - Document rect changed in either source while the key is
+   *   unchanged (live stroke), or `null`.
+   * @returns Masked layer canvas, bounds-sized.
+   */
+  update(layer, mask, key, dirty) {
+    const { bounds } = key;
+    const surface = this.ensureSurface(bounds);
+    const full = { x: 0, y: 0, width: bounds.width, height: bounds.height };
+    if (!this.key || !sameMaskedKey(this.key, key)) {
+      this.rebuilds++;
+      paintMasked(surface.ctx, layer, mask, full, key.invert);
+    } else if (dirty) {
+      const local = intersectRect({ x: dirty.x - bounds.x, y: dirty.y - bounds.y, width: dirty.width, height: dirty.height }, full);
+      if (!isEmptyRect(local)) paintMasked(surface.ctx, layer, mask, local, key.invert);
+    }
+    this.key = { ...key, bounds: { ...bounds } };
+    return surface.canvas;
+  }
+  /** Release the canvas. */
+  dispose() {
+    if (this.surface) releaseSurface(this.surface);
+    this.surface = null;
+    this.key = null;
+  }
+  ensureSurface(bounds) {
+    const s = this.surface;
+    if (s && s.canvas.width === bounds.width && s.canvas.height === bounds.height) return s;
+    if (s) releaseSurface(s);
+    this.key = null;
+    this.surface = createSurface(bounds.width, bounds.height);
+    return this.surface;
+  }
+}
+function sameMaskedKey(a, b) {
+  return a.layerRevision === b.layerRevision && a.maskRevision === b.maskRevision && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
+}
+function paintMasked(ctx, layer, mask, r, invert2) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(r.x, r.y, r.width, r.height);
+  ctx.clip();
+  ctx.globalAlpha = 1;
+  ctx.clearRect(r.x, r.y, r.width, r.height);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(layer, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+  ctx.globalCompositeOperation = invert2 ? "destination-in" : "destination-out";
+  ctx.drawImage(mask, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+  ctx.restore();
+}
+class LayerMaskState {
+  /** Layers whose mask (not pixels) is the edit target. */
+  targets = /* @__PURE__ */ new Set();
+  /** Alt+click view: the layer whose mask is shown alone (grayscale), or `null`. */
+  view = null;
+  /**
+   * Mask swatches (shown instead of the colour swatches while a layer mask
+   * is targeted): the foreground is white (hide; the default) and the
+   * background black, or swapped (X). They only ever hold black / white, so
+   * one flag is the whole state. Per editor, session only.
+   */
+  fgWhite = true;
+  caches = /* @__PURE__ */ new Map();
+  viewSurface = null;
+  /**
+   * Cache of one layer's masked composite.
+   * @param layerId - Layer id.
+   * @returns The cache (created on first use).
+   */
+  cache(layerId) {
+    let cache2 = this.caches.get(layerId);
+    if (!cache2) {
+      cache2 = new MaskedLayerCache();
+      this.caches.set(layerId, cache2);
+    }
+    return cache2;
+  }
+  /**
+   * The mask alone as an opaque grayscale image (white = hidden), cached.
+   * @param mask - Mask pixels (or its live stroke preview).
+   * @param width - Bounds width.
+   * @param height - Bounds height.
+   * @param invert - Show `1 - mask`.
+   * @param key - Cache key (revision, invert, bounds).
+   * @param live - The source changes without a key change (stroke preview): redraw.
+   * @returns Bounds-sized canvas.
+   */
+  viewCanvas(mask, width, height, invert2, key, live) {
+    let v = this.viewSurface;
+    if (!v || v.surface.canvas.width !== width || v.surface.canvas.height !== height) {
+      if (v) releaseSurface(v.surface);
+      v = { surface: createSurface(width, height), key: "" };
+      this.viewSurface = v;
+    }
+    if (v.key !== key || live) {
+      const { ctx } = v.surface;
+      ctx.save();
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(mask, 0, 0);
+      if (invert2) {
+        ctx.globalCompositeOperation = "difference";
+        ctx.fillStyle = MASK_WHITE;
+        ctx.fillRect(0, 0, width, height);
+      }
+      ctx.restore();
+      v.key = key;
+    }
+    return v.surface.canvas;
+  }
+  /**
+   * Drop caches of layers that no longer have a mask.
+   * @param keep - Layer ids with a mask.
+   */
+  prune(keep) {
+    for (const [id, cache2] of this.caches) {
+      if (keep.has(id)) continue;
+      cache2.dispose();
+      this.caches.delete(id);
+    }
+  }
+  /** Release every cache. */
+  dispose() {
+    for (const cache2 of this.caches.values()) cache2.dispose();
+    this.caches.clear();
+    if (this.viewSurface) releaseSurface(this.viewSurface.surface);
+    this.viewSurface = null;
+  }
+}
+function maskedSource(s, layer, source, live) {
+  const mask = layer.layerMask;
+  if (!mask?.enabled) return source;
+  const key = layerMaskKey(layer.id);
+  const surface = s.store.ensure(key);
+  const maskStroking = live && s.stroke.active && s.strokeLayerId === key;
+  const layerStroking = live && s.stroke.active && s.strokeLayerId === layer.id;
+  const maskSource = s.floatPreview(key) ?? (maskStroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+  const cacheKey = {
+    bounds: s.store.bounds,
+    layerRevision: s.runtime.revision(layer.id),
+    maskRevision: s.runtime.revision(key),
+    invert: mask.invert
+  };
+  return s.layerMasks.cache(layer.id).update(source, maskSource, cacheKey, maskStroking || layerStroking ? s.stroke.lastRefreshed : null);
+}
+function maskViewSource(s) {
+  const id = s.layerMasks.view;
+  const layer = id ? s.doc.layers.find((l) => l.id === id) : void 0;
+  const mask = layer?.layerMask;
+  if (!layer || !mask) return null;
+  const key = layerMaskKey(layer.id);
+  const surface = s.store.ensure(key);
+  const live = s.stroke.active && s.strokeLayerId === key;
+  const source = s.floatPreview(key) ?? (live ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+  const b = s.store.bounds;
+  const cacheKey = `${s.runtime.revision(key)}|${mask.invert}|${b.x},${b.y},${b.width},${b.height}`;
+  return s.layerMasks.viewCanvas(source, b.width, b.height, mask.invert, cacheKey, live);
+}
 const TEXT_ENTRY_BYTES = 256;
 const HIT_MARGIN = 0.15;
 function renderTextLayer(s, layer) {
@@ -9662,16 +10164,24 @@ function rasterizeDecision(layer, confirm) {
   if (layer.kind !== "text") return "edit";
   return confirm() ? "rasterize" : "cancel";
 }
-function editBlockNote(s, layer) {
+function editBlockNote(s, layer, kind = "paint") {
   if (layer.id === IMAGE_MASK_ID) return imageMaskNote(layer.name);
-  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
-  if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
+  const viewedMask = kind !== "whole" && editsViewedMask(s, layer);
+  const hidden = viewedMask ? null : hiddenNote(s, layer);
+  if (hidden) return hidden;
+  const maskNote = layerMaskBlockNote(s, layer, kind);
+  if (maskNote) return maskNote;
   if (layer.locked) return LOCKED_LAYER_NOTE;
   return null;
 }
-function preparePixelEdit(s, layer) {
+function hiddenNote(s, layer) {
+  if (!layer.visible) return layer.kind === "mask" ? HIDDEN_MASK_NOTE : HIDDEN_LAYER_NOTE;
+  if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
+  return null;
+}
+function preparePixelEdit(s, layer, kind = "paint") {
   s.settleFloat();
-  const note = editBlockNote(s, layer);
+  const note = editBlockNote(s, layer, kind);
   if (note) {
     s.events.emit("note", note);
     return "blocked";
@@ -10003,11 +10513,10 @@ class EditorHost {
         editor.events.on("selection", () => (this.sync.selectionActions.sync(), this.sync.syncOptions(), this.view.requestOverlay())),
         // Free Transform: bar swaps to the session options and back; handles + cursor follow.
         editor.events.on("transform", () => (this.sync.syncOptions(), this.view.requestOverlay())),
-        editor.colors.events.on("change", (colors) => this.sync.swatches.setColors(colors)),
+        editor.colors.events.on("change", () => this.sync.syncSwatches()),
         // Tool switch: chrome (rail, options, Move drawing toggle) + stage cursor/ring now.
         tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay()))
       );
-      this.sync.swatches.setColors(editor.colors.current);
       this.sync.syncTools();
       this.sync.syncMask();
       this.sync.syncHistory();
@@ -10501,8 +11010,8 @@ function isolateEvents(options) {
   const { root, stage, onWheel, onChromeWheel, onMiddlePointer } = options;
   const controller = new AbortController();
   const { signal } = controller;
-  const stop = (event) => event.stopPropagation();
-  for (const type of ROOT_STOPPED) root.addEventListener(type, stop, { signal });
+  const stop2 = (event) => event.stopPropagation();
+  for (const type of ROOT_STOPPED) root.addEventListener(type, stop2, { signal });
   stage.addEventListener("auxclick", (e) => e.preventDefault(), { signal });
   root.dataset["captureWheel"] = "true";
   let hovering = false;
@@ -10927,23 +11436,6 @@ function requestGraphSync(node, delayMs) {
 }
 function flushGraphSync() {
   task.flush();
-}
-function createSurface(width, height) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width));
-  canvas.height = Math.max(1, Math.round(height));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error(`Could not create a ${canvas.width}x${canvas.height} canvas`);
-  return { canvas, ctx };
-}
-function releaseSurface(surface) {
-  surface.canvas.width = 0;
-  surface.canvas.height = 0;
-}
-function rebaseSurface(source, from, to) {
-  const next = createSurface(to.width, to.height);
-  next.ctx.drawImage(source.canvas, from.x - to.x, from.y - to.y);
-  return next;
 }
 const handled = /* @__PURE__ */ new WeakMap();
 const pending = /* @__PURE__ */ new WeakMap();
@@ -11420,7 +11912,8 @@ function visibleScene(s) {
   const layers2 = [];
   for (const layer of s.doc.layers) {
     if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
-    layers2.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
+    const source = s.store.ensure(layer.id).canvas;
+    layers2.push({ source: layer.layerMask ? maskedSource(s, layer, source, false) : source, opacity: layer.opacity });
   }
   return {
     background: s.background,
@@ -11466,6 +11959,419 @@ function readDocRegion(input, rect, scratch2) {
   const data = ctx.getImageData(0, 0, rect.width, rect.height);
   if (!scratch2) canvas.width = canvas.height = 0;
   return data;
+}
+const INSIDE_COVERAGE = 128;
+function liftPixels(src, coverage, cut) {
+  const float = new Uint8ClampedArray(src);
+  const rest = new Uint8ClampedArray(src);
+  const n = Math.min(coverage.length, src.length >> 2);
+  for (let i = 0; i < src.length >> 2; i++) {
+    const c = i < n ? coverage[i] : 0;
+    const p = i * 4 + 3;
+    const a = src[p];
+    float[p] = Math.round(a * c / 255);
+    if (float[p] === 0) {
+      float[p - 3] = 0;
+      float[p - 2] = 0;
+      float[p - 1] = 0;
+    }
+    if (cut) rest[p] = Math.round(a * (255 - c) / 255);
+  }
+  return { float, rest };
+}
+function compositeOver(dst, dstWidth, dstHeight, src, srcWidth, srcHeight, ox, oy, opacity = 1) {
+  const x0 = Math.max(0, ox);
+  const y0 = Math.max(0, oy);
+  const x1 = Math.min(dstWidth, ox + srcWidth);
+  const y1 = Math.min(dstHeight, oy + srcHeight);
+  const k = Math.min(1, Math.max(0, opacity));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const s = ((y - oy) * srcWidth + (x - ox)) * 4;
+      const sa = src[s + 3] / 255 * k;
+      if (sa <= 0) continue;
+      const d = (y * dstWidth + x) * 4;
+      const da = dst[d + 3] / 255;
+      const oa = sa + da * (1 - sa);
+      for (let c = 0; c < 3; c++) {
+        dst[d + c] = Math.round((src[s + c] * sa + dst[d + c] * da * (1 - sa)) / oa);
+      }
+      dst[d + 3] = Math.round(oa * 255);
+    }
+  }
+}
+function copyPixels(dst, dstRect, src, srcRect) {
+  const x0 = Math.max(dstRect.x, srcRect.x);
+  const y0 = Math.max(dstRect.y, srcRect.y);
+  const x1 = Math.min(dstRect.x + dstRect.width, srcRect.x + srcRect.width);
+  const y1 = Math.min(dstRect.y + dstRect.height, srcRect.y + srcRect.height);
+  if (x1 <= x0) return;
+  for (let y = y0; y < y1; y++) {
+    const s = ((y - srcRect.y) * srcRect.width + (x0 - srcRect.x)) * 4;
+    const d = ((y - dstRect.y) * dstRect.width + (x0 - dstRect.x)) * 4;
+    dst.set(src.subarray(s, s + (x1 - x0) * 4), d);
+  }
+}
+function mergeMaskCoverage(upper, upperInvert, lower, lowerInvert) {
+  for (let p = 0; p < lower.length; p += 4) {
+    const u = upper[p + 3];
+    const l = lower[p + 3];
+    const eu = upperInvert ? 255 - u : u;
+    const el2 = lowerInvert ? 255 - l : l;
+    const union = eu > el2 ? eu : el2;
+    lower[p] = 255;
+    lower[p + 1] = 255;
+    lower[p + 2] = 255;
+    lower[p + 3] = lowerInvert ? 255 - union : union;
+  }
+}
+function offsetSelection(sel, dx, dy) {
+  if (dx === 0 && dy === 0) return sel;
+  return { rect: { ...sel.rect, x: sel.rect.x + dx, y: sel.rect.y + dy }, data: sel.data, outside: sel.outside };
+}
+function selectionHit(sel, x, y) {
+  if (!sel || !Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return coverageAt(sel, Math.floor(x), Math.floor(y)) >= INSIDE_COVERAGE;
+}
+const MAX_SUPERSAMPLE = 4;
+function supersampleFactor(inv) {
+  const stretch = Math.max(Math.hypot(inv.a, inv.b), Math.hypot(inv.c, inv.d));
+  return Math.min(MAX_SUPERSAMPLE, Math.max(1, Math.ceil(stretch - 1e-6)));
+}
+function resampleRgba(src, sw, sh, m, dest) {
+  const out = new Uint8ClampedArray(Math.max(0, dest.width * dest.height * 4));
+  const inv = invert(m);
+  if (!inv) return out;
+  const n = supersampleFactor(inv);
+  const taps = n * n;
+  const acc = [0, 0, 0, 0];
+  for (let y = 0; y < dest.height; y++) {
+    for (let x = 0; x < dest.width; x++) {
+      acc.fill(0);
+      for (let j = 0; j < n; j++) {
+        const py = dest.y + y + (j + 0.5) / n;
+        for (let i = 0; i < n; i++) {
+          const px = dest.x + x + (i + 0.5) / n;
+          const u = inv.a * px + inv.c * py + inv.e - 0.5;
+          const v = inv.b * px + inv.d * py + inv.f - 0.5;
+          bilinearRgba(src, sw, sh, u, v, acc);
+        }
+      }
+      const alpha = acc[3];
+      if (alpha <= 0) continue;
+      const o = (y * dest.width + x) * 4;
+      out[o] = Math.round(acc[0] / alpha);
+      out[o + 1] = Math.round(acc[1] / alpha);
+      out[o + 2] = Math.round(acc[2] / alpha);
+      out[o + 3] = Math.round(alpha / taps);
+    }
+  }
+  return out;
+}
+function resampleCoverage(src, sw, sh, m, dest) {
+  const out = new Uint8Array(Math.max(0, dest.width * dest.height));
+  const inv = invert(m);
+  if (!inv) return out;
+  const n = supersampleFactor(inv);
+  for (let y = 0; y < dest.height; y++) {
+    for (let x = 0; x < dest.width; x++) {
+      let sum = 0;
+      for (let j = 0; j < n; j++) {
+        const py = dest.y + y + (j + 0.5) / n;
+        for (let i = 0; i < n; i++) {
+          const px = dest.x + x + (i + 0.5) / n;
+          sum += bilinearByte(src, sw, sh, inv.a * px + inv.c * py + inv.e - 0.5, inv.b * px + inv.d * py + inv.f - 0.5);
+        }
+      }
+      out[y * dest.width + x] = Math.round(sum / (n * n));
+    }
+  }
+  return out;
+}
+function transformSelection(sel, area, m) {
+  const coverage = coverageFor(sel, area);
+  const dest = transformedAabb(m, area.width, area.height);
+  if (dest.width <= 0 || dest.height <= 0) return null;
+  return selectionFromCoverage(resampleCoverage(coverage, area.width, area.height, m, dest), dest);
+}
+function flipRgba(src, w, h, axis) {
+  const out = new Uint8ClampedArray(src.length);
+  for (let y = 0; y < h; y++) {
+    const ty = axis === "v" ? h - 1 - y : y;
+    for (let x = 0; x < w; x++) {
+      const tx = axis === "h" ? w - 1 - x : x;
+      const s = (y * w + x) * 4;
+      out.set(src.subarray(s, s + 4), (ty * w + tx) * 4);
+    }
+  }
+  return out;
+}
+function bilinearRgba(src, sw, sh, u, v, acc) {
+  const x0 = Math.floor(u);
+  const y0 = Math.floor(v);
+  const fx = u - x0;
+  const fy = v - y0;
+  for (let k = 0; k < 4; k++) {
+    const xx = x0 + (k & 1);
+    const yy = y0 + (k >> 1);
+    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
+    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
+    const p = (yy * sw + xx) * 4;
+    const a = src[p + 3] * wgt;
+    if (a <= 0) continue;
+    acc[0] = acc[0] + src[p] * a;
+    acc[1] = acc[1] + src[p + 1] * a;
+    acc[2] = acc[2] + src[p + 2] * a;
+    acc[3] = acc[3] + a;
+  }
+}
+function bilinearByte(src, sw, sh, u, v) {
+  const x0 = Math.floor(u);
+  const y0 = Math.floor(v);
+  const fx = u - x0;
+  const fy = v - y0;
+  let sum = 0;
+  for (let k = 0; k < 4; k++) {
+    const xx = x0 + (k & 1);
+    const yy = y0 + (k >> 1);
+    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
+    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
+    sum += src[yy * sw + xx] * wgt;
+  }
+  return sum;
+}
+const LAYER_MASK_APPLIED_NOTE = "Layer mask applied.";
+const EMPTY$1 = { x: 0, y: 0, width: 0, height: 0 };
+const contentCache$1 = /* @__PURE__ */ new WeakMap();
+function maskContentRect(s, layerId) {
+  const mask = s.doc.layers.find((l) => l.id === layerId)?.layerMask;
+  if (!mask) return { ...EMPTY$1 };
+  const key = layerMaskKey(layerId);
+  const hide = mask.outside === "hide";
+  let cache2 = contentCache$1.get(s);
+  if (!cache2) {
+    cache2 = /* @__PURE__ */ new Map();
+    contentCache$1.set(s, cache2);
+  }
+  const revision = s.runtime.revision(key);
+  const hit = cache2.get(key);
+  if (hit && hit.revision === revision && hit.hide === hide) return { ...hit.rect };
+  const b = s.store.bounds;
+  const data = s.store.snapshot(key);
+  const local = differsBounds(data.data, data.width, data.height, hide ? 255 : 0);
+  const rect = isEmptyRect(local) ? { ...EMPTY$1 } : { ...local, x: local.x + b.x, y: local.y + b.y };
+  cache2.set(key, { revision, hide, rect });
+  return { ...rect };
+}
+function differsBounds(px, w, h, value) {
+  let minX = w;
+  let minY = h;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < h; y++) {
+    const row = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      if (px[row + x * 4 + 3] === value) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      maxY = y;
+    }
+  }
+  return maxX < 0 ? { ...EMPTY$1 } : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function maskToOpaque(px) {
+  for (let p = 0; p < px.length; p += 4) {
+    const v = px[p + 3];
+    px[p] = v;
+    px[p + 1] = v;
+    px[p + 2] = v;
+    px[p + 3] = 255;
+  }
+}
+function opaqueToMask(px) {
+  for (let p = 0; p < px.length; p += 4) {
+    const v = px[p];
+    const rgb = v === 0 ? 0 : 255;
+    px[p] = rgb;
+    px[p + 1] = rgb;
+    px[p + 2] = rgb;
+    px[p + 3] = v;
+  }
+}
+function applyMaskAlpha(px, mask, inverted) {
+  for (let p = 0; p < px.length; p += 4) {
+    const m = mask[p + 3] ?? 0;
+    const shown = inverted ? m : 255 - m;
+    if (shown === 255) continue;
+    const a = Math.round(px[p + 3] * shown / 255);
+    px[p + 3] = a;
+    if (a === 0) px.fill(0, p, p + 3);
+  }
+}
+function liftMaskPixels(src, coverage, cut) {
+  const float = new Uint8ClampedArray(src.length);
+  const rest = new Uint8ClampedArray(src);
+  for (let i = 0; i < src.length >> 2; i++) {
+    const c = coverage[i] ?? 0;
+    if (c === 0) continue;
+    const p = i * 4;
+    const v = src[p + 3];
+    float[p] = v;
+    float[p + 1] = v;
+    float[p + 2] = v;
+    float[p + 3] = c;
+    if (cut) rest[p + 3] = Math.round(v * (255 - c) / 255);
+  }
+  return { float, rest };
+}
+function landMaskPixels(dst, dw, dh, src, sw, sh, ox, oy) {
+  maskToOpaque(dst);
+  compositeOver(dst, dw, dh, src, sw, sh, ox, oy);
+  opaqueToMask(dst);
+}
+function maskFloatSurfaces(gray, w, h) {
+  const value = new ImageData(w, h);
+  const cover = new ImageData(w, h);
+  for (let p = 0; p < gray.length; p += 4) {
+    const c = gray[p + 3];
+    if (c === 0) continue;
+    cover.data.set([255, 255, 255, c], p);
+    const a = Math.round(gray[p] * c / 255);
+    if (a > 0) value.data.set([255, 255, 255, a], p);
+  }
+  const surfaces = { value: createSurface(w, h), cover: createSurface(w, h) };
+  surfaces.value.ctx.putImageData(value, 0, 0);
+  surfaces.cover.ctx.putImageData(cover, 0, 0);
+  return surfaces;
+}
+function flipMaskPatch(s, layer, about, axis) {
+  const mask = layer.layerMask;
+  const c = maskContentRect(s, layer.id);
+  if (!mask || isEmptyRect(c)) return null;
+  const key = layerMaskKey(layer.id);
+  const sx0 = 2 * about.x + about.width - 1;
+  const sy0 = 2 * about.y + about.height - 1;
+  const mirrored = axis === "h" ? { ...c, x: sx0 + 1 - c.x - c.width } : { ...c, y: sy0 + 1 - c.y - c.height };
+  s.ensureBounds(mirrored, true);
+  const src = s.store.read(key, c);
+  const region = s.store.read(key, unionRect(c, mirrored));
+  if (!src || !region) return null;
+  const r = region.rect;
+  const S2 = src.rect;
+  const next = new Uint8ClampedArray(r.width * r.height * 4);
+  if (mask.outside === "hide") next.fill(255);
+  for (let y = 0; y < S2.height; y++) {
+    for (let x = 0; x < S2.width; x++) {
+      const tx = axis === "h" ? sx0 - (S2.x + x) : S2.x + x;
+      const ty = axis === "v" ? sy0 - (S2.y + y) : S2.y + y;
+      if (tx < r.x || ty < r.y || tx >= r.x + r.width || ty >= r.y + r.height) continue;
+      const si = (y * S2.width + x) * 4;
+      next.set(src.data.data.subarray(si, si + 4), ((ty - r.y) * r.width + (tx - r.x)) * 4);
+    }
+  }
+  return writeMaskPatch(s, key, region, next);
+}
+function writeMaskPatch(s, key, before, next) {
+  const r = before.rect;
+  s.store.write(key, r.x, r.y, new ImageData(next, r.width, r.height));
+  const after = s.store.read(key, r);
+  s.runtime.touch(key);
+  if (!after) return null;
+  const bytes = before.data.data.byteLength + after.data.data.byteLength;
+  return { kind: "patch", layerId: key, x: r.x, y: r.y, before: before.data, after: after.data, bytes };
+}
+function liftCarry(s, layer) {
+  const mask = layer.layerMask;
+  if (!mask) return null;
+  const key = layerMaskKey(layer.id);
+  const hole = maskContentRect(s, layer.id);
+  const kept = s.kept.get(key, s.runtime.revision(key));
+  let pixels;
+  let area;
+  let m0;
+  if (kept) {
+    ({ pixels, m: m0 } = kept);
+    area = { ...kept.area };
+  } else {
+    const read = isEmptyRect(hole) ? null : s.store.read(key, hole);
+    if (!read) return null;
+    const px = new Uint8ClampedArray(read.data.data);
+    maskToOpaque(px);
+    area = read.rect;
+    pixels = new ImageData(px, area.width, area.height);
+    m0 = translation(area.x, area.y);
+  }
+  const shown = new Uint8ClampedArray(pixels.data);
+  opaqueToMask(shown);
+  const surface = createSurface(area.width, area.height);
+  surface.ctx.putImageData(new ImageData(shown, area.width, area.height), 0, 0);
+  return { key, hide: mask.outside === "hide", pixels, area, m0, hole, surface, preview: null };
+}
+function carryMatrix(carry, liftM, m) {
+  const inv = invert(liftM);
+  return inv ? multiply(multiply(m, inv), carry.m0) : carry.m0;
+}
+function carryPreviewCanvas(s, carry, mc) {
+  const b = s.store.bounds;
+  const key = `${mc.a},${mc.b},${mc.c},${mc.d},${mc.e},${mc.f}|${b.x},${b.y},${b.width},${b.height}|${s.runtime.revision(carry.key)}`;
+  if (carry.preview?.key === key) return carry.preview.surface.canvas;
+  if (carry.preview) releaseSurface(carry.preview.surface);
+  const surface = createSurface(b.width, b.height);
+  const { ctx } = surface;
+  ctx.save();
+  ctx.fillStyle = MASK_WHITE;
+  if (carry.hide) ctx.fillRect(0, 0, b.width, b.height);
+  const { width: w, height: h } = carry.area;
+  const draw = (x, y) => {
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.fillRect(x, y, w, h);
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(carry.surface.canvas, x, y);
+  };
+  if (isWholeTranslation(mc)) draw(Math.round(mc.e) - b.x, Math.round(mc.f) - b.y);
+  else {
+    ctx.imageSmoothingEnabled = true;
+    ctx.setTransform(mc.a, mc.b, mc.c, mc.d, mc.e - b.x, mc.f - b.y);
+    draw(0, 0);
+  }
+  ctx.restore();
+  carry.preview = { surface, key };
+  return surface.canvas;
+}
+function writeCarryPatch(s, carry, mc) {
+  const { width: w, height: h } = carry.area;
+  const b = s.store.bounds;
+  const dest = intersectRect(transformedAabb(mc, w, h), b);
+  const current = s.store.read(carry.key, unionRect(intersectRect(carry.hole, b), dest));
+  if (!current) return;
+  const r = current.rect;
+  const next = new Uint8ClampedArray(current.data.data);
+  maskToOpaque(next);
+  const hole = intersectRect(carry.hole, r);
+  const out = carry.hide ? 255 : 0;
+  for (let y = hole.y; y < hole.y + hole.height; y++) {
+    const row = ((y - r.y) * r.width + (hole.x - r.x)) * 4;
+    for (let i = 0; i < hole.width * 4; i += 4) next.fill(out, row + i, row + i + 3);
+  }
+  if (!isEmptyRect(dest)) {
+    const src = resampleRgba(carry.pixels.data, w, h, mc, dest);
+    compositeOver(next, r.width, r.height, src, dest.width, dest.height, dest.x - r.x, dest.y - r.y);
+  }
+  opaqueToMask(next);
+  const entry = writeMaskPatch(s, carry.key, current, next);
+  if (!entry) return;
+  s.history.joinNext();
+  s.history.push(entry);
+}
+function releaseCarry(carry) {
+  releaseSurface(carry.surface);
+  if (carry.preview) releaseSurface(carry.preview.surface);
+  carry.preview = null;
+}
+function isWholeTranslation(m) {
+  const whole = (v) => Math.abs(v - Math.round(v)) < 1e-6;
+  return m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && whole(m.e) && whole(m.f);
 }
 function clean$1(n) {
   return n === 0 ? 0 : n;
@@ -11569,120 +12475,102 @@ function shiftRegion(s, layerId, from, dx, dy) {
   ctx.restore();
   releaseSurface(tmp);
 }
+function shiftMaskRegion(s, key, from, dx, dy, hide) {
+  if (!hide) return shiftRegion(s, key, from, dx, dy);
+  const bounds = s.store.bounds;
+  const src = intersectRect(from, bounds);
+  if (isEmptyRect(src)) return;
+  const surface = s.store.ensure(key);
+  const lx = src.x - bounds.x;
+  const ly = src.y - bounds.y;
+  const tmp = createSurface(src.width, src.height);
+  tmp.ctx.drawImage(surface.canvas, lx, ly, src.width, src.height, 0, 0, src.width, src.height);
+  const ctx = surface.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = MASK_WHITE;
+  ctx.fillRect(lx, ly, src.width, src.height);
+  ctx.clearRect(lx + dx, ly + dy, src.width, src.height);
+  ctx.drawImage(tmp.canvas, lx + dx, ly + dy);
+  ctx.restore();
+  releaseSurface(tmp);
+}
 function translateLayerPixels(s, layerId, dx, dy, gesture) {
+  const mask = s.doc.layers.find((l) => l.id === layerId)?.layerMask;
+  const maskKey = layerMaskKey(layerId);
+  const hide = mask?.outside === "hide";
   const content = layerContentRect(s, layerId);
+  const maskContent = mask ? maskContentRect(s, layerId) : { x: 0, y: 0, width: 0, height: 0 };
   const plan = planTranslate(s.store.bounds, content, dx, dy, s.doc.frame);
-  if (plan.kind === "none") return false;
-  s.ensureBounds(plan.target, true);
+  const mPlan = planTranslate(s.store.bounds, maskContent, dx, dy, s.doc.frame);
+  if (plan.kind === "none" && mPlan.kind === "none") return false;
+  if (plan.kind !== "none") s.ensureBounds(plan.target, true);
+  if (mPlan.kind !== "none") s.ensureBounds(mPlan.target, true);
   const cache2 = cacheOf(s);
-  if (plan.kind === "translate") {
-    shiftRegion(s, layerId, content, dx, dy);
+  const withMask = mPlan.kind !== "none";
+  if (plan.kind !== "patch" && mPlan.kind !== "patch") {
+    if (plan.kind === "translate") shiftRegion(s, layerId, content, dx, dy);
+    if (withMask) shiftMaskRegion(s, maskKey, maskContent, dx, dy, hide);
     const merge = gesture ? s.history.mergeTarget() : void 0;
-    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId) {
+    if (merge?.kind === "translate" && merge.gesture === gesture && merge.layerId === layerId && merge.mask !== void 0 === withMask) {
       mergeTranslate(merge, dx, dy);
       if (merge.dx === 0 && merge.dy === 0) s.history.discardNewest();
     } else {
       const entry = { kind: "translate", layerId, dx, dy, content, bytes: TRANSLATE_ENTRY_BYTES };
+      if (withMask) entry.mask = maskContent;
       if (gesture) entry.gesture = gesture;
       s.history.push(entry);
     }
-    s.runtime.touch(layerId);
-    cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
+    if (plan.kind === "translate") {
+      s.runtime.touch(layerId);
+      cache2.set(layerId, { revision: s.runtime.revision(layerId), rect: plan.target });
+    }
+    if (withMask) s.runtime.touch(maskKey);
     return true;
   }
-  const region = intersectRect(plan.region, s.store.bounds);
-  const before = s.store.read(layerId, region);
-  if (!before) return false;
-  shiftRegion(s, layerId, content, dx, dy);
-  const after = s.store.read(layerId, before.rect);
-  if (after) {
-    const bytes = before.data.data.byteLength + after.data.data.byteLength;
-    s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
+  const entries = [];
+  if (plan.kind !== "none") {
+    const e = shiftPatch(s, layerId, plan.region, () => shiftRegion(s, layerId, content, dx, dy));
+    if (e) entries.push(e);
+    cache2.delete(layerId);
   }
-  s.runtime.touch(layerId);
-  cache2.delete(layerId);
-  return true;
+  if (withMask) {
+    const e = shiftPatch(s, maskKey, mPlan.region, () => shiftMaskRegion(s, maskKey, maskContent, dx, dy, hide));
+    if (e) entries.push(e);
+  }
+  const [first, second] = entries;
+  if (first) s.history.push(second ? groupEntries(first, second) : first);
+  return first !== void 0;
+}
+function shiftPatch(s, key, region, shift) {
+  const before = s.store.read(key, intersectRect(region, s.store.bounds));
+  if (!before) return null;
+  shift();
+  const after = s.store.read(key, before.rect);
+  s.runtime.touch(key);
+  if (!after) return null;
+  const bytes = before.data.data.byteLength + after.data.data.byteLength;
+  return { kind: "patch", layerId: key, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes };
 }
 function applyTranslateEntry(s, entry, forward) {
-  if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
-  const step = translateStep(entry, forward);
-  s.ensureBounds(step.to, false);
-  shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
-  s.runtime.touch(entry.layerId);
-  cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
-}
-const INSIDE_COVERAGE = 128;
-function liftPixels(src, coverage, cut) {
-  const float = new Uint8ClampedArray(src);
-  const rest = new Uint8ClampedArray(src);
-  const n = Math.min(coverage.length, src.length >> 2);
-  for (let i = 0; i < src.length >> 2; i++) {
-    const c = i < n ? coverage[i] : 0;
-    const p = i * 4 + 3;
-    const a = src[p];
-    float[p] = Math.round(a * c / 255);
-    if (float[p] === 0) {
-      float[p - 3] = 0;
-      float[p - 2] = 0;
-      float[p - 1] = 0;
-    }
-    if (cut) rest[p] = Math.round(a * (255 - c) / 255);
+  const layer = s.doc.layers.find((l) => l.id === entry.layerId);
+  if (!layer) return;
+  if (!isEmptyRect(entry.content)) {
+    const step = translateStep(entry, forward);
+    s.ensureBounds(step.to, false);
+    shiftRegion(s, entry.layerId, step.from, step.dx, step.dy);
+    s.runtime.touch(entry.layerId);
+    cacheOf(s).set(entry.layerId, { revision: s.runtime.revision(entry.layerId), rect: step.to });
   }
-  return { float, rest };
-}
-function compositeOver(dst, dstWidth, dstHeight, src, srcWidth, srcHeight, ox, oy, opacity = 1) {
-  const x0 = Math.max(0, ox);
-  const y0 = Math.max(0, oy);
-  const x1 = Math.min(dstWidth, ox + srcWidth);
-  const y1 = Math.min(dstHeight, oy + srcHeight);
-  const k = Math.min(1, Math.max(0, opacity));
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const s = ((y - oy) * srcWidth + (x - ox)) * 4;
-      const sa = src[s + 3] / 255 * k;
-      if (sa <= 0) continue;
-      const d = (y * dstWidth + x) * 4;
-      const da = dst[d + 3] / 255;
-      const oa = sa + da * (1 - sa);
-      for (let c = 0; c < 3; c++) {
-        dst[d + c] = Math.round((src[s + c] * sa + dst[d + c] * da * (1 - sa)) / oa);
-      }
-      dst[d + 3] = Math.round(oa * 255);
-    }
+  if (entry.mask && layer.layerMask) {
+    const key = layerMaskKey(layer.id);
+    const step = translateStep({ dx: entry.dx, dy: entry.dy, content: entry.mask }, forward);
+    s.ensureBounds(step.to, false);
+    shiftMaskRegion(s, key, step.from, step.dx, step.dy, layer.layerMask.outside === "hide");
+    s.runtime.touch(key);
   }
-}
-function copyPixels(dst, dstRect, src, srcRect) {
-  const x0 = Math.max(dstRect.x, srcRect.x);
-  const y0 = Math.max(dstRect.y, srcRect.y);
-  const x1 = Math.min(dstRect.x + dstRect.width, srcRect.x + srcRect.width);
-  const y1 = Math.min(dstRect.y + dstRect.height, srcRect.y + srcRect.height);
-  if (x1 <= x0) return;
-  for (let y = y0; y < y1; y++) {
-    const s = ((y - srcRect.y) * srcRect.width + (x0 - srcRect.x)) * 4;
-    const d = ((y - dstRect.y) * dstRect.width + (x0 - dstRect.x)) * 4;
-    dst.set(src.subarray(s, s + (x1 - x0) * 4), d);
-  }
-}
-function mergeMaskCoverage(upper, upperInvert, lower, lowerInvert) {
-  for (let p = 0; p < lower.length; p += 4) {
-    const u = upper[p + 3];
-    const l = lower[p + 3];
-    const eu = upperInvert ? 255 - u : u;
-    const el2 = lowerInvert ? 255 - l : l;
-    const union = eu > el2 ? eu : el2;
-    lower[p] = 255;
-    lower[p + 1] = 255;
-    lower[p + 2] = 255;
-    lower[p + 3] = lowerInvert ? 255 - union : union;
-  }
-}
-function offsetSelection(sel, dx, dy) {
-  if (dx === 0 && dy === 0) return sel;
-  return { rect: { ...sel.rect, x: sel.rect.x + dx, y: sel.rect.y + dy }, data: sel.data, outside: sel.outside };
-}
-function selectionHit(sel, x, y) {
-  if (!sel || !Number.isFinite(x) || !Number.isFinite(y)) return false;
-  return coverageAt(sel, Math.floor(x), Math.floor(y)) >= INSIDE_COVERAGE;
 }
 function recordSelectionMove(s, before, after, join) {
   if (selectionsEqual(before, after)) return;
@@ -11771,6 +12659,134 @@ class SelectionMoveOps {
     this.start = null;
   }
 }
+function fitScale$1(source, area) {
+  if (source.width <= 0 || source.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
+  return Math.min(1, area.width / source.width, area.height / source.height);
+}
+function insertParams(source, imageArea, docPerImage, place) {
+  const k = fitScale$1(source, { width: imageArea.width / docPerImage, height: imageArea.height / docPerImage });
+  const t = k * docPerImage;
+  const w = source.width * t;
+  const h = source.height * t;
+  const tl = pasteTopLeft({ width: w, height: h }, { ...place, imageArea, original: null });
+  return { cx: tl.x + w / 2, cy: tl.y + h / 2, sx: t, sy: t, angle: 0 };
+}
+class SourceInsertOps {
+  /**
+   * @param s - Shared editor state.
+   * @param layers - Layer commands (undoable add + solo rule).
+   * @param float - Float commands (the session runs on a float).
+   * @param paintTargetOff - Turns Quick Mask off.
+   * @param undo - Undo one history step (`PaintOps.undo`).
+   */
+  constructor(s, layers2, float, paintTargetOff, undo) {
+    this.s = s;
+    this.layers = layers2;
+    this.float = float;
+    this.paintTargetOff = paintTargetOff;
+    this.undo = undo;
+  }
+  s;
+  layers;
+  float;
+  paintTargetOff;
+  undo;
+  /**
+   * New layer holding `pixels` in a Free Transform session (see module doc).
+   * @param pixels - Full-resolution source pixels (straight alpha).
+   * @param name - Layer name (source file name); default "Image N" (next free N).
+   * @returns `true` if the session runs.
+   */
+  insert(pixels, name) {
+    return this.start(
+      pixels,
+      name?.trim() || imageLayerName(this.s.doc.layers),
+      (place, area, docPerImage) => insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place)
+    ) !== null;
+  }
+  /**
+   * An oversized paste (SPEC M10 Clipboard): the same session, at native
+   * size and the paste's own placement (`pastePlacement.ts`, no fit scaling).
+   * @param pixels - Full source pixels (straight alpha).
+   * @param name - Layer name ("Pasted N").
+   * @param rect - Placed document rect of the whole paste (`pasteRect`).
+   * @returns The new layer id if the session runs, else `null`.
+   */
+  insertPlaced(pixels, name, rect) {
+    const sx = rect.width / pixels.width;
+    const sy = rect.height / pixels.height;
+    return this.start(pixels, name, () => ({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, sx, sy, angle: 0 }));
+  }
+  /** Shared body of {@link insert} / {@link insertPlaced}. */
+  start(pixels, name, paramsFor) {
+    const s = this.s;
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return null;
+    s.settleFloat();
+    s.commitTextEdit();
+    if (s.stroke.active) s.cancelStroke();
+    if (this.float.active || this.float.transform.active) return null;
+    if (s.target === "mask") this.paintTargetOff();
+    const layer = createPaintLayer(name);
+    const id = this.layers.addLayer(layer);
+    if (!id) return null;
+    const map = documentMap(s.doc, s.imageSize);
+    const sel = s.selection.current;
+    const place = pasteContext({ selection: sel, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
+    if (sel) {
+      s.selection.set(null);
+      recordSelectionMove(s, sel, null, true);
+    }
+    const step = s.history.mergeTarget();
+    const docPerImage = 1 / map.scale;
+    const area = imageRectToDoc(map, frameRect(s.imageSize));
+    const { width: w, height: h } = pixels;
+    const params = paramsFor(place, area, docPerImage);
+    const m = paramsMatrix(params, w, h);
+    s.ensureBounds(transformedAabb(m, w, h), true);
+    const surface = createSurface(w, h);
+    surface.ctx.putImageData(pixels, 0, 0);
+    const f = {
+      layerId: id,
+      area: { x: 0, y: 0, width: w, height: h },
+      // The layer is empty: a 1 px transparent "hole" inside the bounds keeps the commit patch small.
+      original: new ImageData(1, 1),
+      holeRect: holeAt(s.store.bounds, params),
+      params,
+      pixels,
+      surface,
+      dx: 0,
+      dy: 0,
+      selBefore: null,
+      selBase: null,
+      xf: m,
+      baked: null,
+      dragBase: null,
+      preview: null,
+      inserted: true,
+      onEnd: (landed) => this.ended(id, step, landed)
+    };
+    if (!this.float.adoptInserted(f)) return null;
+    return this.float.transform.enter() ? id : null;
+  }
+  /** The inserted float ended: join its steps, or remove the layer without a trace. */
+  ended(layerId, step, landed) {
+    const s = this.s;
+    if (!step) return;
+    if (landed) {
+      s.history.joinSince(step);
+      return;
+    }
+    if (s.history.mergeTarget() !== step) return;
+    this.undo();
+    s.history.dropRedo();
+    s.kept.drop(layerId);
+    s.events.emit("history", void 0);
+  }
+}
+function holeAt(bounds, p) {
+  const clamp2 = (v, lo, size) => Math.min(lo + size - 1, Math.max(lo, Math.floor(v)));
+  return { x: clamp2(p.cx, bounds.x, bounds.width), y: clamp2(p.cy, bounds.y, bounds.height), width: 1, height: 1 };
+}
 const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
 const PASTE_TRANSFORM_NOTE = "Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel.";
 class ClipboardOps {
@@ -11779,17 +12795,20 @@ class ClipboardOps {
    * @param layers - Layer commands (undoable insert + solo rule).
    * @param paintTargetOff - Turns Quick Mask off (`Editor.setPaintTarget("paint")`).
    * @param insertPlaced - `SourceInsertOps.insertPlaced` (oversized pastes).
+   * @param float - Float commands (pastes into the lmask-only view float on the lmask).
    */
-  constructor(s, layers2, paintTargetOff, insertPlaced) {
+  constructor(s, layers2, paintTargetOff, insertPlaced, float) {
     this.s = s;
     this.layers = layers2;
     this.paintTargetOff = paintTargetOff;
     this.insertPlaced = insertPlaced;
+    this.float = float;
   }
   s;
   layers;
   paintTargetOff;
   insertPlaced;
+  float;
   /** Image px per document px (the frame map scale). */
   get imageScale() {
     return documentMap(this.s.doc, this.s.imageSize).scale;
@@ -11804,7 +12823,7 @@ class ClipboardOps {
     if (s.loading || s.stroke.active) return null;
     s.settleFloat();
     const layer = merged ? void 0 : this.editLayer();
-    const block = layer ? editBlockNote(s, layer) : null;
+    const block = layer ? editBlockNote(s, layer, this.kind(layer)) : null;
     if (block && block !== LOCKED_LAYER_NOTE) {
       s.events.emit("note", block);
       return null;
@@ -11823,7 +12842,7 @@ class ClipboardOps {
     if (s.loading || s.stroke.active) return null;
     s.settleFloat();
     const layer = this.editLayer();
-    if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+    if (!layer || preparePixelEdit(s, layer, this.kind(layer)) === "blocked") return null;
     const area = this.layerArea(layer);
     const clip = area ? this.copyLayer(layer) : null;
     if (!clip || !area) {
@@ -11834,12 +12853,13 @@ class ClipboardOps {
     return clip;
   }
   /**
-   * Ctrl+V / drop: a new paint layer holding `source`.
+   * Ctrl+V / drop: a new paint layer holding `source` -- or, in the
+   * lmask-only view, an lmask float on the viewed lmask ({@link pasteIntoMask}).
    * @param source - Decoded image (ImageBitmap, canvas, ...).
    * @param size - Its pixel size.
    * @param docPerSource - Document px per source px (`1 / imageScale` for image px).
    * @param at - Centre point or top-left, document coords.
-   * @returns What happened, or `null` (loading / nothing fits).
+   * @returns What happened, or `null` (loading / nothing fits / blocked).
    */
   paste(source, size, docPerSource, at) {
     const s = this.s;
@@ -11848,15 +12868,12 @@ class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    const viewed = targetedMaskLayer(s);
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, cropped ? null : rect);
     if (cropped) return this.pasteInTransform(source, size, full);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
-    const surface = createSurface(rect.width, rect.height);
-    surface.ctx.imageSmoothingEnabled = resampled;
-    surface.ctx.imageSmoothingQuality = "high";
-    surface.ctx.drawImage(source, full.x - rect.x, full.y - rect.y, full.width, full.height);
-    const data = surface.ctx.getImageData(0, 0, rect.width, rect.height);
-    releaseSurface(surface);
+    const data = drawSource(source, rect, full, resampled);
     const index = s.target === "mask" ? topPaintIndex(s.doc.layers) : paintInsertIndex(s.doc);
     if (s.target === "mask") this.paintTargetOff();
     const layer = createPaintLayer(pastedLayerName(s.doc.layers));
@@ -11873,40 +12890,99 @@ class ClipboardOps {
   // ── Internals ───────────────────────────────────────────────────────────
   /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
   pasteInTransform(source, size, full) {
-    const surface = createSurface(size.width, size.height);
-    surface.ctx.drawImage(source, 0, 0);
-    const pixels = surface.ctx.getImageData(0, 0, size.width, size.height);
-    releaseSurface(surface);
+    const pixels = drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     const name = pastedLayerName(this.s.doc.layers);
     const id = this.insertPlaced(pixels, name, full);
     if (!id) return null;
     this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
     return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
   }
+  /**
+   * A paste in the lmask-only view (M14b): the image as lmask values
+   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
+   * the paint area (`rect` null) -- the full image in a Free Transform
+   * session (native size at `full`, cropped on commit), like an oversized
+   * paste. The float always lands on commit (it has no lift position); the
+   * selection is dropped now and joins the commit's step (cancel brings it back).
+   */
+  pasteIntoMask(layer, source, size, full, rect) {
+    const s = this.s;
+    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
+    const key = layerMaskKey(layer.id);
+    const resampled = full.width !== size.width || full.height !== size.height;
+    const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
+    imageToMaskGray(pixels.data);
+    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, full);
+    if (!f) return null;
+    const sel = s.selection.current;
+    f.inserted = true;
+    f.onEnd = (landed) => {
+      if (landed) recordSelectionMove(s, sel, s.selection.current, true);
+      else s.selection.set(sel);
+    };
+    s.selection.set(null);
+    if (!this.float.adoptInserted(f)) return null;
+    s.runtime.bump(key);
+    if (!rect) {
+      this.float.transform.enter();
+      s.events.emit("note", PASTE_TRANSFORM_NOTE);
+    }
+    s.events.emit("render", void 0);
+    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, intoMask: true };
+  }
+  /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
+  maskFloatAt(key, pixels, rect) {
+    const s = this.s;
+    s.ensureBounds(rect, true);
+    const read = s.store.read(key, rect);
+    if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
+    return maskFloat(key, pixels, { ...rect }, read.data, null);
+  }
+  /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
+  maskFloatPlaced(key, pixels, full) {
+    const s = this.s;
+    const { width: w, height: h } = pixels;
+    const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
+    const m = paramsMatrix(params, w, h);
+    s.ensureBounds(transformedAabb(m, w, h), true);
+    const hole = holeAt(s.store.bounds, params);
+    const read = s.store.read(key, hole);
+    if (!read) return null;
+    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params };
+  }
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
   editLayer() {
     const s = this.s;
     return activeEditLayer(s.doc, s.target, s.currentMaskId);
   }
-  /** Document area of a layer copy: the selection extent, or the content bbox. */
+  /** Gate kind: copy / cut of a targeted lmask is a mask-aware edit (lmask-only view exception). */
+  kind(layer) {
+    return selectedSurfaceKey(this.s, layer) === layer.id ? "whole" : "paint";
+  }
+  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask, M14b). */
   layerArea(layer) {
     const s = this.s;
     const sel = s.selection.current;
-    const area = sel ? selectionExtent(sel, s.store.bounds) : layerContentRect(s, layer.id);
+    const area = sel ? selectionExtent(sel, s.store.bounds) : layerContentRect(s, selectedSurfaceKey(s, layer));
     return isEmptyRect(area) ? null : area;
   }
   copyLayer(layer) {
     const s = this.s;
     if (!layer) return null;
+    const key = selectedSurfaceKey(s, layer);
+    const gray = layer.kind === "mask" || key !== layer.id;
     const area = this.layerArea(layer);
-    const read = area ? s.store.read(layer.id, area) : null;
+    const read = area ? s.store.read(key, area) : null;
     if (!read) return null;
     const sel = s.selection.current;
     const coverage = sel ? coverageFor(sel, read.rect) : null;
     const px = read.data.data;
-    const any = layer.kind === "mask" ? maskToGray(px, coverage) : applyCoverage(px, coverage);
+    const lm = gray ? void 0 : layer.layerMask;
+    const mask = lm?.enabled ? s.store.read(layerMaskKey(layer.id), read.rect) : null;
+    if (lm && mask) applyMaskAlpha(px, mask.data.data, lm.invert);
+    const any = gray ? maskToGray(px, coverage) : applyCoverage(px, coverage);
     if (!any) return null;
-    return layer.kind === "mask" ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
+    return gray ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
   }
   copyMerged() {
     const s = this.s;
@@ -11955,25 +13031,54 @@ class ClipboardOps {
   clip(data, rect) {
     return { data, rect: { ...rect }, imageScale: this.imageScale };
   }
-  /** Clear the selected (or all) pixels of `area` on a layer as one patch. */
+  /** Clear the selected (or all) pixels of `area` on a layer (or its targeted lmask: reveal) as one patch. */
   clearArea(layer, area) {
     const s = this.s;
-    const before = s.store.read(layer.id, area);
+    const key = selectedSurfaceKey(s, layer);
+    const before = s.store.read(key, area);
     if (!before) return;
     const rect = intersectRect(before.rect, area);
     const sel = s.selection.current;
     const coverage = sel ? coverageFor(sel, rect) : new Uint8Array(rect.width * rect.height).fill(255);
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     eraseCoverage(next.data, { x: 0, y: 0, width: rect.width, height: rect.height }, coverage, rect.width);
-    s.store.write(layer.id, rect.x, rect.y, next);
-    const after = s.store.read(layer.id, rect);
+    s.store.write(key, rect.x, rect.y, next);
+    const after = s.store.read(key, rect);
     if (after) {
       const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
+      s.history.push({ kind: "patch", layerId: key, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
     }
-    s.runtime.touch(layer.id);
+    s.runtime.touch(key);
     s.afterEdit();
   }
+}
+function drawSource(source, rect, full, resampled) {
+  const surface = createSurface(rect.width, rect.height);
+  surface.ctx.imageSmoothingEnabled = resampled;
+  surface.ctx.imageSmoothingQuality = "high";
+  surface.ctx.drawImage(source, full.x - rect.x, full.y - rect.y, full.width, full.height);
+  const data = surface.ctx.getImageData(0, 0, rect.width, rect.height);
+  releaseSurface(surface);
+  return data;
+}
+function maskFloat(key, pixels, area, original, xf) {
+  const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
+  return {
+    layerId: key,
+    area,
+    original,
+    pixels,
+    surface: shown.value,
+    cover: shown.cover,
+    dx: 0,
+    dy: 0,
+    selBefore: null,
+    selBase: null,
+    xf,
+    baked: null,
+    dragBase: null,
+    preview: null
+  };
 }
 function topPaintIndex(layers2) {
   for (let i = layers2.length - 1; i >= 0; i--) if (isPaintLike(layers2[i])) return i + 1;
@@ -12365,6 +13470,13 @@ class LayerRuntimeTable {
     this.entries.delete(layerId);
   }
   /**
+   * {@link remove} every entry whose id matches (layer masks that went with their layer).
+   * @param drop - Predicate on the entry id.
+   */
+  removeWhere(drop) {
+    for (const id of [...this.entries.keys()]) if (drop(id)) this.remove(id);
+  }
+  /**
    * (Re)install a layer that is (again) part of the document (new layer,
    * undo of a delete). The version continues past any earlier life of the
    * id, so an upload started before the delete can never mark the restored
@@ -12445,8 +13557,11 @@ class LayerRuntimeTable {
     for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
   }
 }
+const HIDE_FILL = "#ffffff";
 class LayerStore {
   surfaces = /* @__PURE__ */ new Map();
+  /** Surfaces whose area beyond the stored pixels is white (hiding layer masks). */
+  hideOutside = /* @__PURE__ */ new Set();
   currentBounds;
   /**
    * @param bounds - Initial paint area (document coords, integers).
@@ -12488,7 +13603,28 @@ class LayerStore {
       if (keep.has(id)) continue;
       releaseSurface(surface);
       this.surfaces.delete(id);
+      this.hideOutside.delete(id);
     }
+  }
+  /**
+   * Whether growth / resampling fills a surface's new area white (a layer
+   * mask whose `outside` hides) instead of leaving it transparent.
+   * @param id - Surface key.
+   * @param hide - Fill white outside.
+   */
+  setHideOutside(id, hide) {
+    if (hide) this.hideOutside.add(id);
+    else this.hideOutside.delete(id);
+  }
+  /**
+   * Remove one surface (a deleted layer mask).
+   * @param id - Surface key.
+   */
+  drop(id) {
+    const surface = this.surfaces.get(id);
+    if (surface) releaseSurface(surface);
+    this.surfaces.delete(id);
+    this.hideOutside.delete(id);
   }
   /**
    * Change the paint area, keeping every pixel at its document position
@@ -12498,7 +13634,8 @@ class LayerStore {
   rebase(bounds) {
     if (rectEquals(bounds, this.currentBounds)) return;
     for (const [id, surface] of this.surfaces) {
-      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds));
+      const fill = this.hideOutside.has(id) ? HIDE_FILL : void 0;
+      this.surfaces.set(id, rebaseSurface(surface, this.currentBounds, bounds, fill));
       releaseSurface(surface);
     }
     this.currentBounds = { ...bounds };
@@ -12515,15 +13652,11 @@ class LayerStore {
     const from = this.currentBounds;
     for (const [id, surface] of this.surfaces) {
       const next = createSurface(bounds.width, bounds.height);
+      const place = { x: from.x * factor + tx - bounds.x, y: from.y * factor + ty - bounds.y, width: from.width * factor, height: from.height * factor };
+      if (this.hideOutside.has(id)) fillOutside(next, place, HIDE_FILL);
       next.ctx.imageSmoothingEnabled = true;
       next.ctx.imageSmoothingQuality = "high";
-      next.ctx.drawImage(
-        surface.canvas,
-        from.x * factor + tx - bounds.x,
-        from.y * factor + ty - bounds.y,
-        from.width * factor,
-        from.height * factor
-      );
+      next.ctx.drawImage(surface.canvas, place.x, place.y, place.width, place.height);
       releaseSurface(surface);
       this.surfaces.set(id, next);
     }
@@ -12585,6 +13718,7 @@ class LayerStore {
     for (const [id, surface] of this.surfaces) {
       copy.ensure(id).ctx.drawImage(surface.canvas, 0, 0);
     }
+    for (const id of this.hideOutside) copy.hideOutside.add(id);
     return copy;
   }
   /** Estimated bytes held by layer canvases. */
@@ -13545,6 +14679,8 @@ class EditorState {
   selection = new SelectionState(() => this.events.emit("selection", void 0));
   /** Image Mask coverage (M13a, image px; metadata is `doc.imageMask`). */
   imageMask = new ImageMaskPixels();
+  /** Layer masks (M14): targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
+  layerMasks = new LayerMaskState();
   /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
   solo = new SoloState(() => {
     this.events.emit("solo", void 0);
@@ -13616,15 +14752,16 @@ class EditorState {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, layer.file !== null);
     }
+    initMaskSurfaces(this);
     this.stroke.setClip(() => this.selection.clipCanvas(this.store.bounds));
     this.syncViewFrame();
     this.events.on("layers", () => {
       const rows = this.doc.imageMask ? [...this.doc.layers, this.doc.imageMask] : this.doc.layers;
       this.solo.set(pruneSolo(this.solo.current, rows));
     });
-    this.events.on("layers", () => this.kept.prune(new Set(this.doc.layers.map((l) => l.id))));
+    this.events.on("layers", () => this.kept.prune(surfaceKeys(this.doc.layers)));
     this.events.on("change", () => {
-      for (const layer of this.doc.layers) if (this.kept.has(layer.id)) this.kept.get(layer.id, this.runtime.revision(layer.id));
+      for (const key of surfaceKeys(this.doc.layers)) if (this.kept.has(key)) this.kept.get(key, this.runtime.revision(key));
     });
   }
   /** Layer files are being restored. */
@@ -13666,7 +14803,15 @@ class EditorState {
       this.store.rebase(next);
       this.stroke.rebase(next);
       this.doc.bounds = { ...next };
-      for (const layer of this.doc.layers) this.runtime.resized(layer.id);
+      for (const layer of this.doc.layers) {
+        this.runtime.resized(layer.id);
+        if (layer.layerMask) {
+          const key = layerMaskKey(layer.id);
+          const kept = this.kept.get(key, this.runtime.revision(key));
+          this.runtime.touch(key);
+          if (kept) kept.revision = this.runtime.revision(key);
+        }
+      }
     }
   }
   /**
@@ -13780,6 +14925,7 @@ class FrameOps {
       s.runtime.reset(layer.id, false);
       s.runtime.bump(layer.id);
     }
+    resetMaskSurfaces(s);
     this.rebaseHistory(frame, source);
     s.selection.set(null);
     s.lastStrokeEnd = null;
@@ -13834,6 +14980,14 @@ class FrameOps {
       s.runtime.touch(layer.id);
       const rt = s.runtime.get(layer.id);
       if (rt) rt.hasContent = data !== void 0 || textData !== void 0;
+      const lm = state.layerMasks?.get(layer.id);
+      if (lm) {
+        layer.layerMask = { ...lm.mask };
+        installMaskSurface(s, layer.id, lm.mask, { x: state.bounds.x, y: state.bounds.y, data: lm.data });
+      } else if (layer.layerMask) {
+        delete layer.layerMask;
+        dropMaskSurface(s, layer.id);
+      }
     }
     s.syncViewFrame();
     s.events.emit("placement", void 0);
@@ -13861,31 +15015,48 @@ class FrameOps {
     const s = this.s;
     const pixels = /* @__PURE__ */ new Map();
     const text = /* @__PURE__ */ new Map();
+    const layerMasks = /* @__PURE__ */ new Map();
     for (const layer of s.doc.layers) {
       pixels.set(layer.id, s.store.snapshot(layer.id));
       if (layer.kind === "text" && layer.textData) text.set(layer.id, layer.textData);
+      if (layer.layerMask) layerMasks.set(layer.id, { mask: { ...layer.layerMask }, data: s.store.snapshot(layerMaskKey(layer.id)) });
     }
     const placement = s.doc.placement ? { ...s.doc.placement } : void 0;
-    return { frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...placement ? { placement } : {}, pixels, text, outputs: captureOutputs(s) };
+    return {
+      frame: { ...s.doc.frame },
+      bounds: s.store.bounds,
+      source: s.frameSource,
+      ...placement ? { placement } : {},
+      pixels,
+      text,
+      outputs: captureOutputs(s),
+      ...layerMasks.size ? { layerMasks } : {}
+    };
   }
 }
 function snapshotBytes(state) {
   let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
+  if (state.layerMasks) for (const m of state.layerMasks.values()) bytes += m.data.data.byteLength;
   return bytes;
 }
 const LAYERS_ENTRY_BASE_BYTES = 256;
 function changesBytes(changes) {
   let bytes = LAYERS_ENTRY_BASE_BYTES;
   for (const change of changes) {
-    if ((change.op === "insert" || change.op === "remove") && change.pixels) bytes += change.pixels.data.data.byteLength;
+    if ((change.op === "insert" || change.op === "remove") && change.pixels) {
+      bytes += change.pixels.data.data.byteLength + (change.pixels.mask?.data.byteLength ?? 0);
+    }
   }
   return bytes;
 }
 function captureLayerPixels(s, layerId) {
-  if (!s.runtime.get(layerId)?.hasContent) return null;
+  const masked = s.doc.layers.find((l) => l.id === layerId)?.layerMask !== void 0;
+  if (!s.runtime.get(layerId)?.hasContent && !masked) return null;
   const bounds = s.store.bounds;
-  return { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
+  const pixels = { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
+  if (masked) pixels.mask = s.store.snapshot(layerMaskKey(layerId));
+  return pixels;
 }
 function installLayerPixels(s, layerId, pixels) {
   const surface = s.store.ensure(layerId);
@@ -13895,10 +15066,13 @@ function installLayerPixels(s, layerId, pixels) {
     s.store.write(layerId, pixels.x, pixels.y, pixels.data);
   }
   s.runtime.reinstate(layerId, pixels !== null);
+  const mask = s.doc.layers.find((l) => l.id === layerId)?.layerMask;
+  if (mask) installMaskSurface(s, layerId, mask, pixels?.mask ? { x: pixels.x, y: pixels.y, data: pixels.mask } : null);
 }
 function releaseRemovedLayers(s) {
-  const keep = new Set(s.doc.layers.map((l) => l.id));
+  const keep = surfaceKeys(s.doc.layers);
   s.store.retain(keep);
+  s.runtime.removeWhere((id) => maskOwner(id) !== null && !keep.has(id));
 }
 function applyLayersEntry(s, entry, forward) {
   if (s.stroke.active) s.cancelStroke();
@@ -14260,11 +15434,14 @@ class LayerDisplay {
    */
   compositeLayers() {
     const s = this.s;
+    const view = maskViewSource(s);
+    if (view) return [{ source: view, opacity: 1 }];
     const out = [];
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
-      const source = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+      const raw = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
+      const source = layer.layerMask ? maskedSource(s, layer, raw, true) : raw;
       const offset = this.moveOffset(layer.id);
       out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
     }
@@ -14281,6 +15458,7 @@ class LayerDisplay {
    */
   maskOverlays() {
     const s = this.s;
+    if (s.layerMasks.view !== null) return [];
     const image = this.imageMaskOverlay();
     const out = image ? [image] : [];
     const bounds = s.store.bounds;
@@ -14503,7 +15681,456 @@ function drawBox(ctx, box, colorOverride) {
     ctx.stroke();
   }
 }
-function sameBytes(a, b) {
+const EMPTY_MASK_NOTE = "The layer mask shows nothing.";
+const WHITE = "#ffffff";
+const BLACK = "#000000";
+const ENTRY_BASE_BYTES = 256;
+class LayerMaskOps {
+  /**
+   * @param s - Shared editor state.
+   * @param applySelection - Combine a selection with the current one as one undo step (`SelectionOps.apply`).
+   * @param selectLayer - Make a paint layer the active one with Quick Mask off (a paint row click).
+   * @param savedCanvas - Canvas to save for a store key (`Editor.savedLayerCanvas`: pre-lift pixels while an lmask float is up).
+   */
+  constructor(s, applySelection, selectLayer, savedCanvas = (key) => s.store.ensure(key).canvas) {
+    this.s = s;
+    this.applySelection = applySelection;
+    this.selectLayer = selectLayer;
+    this.savedCanvas = savedCanvas;
+    s.events.on("layers", () => {
+      this.followView();
+      s.layerMasks.prune(new Set(s.doc.layers.filter((l) => l.layerMask).map((l) => l.id)));
+    });
+    s.events.on("mask", () => this.followView());
+  }
+  s;
+  applySelection;
+  selectLayer;
+  savedCanvas;
+  // ── Queries ─────────────────────────────────────────────────────────────
+  /**
+   * A layer's mask record.
+   * @param layerId - Layer id.
+   * @returns The record, or `undefined`.
+   */
+  info(layerId) {
+    return this.find(layerId)?.layerMask;
+  }
+  /**
+   * Whether a layer can get a mask now (a paint layer without one).
+   * @param layerId - Layer id.
+   * @returns `true` if {@link add} would work.
+   */
+  canAdd(layerId) {
+    const layer = this.find(layerId);
+    return !!layer && canHaveLayerMask(layer) && !layer.layerMask;
+  }
+  /**
+   * What strokes on a layer edit (per layer, session only).
+   * @param layerId - Layer id.
+   * @returns `"mask"` when its mask is the target.
+   */
+  target(layerId) {
+    return this.info(layerId) && this.s.layerMasks.targets.has(layerId) ? "mask" : "layer";
+  }
+  /** The layer whose mask the paint target edits now (Quick Mask off), or `null`. */
+  get targeted() {
+    return targetedMaskLayer(this.s)?.id ?? null;
+  }
+  /** The layer whose mask the Alt+click view shows, or `null`. */
+  get viewing() {
+    return this.s.layerMasks.view;
+  }
+  /** The foreground mask swatch is white: brush / bucket hide (`false` = black, reveal). */
+  get foregroundHides() {
+    return this.s.layerMasks.fgWhite;
+  }
+  /** The mask swatches as colours (`#ffffff` / `#000000`), shown instead of FG/BG while a mask is targeted. */
+  get swatches() {
+    const white = this.s.layerMasks.fgWhite;
+    return { fg: white ? WHITE : BLACK, bg: white ? BLACK : WHITE };
+  }
+  /**
+   * Mask pixel revision (thumbnail cache key).
+   * @param layerId - Layer id.
+   * @returns Revision.
+   */
+  revision(layerId) {
+    return this.s.runtime.revision(layerMaskKey(layerId));
+  }
+  /**
+   * The mask canvas (alpha = mask value), for thumbnails and uploads.
+   * @param layerId - Layer id.
+   * @returns Canvas, or `null` without a mask.
+   */
+  canvas(layerId) {
+    return this.info(layerId) ? this.s.store.ensure(layerMaskKey(layerId)).canvas : null;
+  }
+  // ── Structural (undoable) ───────────────────────────────────────────────
+  /**
+   * Add a mask to a paint layer and target it, as one undo step.
+   * @param layerId - Paint layer id.
+   * @param fill - Reveal all (all black), hide all (all white), or show only
+   *   the selection (white = `255 - coverage`; reveal all without one).
+   * @returns `true` if added.
+   */
+  add(layerId, fill) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    if (!layer || !this.canAdd(layerId) || !readyCheck(s)) return false;
+    const sel = fill === "selection" ? s.selection.current : null;
+    if (sel && !sel.outside) s.ensureBounds(sel.rect, true);
+    const b = s.store.bounds;
+    let pixels = null;
+    let outside = fill === "hide" ? "hide" : "reveal";
+    if (sel) {
+      const hidden = coverageFor(sel, b).map((c) => 255 - c);
+      pixels = { x: b.x, y: b.y, data: coverageImage(hidden, b.width, b.height) };
+      outside = sel.outside ? "reveal" : "hide";
+    }
+    const mask = createLayerMask(outside);
+    layer.layerMask = mask;
+    installMaskSurface(s, layerId, mask, pixels);
+    s.layerMasks.targets.add(layerId);
+    this.record(layerId, { mask: null, pixels: null }, { mask: { ...mask }, pixels });
+    return true;
+  }
+  /**
+   * Delete a layer's mask (the pixels stay in the undo step).
+   * @param layerId - Layer id.
+   * @returns `true` if deleted.
+   */
+  remove(layerId) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    const mask = layer?.layerMask;
+    if (!layer || !mask || !readyCheck(s)) return false;
+    const b = s.store.bounds;
+    const pixels = { x: b.x, y: b.y, data: s.store.snapshot(layerMaskKey(layerId)) };
+    delete layer.layerMask;
+    dropMaskSurface(s, layerId);
+    this.record(layerId, { mask: { ...mask }, pixels }, { mask: null, pixels: null });
+    return true;
+  }
+  /**
+   * Apply (options bar, M14b): bake the mask as it acts -- invert applied,
+   * the `outside` value beyond the stored pixels -- into the layer's alpha
+   * and remove the mask, as ONE undo step (`[patch on the layer, mask
+   * removal]`). The layer gate runs first (hidden / locked notes).
+   * @param layerId - Layer id.
+   * @returns `true` if applied.
+   */
+  apply(layerId) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    const mask = layer?.layerMask;
+    if (!layer || !mask || !readyCheck(s) || preparePixelEdit(s, layer, "whole") === "blocked") return false;
+    const key = layerMaskKey(layerId);
+    const entries = [];
+    const rect = layerContentRect(s, layerId);
+    const before = isEmptyRect(rect) ? null : s.store.read(layerId, rect);
+    const hidden = before ? s.store.read(key, before.rect) : null;
+    if (before && hidden) {
+      const r = before.rect;
+      const next = new Uint8ClampedArray(before.data.data);
+      applyMaskAlpha(next, hidden.data.data, mask.invert);
+      s.store.write(layerId, r.x, r.y, new ImageData(next, r.width, r.height));
+      const after = s.store.read(layerId, r);
+      if (after) entries.push({ kind: "patch", layerId, x: r.x, y: r.y, before: before.data, after: after.data, bytes: before.data.data.byteLength + after.data.data.byteLength });
+      s.runtime.touch(layerId);
+    }
+    const b = s.store.bounds;
+    const pixels = { x: b.x, y: b.y, data: s.store.snapshot(key) };
+    delete layer.layerMask;
+    dropMaskSurface(s, layerId);
+    const removal = { kind: "layerMask", layerId, before: { mask: { ...mask }, pixels }, after: { mask: null, pixels: null }, bytes: ENTRY_BASE_BYTES + pixels.data.data.byteLength };
+    s.history.push(entries[0] ? groupEntries(entries[0], removal) : removal);
+    this.changed(true);
+    return true;
+  }
+  /**
+   * Invert setting (display + output use `1 - mask`; pixels unchanged), one undo step.
+   * @param layerId - Layer id.
+   * @param invert - New state.
+   * @returns `true` if changed.
+   */
+  setInvert(layerId, invert2) {
+    const s = this.s;
+    const layer = this.find(layerId);
+    const mask = layer?.layerMask;
+    if (!layer || !mask || mask.invert === invert2 || s.loading) return false;
+    s.settleFloat();
+    layer.layerMask = { ...mask, invert: invert2 };
+    this.record(layerId, { mask: { ...mask }, pixels: null }, { mask: { ...layer.layerMask }, pixels: null });
+    return true;
+  }
+  // ── Not undoable ────────────────────────────────────────────────────────
+  /**
+   * Turn a mask off / on (Shift+click; off = the layer shows unmasked). Not
+   * undoable, like the layer eye.
+   * @param layerId - Layer id.
+   * @param enabled - New state.
+   */
+  setEnabled(layerId, enabled) {
+    const layer = this.find(layerId);
+    const mask = layer?.layerMask;
+    if (!layer || !mask || mask.enabled === enabled) return;
+    this.s.settleFloat();
+    layer.layerMask = { ...mask, enabled };
+    this.changed(false);
+  }
+  /**
+   * Thumbnail clicks: choose what strokes on a layer edit, then make it the
+   * active layer (Quick Mask off). The lmask-only view follows: it moves to
+   * this layer when its mask is the target and ends on its pixels.
+   * @param layerId - Layer id.
+   * @param target - Layer pixels or its mask (ignored without a mask).
+   */
+  setTarget(layerId, target) {
+    const s = this.s;
+    if (!this.find(layerId)) return;
+    const next = target === "mask" && this.info(layerId) !== void 0;
+    if (s.layerMasks.targets.has(layerId) !== next) {
+      if (s.stroke.active) s.cancelStroke();
+      if (next) s.layerMasks.targets.add(layerId);
+      else s.layerMasks.targets.delete(layerId);
+      s.events.emit("mask", void 0);
+    }
+    this.selectLayer(layerId);
+  }
+  /**
+   * Alt+click on the mask thumbnail: show the mask alone (grayscale) on the
+   * stage and edit it (targets the mask, selects the layer; from another
+   * layer's view it switches), or end the view when it already shows this
+   * mask. Display only.
+   * @param layerId - Layer id.
+   */
+  toggleView(layerId) {
+    const s = this.s;
+    if (s.layerMasks.view === layerId) return this.endView();
+    if (!this.info(layerId)) return;
+    this.setTarget(layerId, "mask");
+    if (s.layerMasks.view === layerId || targetedMaskLayer(s)?.id !== layerId) return;
+    s.layerMasks.view = layerId;
+    s.events.emit("mask", void 0);
+    s.events.emit("render", void 0);
+  }
+  /** End the Alt+click view (no-op when not viewing). */
+  endView() {
+    const s = this.s;
+    if (s.layerMasks.view === null) return;
+    s.layerMasks.view = null;
+    s.events.emit("mask", void 0);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * X / the swap button while a layer mask is targeted: swap the mask
+   * swatches (the real colours are untouched).
+   * @returns `false` when no mask is targeted (X keeps its normal meaning).
+   */
+  swapSwatches() {
+    if (!this.targeted) return false;
+    this.s.layerMasks.fgWhite = !this.s.layerMasks.fgWhite;
+    this.s.events.emit("mask", void 0);
+    return true;
+  }
+  /**
+   * D / the reset button while a layer mask is targeted: foreground white
+   * (hide), background black.
+   * @returns `false` when no mask is targeted (D keeps its normal meaning).
+   */
+  resetSwatches() {
+    if (!this.targeted) return false;
+    if (!this.s.layerMasks.fgWhite) {
+      this.s.layerMasks.fgWhite = true;
+      this.s.events.emit("mask", void 0);
+    }
+    return true;
+  }
+  /**
+   * Ctrl(+Shift / +Alt / +Shift+Alt)+click on the mask thumbnail: the mask's
+   * SOFT SHOWN (black) part -- `255 - value` after invert, the `outside`
+   * value beyond the bounds (outside hidden = not selected) -- becomes the
+   * selection, combined by `mode`; one selection step. The inverse of a
+   * cmask's Ctrl+click (white), so selection -> add mask -> Ctrl+click
+   * round-trips.
+   * @param layerId - Layer id.
+   * @param mode - Combination mode.
+   * @returns `true` if the selection changed.
+   */
+  toSelection(layerId, mode) {
+    const s = this.s;
+    const mask = this.info(layerId);
+    if (!mask || s.loading || s.stroke.active) return false;
+    s.settleFloat();
+    const b = s.store.bounds;
+    const px = s.store.read(layerMaskKey(layerId), b);
+    const coverage = new Uint8Array(b.width * b.height).fill(mask.invert ? 0 : 255);
+    if (px) for (let i = 0; i < coverage.length; i++) {
+      const a = px.data.data[i * 4 + 3];
+      coverage[i] = mask.invert ? a : 255 - a;
+    }
+    const outside = mask.outside === "hide" !== mask.invert ? 0 : 255;
+    const sel = trimSelection({ rect: b, data: coverage, outside });
+    if (!sel) {
+      s.events.emit("note", EMPTY_MASK_NOTE);
+      return false;
+    }
+    return this.applySelection(sel, mode);
+  }
+  // ── Persistence ─────────────────────────────────────────────────────────
+  /** Masks whose pixels differ from their saved file. */
+  uploads() {
+    const s = this.s;
+    const out = [];
+    for (const layer of s.doc.layers) {
+      const key = layerMaskKey(layer.id);
+      const rt = s.runtime.get(key);
+      if (!layer.layerMask || !rt?.dirty) continue;
+      out.push({ layerId: layer.id, name: `${layer.name} mask`, version: rt.version, canvas: this.savedCanvas(key), file: layer.layerMask.file });
+    }
+    return out;
+  }
+  /**
+   * Record a finished mask upload.
+   * @param layerId - Layer id.
+   * @param version - Mask version uploaded.
+   * @param file - File reference (`null` = every pixel 0 = shown).
+   */
+  markUploaded(layerId, version, file) {
+    const layer = this.find(layerId);
+    const rt = this.s.runtime.get(layerMaskKey(layerId));
+    if (!layer?.layerMask || !rt) return;
+    layer.layerMask = { ...layer.layerMask, file };
+    if (rt.version === version) rt.dirty = false;
+    this.s.events.emit("change", void 0);
+  }
+  /**
+   * Draw a restored mask file (not an undo step, not dirty). A file smaller
+   * than the bounds (stale) gets the mask's `outside` value beyond it.
+   * @param layerId - Layer id.
+   * @param image - Decoded PNG.
+   */
+  restore(layerId, image) {
+    const mask = this.info(layerId);
+    if (!mask) return;
+    const s = this.s;
+    const key = layerMaskKey(layerId);
+    const surface = s.store.ensure(key);
+    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+    if (mask.outside === "hide") fillOutside(surface, { x: 0, y: 0, width: image.width, height: image.height }, MASK_WHITE);
+    surface.ctx.drawImage(image, 0, 0);
+    s.runtime.bump(key);
+    s.events.emit("render", void 0);
+  }
+  /**
+   * A mask file could not be restored: the layer shows unmasked (all 0, as
+   * Python ignores an unreadable mask); the file reference is kept, not dirty.
+   * @param layerId - Layer id.
+   */
+  restoreFailed(layerId) {
+    if (!this.info(layerId)) return;
+    const key = layerMaskKey(layerId);
+    const surface = this.s.store.ensure(key);
+    surface.ctx.clearRect(0, 0, surface.canvas.width, surface.canvas.height);
+    this.s.runtime.bump(key);
+    this.s.events.emit("render", void 0);
+  }
+  // ── Internals ───────────────────────────────────────────────────────────
+  find(layerId) {
+    return this.s.doc.layers.find((l) => l.id === layerId);
+  }
+  /**
+   * Keep the lmask-only view on the targeted mask (SPEC): it follows the
+   * active paint layer while that layer targets its mask (another lmask
+   * thumbnail, a row whose target is its mask), and ends otherwise -- a
+   * layer without a mask or targeting its pixels, a text layer, any cmask
+   * row / Quick Mask, the mask deleted.
+   */
+  followView() {
+    const s = this.s;
+    const view = s.layerMasks.view;
+    if (view === null) return;
+    const next = targetedMaskLayer(s)?.id ?? null;
+    if (next === view) return;
+    if (next === null) return this.endView();
+    s.layerMasks.view = next;
+    s.events.emit("mask", void 0);
+    s.events.emit("render", void 0);
+  }
+  record(layerId, before, after) {
+    const bytes = ENTRY_BASE_BYTES + (before.pixels?.data.data.byteLength ?? 0) + (after.pixels?.data.data.byteLength ?? 0);
+    this.s.history.push({ kind: "layerMask", layerId, before, after, bytes });
+    this.changed(true);
+  }
+  changed(history) {
+    const s = this.s;
+    if (history) s.events.emit("history", void 0);
+    emitLayerEvents(s);
+    s.events.emit("change", void 0);
+    s.events.emit("render", void 0);
+  }
+}
+function applyLayerMaskEntry(s, entry, forward) {
+  const layer = s.doc.layers.find((l) => l.id === entry.layerId);
+  if (!layer) return;
+  const side = forward ? entry.after : entry.before;
+  const other = forward ? entry.before : entry.after;
+  const live = layer.layerMask;
+  if (!side.mask) {
+    if (!live) return;
+    if (other.mask) other.mask = { ...live, invert: other.mask.invert };
+    delete layer.layerMask;
+    dropMaskSurface(s, layer.id);
+  } else if (live) {
+    layer.layerMask = { ...live, invert: side.mask.invert };
+  } else {
+    layer.layerMask = { ...side.mask };
+    installMaskSurface(s, layer.id, layer.layerMask, side.pixels);
+    s.layerMasks.targets.add(layer.id);
+  }
+  emitLayerEvents(s);
+}
+function paintMaskArea(s, layer, opacity, needSelection, hide) {
+  const key = layerMaskKey(layer.id);
+  const sel = s.selection.current;
+  if (!sel && needSelection) return false;
+  if (sel && !sel.outside) s.ensureBounds(sel.rect, true);
+  const area = sel ? selectionExtent(sel, s.store.bounds) : s.store.bounds;
+  const before = isEmptyRect(area) ? null : s.store.read(key, area);
+  if (!before) return false;
+  const rect = intersectRect(before.rect, area);
+  const coverage = sel ? coverageFor(sel, rect) : new Uint8Array(rect.width * rect.height).fill(255);
+  const k = Math.min(1, Math.max(0, opacity));
+  if (k < 1) for (let i = 0; i < coverage.length; i++) coverage[i] = Math.round(coverage[i] * k);
+  const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
+  const local = { x: 0, y: 0, width: rect.width, height: rect.height };
+  if (hide) blendCoverage(next.data, local, coverage, rect.width, hexToRgb(MASK_WHITE), 1);
+  else eraseCoverage(next.data, local, coverage, rect.width);
+  s.store.write(key, rect.x, rect.y, next);
+  const after = s.store.read(key, rect);
+  if (!after || sameBytes$2(before.data.data, after.data.data)) return false;
+  const bytes = before.data.data.byteLength + after.data.data.byteLength;
+  s.history.push({ kind: "patch", layerId: key, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
+  s.runtime.touch(key);
+  s.afterEdit();
+  return true;
+}
+function coverageImage(coverage, width, height) {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < coverage.length; i++) {
+    const a = coverage[i];
+    if (a === 0) continue;
+    data.set([255, 255, 255, a], i * 4);
+  }
+  return new ImageData(data, width, height);
+}
+function sameBytes$2(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+function sameBytes$1(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
@@ -14559,11 +16186,13 @@ class PaintOps {
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer) return false;
-    if (preparePixelEdit(s, layer) !== "proceed") return false;
-    const strokeStyle = layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
-    s.strokeLayerId = layer.id;
+    if (preparePixelEdit(s, layer, style.shape ? "other" : "paint") !== "proceed") return false;
+    const onMask = targetedMaskLayer(s)?.id === layer.id;
+    const strokeStyle = onMask ? maskStrokeStyle(style, s.layerMasks.fgWhite) : layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
+    const surfaceId = onMask ? layerMaskKey(layer.id) : layer.id;
+    s.strokeLayerId = surfaceId;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(layer.id), s.store.bounds, strokeStyle, s.strokeDiameter);
+    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter);
     s.events.emit("history", void 0);
     return true;
   }
@@ -14617,7 +16246,7 @@ class PaintOps {
       const before = s.store.read(layerId, rect);
       s.stroke.commit(surface);
       const after = s.store.read(layerId, rect);
-      if (before && after && !sameBytes(before.data.data, after.data.data)) {
+      if (before && after && !sameBytes$1(before.data.data, after.data.data)) {
         const bytes = before.data.data.byteLength + after.data.data.byteLength;
         s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
         s.runtime.touch(layerId);
@@ -14689,7 +16318,11 @@ class PaintOps {
       for (const part of parts) this.applyEntry(part, side);
       return;
     }
-    if (!s.doc.layers.some((l) => l.id === entry.layerId)) return;
+    if (entry.kind === "layerMask") {
+      applyLayerMaskEntry(s, entry, side === "after");
+      return;
+    }
+    if (!surfaceAlive(s, entry.layerId)) return;
     const data = side === "before" ? entry.before : entry.after;
     s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);
     s.store.write(entry.layerId, entry.x, entry.y, data);
@@ -15196,117 +16829,10 @@ class EditorMaskOps {
     this.paint.setMaskVisible(visible);
   }
 }
-const MAX_SUPERSAMPLE = 4;
-function supersampleFactor(inv) {
-  const stretch = Math.max(Math.hypot(inv.a, inv.b), Math.hypot(inv.c, inv.d));
-  return Math.min(MAX_SUPERSAMPLE, Math.max(1, Math.ceil(stretch - 1e-6)));
-}
-function resampleRgba(src, sw, sh, m, dest) {
-  const out = new Uint8ClampedArray(Math.max(0, dest.width * dest.height * 4));
-  const inv = invert(m);
-  if (!inv) return out;
-  const n = supersampleFactor(inv);
-  const taps = n * n;
-  const acc = [0, 0, 0, 0];
-  for (let y = 0; y < dest.height; y++) {
-    for (let x = 0; x < dest.width; x++) {
-      acc.fill(0);
-      for (let j = 0; j < n; j++) {
-        const py = dest.y + y + (j + 0.5) / n;
-        for (let i = 0; i < n; i++) {
-          const px = dest.x + x + (i + 0.5) / n;
-          const u = inv.a * px + inv.c * py + inv.e - 0.5;
-          const v = inv.b * px + inv.d * py + inv.f - 0.5;
-          bilinearRgba(src, sw, sh, u, v, acc);
-        }
-      }
-      const alpha = acc[3];
-      if (alpha <= 0) continue;
-      const o = (y * dest.width + x) * 4;
-      out[o] = Math.round(acc[0] / alpha);
-      out[o + 1] = Math.round(acc[1] / alpha);
-      out[o + 2] = Math.round(acc[2] / alpha);
-      out[o + 3] = Math.round(alpha / taps);
-    }
-  }
-  return out;
-}
-function resampleCoverage(src, sw, sh, m, dest) {
-  const out = new Uint8Array(Math.max(0, dest.width * dest.height));
-  const inv = invert(m);
-  if (!inv) return out;
-  const n = supersampleFactor(inv);
-  for (let y = 0; y < dest.height; y++) {
-    for (let x = 0; x < dest.width; x++) {
-      let sum = 0;
-      for (let j = 0; j < n; j++) {
-        const py = dest.y + y + (j + 0.5) / n;
-        for (let i = 0; i < n; i++) {
-          const px = dest.x + x + (i + 0.5) / n;
-          sum += bilinearByte(src, sw, sh, inv.a * px + inv.c * py + inv.e - 0.5, inv.b * px + inv.d * py + inv.f - 0.5);
-        }
-      }
-      out[y * dest.width + x] = Math.round(sum / (n * n));
-    }
-  }
-  return out;
-}
-function transformSelection(sel, area, m) {
-  const coverage = coverageFor(sel, area);
-  const dest = transformedAabb(m, area.width, area.height);
-  if (dest.width <= 0 || dest.height <= 0) return null;
-  return selectionFromCoverage(resampleCoverage(coverage, area.width, area.height, m, dest), dest);
-}
-function flipRgba(src, w, h, axis) {
-  const out = new Uint8ClampedArray(src.length);
-  for (let y = 0; y < h; y++) {
-    const ty = axis === "v" ? h - 1 - y : y;
-    for (let x = 0; x < w; x++) {
-      const tx = axis === "h" ? w - 1 - x : x;
-      const s = (y * w + x) * 4;
-      out.set(src.subarray(s, s + 4), (ty * w + tx) * 4);
-    }
-  }
-  return out;
-}
-function bilinearRgba(src, sw, sh, u, v, acc) {
-  const x0 = Math.floor(u);
-  const y0 = Math.floor(v);
-  const fx = u - x0;
-  const fy = v - y0;
-  for (let k = 0; k < 4; k++) {
-    const xx = x0 + (k & 1);
-    const yy = y0 + (k >> 1);
-    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
-    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
-    const p = (yy * sw + xx) * 4;
-    const a = src[p + 3] * wgt;
-    if (a <= 0) continue;
-    acc[0] = acc[0] + src[p] * a;
-    acc[1] = acc[1] + src[p + 1] * a;
-    acc[2] = acc[2] + src[p + 2] * a;
-    acc[3] = acc[3] + a;
-  }
-}
-function bilinearByte(src, sw, sh, u, v) {
-  const x0 = Math.floor(u);
-  const y0 = Math.floor(v);
-  const fx = u - x0;
-  const fy = v - y0;
-  let sum = 0;
-  for (let k = 0; k < 4; k++) {
-    const xx = x0 + (k & 1);
-    const yy = y0 + (k >> 1);
-    const wgt = (k & 1 ? fx : 1 - fx) * (k >> 1 ? fy : 1 - fy);
-    if (wgt <= 0 || xx < 0 || yy < 0 || xx >= sw || yy >= sh) continue;
-    sum += src[yy * sw + xx] * wgt;
-  }
-  return sum;
-}
 const EMPTY_LAYER_NOTE$1 = "The layer is empty.";
 function flipLayer(s, axis) {
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+  if (!layer || preparePixelEdit(s, layer, "whole") === "blocked") return false;
   const rect = layerContentRect(s, layer.id);
   const before = isEmptyRect(rect) ? null : s.store.read(layer.id, rect);
   if (!before) {
@@ -15322,6 +16848,11 @@ function flipLayer(s, axis) {
     s.history.push({ kind: "patch", layerId: layer.id, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
   }
   s.runtime.touch(layer.id);
+  const maskPatch = flipMaskPatch(s, layer, before.rect, axis);
+  if (maskPatch) {
+    if (after) s.history.joinNext();
+    s.history.push(maskPatch);
+  }
   s.afterEdit();
   return true;
 }
@@ -15345,48 +16876,71 @@ function checkLift(s) {
   if (s.loading || s.stroke.active || !sel) return "blocked";
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!layer) return "blocked";
-  const note = editBlockNote(s, layer);
+  const key = selectedSurfaceKey(s, layer);
+  const note = editBlockNote(s, layer, liftKind(layer, key));
   if (note) {
     s.events.emit("note", note);
     return "blocked";
   }
   if (layer.kind === "text") return "confirm";
-  const area = intersectRect(selectionExtent(sel, s.store.bounds), layerContentRect(s, layer.id));
+  const content = key === layer.id ? layerContentRect(s, layer.id) : s.store.bounds;
+  const area = intersectRect(selectionExtent(sel, s.store.bounds), content);
   if (isEmptyRect(area)) return empty(s, EMPTY_FLOAT_NOTE) || "blocked";
   return "ok";
 }
 function prepareLift(s) {
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (layer) preparePixelEdit(s, layer);
+  if (layer) preparePixelEdit(s, layer, "whole");
 }
 function liftFloat(s, copy, sel) {
   if (s.loading || s.stroke.active) return null;
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
-  if (!layer || preparePixelEdit(s, layer) === "blocked") return null;
+  if (!layer) return null;
+  const key = sel ? selectedSurfaceKey(s, layer) : layer.id;
+  const gray = key !== layer.id;
+  if (preparePixelEdit(s, layer, liftKind(layer, key)) === "blocked") return null;
   const note = sel ? EMPTY_FLOAT_NOTE : EMPTY_LAYER_NOTE$1;
   const content = layerContentRect(s, layer.id);
   const area = sel ? selectionExtent(sel, s.store.bounds) : content;
-  const read = isEmptyRect(area) ? null : s.store.read(layer.id, area);
+  const read = isEmptyRect(area) ? null : s.store.read(key, area);
   if (!read) return empty(s, note) || null;
   const coverage = sel ? coverageFor(sel, read.rect) : new Uint8Array(read.rect.width * read.rect.height).fill(255);
-  const { float, rest } = liftPixels(read.data.data, coverage, !copy);
-  if (!hasAlpha(float)) return empty(s, note) || null;
+  const { float, rest } = gray ? liftMaskPixels(read.data.data, coverage, !copy) : liftPixels(read.data.data, coverage, !copy);
+  if (gray ? !coverage.some((c) => c > 0) : !hasAlpha(float)) return empty(s, note) || null;
   const w = read.rect.width;
   const h = read.rect.height;
   const pixels = new ImageData(float, w, h);
   if (!copy) {
-    s.store.write(layer.id, read.rect.x, read.rect.y, new ImageData(rest, w, h));
-    s.runtime.bump(layer.id);
+    s.store.write(key, read.rect.x, read.rect.y, new ImageData(rest, w, h));
+    s.runtime.bump(key);
   }
-  const surface = createSurface(w, h);
-  surface.ctx.putImageData(pixels, 0, 0);
-  return { layerId: layer.id, area: read.rect, original: read.data, pixels, surface, dx: 0, dy: 0, selBefore: sel, selBase: sel, xf: null, baked: null, dragBase: null, preview: null };
+  const shown = gray ? maskFloatSurfaces(float, w, h) : null;
+  const surface = shown?.value ?? createSurface(w, h);
+  if (!shown) surface.ctx.putImageData(pixels, 0, 0);
+  const carry = sel ? null : liftCarry(s, layer);
+  return {
+    layerId: key,
+    area: read.rect,
+    original: read.data,
+    pixels,
+    surface,
+    dx: 0,
+    dy: 0,
+    selBefore: sel,
+    selBase: sel,
+    xf: null,
+    baked: null,
+    dragBase: null,
+    preview: null,
+    ...shown ? { cover: shown.cover } : {},
+    ...carry ? { carry } : {}
+  };
 }
 function liftKept(s) {
   if (s.loading || s.stroke.active || s.selection.current) return null;
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!layer || layer.kind === "text" || !s.kept.get(layer.id, s.runtime.revision(layer.id))) return null;
-  if (preparePixelEdit(s, layer) === "blocked") return null;
+  if (preparePixelEdit(s, layer, "whole") === "blocked") return null;
   const kept = s.kept.get(layer.id, s.runtime.revision(layer.id));
   const content = layerContentRect(s, layer.id);
   const read = kept && !isEmptyRect(content) ? s.store.read(layer.id, content) : null;
@@ -15397,6 +16951,7 @@ function liftKept(s) {
   const { width: pw, height: ph } = kept.area;
   const surface = createSurface(pw, ph);
   surface.ctx.putImageData(kept.pixels, 0, 0);
+  const carry = liftCarry(s, layer);
   return {
     layerId: layer.id,
     area: { ...kept.area },
@@ -15413,11 +16968,18 @@ function liftKept(s) {
     xf: kept.m,
     baked: null,
     dragBase: null,
-    preview: null
+    preview: null,
+    ...carry ? { carry } : {}
   };
 }
 function holeOf(f) {
   return f.holeRect ?? f.area;
+}
+function liftMatrix(f) {
+  return f.liftM ?? translation(f.area.x, f.area.y);
+}
+function liftKind(layer, key) {
+  return key === layer.id ? "whole" : "paint";
 }
 function empty(s, note) {
   s.events.emit("note", note);
@@ -15444,7 +17006,8 @@ function writeFloatPatch(s, f, m) {
   const next = new Uint8ClampedArray(current.data.data);
   const at = plain ? dest : intersectRect(dest, r);
   const src = plain ? f.pixels.data : resampleRgba(f.pixels.data, f.area.width, f.area.height, m, at);
-  compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  if (f.cover) landMaskPixels(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  else compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
   s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
   const after = s.store.read(f.layerId, r);
   if (after) {
@@ -15452,16 +17015,21 @@ function writeFloatPatch(s, f, m) {
     const bytes = before.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
     recordSelectionMove(s, f.selBefore, s.selection.current, true);
+    if (f.carry) writeCarryPatch(s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
   }
   s.runtime.touch(f.layerId);
 }
 function bakeFloat(f, m) {
   const rect = transformedAabb(m, f.area.width, f.area.height);
-  const surface = createSurface(Math.max(1, rect.width), Math.max(1, rect.height));
-  if (rect.width > 0 && rect.height > 0) {
-    const px = resampleRgba(f.pixels.data, f.area.width, f.area.height, m, rect);
-    surface.ctx.putImageData(new ImageData(px, rect.width, rect.height), 0, 0);
+  const w = Math.max(1, rect.width);
+  const h = Math.max(1, rect.height);
+  const px = rect.width > 0 && rect.height > 0 ? resampleRgba(f.pixels.data, f.area.width, f.area.height, m, rect) : new Uint8ClampedArray(w * h * 4);
+  if (f.cover) {
+    const shown = maskFloatSurfaces(px, w, h);
+    return { surface: shown.value, cover: shown.cover, rect, m };
   }
+  const surface = createSurface(w, h);
+  surface.ctx.putImageData(new ImageData(px, w, h), 0, 0);
   return { surface, rect, m };
 }
 function floatPreviewCanvas(s, f, m) {
@@ -15476,10 +17044,13 @@ function floatPreviewCanvas(s, f, m) {
 }
 function dropBake(f) {
   if (f.baked) releaseSurface(f.baked.surface);
+  if (f.baked?.cover) releaseSurface(f.baked.cover);
   f.baked = null;
 }
 function releaseFloat(f) {
   releaseSurface(f.surface);
+  if (f.cover) releaseSurface(f.cover);
+  if (f.carry) releaseCarry(f.carry);
   dropBake(f);
   if (f.preview) releaseSurface(f.preview.surface);
   f.preview = null;
@@ -15492,19 +17063,32 @@ function isWholeShift(from, to) {
 }
 function drawFloatPreview(ctx, layer, f, m, bounds) {
   ctx.drawImage(layer, 0, 0);
+  const cover = f.cover;
+  if (!cover) {
+    drawPlaced(ctx, f, m, bounds, f.surface.canvas, f.baked?.surface.canvas);
+    return;
+  }
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  drawPlaced(ctx, f, m, bounds, cover.canvas, f.baked?.cover?.canvas);
+  ctx.globalCompositeOperation = "lighter";
+  drawPlaced(ctx, f, m, bounds, f.surface.canvas, f.baked?.surface.canvas);
+  ctx.restore();
+}
+function drawPlaced(ctx, f, m, bounds, canvas, bakedCanvas) {
   if (isPlainPlacement(f, m)) {
-    ctx.drawImage(f.surface.canvas, m.e - bounds.x, m.f - bounds.y);
+    ctx.drawImage(canvas, m.e - bounds.x, m.f - bounds.y);
     return;
   }
   const baked = f.baked;
-  if (baked && isWholeShift(baked.m, m)) {
-    ctx.drawImage(baked.surface.canvas, baked.rect.x + Math.round(m.e - baked.m.e) - bounds.x, baked.rect.y + Math.round(m.f - baked.m.f) - bounds.y);
+  if (baked && bakedCanvas && isWholeShift(baked.m, m)) {
+    ctx.drawImage(bakedCanvas, baked.rect.x + Math.round(m.e - baked.m.e) - bounds.x, baked.rect.y + Math.round(m.f - baked.m.f) - bounds.y);
     return;
   }
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.setTransform(m.a, m.b, m.c, m.d, m.e - bounds.x, m.f - bounds.y);
-  ctx.drawImage(f.surface.canvas, 0, 0);
+  ctx.drawImage(canvas, 0, 0);
   ctx.restore();
 }
 function fieldValue(p, map, key) {
@@ -16120,7 +17704,7 @@ class FloatOps {
       f.selBase = sel;
       s.selection.set(sel);
     }
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     s.events.emit("render", void 0);
   }
   /**
@@ -16143,7 +17727,7 @@ class FloatOps {
     if (!f || !m || !f.xf) return;
     dropBake(f);
     f.baked = bakeFloat(f, m);
-    this.s.runtime.bump(f.layerId);
+    this.bump(f);
     this.s.events.emit("render", void 0);
   }
   // ── Moving ──────────────────────────────────────────────────────────────
@@ -16196,18 +17780,20 @@ class FloatOps {
     if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
     const m = this.matrix() ?? translation(f.area.x, f.area.y);
-    if (!f.inserted && affineEquals(m, f.liftM ?? translation(f.area.x, f.area.y))) {
+    if (!f.inserted && affineEquals(m, liftMatrix(f))) {
       this.cancel();
       return false;
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
-    const keep = f.xf !== null && isEmptyRect(layerContentRect(s, f.layerId));
+    const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
     writeFloatPatch(s, f, m);
     releaseFloat(f);
     if (keep) {
       const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : void 0;
       s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
+      const c = f.carry;
+      if (c) s.kept.keep(c.key, { pixels: c.pixels, area: { ...c.area }, m: carryMatrix(c, liftMatrix(f), m), revision: s.runtime.revision(c.key) });
     }
     f.onEnd?.(true);
     s.afterEdit();
@@ -16225,7 +17811,7 @@ class FloatOps {
     this.f = null;
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     s.selection.set(f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
@@ -16252,14 +17838,23 @@ class FloatOps {
     s.ensureBounds(transformedAabb(m, f.area.width, f.area.height), true);
     f.dx = dx;
     f.dy = dy;
-    s.runtime.bump(f.layerId);
+    this.bump(f);
     if (f.selBase) s.selection.set(offsetSelection(f.selBase, dx, dy));
     s.events.emit("render", void 0);
   }
+  /** New revision of the float's key (and its carried lmask): display caches keyed by it (mask tint, masked layer, thumbnails) refresh. */
+  bump(f) {
+    this.s.runtime.bump(f.layerId);
+    if (f.carry) this.s.runtime.bump(f.carry.key);
+  }
+  /** Display of a store key while floating: the float's own key, or its carried lmask (M14b). */
   preview(layerId) {
     const f = this.f;
-    if (!f || f.layerId !== layerId) return null;
-    return floatPreviewCanvas(this.s, f, this.matrix() ?? translation(f.area.x, f.area.y));
+    if (!f) return null;
+    const m = this.matrix() ?? translation(f.area.x, f.area.y);
+    if (f.layerId === layerId) return floatPreviewCanvas(this.s, f, m);
+    if (f.carry?.key === layerId) return carryPreviewCanvas(this.s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
+    return null;
   }
 }
 const MERGE_NOTHING_NOTE = "Nothing to merge down into.";
@@ -16288,6 +17883,7 @@ function mergeDown(s) {
   s.runtime.touch(lower.id);
   emitLayerEvents(s);
   s.afterEdit();
+  if (upper.layerMask?.enabled) s.events.emit("note", LAYER_MASK_APPLIED_NOTE);
   return true;
 }
 function canMergeDown(s) {
@@ -16301,7 +17897,7 @@ function mergePlan(s) {
   const index = s.doc.layers.indexOf(upper);
   const lower = s.doc.layers[index - 1];
   if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;
-  return editBlockNote(s, upper) ?? editBlockNote(s, lower) ?? { upper, lower, index };
+  return editBlockNote(s, upper, "whole") ?? editBlockNote(s, lower, "whole") ?? { upper, lower, index };
 }
 function mergePixels(s, upper, lower) {
   const bounds = s.store.bounds;
@@ -16315,6 +17911,9 @@ function mergePixels(s, upper, lower) {
   if (upper.kind === "mask") {
     mergeMaskCoverage(up.data.data, upper.invert === true, next, lower.invert === true);
   } else {
+    const lm = upper.layerMask;
+    const mask = lm?.enabled ? s.store.read(layerMaskKey(upper.id), r) : null;
+    if (lm && mask) applyMaskAlpha(up.data.data, mask.data.data, lm.invert);
     compositeOver(next, r.width, r.height, up.data.data, r.width, r.height, 0, 0, upper.opacity);
   }
   s.store.write(lower.id, r.x, r.y, new ImageData(next, r.width, r.height));
@@ -16460,7 +18059,7 @@ class LayerMoveOps {
   }
 }
 function blockedNote(s, layer) {
-  const note = editBlockNote(s, layer);
+  const note = editBlockNote(s, layer, "whole");
   if (note) return note;
   if (!moverFor(layer)) return UNMOVABLE_LAYER_NOTE;
   return null;
@@ -16695,9 +18294,34 @@ function wandSelection(pixels, area, point, options) {
   });
   return selectionFromCoverage(coverage, area, bbox);
 }
-function sampleTarget(sample, layer) {
-  if (sample === "layer") return layer ? { kind: "layer", layer } : { kind: "scene", source: "all" };
-  return { kind: "scene", source: sample };
+function sampleTarget(sample, layer, viewedMask) {
+  if (viewedMask?.layerMask) return { kind: "lmask", layer: viewedMask };
+  if (sample === "all" && layer?.kind === "mask") return { kind: "masks" };
+  if (sample !== "layer") return { kind: "scene", source: sample };
+  if (!layer) return { kind: "scene", source: "all" };
+  return layer.kind === "mask" ? { kind: "cmask", layer } : { kind: "layer", layer };
+}
+function coverageGray(coverage) {
+  const out = new Uint8ClampedArray(coverage.length * 4);
+  for (let i = 0; i < coverage.length; i++) {
+    const v = coverage[i];
+    out[i * 4] = out[i * 4 + 1] = out[i * 4 + 2] = v;
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+function lmaskGray(read, area, invert2, outsideHidden) {
+  const n = area.width * area.height;
+  const hidden = new Uint8Array(n).fill(outsideHidden ? 255 : 0);
+  if (read) {
+    const { rect, data } = read;
+    for (let y = 0; y < rect.height; y++) {
+      const row = (rect.y - area.y + y) * area.width + (rect.x - area.x);
+      for (let x = 0; x < rect.width; x++) hidden[row + x] = data.data[(y * rect.width + x) * 4 + 3];
+    }
+  }
+  if (invert2) for (let i = 0; i < n; i++) hidden[i] = 255 - hidden[i];
+  return coverageGray(hidden);
 }
 class PixelOps {
   /**
@@ -16720,6 +18344,7 @@ class PixelOps {
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
+    const onMask = targetedMaskLayer(s)?.id === layer.id;
     const px = Math.floor(req.point.x);
     const py = Math.floor(req.point.y);
     const image = this.imageRectInDoc();
@@ -16727,10 +18352,10 @@ class PixelOps {
     s.ensureBounds(image, true);
     const bounds = s.store.bounds;
     if (!inside(bounds, px, py)) return false;
-    const target = sampleTarget(req.sample, layer);
+    const target = sampleTarget(req.sample, layer, this.viewedMask());
     const source = this.sampleArea(bounds, target);
     if (!source) return false;
-    const own = !req.antiAlias ? void 0 : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
+    const own = !req.antiAlias || onMask ? void 0 : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
     const { coverage, bbox, under } = floodFill(source, bounds.width, bounds.height, {
       x: px - bounds.x,
       y: py - bounds.y,
@@ -16743,6 +18368,7 @@ class PixelOps {
     });
     if (isEmptyRect(bbox)) return false;
     const docRect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
+    if (onMask) return this.fillMask(layer, docRect, bbox, coverage, bounds.width, req.opacity);
     const before = s.store.read(layer.id, docRect);
     if (!before) return false;
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
@@ -16759,22 +18385,68 @@ class PixelOps {
     s.afterEdit();
     return true;
   }
+  /**
+   * The bucket on a targeted layer mask: the flooded region (selection-clipped,
+   * times `opacity`) gets the foreground mask swatch -- white hides (white
+   * paint), black reveals (erase). One patch on the mask key; no change = no step.
+   * @param layer - Layer whose mask is targeted.
+   * @param docRect - Coverage bbox in document coords.
+   * @param bbox - The same rect in coverage coords.
+   * @param coverage - Flood coverage (bounds-sized; scaled in place for reveal).
+   * @param stride - Coverage row length.
+   * @param opacity - 0..1.
+   * @returns `true` if pixels changed.
+   */
+  fillMask(layer, docRect, bbox, coverage, stride, opacity) {
+    const s = this.s;
+    const key = layerMaskKey(layer.id);
+    const before = s.store.read(key, docRect);
+    if (!before) return false;
+    const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
+    if (s.layerMasks.fgWhite) {
+      blendCoverage(next.data, bbox, coverage, stride, hexToRgb(MASK_WHITE), opacity);
+    } else {
+      const k = Math.min(1, Math.max(0, opacity));
+      if (k < 1) for (let i = 0; i < coverage.length; i++) coverage[i] = Math.round(coverage[i] * k);
+      eraseCoverage(next.data, bbox, coverage, stride);
+    }
+    s.store.write(key, docRect.x, docRect.y, next);
+    const after = s.store.read(key, docRect);
+    if (!after || sameBytes(before.data.data, after.data.data)) return false;
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId: key, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
+    s.runtime.touch(key);
+    s.afterEdit();
+    return true;
+  }
   // ── Magic wand ──────────────────────────────────────────────────────────
   /**
    * Magic-wand coverage at a point (not applied: the tool combines it with
    * the current selection via `Editor.selection.apply`). Samples like the
    * bucket, over the paint bounds united with the image rect, without growing
-   * the bounds (the wand edits no pixels). "Current layer" is the active paint
-   * layer (colours, also in Quick Mask; like the eyedropper).
+   * the bounds (the wand edits no pixels). "Current layer" is the current
+   * target: the paint layer's raw pixels, or under Quick Mask the current
+   * mask's effective coverage as gray (Image / Input Mask row included); a
+   * hidden target (eye off or hidden by solo) refuses with the gate's
+   * hidden note. "All layers" under Quick Mask: the visible masks' union
+   * (no note). In the lmask-only view the viewed mask's grayscale,
+   * whatever the option (also for a hidden layer).
    * @param req - Click position, matching options and sample source.
-   * @returns Selection in document coords, or `null` (nothing matched / loading / outside).
+   * @returns Selection in document coords, `null` (nothing matched / loading
+   *   / outside), or `"blocked"` (hidden target; note shown, leave the selection alone).
    */
   wandSelection(req) {
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
     const area = unionRect(this.imageRectInDoc(), s.store.bounds);
     if (!inside(area, Math.floor(req.point.x), Math.floor(req.point.y))) return null;
-    const source = this.sampleArea(area, sampleTarget(req.sample, targetLayer(s.doc, "paint")));
+    const target = sampleTarget(req.sample, targetLayer(s.doc, s.target, s.currentMaskId), this.viewedMask());
+    const note = target.kind === "layer" || target.kind === "cmask" ? hiddenNote(s, target.layer) : null;
+    if (note) {
+      s.events.emit("note", note);
+      return "blocked";
+    }
+    const source = this.sampleArea(area, target);
     return source ? wandSelection(source, area, req.point, req) : null;
   }
   // ── Sampling ────────────────────────────────────────────────────────────
@@ -16803,12 +18475,21 @@ class PixelOps {
   // ── Internals ───────────────────────────────────────────────────────────
   /**
    * RGBA of a document area as the bucket / wand / eyedropper see it: the
-   * visible composite, the background only, or one layer (transparent
-   * outside the bounds). The one sampling path of all three tools.
+   * visible composite, the background only, one layer's raw pixels
+   * (transparent outside the bounds), a mask layer's effective coverage or
+   * a layer mask as opaque gray ({@link coverageGray}, {@link lmaskGray}).
+   * The one sampling path of all three tools.
    * @param scratch - Reusable canvas for scene reads (eyedropper drags).
    */
   sampleArea(area, target, scratch2) {
     if (target.kind === "scene") return readDocRegion(sceneFor(this.compositeInput(), target.source), area, scratch2)?.data ?? null;
+    if (target.kind === "cmask") return this.maskCoverageGray(target.layer, area);
+    if (target.kind === "masks") return this.visibleMasksGray(area);
+    if (target.kind === "lmask") {
+      const mask = target.layer.layerMask;
+      const read2 = this.s.store.read(layerMaskKey(target.layer.id), area);
+      return lmaskGray(read2, area, mask?.invert === true, mask?.outside === "hide");
+    }
     const read = this.s.store.read(target.layer.id, area);
     if (read && rectEquals(read.rect, area)) return read.data.data;
     const out = new Uint8ClampedArray(area.width * area.height * 4);
@@ -16820,6 +18501,46 @@ class PixelOps {
     }
     return out;
   }
+  /**
+   * A mask layer's effective coverage (its invert applied) over `area` as
+   * opaque gray. Mask layers: stored alpha, 0 beyond the stored pixels
+   * before invert (like the overlay and Python). The Image / Input Mask row:
+   * its image-px coverage resampled into document coords, 0 outside the
+   * image (also when inverted), like its Ctrl+click selection.
+   */
+  maskCoverageGray(layer, area) {
+    const s = this.s;
+    const invert2 = layer.invert === true;
+    if (layer.id !== IMAGE_MASK_ID) return lmaskGray(s.store.read(layer.id, area), area, invert2, false);
+    const plane = s.imageMask.coverage;
+    const size = s.imageMask.size;
+    const n = area.width * area.height;
+    return coverageGray(plane ? coverageInDoc(plane, size, documentMap(s.doc, size), area, invert2) : new Uint8Array(n));
+  }
+  /**
+   * "All layers" with a mask targeted: the union (max) of every mask shown
+   * on the stage (eye / solo, like the overlay), each after its own invert,
+   * as opaque gray. The Image / Input Mask row joins while it is shown and
+   * applies to the current image ({@link imageMaskApplies}); its coverage is
+   * 0 outside the image. Paint layers are not read.
+   */
+  visibleMasksGray(area) {
+    const s = this.s;
+    const union = new Uint8Array(area.width * area.height);
+    for (const layer of s.doc.layers) {
+      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
+      const read = s.store.read(layer.id, area);
+      unionMaskCoverage(union, area, read?.rect ?? null, read?.data.data ?? new Uint8ClampedArray(0), layer.invert === true);
+    }
+    const image = s.doc.imageMask;
+    const plane = s.imageMask.coverage;
+    if (image && plane && shownOnStage(image, s.solo.current) && imageMaskApplies(s)) {
+      const size = s.imageMask.size;
+      const cov = coverageInDoc(plane, size, documentMap(s.doc, size), area, image.invert === true);
+      for (let i = 0; i < union.length; i++) if (cov[i] > union[i]) union[i] = cov[i];
+    }
+    return coverageGray(union);
+  }
   /** The current image's rect in document coords (rounded out). */
   imageRectInDoc() {
     const s = this.s;
@@ -16827,21 +18548,31 @@ class PixelOps {
     const size = s.imageSize;
     return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
   }
+  /** The layer whose mask the lmask-only view shows (it is then the targeted mask), or `null`. */
+  viewedMask() {
+    const layer = targetedMaskLayer(this.s);
+    return layer && this.s.layerMasks.view === layer.id ? layer : null;
+  }
   /** "What the user sees": honours solo (view only), like the stage. */
   compositeInput() {
     return visibleScene(this.s);
   }
+}
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 function inside(r, x, y) {
   return x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height;
 }
 const WHEEL_SCALE_STEP = 1.05;
 const MAX_WHEEL_DELTA = 300;
-function fitScale$1(frame, image) {
+function fitScale(frame, image) {
   return frameMap(frame, image).scale;
 }
 function translatePlacement(p, frame, image, dx, dy) {
-  const s = fitScale$1(frame, image);
+  const s = fitScale(frame, image);
   return { x: p.x + dx / s, y: p.y + dy / s, scale: p.scale };
 }
 function scalePlacementAt(p, frame, image, factor, anchor) {
@@ -16863,11 +18594,11 @@ function wheelScaleFactor(deltaPx) {
   return Math.pow(WHEEL_SCALE_STEP, -d / 100);
 }
 function placementImageOffset(p, frame, image) {
-  const s = fitScale$1(frame, image);
+  const s = fitScale(frame, image);
   return { x: p.x * s, y: p.y * s };
 }
 function imageOffsetToPlacement(imagePx, frame, image) {
-  return imagePx / fitScale$1(frame, image);
+  return imagePx / fitScale(frame, image);
 }
 const PLACEMENT_MARGIN = 50;
 function validSizes(frame, image) {
@@ -17103,22 +18834,26 @@ class SelectionOps {
   // ── Pixel commands (one undo patch each) ────────────────────────────────
   /**
    * Delete/Backspace: clear the selected pixels of the paint target (on the
-   * mask target this removes mask coverage).
+   * mask target this removes mask coverage; on a targeted layer mask it
+   * clears the white too, i.e. reveals).
    * @returns `true` if pixels changed.
    */
   clearSelected() {
     const layer = this.editableTarget();
+    if (layer && this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, false);
     return layer ? this.editPixels(layer, (px, rect, cov, stride) => eraseCoverage(px, rect, cov, stride)) : false;
   }
   /**
    * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
-   * target (on the mask target: add coverage, colour ignored).
+   * target (on the mask target: add coverage, colour ignored; on a targeted
+   * layer mask the same: paint white = hide, swatches ignored).
    * @param color - CSS hex colour.
    * @returns `true` if pixels changed.
    */
   fillSelected(color) {
     const layer = this.editableTarget();
     if (!layer) return false;
+    if (this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, true);
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
   }
@@ -17156,6 +18891,10 @@ class SelectionOps {
       return false;
     }
     return true;
+  }
+  /** Whether pixel commands on `layer` go to its targeted layer mask (M14). */
+  onLayerMask(layer) {
+    return targetedMaskLayer(this.s)?.id === layer.id;
   }
   editableTarget() {
     const s = this.s;
@@ -17261,6 +19000,12 @@ class TextOps {
     this.commit();
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
+    const masked = targetedMaskLayer(s);
+    const note = masked ? layerMaskBlockNote(s, masked, "other") : null;
+    if (note) {
+      s.events.emit("note", note);
+      return null;
+    }
     const textData = { ...style, text: "", x: at.x, y: at.y };
     const layer = createTextLayer(textData);
     if (!this.layers.addLayer(layer)) return null;
@@ -17728,6 +19473,7 @@ class ResolutionOps {
     for (const layer of s.doc.layers) {
       if (s.runtime.get(layer.id)?.hasContent) s.runtime.touch(layer.id);
       else s.runtime.bump(layer.id);
+      if (layer.layerMask) s.runtime.touch(layerMaskKey(layer.id));
     }
     s.history.clear();
     s.selection.set(null);
@@ -17738,134 +19484,6 @@ class ResolutionOps {
     s.afterEdit();
     return true;
   }
-}
-function fitScale(source, area) {
-  if (source.width <= 0 || source.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
-  return Math.min(1, area.width / source.width, area.height / source.height);
-}
-function insertParams(source, imageArea, docPerImage, place) {
-  const k = fitScale(source, { width: imageArea.width / docPerImage, height: imageArea.height / docPerImage });
-  const t = k * docPerImage;
-  const w = source.width * t;
-  const h = source.height * t;
-  const tl = pasteTopLeft({ width: w, height: h }, { ...place, imageArea, original: null });
-  return { cx: tl.x + w / 2, cy: tl.y + h / 2, sx: t, sy: t, angle: 0 };
-}
-class SourceInsertOps {
-  /**
-   * @param s - Shared editor state.
-   * @param layers - Layer commands (undoable add + solo rule).
-   * @param float - Float commands (the session runs on a float).
-   * @param paintTargetOff - Turns Quick Mask off.
-   * @param undo - Undo one history step (`PaintOps.undo`).
-   */
-  constructor(s, layers2, float, paintTargetOff, undo) {
-    this.s = s;
-    this.layers = layers2;
-    this.float = float;
-    this.paintTargetOff = paintTargetOff;
-    this.undo = undo;
-  }
-  s;
-  layers;
-  float;
-  paintTargetOff;
-  undo;
-  /**
-   * New layer holding `pixels` in a Free Transform session (see module doc).
-   * @param pixels - Full-resolution source pixels (straight alpha).
-   * @param name - Layer name (source file name); default "Image N" (next free N).
-   * @returns `true` if the session runs.
-   */
-  insert(pixels, name) {
-    return this.start(
-      pixels,
-      name?.trim() || imageLayerName(this.s.doc.layers),
-      (place, area, docPerImage) => insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place)
-    ) !== null;
-  }
-  /**
-   * An oversized paste (SPEC M10 Clipboard): the same session, at native
-   * size and the paste's own placement (`pastePlacement.ts`, no fit scaling).
-   * @param pixels - Full source pixels (straight alpha).
-   * @param name - Layer name ("Pasted N").
-   * @param rect - Placed document rect of the whole paste (`pasteRect`).
-   * @returns The new layer id if the session runs, else `null`.
-   */
-  insertPlaced(pixels, name, rect) {
-    const sx = rect.width / pixels.width;
-    const sy = rect.height / pixels.height;
-    return this.start(pixels, name, () => ({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, sx, sy, angle: 0 }));
-  }
-  /** Shared body of {@link insert} / {@link insertPlaced}. */
-  start(pixels, name, paramsFor) {
-    const s = this.s;
-    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return null;
-    s.settleFloat();
-    s.commitTextEdit();
-    if (s.stroke.active) s.cancelStroke();
-    if (this.float.active || this.float.transform.active) return null;
-    if (s.target === "mask") this.paintTargetOff();
-    const layer = createPaintLayer(name);
-    const id = this.layers.addLayer(layer);
-    if (!id) return null;
-    const map = documentMap(s.doc, s.imageSize);
-    const sel = s.selection.current;
-    const place = pasteContext({ selection: sel, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
-    if (sel) {
-      s.selection.set(null);
-      recordSelectionMove(s, sel, null, true);
-    }
-    const step = s.history.mergeTarget();
-    const docPerImage = 1 / map.scale;
-    const area = imageRectToDoc(map, frameRect(s.imageSize));
-    const { width: w, height: h } = pixels;
-    const params = paramsFor(place, area, docPerImage);
-    const m = paramsMatrix(params, w, h);
-    s.ensureBounds(transformedAabb(m, w, h), true);
-    const surface = createSurface(w, h);
-    surface.ctx.putImageData(pixels, 0, 0);
-    const f = {
-      layerId: id,
-      area: { x: 0, y: 0, width: w, height: h },
-      // The layer is empty: a 1 px transparent "hole" inside the bounds keeps the commit patch small.
-      original: new ImageData(1, 1),
-      holeRect: holeAt(s.store.bounds, params),
-      params,
-      pixels,
-      surface,
-      dx: 0,
-      dy: 0,
-      selBefore: null,
-      selBase: null,
-      xf: m,
-      baked: null,
-      dragBase: null,
-      preview: null,
-      inserted: true,
-      onEnd: (landed) => this.ended(id, step, landed)
-    };
-    if (!this.float.adoptInserted(f)) return null;
-    return this.float.transform.enter() ? id : null;
-  }
-  /** The inserted float ended: join its steps, or remove the layer without a trace. */
-  ended(layerId, step, landed) {
-    const s = this.s;
-    if (!step) return;
-    if (landed) {
-      s.history.joinSince(step);
-      return;
-    }
-    if (s.history.mergeTarget() !== step) return;
-    this.undo();
-    s.history.dropRedo();
-    s.kept.drop(layerId);
-    s.events.emit("history", void 0);
-  }
-}
-function holeAt(bounds, p) {
-  const clamp2 = (v, lo, size) => Math.min(lo + size - 1, Math.max(lo, Math.floor(v)));
-  return { x: clamp2(p.cx, bounds.x, bounds.width), y: clamp2(p.cy, bounds.y, bounds.height), width: 1, height: 1 };
 }
 class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
@@ -17894,6 +19512,8 @@ class Editor extends EditorBase {
   insert;
   /** Image Mask row (M13a): background alpha, restore / upload bookkeeping, Duplicate. */
   imageMask;
+  /** Layer masks (M14): add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
+  layerMask;
   maskOps;
   /**
    * @param doc - Document (copied).
@@ -17913,10 +19533,19 @@ class Editor extends EditorBase {
     this.regionOps = new RegionOps(this.s);
     this.float = new FloatOps(this.s);
     this.selectionMove = new SelectionMoveOps(this.s);
-    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r));
+    this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r), this.float);
     this.resolution = new ResolutionOps(this.s);
     this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
     this.imageMask = new ImageMaskOps(this.s);
+    this.layerMask = new LayerMaskOps(
+      this.s,
+      (sel, mode) => this.selection.apply(sel, mode),
+      (id) => {
+        this.layerOps.setActiveLayer(id);
+        this.setPaintTarget("paint");
+      },
+      (key) => this.savedLayerCanvas(key)
+    );
   }
   // ── Read access ─────────────────────────────────────────────────────────
   /** Current document (treat as read-only). */
@@ -18178,6 +19807,7 @@ class Editor extends EditorBase {
     this.s.stroke.dispose();
     this.s.store.dispose();
     this.s.imageMask.dispose();
+    this.s.layerMasks.dispose();
     this.display.dispose();
     this.pixelOps.dispose();
     this.s.selection.dispose();
@@ -18455,6 +20085,10 @@ class EyedropperTool {
   onPointerDown(editor, samples) {
     const first = samples[0];
     if (!first) return;
+    if (editor.layerMask.targeted) {
+      editor.events.emit("note", LAYER_MASK_EYEDROPPER_NOTE);
+      return;
+    }
     const slot = first.altKey && !this.isTemporary ? "bg" : "fg";
     const previous = editor.colors[slot];
     this.picking = { slot, previous, color: previous };
@@ -18798,6 +20432,7 @@ class MagicWandTool {
       antiAlias: v.antiAlias,
       sample: v.sample
     });
+    if (sel === "blocked") return;
     editor.selection.apply(sel, mode);
   }
   /** @inheritdoc */
@@ -19213,7 +20848,7 @@ class ShapeTool {
     const first = samples[0];
     if (!first || this.drag) return;
     const { fg, bg } = editor.colors;
-    if (!editor.beginStroke({ mode: "paint", opacity: this.values.opacity, hardness: 1, color: fg }, 1)) return;
+    if (!editor.beginStroke({ mode: "paint", opacity: this.values.opacity, hardness: 1, color: fg, shape: true }, 1)) return;
     this.drag = { start: { x: first.x, y: first.y }, width: imageLengthToDoc(editor.frameMap, this.values.width), fg, bg };
     this.update(editor, samples.at(-1) ?? first);
   }
@@ -19369,6 +21004,71 @@ function createArrowTool() {
 const SHAPE_GROUP = { id: "shape", label: "Shape", toolIds: ["line", "arrow", "rectangle", "ellipse"] };
 function createShapeTools() {
   return [createLineTool(), createArrowTool(), createRectangleTool(), createEllipseTool()];
+}
+const LABEL_KEY = "layerMaskLabel";
+const INVERT_KEY = "layerMaskInvert";
+const APPLY_KEY = "layerMaskApply";
+const DELETE_KEY = "layerMaskDelete";
+const MASK_DESCRIPTORS = [
+  { kind: "label", key: LABEL_KEY, label: "Layer Mask:", title: "Strokes edit the layer mask (white hides, black reveals)", group: "layerMask" },
+  { kind: "toggle", key: INVERT_KEY, label: "Invert mask", title: "Invert the layer mask (a setting; pixels are kept)", group: "layerMask" },
+  { kind: "button", key: APPLY_KEY, label: "Apply", title: "Apply the layer mask: bake it into the layer's pixels and remove it (undoable)", group: "layerMask" },
+  { kind: "button", key: DELETE_KEY, label: "Delete mask", title: "Delete the layer mask (undoable)", icon: "trash", group: "layerMask" }
+];
+class LayerMaskBarOptions {
+  /**
+   * @param editor - Session editor.
+   * @param base - Options the bar would show otherwise (or `null`).
+   */
+  constructor(editor, base) {
+    this.editor = editor;
+    this.base = base;
+    this.descriptors = [...base?.descriptors ?? [], ...MASK_DESCRIPTORS];
+  }
+  editor;
+  base;
+  descriptors;
+  /** Groups of the base options. */
+  get groups() {
+    return this.base?.groups;
+  }
+  /** @inheritdoc */
+  get(key) {
+    const lm = this.editor.layerMask;
+    const id = lm.targeted;
+    if (key === LABEL_KEY) return void 0;
+    if (key === INVERT_KEY) return id ? lm.info(id)?.invert === true : false;
+    if (key === DELETE_KEY || key === APPLY_KEY) return id !== null;
+    return this.base?.get(key);
+  }
+  /** @inheritdoc */
+  set(key, value) {
+    const lm = this.editor.layerMask;
+    const id = lm.targeted;
+    if (key === LABEL_KEY) return false;
+    if (key === INVERT_KEY) return id !== null && typeof value === "boolean" && lm.setInvert(id, value);
+    if (key === APPLY_KEY) return id !== null && value === true && lm.apply(id);
+    if (key === DELETE_KEY) return id !== null && value === true && lm.remove(id);
+    return this.base?.set(key, value) ?? false;
+  }
+  /** @inheritdoc */
+  endEdit(key) {
+    this.base?.endEdit?.(key);
+  }
+}
+function layerMaskBarDecorator(editor) {
+  const cache2 = /* @__PURE__ */ new WeakMap();
+  const none = {};
+  return (options) => {
+    if (!editor.layerMask.targeted || editor.float.transform.active) return options;
+    const base = options ?? none;
+    let wrapped = cache2.get(base);
+    if (!wrapped) {
+      wrapped = new LayerMaskBarOptions(editor, options);
+      cache2.set(base, wrapped);
+    }
+    return wrapped;
+  };
 }
 const CURATED_FONTS = [
   "sans-serif",
@@ -20037,7 +21737,17 @@ class ToolRegistry {
    * @returns Options, or `null`.
    */
   barOptions() {
-    return this.session ? this.session.options(this.active) : this.active.options;
+    const options = this.session ? this.session.options(this.active) : this.active.options;
+    return this.barDecorator ? this.barDecorator(options, this.active) : options;
+  }
+  /** Adds context controls to the bar (M14 layer mask controls), or `null`. */
+  barDecorator = null;
+  /**
+   * Install a bar decorator ({@link barOptions} passes its result through it).
+   * @param decorator - Returns the options to show (stable objects), or `null` to remove.
+   */
+  setBarDecorator(decorator) {
+    this.barDecorator = decorator;
   }
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
   altTool = null;
@@ -20110,6 +21820,7 @@ function createDefaultTools(editor, pressure = PRESSURE_DEFAULTS, samples = SAMP
   registry.setCtrlTool(moveLayer);
   registry.setBeforeSwitch(() => editor.settle());
   registry.setSession(createTransformSession(editor));
+  registry.setBarDecorator(layerMaskBarDecorator(editor));
   return registry;
 }
 function contentHash(bytes, seed = 0) {
@@ -20272,6 +21983,7 @@ class LayerUploader {
         failures.push(error);
       }
     }
+    await this.uploadLayerMasks(paintQuality, failures);
     await this.uploadImageMask(paintQuality, failures);
     if (this.disposed) return;
     if (failures.length) {
@@ -20299,6 +22011,23 @@ class LayerUploader {
       this.timer = null;
       this.flushQuietly();
     }, this.retryDelay);
+  }
+  /**
+   * M14: dirty layer masks, like mask layers (PNG, same folder and naming;
+   * a fully hidden mask stores no file).
+   */
+  async uploadLayerMasks(paintQuality, failures) {
+    for (const job of this.editor.layerMask.uploads()) {
+      if (this.disposed) return;
+      try {
+        const file = await this.uploadLayer({ id: job.layerId, name: job.name, kind: "mask", file: job.file }, paintQuality, job.canvas);
+        if (this.disposed) return;
+        if (file) this.knownFiles.add(file);
+        this.editor.layerMask.markUploaded(job.layerId, job.version, file);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
   }
   /**
    * M13a: the Image Mask coverage, like a mask layer (PNG, same folder and
@@ -20361,13 +22090,15 @@ function isUploadResponse(value) {
 }
 async function restoreLayers(editor, isAlive) {
   const layers2 = editor.doc.layers.filter((l) => l.file);
-  if (!layers2.length) return;
+  const masks = editor.doc.layers.filter((l) => l.layerMask?.file);
+  if (!layers2.length && !masks.length) return;
   const bounds = editor.bounds;
   const problems = [];
   editor.beginLoading();
   try {
-    await Promise.all(
-      layers2.map(async (layer) => {
+    await Promise.all([
+      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems)),
+      ...layers2.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
         const url = viewUrl(item, (route) => api.apiURL(route));
@@ -20388,12 +22119,33 @@ async function restoreLayers(editor, isAlive) {
           if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
       })
-    );
+    ]);
   } finally {
     if (isAlive()) editor.endLoading();
   }
   const summary = isAlive() ? restoreSummary(problems) : null;
   if (summary) notify(summary.severity, summary.message, { key: `restore:${editor.doc.docId}:${summary.message}` });
+}
+async function restoreLayerMask(editor, layer, isAlive, problems) {
+  const file = layer.layerMask?.file ?? null;
+  const item = parseAnnotatedFilename(file, "input");
+  if (!item) return;
+  const name = `${layer.name} mask`;
+  try {
+    const image = await fetchImage(viewUrl(item, (route) => api.apiURL(route)));
+    if (!isAlive()) return;
+    const b = editor.bounds;
+    if (image.naturalWidth !== b.width || image.naturalHeight !== b.height) {
+      log.warn(`layer mask "${name}" file is ${image.naturalWidth}x${image.naturalHeight}, expected ${b.width}x${b.height}:`, file);
+      problems.push({ name, kind: "stale" });
+    }
+    editor.layerMask.restore(layer.id, image);
+  } catch (error) {
+    if (!isAlive()) return;
+    log.warn(`could not restore layer mask "${name}" from ${file}:`, error);
+    editor.layerMask.restoreFailed(layer.id);
+    problems.push({ name, kind: classifyError(error) });
+  }
 }
 async function fetchImage(url) {
   const response = await fetch(url);
@@ -20420,7 +22172,10 @@ function createSession(doc, source, editor) {
   const ed = editor ?? new Editor(doc, source);
   ed.setMaskStyleProvider(readFirstMaskStyle);
   const knownFiles = /* @__PURE__ */ new Set();
-  for (const layer of ed.doc.layers) if (layer.file) knownFiles.add(layer.file);
+  for (const layer of ed.doc.layers) {
+    if (layer.file) knownFiles.add(layer.file);
+    if (layer.layerMask?.file) knownFiles.add(layer.layerMask.file);
+  }
   const imageMaskFile = ed.doc.imageMask?.file;
   if (imageMaskFile) knownFiles.add(imageMaskFile);
   const session = {
@@ -20452,7 +22207,8 @@ function findSession(docId) {
   return sessions.get(docId);
 }
 function fileSignature(doc) {
-  return JSON.stringify([doc.frame, doc.layers.map((l) => [l.id, l.file]), outputMetadataSignature(doc), doc.imageMask?.file ?? null]);
+  const layers2 = doc.layers.map((l) => l.layerMask ? [l.id, l.file, l.layerMask] : [l.id, l.file]);
+  return JSON.stringify([doc.frame, layers2, outputMetadataSignature(doc), doc.imageMask?.file ?? null]);
 }
 function sessionMatches(session, doc) {
   const signature = fileSignature(doc);
@@ -20953,8 +22709,8 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
-const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n/* Icon command buttons (Free Transform, flips, commit / cancel). */\n.cps-toggle.cps-icon-command {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 26px;\n  padding: 0;\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  /* Fixed width: without these, the min-content width of a long nowrap\n     layer name (flex min-width: auto) would push the panel over the canvas. */\n  width: var(--cps-panel-width);\n  min-width: 0;\n  max-width: var(--cps-panel-width);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
+const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Static caption option (e.g. "Layer Mask:"). */\n.cps-bar-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n  user-select: none;\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n/* Icon command buttons (Free Transform, flips, commit / cancel). */\n.cps-toggle.cps-icon-command {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 26px;\n  padding: 0;\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Layer mask swatches (M14): black / white only, no picker; default = white over black. */\n.cps-swatches.cps-mask-swatches .cps-swatch {\n  cursor: default;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-fg {\n  background: #fff;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-bg {\n  background: #000;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  /* Fixed width: without these, the min-content width of a long nowrap\n     layer name (flex min-width: auto) would push the panel over the canvas. */\n  width: var(--cps-panel-width);\n  min-width: 0;\n  max-width: var(--cps-panel-width);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
 const fullscreenCss = `/*
  * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
  *
@@ -21283,12 +23039,82 @@ const layersCss = `/*
   background-size: 8px 8px;
 }
 
+/* M14 layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
+   thumbnail; the edit target's thumbnail is framed. Fixed size, so long
+   names ellipsize instead of widening the row. */
+.cps-layer-mask-slot {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.cps-layer-mask-slot[hidden],
+.cps-layer-mask-slot [hidden] {
+  display: none;
+}
+
+.cps-layer-button.cps-layer-mask-add {
+  width: 14px;
+  height: 14px;
+  opacity: 0.45;
+}
+
+.cps-layer-row:hover .cps-layer-button.cps-layer-mask-add,
+.cps-layer-button.cps-layer-mask-add:hover {
+  opacity: 1;
+}
+
+.cps-layer-thumb-box.cps-target .cps-layer-thumb {
+  outline: 2px solid var(--cps-accent);
+  outline-offset: 1px;
+}
+
+.cps-layer-mask-thumb.cps-viewing .cps-layer-thumb {
+  outline: 2px dashed var(--cps-accent);
+  outline-offset: 1px;
+}
+
+.cps-layer-mask-thumb .cps-layer-thumb {
+  background: #000;
+}
+
+/* Disabled mask: red X over the thumbnail. */
+.cps-layer-mask-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cps-danger, #e53935);
+  pointer-events: none;
+}
+
 .cps-layer-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Row names (layerRow.ts LAYER_NAME_CLAMP_CLASS): up to 2 lines, then an
+   ellipsis; centred by .cps-layer-main. 2 x 11px x 1.2 = 26.4px fits the
+   38px thumbnail box, so the row height never changes. The one-line rename
+   field lifts the clamp. */
+.cps-layer-name.cps-layer-name-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-height: 2.4em;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cps-layer-name.cps-layer-name-clamp.cps-renaming {
+  display: block;
+  max-height: none;
 }
 
 .cps-layer-row.cps-hidden-layer .cps-layer-name,

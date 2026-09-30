@@ -11,7 +11,7 @@
  * | `[` `]` (Shift: hardness) | size (tools with a `size` / `hardness` option) |
  * | `1`..`9`, `0` | opacity 10%..90%, 100% |
  * | Q | Quick Mask |
- * | X / D | swap / reset FG-BG colours |
+ * | X / D | swap / reset FG-BG colours (with a layer mask targeted: the black / white mask swatches, M14) |
  * | F | toggle fullscreen (shell `fullscreen` event) |
  * | O | Outputs tab / region mode (toggle) |
  * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
@@ -124,10 +124,11 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
       editor.togglePaintTarget();
       return true;
     case "x":
-      editor.colors.swap();
+      // M14: while a layer mask is targeted X / D act on the black / white mask swatches.
+      if (!editor.layerMask.swapSwatches()) editor.colors.swap();
       return true;
     case "d":
-      editor.colors.reset();
+      if (!editor.layerMask.resetSwatches()) editor.colors.reset();
       return true;
     case "f":
       effects.fullscreen();

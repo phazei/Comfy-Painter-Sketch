@@ -13,10 +13,15 @@
  *   or nothing mergeable is below.
  * - ONE undo step: a group entry `[rasterize..., patch on lower, remove upper]`.
  *   A solo on the removed layer ends (the `layers` event prunes it).
+ * - Layer masks (M14b): the upper layer's enabled lmask is applied to its
+ *   pixels first (what you see; note "Layer mask applied."; undo brings the
+ *   layer and its mask back). The lower layer keeps its lmask and settings
+ *   unchanged: the merged pixels go under it.
  */
 
 import { IMAGE_MASK_ID } from "../document/imageMask";
 import { isPaintLike } from "../document/layerList";
+import { layerMaskKey } from "../document/layerMask";
 import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { intersectRect, isEmptyRect } from "../geometry/rect";
@@ -26,6 +31,7 @@ import type { HistoryEntry, LayersEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { compositeOver, mergeMaskCoverage } from "./floatMath";
 import { captureLayerPixels, changesBytes, emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
+import { applyMaskAlpha, LAYER_MASK_APPLIED_NOTE } from "./layerMaskCarry";
 import { readyCheck } from "./layerOpsHelpers";
 import { layerContentRect } from "./layerTranslate";
 import { editBlockNote, preparePixelEdit } from "./rasterize";
@@ -64,6 +70,7 @@ export function mergeDown(s: EditorState): boolean {
   s.runtime.touch(lower.id);
   emitLayerEvents(s);
   s.afterEdit();
+  if (upper.layerMask?.enabled) s.events.emit("note", LAYER_MASK_APPLIED_NOTE);
   return true;
 }
 
@@ -87,7 +94,7 @@ function mergePlan(s: EditorState): { upper: Layer; lower: Layer; index: number 
   const index = s.doc.layers.indexOf(upper);
   const lower = s.doc.layers[index - 1];
   if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;
-  return editBlockNote(s, upper) ?? editBlockNote(s, lower) ?? { upper, lower, index };
+  return editBlockNote(s, upper, "whole") ?? editBlockNote(s, lower, "whole") ?? { upper, lower, index };
 }
 
 /** Draw `upper` into `lower`; returns the patch entry, or `null` if nothing changed. */
@@ -103,6 +110,10 @@ function mergePixels(s: EditorState, upper: Layer, lower: Layer): HistoryEntry |
   if (upper.kind === "mask") {
     mergeMaskCoverage(up.data.data, upper.invert === true, next, lower.invert === true);
   } else {
+    // What you see of the upper layer: its enabled lmask applied (M14b).
+    const lm = upper.layerMask;
+    const mask = lm?.enabled ? s.store.read(layerMaskKey(upper.id), r) : null;
+    if (lm && mask) applyMaskAlpha(up.data.data, mask.data.data, lm.invert);
     compositeOver(next, r.width, r.height, up.data.data, r.width, r.height, 0, 0, upper.opacity);
   }
   s.store.write(lower.id, r.x, r.y, new ImageData(next, r.width, r.height));

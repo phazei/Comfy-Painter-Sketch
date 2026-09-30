@@ -17,6 +17,7 @@ import type { CompositeLayer, FrameBackground } from "./compositor";
 import type { EditorState } from "./editorState";
 import { documentMap, imageRectToDoc } from "./frameMap";
 import type { FrameMap } from "./frameMap";
+import { maskedSource } from "./layerMask";
 import { backgroundShown, shownOnStage } from "./solo";
 
 /** Scene description in document terms. */
@@ -63,7 +64,9 @@ export function visibleScene(s: EditorState): DocCompositeInput {
   const layers: CompositeLayer[] = [];
   for (const layer of s.doc.layers) {
     if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
-    layers.push({ source: s.store.ensure(layer.id).canvas, opacity: layer.opacity });
+    const source = s.store.ensure(layer.id).canvas;
+    // M14: what you see is the masked layer.
+    layers.push({ source: layer.layerMask ? maskedSource(s, layer, source, false) : source, opacity: layer.opacity });
   }
   return {
     background: s.background,
