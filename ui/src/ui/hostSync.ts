@@ -10,7 +10,7 @@
  * Sync calls: the host calls the methods below whenever editor events fire.
  * Disposal: the host calls {@link HostSync.dispose} when it tears down.
  *
- * Region mode (M9, `regionMode.ts`): the Outputs tab and the region tool
+ * Region mode (SPEC "Outputs and regions (editor)", `regionMode.ts`): the Outputs tab and the region tool
  * follow each other -- opening the tab activates the tool, any other tool
  * shows the Layers tab. The Outputs button / `O` toggles it.
  */
@@ -104,13 +104,12 @@ export class HostSync {
       shell.popoverHost,
     );
 
-    // M14: while a layer mask is targeted the swatches are the black / white mask swatches (no picker).
+    // While a layer mask is targeted the swatches are the black / white mask swatches (no picker).
     this.swatches = new SwatchWidget({
       pick: (slot, anchor) => {
         const editor = this.getSession()?.editor;
         if (!editor || editor.layerMask.targeted) return;
-        const colors = editor.colors;
-        this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
+        this.shell.requestColorPick(slot, anchor);
       },
       swap: () => {
         const editor = this.getSession()?.editor;
@@ -241,14 +240,14 @@ export class HostSync {
     this.rail.setQuickMask(targeting, color);
     this.shell.root.classList.toggle("cps-quickmask", targeting);
     this.optionsBar.setMask({ targeting, color });
-    // M14: the layer mask controls and swatches come and go with the edit target (`tools/layerMaskBar.ts`).
+    // The layer mask controls and swatches come and go with the edit target (`tools/layerMaskBar.ts`).
     this.syncOptions();
     this.syncSwatches();
   }
 
   /**
    * Show the FG/BG colours, or the black / white mask swatches while a
-   * layer mask is targeted (M14; the real colours stay untouched).
+   * layer mask is targeted (the real colours stay untouched).
    */
   syncSwatches(): void {
     const editor = this.getSession()?.editor;

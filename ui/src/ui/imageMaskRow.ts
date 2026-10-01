@@ -1,6 +1,6 @@
 /**
- * Layers-panel pieces for the M13a Image Mask row (`engine/imageMaskOps.ts`),
- * kept out of `layersPanel.ts`: its thumbnail (image-px coverage), the M13b
+ * Layers-panel pieces for the Image Mask row (`engine/imageMaskOps.ts`),
+ * kept out of `layersPanel.ts`: its thumbnail (image-px coverage), the
  * Input Mask's "run the workflow" hint and the footer's Duplicate / Delete
  * behaviour for it. The row itself is a
  * `LayerRow` of kind `imageMask`, directly above the Background row.
@@ -16,7 +16,7 @@ let emptyCanvas: HTMLCanvasElement | null = null;
 /**
  * Redraw the Image Mask thumbnail when its coverage or invert changed
  * (white-on-black like mask thumbnails, framed like the Background's). No
- * coverage (not loaded, M13b "no mask") is plain black, invert or not, like
+ * coverage (Input Mask not loaded: "no mask") is plain black, invert or not, like
  * the stage (nothing drawn).
  * @param editor - Bound editor.
  * @param row - The row, if shown.
@@ -39,7 +39,7 @@ export function refreshImageMaskThumb(editor: Editor, row: LayerRow | undefined)
   row.thumb.update(`${editor.imageMask.revision}|${invert}`, size, { kind: "layer", canvas, region, mask: true, invert });
 }
 
-/** Hint under the Input Mask row while a run has to deliver its pixels (M13b). */
+/** Hint under the Input Mask row while a run has to deliver its pixels. */
 export const INPUT_MASK_WAIT_HINT = "Run the workflow to load this mask";
 
 /**

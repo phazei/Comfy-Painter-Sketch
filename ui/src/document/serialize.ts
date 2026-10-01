@@ -27,9 +27,9 @@ export function stringifyDocument(doc: PainterDocument): string {
     regions: doc.regions.map(cloneRegion),
     ...(doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {}),
     ...(doc.backgroundVisible === false ? { backgroundVisible: false } : {}),
-    // M13a: only while the row exists (older manifests stay byte-identical).
+    // Only while the row exists (older manifests stay byte-identical).
     ...(doc.imageMask ? { imageMask: serializeImageMask(doc.imageMask) } : {}),
-    // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
+    // Only when moved: manifests without a placement stay byte-identical.
     ...(p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {}),
     activeLayerId: doc.activeLayerId,
     layers: doc.layers.map(serializeLayer),
@@ -50,7 +50,7 @@ function serializeLayer(layer: Layer): Record<string, unknown> {
   if (layer.color !== undefined) out["color"] = layer.color;
   if (layer.invert !== undefined) out["invert"] = layer.invert;
   if (layer.kind === "text" && layer.textData !== undefined) out["textData"] = serializeTextData(layer.textData);
-  // M14: only while the layer has one (older manifests stay byte-identical).
+  // Only while the layer has one (older manifests stay byte-identical).
   if (layer.layerMask) out["layerMask"] = serializeLayerMask(layer.layerMask);
   return out;
 }

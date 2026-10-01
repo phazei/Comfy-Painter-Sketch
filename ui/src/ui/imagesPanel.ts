@@ -1,5 +1,5 @@
 /**
- * The rail's Images button and its panel (SPEC "Image sources (M12)"): the
+ * The rail's Images button and its panel (SPEC "Image sources and the Images panel"): the
  * button sits next to Paste with a count badge and is disabled while the
  * node's source history is empty. It opens a narrow panel over the left of
  * the stage with a vertical, scrollable thumbnail list, newest first;

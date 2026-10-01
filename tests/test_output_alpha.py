@@ -1,4 +1,4 @@
-"""Tests for the M13c per-output Alpha option: RGBA IMAGE, alpha = 1 - that output's final MASK."""
+"""Tests for the per-output Alpha option: RGBA IMAGE, alpha = 1 - that output's final MASK."""
 
 import json
 import unittest

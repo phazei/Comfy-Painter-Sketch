@@ -1,5 +1,5 @@
 /**
- * Layer masks in the engine (M14a, SPEC "Layer masks (M14)"): session state,
+ * Layer masks in the engine (SPEC "Layer masks (lmask)"): session state,
  * the pixel surfaces and the compositor cache. Commands, history and
  * persistence bookkeeping are in `layerMaskOps.ts`.
  *
@@ -24,7 +24,7 @@
  *   other pixel tools refuse on a targeted mask. A hidden layer's mask is
  *   refused like its pixels, except in the lmask-only view
  *   ({@link editsViewedMask}). Whole-layer operations carry the mask and
- *   floats / copy / cut respect the target (M14b, `layerMaskCarry.ts`).
+ *   floats / copy / cut respect the target (`layerMaskCarry.ts`).
  * - A float on the mask (lmask-targeted lift) or carrying it (whole-layer
  *   transform) shows through `EditorState.floatPreview(maskKey)` in the
  *   masked composite and the Alt view.
@@ -78,7 +78,7 @@ export function targetedMaskLayer(s: EditorState): Layer | null {
 }
 
 /**
- * Store key a selection lift / copy / cut of `layer` acts on (M14b): its
+ * Store key a selection lift / copy / cut of `layer` acts on: its
  * mask while targeted, else the layer itself.
  * @param s - Editor state.
  * @param layer - Current edit layer.
@@ -411,7 +411,7 @@ export function maskedSource(s: EditorState, layer: Layer, source: CanvasImageSo
   const surface = s.store.ensure(key);
   const maskStroking = live && s.stroke.active && s.strokeLayerId === key;
   const layerStroking = live && s.stroke.active && s.strokeLayerId === layer.id;
-  // A float on (or carrying) the mask shows live (M14b); its revision bumps key the cache.
+  // A float on (or carrying) the mask shows live; its revision bumps key the cache.
   const maskSource = s.floatPreview(key) ?? (maskStroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
   const cacheKey: MaskedKey = {
     bounds: s.store.bounds,

@@ -1,5 +1,5 @@
 /**
- * M13b Input Mask, widget side: while the node's `mask` input is connected
+ * Input Mask, widget side: while the node's `mask` input is connected
  * this owns the fixed mask row (`Editor.imageMask.setInput`) instead of the
  * image-alpha sync (`imageMaskSync.ts`); the choice of pixels is the pure
  * rule in `inputMaskRule.ts` (live `channel=a` read of the mask node's file,

@@ -1,5 +1,5 @@
 /**
- * Move tool (V, SPEC M6a): moves the ACTIVE LAYER's content -- the active
+ * Move tool (V, SPEC "Moving (Move layer, Move drawing)"): moves the ACTIVE LAYER's content -- the active
  * paint-like layer, or the mask under Quick Mask -- by whole document px.
  * (Moving the whole drawing is the separate "Move drawing" mode, `move.ts`.)
  *
@@ -8,11 +8,12 @@
  * - Arrows nudge 1 image px (in document px, at least 1), Shift+arrows 10;
  *   consecutive nudges merge into one undo entry.
  * - Locked / hidden layers show a note.
- * - With a selection (M10a): a press inside it (coverage >= 50 %) lifts the
+ * - With a selection: a press inside it (coverage >= 50 %) lifts the
  *   selected pixels into a floating selection (`Editor.float`; Alt = copy,
  *   no hole) and drags it; a press outside moves the whole layer and the
- *   selection moves with it. While a float exists every drag and arrow
- *   nudge moves the float; Enter / other edits commit it, Esc cancels it.
+ *   selection moves with it. While a float exists every drag moves the
+ *   float (arrow nudges of a float are `ui/floatShortcuts.ts`, whatever the
+ *   tool); Enter / other edits commit it, Esc cancels it.
  *   Auto-select (Ctrl or the option) is off while a selection exists.
  * - Auto-select (Photoshop): with Ctrl held at pointer-down -- also when
  *   this tool is the temporary Ctrl tool of another rail tool
@@ -132,8 +133,8 @@ export class MoveLayerTool implements Tool {
     if (!dir) return false;
     // A nudge mid-drag would fight the drag: swallow it.
     if (this.start) return true;
+    // A float's nudge was already handled by `ui/floatShortcuts.ts` (it runs first, whatever the tool).
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
-    if (editor.float.nudge(dir[0] * step, dir[1] * step)) return true;
     editor.layerMove.nudge(dir[0] * step, dir[1] * step);
     return true;
   }
@@ -145,7 +146,7 @@ export class MoveLayerTool implements Tool {
 
   /**
    * Pick the layer under the pointer and make it the move target.
-   * @returns alse if nothing was hit (the drag moves nothing).
+   * @returns `false` if nothing was hit (the drag moves nothing).
    */
   private autoSelect(editor: Editor, at: ToolPointer): boolean {
     if (editor.paintTarget === "mask") {

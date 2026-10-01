@@ -1,21 +1,25 @@
 /**
- * Saving and restoring layer pixels (decision 8, saved-file contract).
+ * Saving and restoring layer pixels (SPEC "Persistence and sync", saved-file contract).
  *
  * Save: each dirty layer is encoded as WebP (masks lossless, paint layers at
  * `PainterSketch.PaintQuality`; PNG fallback, see `layerEncode.ts`), exactly
  * `bounds` sized with straight alpha, named by a hash of the encoded bytes
  * and uploaded with `POST /upload/image` (`type=input`,
  * `subfolder=painter-sketch`, `overwrite=true`: same name == same bytes).
- * Unchanged content maps to the same name and is not re-uploaded. A layer's
+ * Unchanged content maps to the same name and is not re-uploaded while the
+ * name is fresh in the session's {@link KnownFiles} (uploaded less than
+ * {@link KNOWN_FILE_MAX_AGE_MS} ago; the settings cleanup deletes unreferenced
+ * files older than 24 h, so an older name is uploaded again, which bumps the
+ * server mtime; names from the loaded manifest count as fresh). A layer's
  * `file` is only updated after a successful upload, so the manifest never
  * references a missing file; on failure the layer stays dirty, the pixels
  * stay in memory, one error toast is shown per failure streak (de-duplicated
  * across documents) and the batch is retried automatically with backoff
  * (15 s doubling to 2 min); the first success after a toasted failure says so.
  *
- * The M13a Image Mask uploads the same way (PNG) when its coverage is dirty,
+ * The Image Mask uploads the same way (PNG) when its coverage is dirty,
  * i.e. after its source changed (`imageMaskSync.ts`); it is never edited.
- * M14 layer masks upload and restore like mask layers too (PNG,
+ * Layer masks upload and restore like mask layers too (PNG,
  * `Editor.layerMask`), their file in the layer's `layerMask.file`.
  *
  * Upload timing (saved-file contract): the owner calls {@link LayerUploader.flush}
@@ -30,7 +34,7 @@
 import { api } from "@comfy/scripts/api.js";
 
 import { DOCUMENT_SUBFOLDER } from "../document/types";
-import type { Layer, LayerKind } from "../document/types";
+import type { Layer, LayerKind, PainterDocument } from "../document/types";
 import type { Editor } from "../engine/editor";
 import { log } from "../log";
 import { readSetting } from "./comfyApi";
@@ -49,6 +53,41 @@ export const IDLE_UPLOAD_DELAY_MS = 5000;
 const RETRY_MIN_MS = 15_000;
 /** Longest automatic retry interval. */
 const RETRY_MAX_MS = 120_000;
+
+/**
+ * A file this session uploaded is trusted to still exist this long; older
+ * names are uploaded again (the cleanup deletes unreferenced files > 24 h).
+ */
+export const KNOWN_FILE_MAX_AGE_MS = 20 * 60 * 60 * 1000;
+
+/**
+ * Every file reference a document has loaded or uploaded -> when it was last
+ * uploaded or loaded (epoch ms). Files referenced by the loaded manifest are
+ * recorded as fresh (see {@link manifestKnownFiles}); the age check only
+ * matters for names uploaded earlier in the session and revived by undo.
+ */
+export type KnownFiles = Map<string, number>;
+
+/**
+ * The known files of a just-loaded document: every file its manifest
+ * references, recorded as fresh. The open workflow / draft references them,
+ * so the settings cleanup keeps them; reusing one (a text layer re-rendered
+ * on load to the same bytes, undo back to the saved state) needs no upload.
+ *
+ * @param doc - Loaded document.
+ * @param now - Clock (epoch ms).
+ * @returns A new known-files map.
+ */
+export function manifestKnownFiles(doc: Readonly<PainterDocument>, now: number = Date.now()): KnownFiles {
+  const known: KnownFiles = new Map();
+  for (const layer of doc.layers) {
+    if (layer.file) known.set(layer.file, now);
+    if (layer.layerMask?.file) known.set(layer.layerMask.file, now);
+  }
+  const imageMaskFile = doc.imageMask?.file;
+  if (imageMaskFile) known.set(imageMaskFile, now);
+  return known;
+}
 
 /** Toast keys shared by all documents (one outage = one toast). */
 const UPLOAD_FAILED_KEY = "upload-failed";
@@ -75,12 +114,14 @@ export class LayerUploader {
 
   /**
    * @param editor - Editor whose layers are uploaded.
-   * @param knownFiles - Every file reference this document has used (updated).
+   * @param knownFiles - Every file reference this document has used, with upload times (updated).
+   * @param now - Clock (epoch ms); tests inject one.
    */
   constructor(
     private readonly editor: Editor,
-    private readonly knownFiles: Set<string>,
-      ) {}
+    private readonly knownFiles: KnownFiles,
+    private readonly now: () => number = Date.now,
+  ) {}
 
   /** @returns Whether an upload batch is in progress. */
   get busy(): boolean {
@@ -156,7 +197,7 @@ export class LayerUploader {
       try {
         const file = await this.uploadLayer(layer, paintQuality);
         if (this.disposed) return;
-        if (file) this.knownFiles.add(file);
+        if (file) this.knownFiles.set(file, this.now());
         this.editor.markUploaded(layer.id, version, file);
       } catch (error) {
         failures.push(error);
@@ -196,7 +237,7 @@ export class LayerUploader {
   }
 
   /**
-   * M14: dirty layer masks, like mask layers (PNG, same folder and naming;
+   * Dirty layer masks, like mask layers (PNG, same folder and naming;
    * a fully hidden mask stores no file).
    */
   private async uploadLayerMasks(paintQuality: number, failures: unknown[]): Promise<void> {
@@ -205,7 +246,7 @@ export class LayerUploader {
       try {
         const file = await this.uploadLayer({ id: job.layerId, name: job.name, kind: "mask", file: job.file }, paintQuality, job.canvas);
         if (this.disposed) return;
-        if (file) this.knownFiles.add(file);
+        if (file) this.knownFiles.set(file, this.now());
         this.editor.layerMask.markUploaded(job.layerId, job.version, file);
       } catch (error) {
         failures.push(error);
@@ -214,7 +255,7 @@ export class LayerUploader {
   }
 
   /**
-   * M13a: the Image Mask coverage, like a mask layer (PNG, same folder and
+   * The Image Mask coverage, like a mask layer (PNG, same folder and
    * naming); dirty only after its source changed.
    */
   private async uploadImageMask(paintQuality: number, failures: unknown[]): Promise<void> {
@@ -226,7 +267,7 @@ export class LayerUploader {
     try {
       const file = await this.uploadLayer(info, paintQuality, canvas);
       if (this.disposed) return;
-      if (file) this.knownFiles.add(file);
+      if (file) this.knownFiles.set(file, this.now());
       mask.markUploaded(version, file);
     } catch (error) {
       failures.push(error);
@@ -241,7 +282,6 @@ export class LayerUploader {
     canvas: HTMLCanvasElement = this.editor.savedLayerCanvas(layer.id),
   ): Promise<string | null> {
     if (isCanvasEmpty(canvas)) return null;
-    const currentFile = layer.file;
     const { blob, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error: unknown) => {
       log.warn(`encoding layer "${layer.name}" (${canvas.width}x${canvas.height}) failed:`, error);
       throw new EncodeError(layer.name);
@@ -249,8 +289,10 @@ export class LayerUploader {
     const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
     // Same bytes as the current or an earlier upload of this document (e.g.
-    // after undo): the file already exists, skip the request.
-    if (currentFile === expected || this.knownFiles.has(expected)) return expected;
+    // after undo): the file exists unless the cleanup may have deleted it by
+    // now, so skip the request only while the name is fresh.
+    const uploadedAt = this.knownFiles.get(expected);
+    if (uploadedAt !== undefined && this.now() - uploadedAt < KNOWN_FILE_MAX_AGE_MS) return expected;
     return uploadImage(blob, name);
   }
 }
@@ -304,11 +346,17 @@ function isUploadResponse(value: unknown): value is { name: string; subfolder?: 
  * are re-rendered from `textData` instead (their source of truth) and
  * re-uploaded. All problems of one document produce a single toast.
  *
+ * A file that failed to load is dropped from `knownFiles` (it may be gone),
+ * so content encoding to that name is uploaded again. A text layer re-rendered
+ * after a successful load (size mismatch) keeps its fresh entry: when it
+ * encodes to the existing name, no request is made.
+ *
  * @param editor - Target editor (fresh, layers blank).
  * @param isAlive - Returns `false` once the session was released (stale loads are dropped).
+ * @param knownFiles - The session's known files (failed loads are removed).
  * @returns Resolves when all loads settled.
  */
-export async function restoreLayers(editor: Editor, isAlive: () => boolean): Promise<void> {
+export async function restoreLayers(editor: Editor, isAlive: () => boolean, knownFiles?: KnownFiles): Promise<void> {
   const layers = editor.doc.layers.filter((l) => l.file);
   const masks = editor.doc.layers.filter((l) => l.layerMask?.file);
   if (!layers.length && !masks.length) return;
@@ -317,7 +365,7 @@ export async function restoreLayers(editor: Editor, isAlive: () => boolean): Pro
   editor.beginLoading();
   try {
     await Promise.all([
-      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems)),
+      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems, knownFiles)),
       ...layers.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
@@ -336,6 +384,7 @@ export async function restoreLayers(editor: Editor, isAlive: () => boolean): Pro
           editor.restoreLayerPixels(layer.id, image);
         } catch (error) {
           if (!isAlive()) return;
+          if (layer.file) knownFiles?.delete(layer.file);
           log.warn(`could not restore layer "${layer.name}" from ${layer.file}:`, error);
           if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
@@ -349,10 +398,16 @@ export async function restoreLayers(editor: Editor, isAlive: () => boolean): Pro
 }
 
 /**
- * Restore one layer mask (M14). A failed load shows the layer unmasked (as
+ * Restore one layer mask. A failed load shows the layer unmasked (as
  * Python ignores an unreadable mask) and keeps the file reference.
  */
-async function restoreLayerMask(editor: Editor, layer: Readonly<Layer>, isAlive: () => boolean, problems: RestoreProblem[]): Promise<void> {
+async function restoreLayerMask(
+  editor: Editor,
+  layer: Readonly<Layer>,
+  isAlive: () => boolean,
+  problems: RestoreProblem[],
+  knownFiles: KnownFiles | undefined,
+): Promise<void> {
   const file = layer.layerMask?.file ?? null;
   const item = parseAnnotatedFilename(file, "input");
   if (!item) return;
@@ -368,6 +423,7 @@ async function restoreLayerMask(editor: Editor, layer: Readonly<Layer>, isAlive:
     editor.layerMask.restore(layer.id, image);
   } catch (error) {
     if (!isAlive()) return;
+    if (file) knownFiles?.delete(file);
     log.warn(`could not restore layer mask "${name}" from ${file}:`, error);
     editor.layerMask.restoreFailed(layer.id);
     problems.push({ name, kind: classifyError(error) });

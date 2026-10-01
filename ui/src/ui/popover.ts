@@ -1,7 +1,7 @@
 /**
  * Popover host: a layer INSIDE the editor root that floats small panels
- * (slider popovers now, the colour picker in M3.2) next to an anchor. Living
- * inside the root means fullscreen (M3.4) can re-parent the root and open
+ * (slider popovers, the colour picker) next to an anchor. Living
+ * inside the root means fullscreen can re-parent the root and open
  * popovers move with it, and the root's pointer/wheel isolation covers them.
  *
  * One popover at a time, except nesting: a popover whose anchor lies inside

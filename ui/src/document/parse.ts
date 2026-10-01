@@ -86,6 +86,8 @@ function validate(data: Record<string, unknown>): ParseResult {
   if (!frame) return { status: "invalid", reason: "missing or invalid frame" };
   let repaired = false;
 
+  // `readRect` already rejects a side over MAX_DOCUMENT_SIDE (or < 1), so an
+  // oversized bounds is repaired to the frame here, like a missing one.
   let bounds = readRect(data["bounds"]);
   if (!bounds) {
     bounds = frameRect(frame);
@@ -95,11 +97,10 @@ function validate(data: Record<string, unknown>): ParseResult {
     // bounds, so a repaired bounds would misplace pixels: reject instead.
     return { status: "invalid", reason: "bounds does not contain the frame" };
   }
-  if (bounds.width > MAX_DOCUMENT_SIDE || bounds.height > MAX_DOCUMENT_SIDE) {
-    return { status: "invalid", reason: "bounds too large" };
-  }
 
-  const rawLayers = data["layers"];
+  // As Python (`parse_document`): a missing `layers` key is an empty stack;
+  // a present non-array (including null) is no document.
+  const rawLayers = data["layers"] === undefined ? [] : data["layers"];
   if (!Array.isArray(rawLayers)) return { status: "invalid", reason: "layers is not an array" };
   const read = readLayers(rawLayers);
   const { layers, seen, skippedLayers } = read;
@@ -108,7 +109,7 @@ function validate(data: Record<string, unknown>): ParseResult {
     layers.unshift(createPaintLayer("Layer 1"));
     repaired = true;
   }
-  // Masks always sit above the paint stack (M8). Their order never affects
+  // Masks always sit above the paint stack. Their order never affects
   // the output (union), so moving strays up keeps the result identical.
   const masks = layers.filter((l) => l.kind === "mask");
   const stacked = [...layers.filter((l) => l.kind !== "mask"), ...masks];
@@ -131,7 +132,7 @@ function validate(data: Record<string, unknown>): ParseResult {
 
   const regions = readRegions(data["regions"]);
   if (regions.repaired) repaired = true;
-  // Dropped field of the unreleased first M9 pass; regions are image px now.
+  // Dropped field of an earlier regions draft; regions are image px now.
   if (data["regionsReferenceSize"] !== undefined) repaired = true;
 
   // Background eye: only `false` hides; anything else non-boolean is repaired to visible.
@@ -235,7 +236,7 @@ function readLayer(value: unknown): Layer | null {
   };
   if (typeof value["color"] === "string") layer.color = value["color"];
   if (typeof value["invert"] === "boolean") layer.invert = value["invert"];
-  // M14: paint layers only (as saved; Python checks the saved kind too).
+  // Layer masks: paint layers only (as saved; Python checks the saved kind too).
   if (kind === "paint") {
     const { mask } = readLayerMask(value["layerMask"]);
     if (mask) layer.layerMask = mask;
@@ -254,7 +255,7 @@ function readLayer(value: unknown): Layer | null {
 }
 
 /**
- * Read the optional M13a `imageMask` record (`imageMask.ts`) leniently: a
+ * Read the optional `imageMask` record (`imageMask.ts`) leniently: a
  * record without a string `sourceKey` or a valid size is dropped (Python
  * ignores it too); unusable `file` -> none, `visible` -> true, `invert` ->
  * false, colour / opacity as for mask layers.

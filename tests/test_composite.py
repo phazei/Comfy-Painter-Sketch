@@ -164,7 +164,7 @@ class TestCompositePaintLayers(unittest.TestCase):
 
 
 class TestTextLayer(unittest.TestCase):
-    """Text layers (SPEC M6b) are rasterized by the frontend: Python composites them like paint."""
+    """Text layers (SPEC "Tools" > "Text (T)") are rasterized by the frontend: Python composites them like paint."""
 
     def _manifest(self, kind):
         return json.dumps({
@@ -265,7 +265,7 @@ class TestCombineMaskLayers(unittest.TestCase):
         self.assertAlmostEqual(mask[0, 5, 5].item(), 0.5, places=4)
 
     def test_seven_masks_union_invert_hidden(self):
-        """M8: 7 masks, each covering its own row; per-mask invert before the
+        """7 masks, each covering its own row; per-mask invert before the
         union, hidden masks skipped, node invert applied to the final union."""
         base = torch.full((1, 10, 10, 3), 0.5)
         layers, tensors = [], {}

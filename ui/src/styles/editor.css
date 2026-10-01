@@ -248,7 +248,7 @@
   background: #fff;
 }
 
-/* Layer mask swatches (M14): black / white only, no picker; default = white over black. */
+/* Layer mask swatches: black / white only, no picker; default = white over black. */
 .cps-swatches.cps-mask-swatches .cps-swatch {
   cursor: default;
 }
@@ -265,18 +265,6 @@
 .cps-root.cps-quickmask .cps-swatches {
   filter: grayscale(1);
   opacity: 0.6;
-}
-
-.cps-native-color {
-  position: absolute;
-  left: 4px;
-  bottom: 4px;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  border: 0;
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* ── Body: stage + side panel ──────────────────────────────────────────── */

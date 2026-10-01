@@ -1,6 +1,6 @@
 /**
  * The "Defaults" settings for the pen pressure curve of the brush and eraser
- * (SPEC "Pressure", "Settings"): pressure -> size, pressure -> opacity, min
+ * (SPEC "Brush engine", SPEC "Settings"): pressure -> size, pressure -> opacity, min
  * size and gamma.
  *
  * They are the INITIAL option values of a new editor session (read once when

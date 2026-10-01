@@ -20,7 +20,7 @@
  * Shape tools use the same buffer but replace its content on every move
  * ({@link StrokeBuffer.replaceContent}) instead of accumulating dabs.
  * With a selection ({@link StrokeBuffer.setClip}) both the preview and the
- * commit composite `buffer x selection coverage` (M5 clipping).
+ * commit composite `buffer x selection coverage` (selection clipping).
  */
 
 import { intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
@@ -45,7 +45,7 @@ export interface StrokeStyle {
   hardness: number;
   /** CSS colour (ignored when erasing). */
   color: string;
-  /** Shape tools (one shape, not dabs): refused on a layer mask (M14). */
+  /** Shape tools (one shape, not dabs): refused on a layer mask. */
   shape?: boolean;
 }
 
@@ -225,6 +225,21 @@ export class StrokeBuffer {
     this.end();
   }
 
+  /**
+   * Composite the buffer (opacity and selection clip applied, as
+   * {@link commit} does) over `rect` into a `rect`-sized surface, without
+   * ending the stroke: a shape on its own (`shapeFloat.ts`).
+   * @param target - Surface whose (0, 0) is `rect`'s top-left (usually transparent).
+   * @param rect - Document rect inside the bounds.
+   */
+  compositeInto(target: Surface, rect: Rect): void {
+    this.flushMask();
+    if (!this.style || isEmptyRect(rect)) return;
+    const x = rect.x - this.bounds.x;
+    const y = rect.y - this.bounds.y;
+    this.compositeBuffer(target.ctx, this.surfaces().buffer, x, y, rect.width, rect.height, -x, -y);
+  }
+
   /** Abort the stroke without touching the layer. */
   cancel(): void {
     this.end();
@@ -250,13 +265,15 @@ export class StrokeBuffer {
     y: number,
     width: number,
     height: number,
+    offsetX = 0,
+    offsetY = 0,
   ): void {
     if (!this.style) return;
     const source = this.sourceFor(buffer, x, y, width, height);
     ctx.save();
     ctx.globalAlpha = this.style.opacity;
     ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
-    ctx.drawImage(source, x, y, width, height, x, y, width, height);
+    ctx.drawImage(source, x, y, width, height, x + offsetX, y + offsetY, width, height);
     ctx.restore();
   }
 

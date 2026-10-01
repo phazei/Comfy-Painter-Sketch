@@ -1,5 +1,5 @@
 /**
- * Output cards of the Outputs tab (M9).
+ * Output cards of the Outputs tab (SPEC "Outputs and regions (editor)").
  *
  * - {@link RegionCard} (filled slot): row 1 eye, title (`N · name`,
  *   double-click renames like a layer row), delete; row 2 X / Y / W / H in
@@ -176,7 +176,7 @@ export class RegionCard {
     });
   }
 
-  /** One X / Y / W / H field, clamped to the paint area. */
+  /** One X / Y / W / H field, clamped to the region area. */
   private rectField(key: RegionRectField, label: string, title: string): OutputField {
     const { editor } = this.ctx;
     const ops = editor.regionOps;

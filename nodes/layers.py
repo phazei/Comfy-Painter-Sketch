@@ -19,22 +19,28 @@ transparency -- exactly what the editor draws, so output matches the screen
 document is stale).
 
 A missing or unreadable file is logged and treated as an empty layer (SPEC
-"Saved-file contract"): the node still runs with the remaining layers.
+"Python execution"): the node still runs with the remaining layers.
 
-The M13a Image Mask file (same folder and naming) is image-px sized instead
+The Image Mask file (same folder and naming) is image-px sized instead
 of bounds-sized: :func:`load_image_mask` returns its alpha only when it
 matches the run-time image size.
 
-M14 layer mask files (same folder and naming, bounds-sized like their layer)
+Layer mask files (same folder and naming, bounds-sized like their layer)
 load as their alpha plane with :func:`load_layer_mask`; ``layer_masks.py``
 places and applies them.
 
 Callers (composite.py) never see PIL objects; they only see torch tensors or
 None for missing/skipped files.
 
-Security note: ``folder_paths.get_annotated_filepath`` resolves the path safely
-(it knows ComfyUI's input folder); we add an explicit subfolder prefix check on
-top to guarantee layers can never reference arbitrary input files.
+Security note: :func:`is_safe_file_value` guarantees that a manifest file value
+can only ever resolve to a file under ``input/painter-sketch/``.  It mirrors
+``folder_paths.annotated_filepath`` exactly: only an exact trailing ``[input]``
+annotation is removed (``[output]`` / ``[temp]`` are rejected -- the frontend
+only writes ``[input]``, and an unannotated value also falls back to ``input/``),
+and *everything* that remains must start with ``painter-sketch/`` and contain
+no ``..`` component.  ``folder_paths`` additionally confines the resolved path
+to the input directory; our check is the stricter one and runs first, before
+any filesystem access (loading here, ``stat`` in ``fingerprint_inputs``).
 """
 
 import logging
@@ -55,25 +61,43 @@ _ALLOWED_PREFIX = "painter-sketch/"
 """All layer file values must start with this prefix (after stripping the annotation)."""
 
 
-def _strip_annotation(file_val: str) -> str:
-    """Remove the trailing ``[input]`` / ``[output]`` / ``[temp]`` annotation.
+_INPUT_ANNOTATION = "[input]"
+_REJECTED_ANNOTATIONS = ("[output]", "[temp]")
+
+
+def _strip_annotation(file_val: str) -> str | None:
+    """Return the path ``folder_paths`` will join under ``input/``, or None.
+
+    Mirrors ``folder_paths.annotated_filepath``: only an *exact* trailing
+    ``[input]`` is removed (together with the separator character before it,
+    as ComfyUI does: ``name[:-8]``).  Nothing else is stripped -- a ``" ["``
+    anywhere else is part of the path ComfyUI resolves, so it must stay in the
+    string the safety check sees.  A trailing ``[output]`` / ``[temp]`` would
+    resolve outside ``input/`` and yields None (rejected).
 
     Args:
-        file_val: Annotated path string such as ``"painter-sketch/abc.png [input]"``.
+        file_val: File value such as ``"painter-sketch/abc.png [input]"``.
 
     Returns:
-        Bare relative path, e.g. ``"painter-sketch/abc.png"``.
+        The relative path under ``input/``, or None when the annotation points
+        to another folder.
     """
-    return file_val.rsplit(" [", 1)[0].strip()
+    if file_val.endswith(_REJECTED_ANNOTATIONS):
+        return None
+    if file_val.endswith(_INPUT_ANNOTATION):
+        return file_val[: -(len(_INPUT_ANNOTATION) + 1)]
+    return file_val
 
 
 def _is_safe_name(bare: str) -> bool:
     """Return True if ``bare`` is inside the painter-sketch subfolder and safe.
 
-    Rejects empty strings, paths starting with ``/``, and any ``..`` component.
+    Rejects empty strings, anything not starting with ``painter-sketch/``
+    (which also covers ``/`` and drive-letter absolute paths), and any ``..``
+    component (``/`` or ``\\`` separated).
 
     Args:
-        bare: Bare (unannotated) relative path.
+        bare: Relative path exactly as ComfyUI will join it under ``input/``.
 
     Returns:
         True when the path is allowed.
@@ -85,6 +109,25 @@ def _is_safe_name(bare: str) -> bool:
     # Reject path traversal components
     parts = bare.replace("\\", "/").split("/")
     return ".." not in parts
+
+
+def is_safe_file_value(file_val: str) -> bool:
+    """Whether a manifest file value may be resolved and read.
+
+    True only when ``folder_paths`` will resolve the value to a file under
+    ``input/painter-sketch/``: an optional exact ``[input]`` annotation, no
+    ``[output]`` / ``[temp]``, the ``painter-sketch/`` prefix and no ``..``.
+    Callers that touch the filesystem for a manifest file value (loading,
+    ``fingerprint_inputs`` stat) must check this first.
+
+    Args:
+        file_val: File value, e.g. ``"painter-sketch/ps-x.png [input]"``.
+
+    Returns:
+        True when the value is confined to ``input/painter-sketch/``.
+    """
+    bare = _strip_annotation(file_val)
+    return bare is not None and _is_safe_name(bare)
 
 
 def load_layer_rgba(
@@ -131,7 +174,7 @@ def load_layer_rgba(
 
 
 def load_image_mask(mask: ImageMask, image_size: tuple[int, int]) -> torch.Tensor | None:
-    """Load the Image Mask file (M13a) as a ``[H, W]`` float32 coverage tensor (its alpha).
+    """Load the Image Mask file as a ``[H, W]`` float32 coverage tensor (its alpha).
 
     The file is in image px, so it is only used when it is exactly the
     run-time image size; otherwise it belongs to another image (the editor
@@ -161,7 +204,7 @@ def load_image_mask(mask: ImageMask, image_size: tuple[int, int]) -> torch.Tenso
 
 
 def load_layer_mask(file_val: str) -> torch.Tensor | None:
-    """Load an M14 layer mask file as its ``[h, w]`` float32 alpha plane (unscaled).
+    """Load a layer mask file as its ``[h, w]`` float32 alpha plane (unscaled).
 
     Same safety checks as layer files (``painter-sketch/`` only, exists,
     readable). Placement and the ``outside`` value are applied by
@@ -196,8 +239,7 @@ def _open_rgba(file_val: str, label: str) -> Image.Image | None:
     Returns:
         RGBA PIL image, or ``None``.
     """
-    bare = _strip_annotation(file_val)
-    if not _is_safe_name(bare):
+    if not is_safe_file_value(file_val):
         log.warning("layers: %s has unsafe file path %r; skipping", label, file_val)
         return None
 

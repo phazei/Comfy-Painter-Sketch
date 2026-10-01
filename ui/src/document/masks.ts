@@ -1,7 +1,8 @@
 /**
- * Pure helpers for mask layers and the Quick Mask paint target (decisions 5
- * and 6). The target itself is editor UI state (not saved); these functions
- * only resolve which document layer a target refers to.
+ * Pure helpers for mask layers and the Quick Mask paint target (SPEC "Layers"
+ * > "cmasks, current mask and Quick Mask"). The target itself is editor UI
+ * state (not saved); these functions only resolve which document layer a
+ * target refers to.
  */
 
 import { createMaskLayer, DEFAULT_MASK_COLOR, DEFAULT_MASK_STYLE, FIRST_MASK_NAME } from "./create";
@@ -13,10 +14,10 @@ import type { Layer, PainterDocument } from "./types";
 export type PaintTarget = "paint" | "mask";
 
 /**
- * The current mask (M8): the mask Quick Mask edits. It is the last selected
+ * The current mask: the mask Quick Mask edits. It is the last selected
  * mask row (`currentMaskId`, editor UI state); if that mask no longer exists
  * (deleted, undone) the top-most mask is used instead. The Image Mask row
- * (M13a) can be current too: every pixel edit on it is refused (`rasterize.ts`).
+ * can be current too: every pixel edit on it is refused (`rasterize.ts`).
  *
  * @param doc - Document.
  * @param currentMaskId - Last selected mask id (`null`/`undefined` = none yet).
@@ -91,7 +92,7 @@ export function activeEditLayer(
 
 /**
  * Make sure the document has a mask layer, appending a default one on top of
- * the stack if it has none (documents saved before M2). Mutates `doc`.
+ * the stack if it has none (older documents with no mask layer). Mutates `doc`.
  *
  * @param doc - Document to update in place.
  * @param style - Style of a newly created mask (only read when one is created).

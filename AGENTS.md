@@ -2,10 +2,11 @@
 
 Guidelines for working on this project. Read this before making changes.
 
-This file holds the **stable** rules: philosophy, architecture, conventions, and
-hard-won gotchas. The **goals, feature scope, milestones, decisions, and progress**
-live in [`SPEC.md`](SPEC.md). Read both. Update `SPEC.md` as work lands; only
-change this file when an architectural rule or convention changes.
+This file holds the **stable** rules: philosophy, architecture, conventions,
+hard-won gotchas, and an index of where things live. **How every feature works**
+(behaviour, shortcuts, messages, remaining work) is in [`docs/SPEC.md`](docs/SPEC.md);
+history and old decision logs are in `docs/archive/`. Update `docs/SPEC.md`
+when behaviour changes; only change this file when a rule or convention changes.
 
 ## Project Goals
 
@@ -16,7 +17,7 @@ optionally draw a mask) directly inside the node, output `IMAGE` and `MASK`.
   fullscreen button opens the same editor larger; it is the same editor, not a
   separate app.
 - **Simple, not a kitchen sink** -- a focused tool set done well beats a large
-  tool set done poorly. If a feature isn't in `SPEC.md`, don't add it without
+  tool set done poorly. If a feature isn't in `docs/SPEC.md`, don't add it without
   asking.
 - **Well-organized, well-documented code** -- small modules with one job each.
   Every module, class, and exported function gets a docstring / JSDoc / TSDoc.
@@ -96,7 +97,7 @@ detail against the local frontend/backend source listed under Local References.
   are deprecated and print warnings. Never import frontend internals (`@/...`).
 - **No UI framework by default.** Editor UI is plain TypeScript DOM components.
   If we ever bundle Vue, remember the dual-runtime problem (below): our Vue
-  instance is invisible to the frontend's reactivity. Decision tracked in `SPEC.md`.
+  instance is invisible to the frontend's reactivity. Decision tracked in `docs/SPEC.md`.
 - Register one extension: `app.registerExtension({ name: "phazei.PainterSketch", ... })`.
   `phazei` is the publisher ID / GitHub owner; user-visible names are just
   `PainterSketch` (node ID and display name).
@@ -151,7 +152,7 @@ ui/src/
     stroke.ts             -- per-stroke buffer + preview, committed at opacity
     selection.ts          -- selection as a Uint8 coverage mask + cached outline
     solo.ts               -- view-only solo (one layer + one mask); display only, never outputs
-    regionOps.ts          -- output regions: add/remove/edit, metadata undo (M9)
+    regionOps.ts          -- output regions: add/remove/edit, metadata undo
   tools/                  -- one file per tool implementing a common Tool interface
     brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
     marquee.ts lasso.ts magicWand.ts ...
@@ -169,13 +170,13 @@ ui/src/
   region.
 - **Naming: cmask vs lmask.** Never say just "mask". A *cmask* is a standalone
   ComfyUI-style mask row (mask layers, plus the fixed Image/Input Mask row); cmasks
-  feed the MASK outputs. An *lmask* is a paint layer's layer mask (M14); it only
+  feed the MASK outputs. An *lmask* is a paint layer's layer mask; it only
   hides part of that layer and never reaches MASK. Both use the ComfyUI polarity
   (white = masked / hidden). Ctrl+click on a cmask selects its white part; on an
   lmask, its black (shown) part.
 - Tools produce brush dabs / operations; the engine owns the stroke buffer,
   layer canvases and history.
-- **The brush model is measured, not designed** (SPEC "Brush engine"): the tip
+- **The brush model is measured, not designed** (`docs/SPEC.md` "Brush engine"): the tip
   is Photoshop's `10^-(d/R)^2` and every dab composites source-over. Do not
   replace it with a swept-profile / max / "alpha darken" scheme again -- two
   sessions did, from eyeballing screenshots, and every variant creased where a
@@ -236,9 +237,9 @@ ui/src/
 
 - The saved state is a **versioned layer document** (JSON manifest with
   `version`, canvas size, layers, text data, mask) plus one image per layer
-  (masks PNG; paint lossy WebP per setting -- see SPEC "Saved-file contract").
+  (masks PNG; paint lossy WebP per setting -- see `docs/SPEC.md` "Document and saved files").
 - Pixel data is uploaded to ComfyUI's `input` folder via `POST /upload/image`
-  (subfolder `painter-sketch/`), only when dirty. Upload timing is in SPEC
+  (subfolder `painter-sketch/`), only when dirty. Upload timing is in `docs/SPEC.md`
   (focus loss, 5 s idle, queue via `serializeValue`, intercepted Ctrl+S).
 - The cleanup route (`nodes/cleanup_route.py`) is registered at import time via
   `PromptServer.instance.routes` and is a no-op when no server exists (tests).
@@ -251,8 +252,11 @@ ui/src/
 - Bump `version` for any breaking manifest change and add a migration.
 
 ### Git
-The maintainer makes all commits. Agents update `SPEC.md` checkboxes/log as work
+The maintainer makes all commits. Agents update `docs/SPEC.md` as work
 lands but never run `git commit`.
+
+Line endings are normalized to LF by `.gitattributes` (`* text=auto eol=lf`).
+Don't preserve, convert or report them; CRLF in a working file is harmless.
 
 ## Code Style
 
@@ -346,7 +350,11 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
   Ctrl+Z undoes a stroke, not a graph edit. Let keys through when an `<input>` /
   `<textarea>` (text tool, hex field) is the target.
 - Register listeners in the capture phase on `window` while active and remove them
-  when inactive / on node removal. No always-on global listeners.
+  when inactive / on node removal. No always-on global listeners, with one
+  deliberate exception: `widget/pageGuards.ts` (reload keys, blur,
+  visibilitychange, beforeunload) must see events while no editor is focused;
+  it is installed once per page and does nothing unless uploads or draft
+  captures are pending.
 - The frontend keybinding service listens on `window` (bubble) and LiteGraph on its
   canvas, so our capture listeners beat both. ComfyUI's graph-undo listener
   (ChangeTracker) is also window-capture but registers before extensions, so
@@ -434,7 +442,7 @@ import in tests).
 
 ### Photoshop Conventions
 The maintainer has used Photoshop since PS6. When a behavior or shortcut has a
-well-known Photoshop equivalent, match it rather than inventing one. `SPEC.md`
+well-known Photoshop equivalent, match it rather than inventing one. `docs/SPEC.md`
 lists the chosen shortcuts; keep that table the single source of truth.
 
 ## Testing
@@ -448,7 +456,7 @@ lists the chosen shortcuts; keep that table the single source of truth.
   3. Save workflow, reload page, edits restore
   4. Switch workflow tabs and back; edits survive
   5. Put the node in a subgraph; enter/exit; edits survive
-  6. Change the upstream image; canvas adapts per `SPEC.md` rules
+  6. Change the upstream image; canvas adapts per `docs/SPEC.md` rules
   7. Queue: `IMAGE` and `MASK` outputs are correct; unchanged edits are cached
   8. Pen tablet: pressure affects size/opacity as configured
   9. Remove the node: listeners and DOM cleaned up

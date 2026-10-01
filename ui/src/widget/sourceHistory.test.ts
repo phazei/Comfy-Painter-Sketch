@@ -1,5 +1,5 @@
 /**
- * `layer_source` session history (M12): de-duplicated, capped at 10, newest
+ * `layer_source` session history: de-duplicated, capped at 10, newest
  * first; executed-output parsing; and the source lookup (upstream first,
  * then our executed preview) with `app` / `api` mocked.
  */

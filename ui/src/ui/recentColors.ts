@@ -1,5 +1,5 @@
 /**
- * Recent colours for the colour picker (SPEC "Color"): up to
+ * Recent colours for the colour picker (SPEC "Colour"): up to
  * {@link MAX_RECENTS} committed colours, newest first, persisted in
  * localStorage under `PainterSketch.recentColors`. Storage failures (quota,
  * private mode, malformed data) degrade to an empty list.

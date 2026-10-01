@@ -1,5 +1,5 @@
 /**
- * Undo/redo bookkeeping (decision 10). Generic over entry payloads so it is
+ * Undo/redo bookkeeping (SPEC "Undo and redo"). Generic over entry payloads so it is
  * pure and unit-testable; the editor defines the entry types and applies them.
  *
  * - Synchronous: `undo()`/`redo()` just hand back the entry to apply.

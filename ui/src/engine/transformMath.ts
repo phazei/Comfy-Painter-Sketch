@@ -1,5 +1,5 @@
 /**
- * Pure geometry of Free Transform (SPEC "Free Transform (M11)"): affine
+ * Pure geometry of Free Transform (SPEC "Free Transform and flips"): affine
  * matrices, the session parameters (centre / scale / angle), the handle
  * box and handle drags (hit zones / cursor choice: `transformHit.ts`). No DOM, no
  * canvas -- unit-testable.

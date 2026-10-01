@@ -1,6 +1,6 @@
 /**
  * Pure region hit testing and drag geometry in current-image px. Regions may
- * extend outside the image: every result is clamped to the paint area with
+ * extend outside the image: every result is clamped to the region area with
  * `clampRegionRect` / `regionArea` (`document/regions.ts`), never to the image.
  */
 
@@ -69,7 +69,7 @@ export function insideRegion(rect: Rect, p: Point): boolean {
 // ── Drag geometry ─────────────────────────────────────────────────────────────
 
 /**
- * Rect spanned by a draw drag (any direction), clamped to the paint area.
+ * Rect spanned by a draw drag (any direction), clamped to the region area.
  * @param start - Press position (image px).
  * @param end - Current position (image px).
  * @param image - Current image size.
@@ -84,13 +84,13 @@ export function drawRegionRect(start: Point, end: Point, image: Size): Rect {
 
 /**
  * Move or resize a region by a pointer displacement.
- * Moving keeps the size and stops at the paint area; resizing keeps the
+ * Moving keeps the size and stops at the region area; resizing keeps the
  * opposite edge fixed and never flips.
  * @param rect - Rect at drag start.
  * @param delta - Pointer displacement (image px).
  * @param image - Current image size.
  * @param handle - Handle being dragged; null moves the whole rect.
- * @returns Integer rect inside the paint area.
+ * @returns Integer rect inside the region area.
  */
 export function dragRegionRect(rect: Rect, delta: Point, image: Size, handle: RegionHandle | null): Rect {
   const dx = roundRegionEdge(delta.x);
@@ -107,7 +107,7 @@ export function dragRegionRect(rect: Rect, delta: Point, image: Size, handle: Re
   return clampRegionRect({ x: left, y: top, width: right - left, height: bottom - top }, image);
 }
 
-/** Translate without resizing, stopping at the paint area edges. */
+/** Translate without resizing, stopping at the region area edges. */
 function moveRect(rect: Rect, dx: number, dy: number, image: Size): Rect {
   const area = regionArea(image);
   const x = clampNumber(rect.x + dx, area.x, area.x + area.width - rect.width);
@@ -125,7 +125,7 @@ export type RegionRectField = keyof Rect;
  * @param rect - Current rect.
  * @param field - Field being edited.
  * @param image - Current image size.
- * @returns Inclusive integer bounds inside the paint area.
+ * @returns Inclusive integer bounds inside the region area.
  */
 export function regionFieldBounds(rect: Rect, field: RegionRectField, image: Size): { min: number; max: number } {
   const area = regionArea(image);

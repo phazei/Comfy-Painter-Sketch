@@ -1,6 +1,6 @@
 /**
- * Insert an image source as a new layer in Free Transform (SPEC "Image
- * sources (M12)"), exposed as `Editor.insert`.
+ * Insert an image source as a new layer in Free Transform
+ * (SPEC "Image sources and the Images panel"), exposed as `Editor.insert`.
  *
  * Unlike a paste, the pixels never land in the layer first: an empty paint
  * layer is added (the paste's placement rules -- above the current paint
@@ -99,7 +99,7 @@ export class SourceInsertOps {
   }
 
   /**
-   * An oversized paste (SPEC M10 Clipboard): the same session, at native
+   * An oversized paste (SPEC "Clipboard and drop"): the same session, at native
    * size and the paste's own placement (`pastePlacement.ts`, no fit scaling).
    * @param pixels - Full source pixels (straight alpha).
    * @param name - Layer name ("Pasted N").

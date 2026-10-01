@@ -1,5 +1,6 @@
 /**
- * Pixel side of the layer Move tool (SPEC M6a) for paint and mask layers:
+ * Pixel side of the layer Move tool
+ * (SPEC "Moving (Move layer, Move drawing)") for paint and mask layers:
  * shift a layer's content by whole document px and record it.
  *
  * - Bounds first grow (chunked, capped, like painting) to cover the moved
@@ -13,10 +14,10 @@
  *   bounds growth.
  * - The content bbox (alpha > 0) is cached per layer pixel revision, so
  *   repeated nudges don't re-read the whole layer.
- * - A paint layer's lmask moves with it by the same delta, in the same entry
- *   (M14b): its content (`layerMaskCarry.maskContentRect`) shifts and the
- *   vacated part gets the mask's `outside` value, which is as lossless as the
- *   layer part (everything outside the content already holds that value).
+ * - A paint layer's lmask moves with it by the same delta, in the same entry:
+ *   its content (`layerMaskCarry.maskContentRect`) shifts and the vacated
+ *   part gets the mask's `outside` value, which is as lossless as the layer
+ *   part (everything outside the content already holds that value).
  */
 
 import { layerMaskKey } from "../document/layerMask";
@@ -132,7 +133,7 @@ export function shiftMaskRegion(s: EditorState, key: string, from: Rect, dx: num
 }
 
 /**
- * Translate a layer's content (and its lmask, M14b) and record it
+ * Translate a layer's content (and its lmask) and record it
  * (translate entry, merged by `gesture`, or patches when the bounds cap
  * clips). Callers check lock / visibility and emit the edit events.
  * @param s - Editor state.
@@ -205,7 +206,7 @@ function shiftPatch(s: EditorState, key: string, region: Rect, shift: () => void
 }
 
 /**
- * Undo (`forward = false`) or redo a translate entry (with its lmask part, M14b).
+ * Undo (`forward = false`) or redo a translate entry (with its lmask part).
  * @param s - Editor state.
  * @param entry - Entry.
  * @param forward - Redo direction.

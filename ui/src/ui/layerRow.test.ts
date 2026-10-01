@@ -1,5 +1,5 @@
 /**
- * Layers panel row click routing (M14 lmask-only view) against a minimal
+ * Layers panel row click routing (lmask-only view) against a minimal
  * fake DOM: a click on the Background row reaches `select` (the panel ends
  * the view there; it isn't selectable), its eye doesn't; lmask thumbnail
  * Alt / plain clicks and the pixel thumbnail reach their actions.

@@ -803,9 +803,9 @@ const WIDGET_SPEC_TYPE = "PAINTERSKETCH";
 const DOM_WIDGET_TYPE = "paintersketch";
 const INPUT_NAMES = {
   image: "image",
-  /** M13b: optional MASK, the Input Mask row. */
+  /** Optional MASK, the Input Mask row. */
   mask: "mask",
-  /** M12: optional image offered in the Images panel. */
+  /** Optional image offered in the Images panel. */
   layerSource: "layer_source",
   document: "document",
   width: "width",
@@ -1180,10 +1180,7 @@ function validate(data) {
   } else if (!containsRect(bounds, frameRect(frame))) {
     return { status: "invalid", reason: "bounds does not contain the frame" };
   }
-  if (bounds.width > MAX_DOCUMENT_SIDE || bounds.height > MAX_DOCUMENT_SIDE) {
-    return { status: "invalid", reason: "bounds too large" };
-  }
-  const rawLayers = data["layers"];
+  const rawLayers = data["layers"] === void 0 ? [] : data["layers"];
   if (!Array.isArray(rawLayers)) return { status: "invalid", reason: "layers is not an array" };
   const read = readLayers(rawLayers);
   const { layers: layers2, seen, skippedLayers } = read;
@@ -1356,9 +1353,9 @@ function stringifyDocument(doc) {
     regions: doc.regions.map(cloneRegion),
     ...doc.mainOutput ? { mainOutput: cloneOutputOptions(doc.mainOutput) } : {},
     ...doc.backgroundVisible === false ? { backgroundVisible: false } : {},
-    // M13a: only while the row exists (older manifests stay byte-identical).
+    // Only while the row exists (older manifests stay byte-identical).
     ...doc.imageMask ? { imageMask: serializeImageMask(doc.imageMask) } : {},
-    // Only when moved: identity manifests stay byte-identical to pre-M5 ones.
+    // Only when moved: manifests without a placement stay byte-identical.
     ...p && !isIdentityPlacement(p) ? { placement: { x: p.x, y: p.y, scale: p.scale } } : {},
     activeLayerId: doc.activeLayerId,
     layers: doc.layers.map(serializeLayer)
@@ -2070,7 +2067,7 @@ const PATHS = {
   quickMask: "M4 5h16v14H4zM12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7",
   undo: "M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
   redo: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3",
-  // Clipboard (M10b): two sheets (copy), scissors (cut), clipboard board (paste).
+  // Clipboard: two sheets (copy), scissors (cut), clipboard board (paste).
   copy: "M9 9h11v11H9zM5 15H4V4h11v1",
   cut: "M6 4a3 3 0 1 0 0 6a3 3 0 1 0 0-6M6 14a3 3 0 1 0 0 6a3 3 0 1 0 0-6M8.5 8.5 20 20M8.5 15.5 20 4",
   paste: "M8 4H5v17h14V4h-3M9 2h6v4H9zM9 11h6M9 15h6",
@@ -2096,7 +2093,7 @@ const PATHS = {
   solo: "M12 4a8 8 0 1 0 0 16a8 8 0 1 0 0-16M12 10a2 2 0 1 0 0 4a2 2 0 1 0 0-4",
   // "New mask": the Quick Mask glyph (smaller) with a plus at the top-right.
   maskAdd: "M3 8h12v12H3zM9 11a3 3 0 1 0 0 6a3 3 0 1 0 0-6M19 2v6M16 5h6",
-  // "Add layer mask" (M14, row icon): a filled-looking frame with a circle, Photoshop's mask glyph.
+  // "Add layer mask" (row icon): a filled-looking frame with a circle, Photoshop's mask glyph.
   layerMaskAdd: "M3 5h18v14H3zM12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8",
   duplicate: "M9 9h11v11H9zM5 15H4V4h11v1",
   trash: "M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3",
@@ -2131,7 +2128,7 @@ const PATHS = {
   lasso: "M8.5 14.6C5.8 13.8 4 12.1 4 10c0-3 3.6-5.5 8-5.5s8 2.5 8 5.5-3.6 5.5-8 5.5c-1.3 0-2.5-.2-3.5-.4M8.5 14.6c-1.4.6-1.4 2.2 0 2.6s1.2 2.3-.8 3.3",
   // Magic wand (W): diagonal stick with a sparkle at its tip.
   magicWand: "M4 20 14.5 9.5M13 8l3 3M17 3v4M15 5h4M20.5 9.5v2M19.5 10.5h2M10.5 3.5v2M9.5 4.5h2",
-  // Free Transform (M11): box with corner handles and a rotate arc; flips = mirrored
+  // Free Transform: box with corner handles and a rotate arc; flips = mirrored
   // triangles about a dashed axis; commit tick; cancel cross.
   transform: "M6 6h12v12H6zM4 4h4v4H4zM16 4h4v4h-4zM16 16h4v4h-4zM4 16h4v4H4zM14 2.5a9 9 0 0 1 7.5 7.5",
   flipH: "M12 3v2M12 8v2M12 13v2M12 18v3M9 6 3 18h6zM15 6l6 12h-6z",
@@ -2140,7 +2137,7 @@ const PATHS = {
   close: "M6 6l12 12M18 6 6 18",
   // "Selection to mask": dashed square with the Quick Mask circle.
   selectionToMask: "M4 7V4h3M10 4h4M17 4h3v3M20 10v4M20 17v3h-3M14 20h-4M7 20H4v-3M4 14v-4M12 9a3 3 0 1 0 0 6a3 3 0 1 0 0-6",
-  // Image sources (M12): stacked pictures (mountain + sun in the front frame).
+  // Image sources: stacked pictures (mountain + sun in the front frame).
   images: "M7 3h14v12M3 7h14v14H3zM3 18l4.5-5 3.5 4 2-2 4 4.5M12.5 10.5a1 1 0 1 0 0 .01"
 };
 const FALLBACK = "M5 5h14v14H5z";
@@ -2632,8 +2629,6 @@ function openColorPicker(host, anchor, opts) {
   const initial = normalizeHex(opts.initial) ?? "#000000";
   let hsv = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
   let current = initial;
-  let committed = false;
-  let escaped = false;
   const root = document.createElement("div");
   root.className = "cps-picker";
   if (opts.title) {
@@ -2706,6 +2701,7 @@ function openColorPicker(host, anchor, opts) {
       applyHexField();
       hexInput.blur();
     }
+    if (event.key === "Escape") applyHexField();
   });
   hexInput.addEventListener("blur", () => {
     applyHexField();
@@ -2739,27 +2735,13 @@ function openColorPicker(host, anchor, opts) {
     anchor,
     placement: "below",
     onClose: () => {
-      if (!escaped && !committed) {
-        committed = true;
-        if (current !== initial) {
-          saveRecentColor(current);
-          opts.onCommit?.(current);
-        }
-      } else if (escaped) {
-        opts.onInput(initial);
+      if (current !== initial) {
+        saveRecentColor(current);
+        opts.onCommit?.(current);
       }
-      opts.onClose?.(escaped);
+      opts.onClose?.();
     }
   });
-  handle.element.addEventListener(
-    "keydown",
-    (event) => {
-      if (event.key === "Escape") {
-        escaped = true;
-      }
-    },
-    true
-  );
   return handle;
 }
 const DRAG_BLOCKED_TEXT = "Couldn't load the dragged image (the site doesn't allow it). Save it and drop the file instead.";
@@ -3753,7 +3735,7 @@ class LayerRow {
   textBadge = null;
   soloButton = null;
   hintEl = null;
-  /** Paint rows: add-mask icon / mask thumbnail (M14). */
+  /** Paint rows: add-mask icon / mask thumbnail. */
   maskSlot = null;
   thumbBox;
   model = null;
@@ -5010,7 +4992,7 @@ class LayersPanel {
       },
       // Selection only: the current layer, Quick Mask and solo stay as they are.
       loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
-      // ── M14 layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
+      // ── Layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
       targetLayer: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "layer")),
       targetMask: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "mask")),
       addLayerMask: (id, hideAll) => this.withEditor((e) => {
@@ -5205,21 +5187,26 @@ function separator() {
   sep.className = "cps-bar-sep";
   return sep;
 }
+const TO_MASK_TITLE = "Selection to mask: add the selection to the mask";
+const TO_LMASK_TITLE = "Selection to layer mask: hide the selection";
 class SelectionActions {
   /** Root element (append to the bar's leading region). */
   element;
+  toMask;
   editor = null;
   constructor() {
     this.element = document.createElement("div");
     this.element.className = "cps-selection-actions";
     this.element.hidden = true;
     const toMask = document.createElement("button");
+    this.toMask = toMask;
     toMask.type = "button";
     toMask.className = "cps-toggle";
-    toMask.title = "Selection to mask: add the selection to the mask";
+    toMask.title = TO_MASK_TITLE;
     setIcon(toMask, "selectionToMask", 14);
     toMask.append("To mask");
     toMask.addEventListener("click", () => this.editor?.selection.toMask());
+    toMask.addEventListener("pointerenter", () => this.syncTitle());
     const invert2 = document.createElement("button");
     invert2.type = "button";
     invert2.className = "cps-toggle";
@@ -5240,6 +5227,11 @@ class SelectionActions {
   /** Show/hide for the current selection state. */
   sync() {
     this.element.hidden = !this.editor?.selection.active;
+    this.syncTitle();
+  }
+  /** "To mask" tooltip for the current target (cmask vs targeted lmask). */
+  syncTitle() {
+    this.toMask.title = this.editor?.layerMask.targeted ? TO_LMASK_TITLE : TO_MASK_TITLE;
   }
 }
 const TITLES = {
@@ -5587,7 +5579,7 @@ class ToolRail {
       this.pasteButton.element
     );
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
-    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
+    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z / Ctrl+Y)", () => this.actions.redo());
     this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
     this.fullscreenButton.setAttribute("aria-pressed", "false");
     const actionGroup = group();
@@ -5613,7 +5605,7 @@ class ToolRail {
   toolIds = "";
   groupSlots = [];
   /**
-   * Add a button to the clipboard group, after Paste (M12 Images button).
+   * Add a button to the clipboard group, after Paste (the Images button).
    * @param element - Button element.
    */
   appendClipboardButton(element) {
@@ -5991,7 +5983,7 @@ class OutputOptionsRow {
   borderSize;
   borderMask;
   borderMaskBox;
-  /** M13c: RGBA IMAGE (hidden, value kept, while Modify = Fill mask). */
+  /** Alpha: RGBA IMAGE (hidden, value kept, while Modify = Fill mask). */
   alpha;
   alphaBox;
   /** Show the current options (fields being edited keep their text). */
@@ -6016,13 +6008,13 @@ class OutputOptionsRow {
     this.alphaBox.checked = options.alpha === true;
     this.alpha.hidden = fill;
   }
-  /** Close the picker / revert open sessions. */
+  /** Close an open colour picker (its `onClose` commits the session) and the number controls. */
   dispose() {
     this.ctx.popovers.closeAnchoredIn(this.element);
     this.padding.dispose();
     this.borderSize.dispose();
   }
-  /** Fill / border colour picker: one session = one undo step; Esc reverts. */
+  /** Fill / border colour picker: one session = one undo step; Esc / click-outside keep the colour. */
   pickColor() {
     const { popovers, editor } = this.ctx;
     const ops = editor.regionOps;
@@ -6038,9 +6030,8 @@ class OutputOptionsRow {
         if (!ops.active) return;
         ops.setOptions(this.id, border ? { borderColor: hex } : { fillColor: hex });
       },
-      onClose: (cancelled) => {
-        if (cancelled) ops.cancel();
-        else ops.commit();
+      onClose: () => {
+        ops.commit();
       }
     });
   }
@@ -6165,7 +6156,7 @@ class RegionCard {
       this.ctx.releaseFocus();
     });
   }
-  /** One X / Y / W / H field, clamped to the paint area. */
+  /** One X / Y / W / H field, clamped to the region area. */
   rectField(key, label, title) {
     const { editor } = this.ctx;
     const ops = editor.regionOps;
@@ -6433,12 +6424,13 @@ function createRegionTool() {
         drag = null;
         return;
       }
+      drag.open = true;
     }
     if (drag.mode !== "draw" && drag.id && drag.rect) {
       ops.setRect(drag.id, dragRegionRect(drag.rect, delta, editor.imageSize, drag.handle));
       return;
     }
-    if (!ops.active) return;
+    if (!drag.open) return;
     const rect = drawRegionRect(drag.start, p, editor.imageSize);
     if (drag.id) ops.setRect(drag.id, rect);
     else drag.id = ops.add(rect);
@@ -6458,7 +6450,7 @@ function createRegionTool() {
       const start = docToImage(editor.frameMap, sample);
       const grab = sample.shiftKey ? null : grabAt(editor, start);
       if (grab?.id) editor.regionOps.select(grab.id);
-      drag = { start, moved: false, ...grab ?? { mode: "draw", id: null, rect: null, handle: null } };
+      drag = { start, moved: false, open: false, ...grab ?? { mode: "draw", id: null, rect: null, handle: null } };
     },
     onPointerMove(editor, samples) {
       const sample = samples.at(-1);
@@ -6467,13 +6459,13 @@ function createRegionTool() {
     onPointerUp(editor, sample) {
       if (!drag) return;
       update(editor, sample);
-      const { moved, mode } = drag;
+      const { moved, mode, open } = drag;
       drag = null;
-      if (moved) editor.regionOps.commit();
-      else if (mode === "draw") editor.regionOps.select(null);
+      if (open) editor.regionOps.commit();
+      else if (!moved && mode === "draw") editor.regionOps.select(null);
     },
     onCancel(editor) {
-      if (drag) editor.regionOps.cancel();
+      if (drag?.open) editor.regionOps.cancel();
       drag = null;
     },
     pending: () => drag !== null
@@ -6529,8 +6521,7 @@ class HostSync {
       pick: (slot, anchor) => {
         const editor = this.getSession()?.editor;
         if (!editor || editor.layerMask.targeted) return;
-        const colors = editor.colors;
-        this.shell.requestColorPick(slot, anchor, colors[slot], (hex) => colors.set(slot, hex));
+        this.shell.requestColorPick(slot, anchor);
       },
       swap: () => {
         const editor = this.getSession()?.editor;
@@ -6680,7 +6671,7 @@ class HostSync {
   }
   /**
    * Show the FG/BG colours, or the black / white mask swatches while a
-   * layer mask is targeted (M14; the real colours stay untouched).
+   * layer mask is targeted (the real colours stay untouched).
    */
   syncSwatches() {
     const editor = this.getSession()?.editor;
@@ -6753,6 +6744,11 @@ function mayKeepFocus(info) {
 function isScopeActive(state) {
   return state.hovered || state.held || state.engaged || state.fullscreen;
 }
+const ARROW_KEYS = /* @__PURE__ */ new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
+function swallowsIdleArrow(state, chord) {
+  if (!ARROW_KEYS.has(chord.key) || chord.ctrlKey || chord.metaKey || chord.altKey) return false;
+  return state.engaged || state.fullscreen;
+}
 function hoverMayTakeFocus(focused) {
   return focused === null || !isTextEntry(focused);
 }
@@ -6763,7 +6759,7 @@ function describeElement(element) {
   return info;
 }
 const BROWSER_MOD_KEYS = /* @__PURE__ */ new Set(["r", "w", "t", "n", "l", "tab", "pageup", "pagedown"]);
-const BROWSER_MOD_SHIFT_KEYS = /* @__PURE__ */ new Set(["i", "j", "c"]);
+const BROWSER_MOD_SHIFT_KEYS = /* @__PURE__ */ new Set(["j"]);
 const COMFY_MOD_KEYS = /* @__PURE__ */ new Set(["s", "enter"]);
 const MODIFIER_KEYS$1 = /* @__PURE__ */ new Set(["control", "shift", "alt", "altgraph", "meta", "os"]);
 function fullscreenKeyPolicy(event) {
@@ -6772,6 +6768,7 @@ function fullscreenKeyPolicy(event) {
   if (/^f([1-9]|1[0-9]|2[0-4])$/.test(key)) return "pass";
   const mod = event.ctrlKey || event.metaKey;
   if (event.altKey && !mod && (key === "arrowleft" || key === "arrowright")) return "pass";
+  if (event.altKey && mod && !event.shiftKey && key === "enter") return "pass";
   if (mod && !event.altKey) {
     if (key === "v") return "pass";
     if (BROWSER_MOD_KEYS.has(key) || COMFY_MOD_KEYS.has(key)) return "pass";
@@ -7127,7 +7124,8 @@ class KeyboardScope {
       event.stopPropagation();
       return;
     }
-    if (this.handlers.onKeyDown(event) || this.captureScope && fullscreenKeyPolicy(event) === "swallow") {
+    const fullscreen = this.captureScope !== null;
+    if (this.handlers.onKeyDown(event) || fullscreen && fullscreenKeyPolicy(event) === "swallow" || swallowsIdleArrow({ engaged: this.engaged, fullscreen }, event)) {
       event.preventDefault();
       event.stopPropagation();
     }
@@ -7320,7 +7318,7 @@ function panelSetByUser(state, collapsed) {
 class SidePanel {
   /** Panel element (a region of the shell body). */
   element;
-  /** Mount point for panel content (placeholder "Layers" until M3.3). */
+  /** Mount point for panel content (`setTabs` mounts the tab bar and panels; a "Layers" placeholder shows until then). */
   content;
   events = new Emitter();
   state = INITIAL_PANEL_STATE;
@@ -7449,8 +7447,6 @@ class EditorShell {
   /** Opens the side panel on the Outputs tab (region mode); next to the panel toggle. */
   outputsButton;
   resizeObserver;
-  nativeInput = null;
-  nativeApply = null;
   constructor() {
     this.root = div("cps-root");
     this.rail = { element: div("cps-rail"), tools: div("cps-rail-tools"), swatchSlot: div("cps-rail-swatches") };
@@ -7491,17 +7487,13 @@ class EditorShell {
     this.resizeObserver.observe(this.root);
   }
   /**
-   * Ask for a colour picker for a swatch: emits `pick-color`; if no listener
-   * handles it, falls back to the native colour input.
+   * Ask for a colour picker for a swatch: emits `pick-color` (the EditorHost
+   * opens the picker popover and applies the colour).
    * @param slot - Foreground or background.
    * @param anchor - Swatch element.
-   * @param current - Current colour (`#rrggbb`).
-   * @param apply - Called with each picked colour.
    */
-  requestColorPick(slot, anchor, current, apply2) {
-    const request = { slot, anchor, handled: false };
-    this.events.emit("pick-color", request);
-    if (!request.handled) this.nativeColorPick(current, apply2);
+  requestColorPick(slot, anchor) {
+    this.events.emit("pick-color", { slot, anchor });
   }
   /**
    * Horizontal scroll for wheel over the options bar (vertical wheels scroll
@@ -7533,30 +7525,6 @@ class EditorShell {
     this.panelButton.classList.toggle("cps-active", open);
     this.panelButton.setAttribute("aria-pressed", String(open));
     this.panelButton.title = open ? "Hide side panel" : "Show side panel";
-  }
-  /** Fallback picker until M3.2: a hidden native `<input type=color>`. */
-  nativeColorPick(current, apply2) {
-    let input = this.nativeInput;
-    if (!input) {
-      const created = document.createElement("input");
-      created.type = "color";
-      created.className = "cps-native-color";
-      created.tabIndex = -1;
-      created.addEventListener("input", () => this.nativeApply?.(created.value));
-      created.addEventListener("change", () => this.nativeApply?.(created.value));
-      this.popoverHost.element.appendChild(created);
-      this.nativeInput = input = created;
-    }
-    this.nativeApply = apply2;
-    input.value = current;
-    if (typeof input.showPicker === "function") {
-      try {
-        input.showPicker();
-        return;
-      } catch {
-      }
-    }
-    input.click();
   }
 }
 function div(className) {
@@ -7593,6 +7561,100 @@ function handleClipboardShortcut(event, actions, cancelDrag) {
   }
   return false;
 }
+const DEFAULT_GROWTH = { chunk: 256, marginFactor: 1, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
+  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
+  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
+  return {
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
+  };
+}
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
+  const cap = boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
+  };
+  return unionRect(intersectRect(grown, cap), bounds);
+}
+function clean$1(n) {
+  return n === 0 ? 0 : n;
+}
+function dragDelta(start, current) {
+  return { x: clean$1(Math.round(current.x - start.x)), y: clean$1(Math.round(current.y - start.y)) };
+}
+function nudgeStep(imagePx, mapScale) {
+  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
+  return Math.max(1, Math.round(imagePx / mapScale));
+}
+function alphaBounds(data, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    let first = -1;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3]) {
+        first = x;
+        break;
+      }
+    }
+    if (first < 0) continue;
+    let last = first;
+    for (let x = width - 1; x > first; x--) {
+      if (data[row + x * 4 + 3]) {
+        last = x;
+        break;
+      }
+    }
+    if (first < minX) minX = first;
+    if (last > maxX) maxX = last;
+    if (minY === height) minY = y;
+    maxY = y;
+  }
+  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function offsetRect(r, dx, dy) {
+  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
+}
+function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
+  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
+  const target = offsetRect(content, dx, dy);
+  const grown = growBounds(bounds, target, frame, limits);
+  const kind = containsRect(grown, target) ? "translate" : "patch";
+  return { kind, bounds: grown, target, region: unionRect(content, target) };
+}
+function translateStep(entry, forward) {
+  const moved = offsetRect(entry.content, entry.dx, entry.dy);
+  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean$1(-entry.dx), dy: clean$1(-entry.dy) };
+}
+function mergeTranslate(entry, dx, dy) {
+  entry.dx = clean$1(entry.dx + dx);
+  entry.dy = clean$1(entry.dy + dy);
+}
+const ARROWS$4 = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1]
+};
 function handleFloatShortcut(event, editor, effects) {
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
@@ -7616,6 +7678,13 @@ function handleFloatShortcut(event, editor, effects) {
     editor.float.cancel();
     return true;
   }
+  const dir = ARROWS$4[event.key];
+  if (dir) {
+    if (editor.float.transform.active) return false;
+    const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    editor.float.nudge(dir[0] * step, dir[1] * step);
+    return true;
+  }
   if (key === "enter" && !event.shiftKey) {
     effects.cancelDrag();
     if (editor.float.transform.active) editor.float.transform.commit();
@@ -7636,8 +7705,8 @@ function handleSelectionShortcut(event, editor, cancelDrag) {
   const sel = editor.selection;
   if (key === "backspace" || key === "delete") {
     if (event.repeat) return true;
-    if (key === "backspace" && alt && !ctrl) return run$1(cancelDrag, () => sel.fillSelected(editor.colors.fg));
-    if (key === "backspace" && ctrl && !alt) return run$1(cancelDrag, () => sel.fillSelected(editor.colors.bg));
+    if (key === "backspace" && alt && !ctrl) return run$1(cancelDrag, () => sel.fillSelected(editor.colors.fg, "fg"));
+    if (key === "backspace" && ctrl && !alt) return run$1(cancelDrag, () => sel.fillSelected(editor.colors.bg, "bg"));
     if (!ctrl && !alt && sel.active) return run$1(cancelDrag, () => sel.clearSelected());
     return !ctrl && !alt;
   }
@@ -7650,11 +7719,26 @@ function handleSelectionShortcut(event, editor, cancelDrag) {
   if (key === "f7" && shift && !alt) return run$1(cancelDrag, () => sel.invert());
   return false;
 }
+const ARROWS$3 = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1]
+};
+function handleOutlineNudge(event, tool, editor, dragging = false) {
+  const dir = ARROWS$3[event.key];
+  if (!dir || !tool.combinesSelection || !editor.selection.active || (tool.pending?.() ?? false)) return false;
+  if (dragging) return true;
+  const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+  editor.selectionMove.nudge(dir[0] * step, dir[1] * step);
+  return true;
+}
 function run$1(cancelDrag, action) {
   cancelDrag();
   action();
   return true;
 }
+const MAX_SHAPE_WIDTH = 500;
 function handleShortcut(event, session, effects) {
   const { editor, tools } = session;
   const ctrl = event.ctrlKey || event.metaKey;
@@ -7677,10 +7761,11 @@ function handleShortcut(event, session, effects) {
   }
   if (event.altKey || ctrl) return false;
   if (tools.resolve(false).onKey?.(editor, event)) return true;
+  if (handleOutlineNudge(event, tools.active, editor, effects.isToolDragging?.() ?? false)) return true;
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {
     const up = event.code === "BracketRight" || key === "]" || key === "}";
-    const changed = event.shiftKey ? stepOption(options, "hardness", (v) => stepHardness(v, up)) : stepOption(options, "size", (v) => stepSize(v, up));
+    const changed = event.shiftKey ? stepOption(options, "hardness", (v) => stepHardness(v, up)) : stepOption(options, "size", (v) => stepSize(v, up)) ?? stepOption(options, "width", (v) => stepSize(v, up, MAX_SHAPE_WIDTH));
     if (changed === null) return false;
     if (changed) effects.optionsChanged();
     return true;
@@ -7736,10 +7821,10 @@ function stepOption(options, key, next) {
   if (!options || typeof value !== "number") return null;
   return options.set(key, next(value));
 }
-function stepSize(size, up) {
+function stepSize(size, up, max = 1e3) {
   const step = size < 10 ? 1 : size < 50 ? 5 : size < 100 ? 10 : size < 300 ? 25 : 50;
   const next = up ? size + step : size - (size <= 10 ? 1 : size <= 50 ? 5 : size <= 100 ? 10 : size <= 300 ? 25 : 50);
-  return Math.min(1e3, Math.max(1, Math.round(next)));
+  return Math.min(max, Math.max(1, Math.round(next)));
 }
 function stepHardness(hardness, up) {
   const next = Math.round((hardness + (up ? 0.25 : -0.25)) * 4) / 4;
@@ -8136,36 +8221,6 @@ class StageInput {
   release(pointerId) {
     if (this.stage.hasPointerCapture(pointerId)) this.stage.releasePointerCapture(pointerId);
   }
-}
-const DEFAULT_GROWTH = { chunk: 256, marginFactor: 1, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
-  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
-  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
 }
 const STEP = 1.7;
 const COBWEB_DEFAULTS = {
@@ -10395,7 +10450,6 @@ class EditorHost {
       const colors = this.session?.editor.colors;
       if (!colors) return;
       const slot = request.slot;
-      request.handled = true;
       openColorPicker(this.shell.popoverHost, request.anchor, {
         initial: colors[slot],
         title: slot === "fg" ? "Foreground" : "Background",
@@ -10422,11 +10476,11 @@ class EditorHost {
         viewChanged: () => this.view.requestRender(),
         cancelDrag: () => this.input.cancel(),
         cancelToolDrag: () => this.input.cancelToolDrag(),
+        isToolDragging: () => this.input.activeTool !== null,
         fullscreen: () => this.shell.events.emit("fullscreen", void 0),
         toggleOutputs: () => this.sync.toggleOutputs(),
         closePopover: () => {
           if (!this.shell.popoverHost.isOpen) return false;
-          this.session?.editor.regionOps.cancel();
           return this.shell.popoverHost.close();
         },
         exitFullscreen: () => {
@@ -10472,7 +10526,7 @@ class EditorHost {
   /** Copy / cut / paste (keys, rail, drops). */
   clipboard;
   removeDrop;
-  /** M12: Images button + thumbnail panel. */
+  /** Images button + thumbnail panel. */
   images;
   restoreState = null;
   session = null;
@@ -10480,7 +10534,7 @@ class EditorHost {
   wasVisible = false;
   disposed = false;
   // ── Public API ──────────────────────────────────────────────────────────
-  /** Session currently shown (M3.2/M3.3 read its editor and tools). */
+  /** Session currently shown (the colour picker and panels read its editor and tools). */
   get current() {
     return this.session;
   }
@@ -10935,7 +10989,7 @@ class BackgroundLoader {
         image,
         size: { width: image.naturalWidth, height: image.naturalHeight },
         origin: source.origin,
-        // M13a: only an upstream file has alpha worth reading (our executed preview is RGB).
+        // Only an upstream file has alpha worth reading (our executed preview is RGB).
         alphaUrl: source.origin === "upstream" ? withAlphaChannel(source.url) : null
       };
       this.onSettled();
@@ -11229,7 +11283,7 @@ class FrameSync {
   /**
    * The current image while disconnected: `width` x `height` filled with
    * `background`. Like any upstream image, an empty document adopts it and a
-   * painted one is shown through the frame map (decision 4).
+   * painted one is shown through the frame map.
    * @returns Sanitized fallback frame.
    */
   fallbackFrame() {
@@ -11593,7 +11647,7 @@ class ImageMaskPixels {
   version = 0;
   /** Display cache key (tint, thumbnail); globally unique. */
   revision = 0;
-  /** M13b: no coverage yet, the Input Mask arrives with a run (row hint). */
+  /** Input Mask only: no coverage yet, it arrives with a run (row hint). */
   waiting = false;
   /** Coverage plane (treat as immutable), or `null` when none is loaded. */
   get coverage() {
@@ -12373,64 +12427,6 @@ function isWholeTranslation(m) {
   const whole = (v) => Math.abs(v - Math.round(v)) < 1e-6;
   return m.a === 1 && m.b === 0 && m.c === 0 && m.d === 1 && whole(m.e) && whole(m.f);
 }
-function clean$1(n) {
-  return n === 0 ? 0 : n;
-}
-function dragDelta(start, current) {
-  return { x: clean$1(Math.round(current.x - start.x)), y: clean$1(Math.round(current.y - start.y)) };
-}
-function nudgeStep(imagePx, mapScale) {
-  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
-  return Math.max(1, Math.round(imagePx / mapScale));
-}
-function alphaBounds(data, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width * 4;
-    let first = -1;
-    for (let x = 0; x < width; x++) {
-      if (data[row + x * 4 + 3]) {
-        first = x;
-        break;
-      }
-    }
-    if (first < 0) continue;
-    let last = first;
-    for (let x = width - 1; x > first; x--) {
-      if (data[row + x * 4 + 3]) {
-        last = x;
-        break;
-      }
-    }
-    if (first < minX) minX = first;
-    if (last > maxX) maxX = last;
-    if (minY === height) minY = y;
-    maxY = y;
-  }
-  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function offsetRect(r, dx, dy) {
-  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
-}
-function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
-  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
-  const target = offsetRect(content, dx, dy);
-  const grown = growBounds(bounds, target, frame, limits);
-  const kind = containsRect(grown, target) ? "translate" : "patch";
-  return { kind, bounds: grown, target, region: unionRect(content, target) };
-}
-function translateStep(entry, forward) {
-  const moved = offsetRect(entry.content, entry.dx, entry.dy);
-  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean$1(-entry.dx), dy: clean$1(-entry.dy) };
-}
-function mergeTranslate(entry, dx, dy) {
-  entry.dx = clean$1(entry.dx + dx);
-  entry.dy = clean$1(entry.dy + dy);
-}
 const TRANSLATE_ENTRY_BYTES = 128;
 const contentCache = /* @__PURE__ */ new WeakMap();
 function cacheOf(s) {
@@ -12572,6 +12568,7 @@ function applyTranslateEntry(s, entry, forward) {
     s.runtime.touch(key);
   }
 }
+const SELECTION_NUDGE_GESTURE = "selection-nudge";
 function recordSelectionMove(s, before, after, join) {
   if (selectionsEqual(before, after)) return;
   if (join) s.history.joinNext((entry) => entry.kind === "selection");
@@ -12658,6 +12655,34 @@ class SelectionMoveOps {
     if (this.start) this.s.selection.set(this.start);
     this.start = null;
   }
+  /**
+   * Arrow nudge of the outline only (selection tools, no float). Consecutive
+   * nudges merge into one `selection` history entry (like Move nudges); a
+   * run that returns to its start drops the entry.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   * @returns `false` without a selection, while busy or mid-drag.
+   */
+  nudge(dx, dy) {
+    const s = this.s;
+    if (this.start || s.loading || s.stroke.active) return false;
+    s.settleFloat();
+    const sel = s.selection.current;
+    if (!sel) return false;
+    if (dx === 0 && dy === 0) return true;
+    const after = offsetSelection(sel, dx, dy);
+    const top = s.history.mergeTarget();
+    if (top?.kind === "selection" && top.gesture === SELECTION_NUDGE_GESTURE && top.after === sel) {
+      top.after = after;
+      if (selectionsEqual(top.before, after)) s.history.discardNewest();
+    } else {
+      const bytes = selectionBytes(sel) + selectionBytes(after);
+      s.history.push({ kind: "selection", before: sel, after, bytes, gesture: SELECTION_NUDGE_GESTURE });
+    }
+    s.selection.set(after);
+    s.events.emit("history", void 0);
+    return true;
+  }
 }
 function fitScale$1(source, area) {
   if (source.width <= 0 || source.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
@@ -12705,7 +12730,7 @@ class SourceInsertOps {
     ) !== null;
   }
   /**
-   * An oversized paste (SPEC M10 Clipboard): the same session, at native
+   * An oversized paste (SPEC "Clipboard and drop"): the same session, at native
    * size and the paste's own placement (`pastePlacement.ts`, no fit scaling).
    * @param pixels - Full source pixels (straight alpha).
    * @param name - Layer name ("Pasted N").
@@ -12898,7 +12923,7 @@ class ClipboardOps {
     return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
   }
   /**
-   * A paste in the lmask-only view (M14b): the image as lmask values
+   * A paste in the lmask-only view: the image as lmask values
    * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
    * the paint area (`rect` null) -- the full image in a Free Transform
    * session (native size at `full`, cropped on commit), like an oversized
@@ -12959,7 +12984,7 @@ class ClipboardOps {
   kind(layer) {
     return selectedSurfaceKey(this.s, layer) === layer.id ? "whole" : "paint";
   }
-  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask, M14b). */
+  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask). */
   layerArea(layer) {
     const s = this.s;
     const sel = s.selection.current;
@@ -14456,6 +14481,20 @@ class StrokeBuffer {
     }
     this.end();
   }
+  /**
+   * Composite the buffer (opacity and selection clip applied, as
+   * {@link commit} does) over `rect` into a `rect`-sized surface, without
+   * ending the stroke: a shape on its own (`shapeFloat.ts`).
+   * @param target - Surface whose (0, 0) is `rect`'s top-left (usually transparent).
+   * @param rect - Document rect inside the bounds.
+   */
+  compositeInto(target, rect) {
+    this.flushMask();
+    if (!this.style || isEmptyRect(rect)) return;
+    const x = rect.x - this.bounds.x;
+    const y = rect.y - this.bounds.y;
+    this.compositeBuffer(target.ctx, this.surfaces().buffer, x, y, rect.width, rect.height, -x, -y);
+  }
   /** Abort the stroke without touching the layer. */
   cancel() {
     this.end();
@@ -14471,13 +14510,13 @@ class StrokeBuffer {
     this.style = null;
   }
   // ── Internals ───────────────────────────────────────────────────────────
-  compositeBuffer(ctx, buffer, x, y, width, height) {
+  compositeBuffer(ctx, buffer, x, y, width, height, offsetX = 0, offsetY = 0) {
     if (!this.style) return;
     const source = this.sourceFor(buffer, x, y, width, height);
     ctx.save();
     ctx.globalAlpha = this.style.opacity;
     ctx.globalCompositeOperation = this.style.mode === "erase" ? "destination-out" : "source-over";
-    ctx.drawImage(source, x, y, width, height, x, y, width, height);
+    ctx.drawImage(source, x, y, width, height, x + offsetX, y + offsetY, width, height);
     ctx.restore();
   }
   /** Write pending dab coverage into the buffer canvas (stroke colour, alpha = coverage). */
@@ -14673,15 +14712,15 @@ class EditorState {
   stroke = new StrokeBuffer();
   runtime = new LayerRuntimeTable();
   store;
-  /** Pre-transform originals per layer (M11b, memory only; `keptOriginal.ts`). */
+  /** Pre-transform originals per layer (memory only; `keptOriginal.ts`). */
   kept = new KeptOriginals();
   /** Current selection (session state, not saved); strokes are clipped to it. */
   selection = new SelectionState(() => this.events.emit("selection", void 0));
-  /** Image Mask coverage (M13a, image px; metadata is `doc.imageMask`). */
+  /** Image Mask coverage (image px; metadata is `doc.imageMask`). */
   imageMask = new ImageMaskPixels();
-  /** Layer masks (M14): targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
+  /** Layer masks: targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
   layerMasks = new LayerMaskState();
-  /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
+  /** Solo (view only; not saved/undoable, ignored by outputs). */
   solo = new SoloState(() => {
     this.events.emit("solo", void 0);
     this.events.emit("render", void 0);
@@ -14700,7 +14739,7 @@ class EditorState {
   /** Quick Mask paint target (UI state, not saved). */
   target = "paint";
   /**
-   * Current mask (M8): the last selected mask row, what Quick Mask paints
+   * Current mask: the last selected mask row, what Quick Mask paints
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId = null;
@@ -14816,7 +14855,7 @@ class EditorState {
   }
   /**
    * The current mask layer, adding a default one (not dirty, no history)
-   * when the document has none -- documents saved before M2 get one lazily.
+   * when the document has none -- older documents with no mask layer get one lazily.
    * @returns The mask layer.
    */
   ensureMask() {
@@ -14886,7 +14925,7 @@ class FrameOps {
   /**
    * A new current-image size arrived (upstream image, or the widgets while
    * disconnected; call after {@link setBackground}): an empty document
-   * adopts it, otherwise it is only a display mapping (decision 4).
+   * adopts it, otherwise it is only a display mapping.
    * Deferred while layer files are loading.
    * @param size - Current image size.
    */
@@ -14945,7 +14984,7 @@ class FrameOps {
     const frame = minimumFrame(size);
     const source = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
     const before = this.captureSnapshot();
-    const after = { frame, bounds: frameRect(frame), source, pixels: null };
+    const after = { frame, bounds: frameRect(frame), source, pixels: null, selection: null };
     this.applySnapshot(after);
     s.solo.clear();
     s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
@@ -14989,6 +15028,7 @@ class FrameOps {
         dropMaskSurface(s, layer.id);
       }
     }
+    s.selection.set(state.selection ?? null);
     s.syncViewFrame();
     s.events.emit("placement", void 0);
     s.events.emit("layers", void 0);
@@ -15030,12 +15070,13 @@ class FrameOps {
       pixels,
       text,
       outputs: captureOutputs(s),
-      ...layerMasks.size ? { layerMasks } : {}
+      ...layerMasks.size ? { layerMasks } : {},
+      selection: s.selection.current
     };
   }
 }
 function snapshotBytes(state) {
-  let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
+  let bytes = (state.outputs ? outputsKey(state.outputs).length * 2 : 0) + selectionBytes(state.selection ?? null);
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
   if (state.layerMasks) for (const m of state.layerMasks.values()) bytes += m.data.data.byteLength;
   return bytes;
@@ -15226,17 +15267,17 @@ class ImageMaskOps {
     this.changed();
     return true;
   }
-  /** M13b: the row shows the `mask` input ("Input Mask"). */
+  /** The row shows the `mask` input ("Input Mask"). */
   get isInput() {
     const mask = this.s.doc.imageMask;
     return mask !== void 0 && isInputMaskKey(mask.sourceKey);
   }
-  /** M13b: the Input Mask has no coverage until a run delivers it (row hint). */
+  /** The Input Mask has no coverage until a run delivers it (row hint). */
   get waiting() {
     return this.isInput && this.s.imageMask.waiting;
   }
   /**
-   * M13b: show the `mask` input as the row ("Input Mask"): settings of an
+   * Show the `mask` input as the row ("Input Mask"): settings of an
    * existing row are kept, no file (Python has the tensor), never uploaded.
    * Not an undo step.
    * @param sourceKey - Input Mask key (`INPUT_MASK_KEY_PREFIX`...).
@@ -15813,7 +15854,7 @@ class LayerMaskOps {
     return true;
   }
   /**
-   * Apply (options bar, M14b): bake the mask as it acts -- invert applied,
+   * Apply (options bar): bake the mask as it acts -- invert applied,
    * the `outside` value beyond the stored pixels -- into the layer's alpha
    * and remove the mask, as ONE undo step (`[patch on the layer, mask
    * removal]`). The layer gate runs first (hidden / locked notes).
@@ -16041,7 +16082,7 @@ class LayerMaskOps {
     return this.s.doc.layers.find((l) => l.id === layerId);
   }
   /**
-   * Keep the lmask-only view on the targeted mask (SPEC): it follows the
+   * Keep the lmask-only view on the targeted mask (SPEC "Layer masks (lmask)"): it follows the
    * active paint layer while that layer targets its mask (another lmask
    * thumbnail, a row whose target is its mask), and ends otherwise -- a
    * layer without a mask or targeting its pixels, a text layer, any cmask
@@ -16109,7 +16150,7 @@ function paintMaskArea(s, layer, opacity, needSelection, hide) {
   else eraseCoverage(next.data, local, coverage, rect.width);
   s.store.write(key, rect.x, rect.y, next);
   const after = s.store.read(key, rect);
-  if (!after || sameBytes$2(before.data.data, after.data.data)) return false;
+  if (!after || sameBytes$3(before.data.data, after.data.data)) return false;
   const bytes = before.data.data.byteLength + after.data.data.byteLength;
   s.history.push({ kind: "patch", layerId: key, x: rect.x, y: rect.y, before: before.data, after: after.data, bytes });
   s.runtime.touch(key);
@@ -16125,12 +16166,12 @@ function coverageImage(coverage, width, height) {
   }
   return new ImageData(data, width, height);
 }
-function sameBytes$2(a, b) {
+function sameBytes$3(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
-function sameBytes$1(a, b) {
+function sameBytes$2(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
@@ -16246,7 +16287,7 @@ class PaintOps {
       const before = s.store.read(layerId, rect);
       s.stroke.commit(surface);
       const after = s.store.read(layerId, rect);
-      if (before && after && !sameBytes$1(before.data.data, after.data.data)) {
+      if (before && after && !sameBytes$2(before.data.data, after.data.data)) {
         const bytes = before.data.data.byteLength + after.data.data.byteLength;
         s.history.push({ kind: "patch", layerId, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
         s.runtime.touch(layerId);
@@ -16439,7 +16480,7 @@ class EditorBase {
   }
   /**
    * Replace the current stroke's content with one shape (shape tools: live
-   * preview on every move, rasterized into the layer by {@link endStroke}).
+   * preview on every move; `Editor.endShape` turns it into a float in Free Transform).
    * @param shape - Shape in document coords.
    */
   drawShape(shape) {
@@ -16502,7 +16543,7 @@ class LayerOps {
     return canDeleteLayer(this.s.doc.layers, layerId);
   }
   /**
-   * Whether another mask can be added (M8: at most `MAX_MASKS`).
+   * Whether another mask can be added (at most `MAX_MASKS`).
    * @returns `true` if below the limit.
    */
   canAddMask() {
@@ -16745,7 +16786,7 @@ class LayerOps {
     return setLayerProps(this.s, layerId, { color: color.toLowerCase() }, gesture);
   }
   /**
-   * Per-mask invert (applied before the union, decision 5).
+   * Per-mask invert (applied before the union).
    * @param layerId - Mask layer id.
    * @param invert - Invert state.
    * @returns `true` if changed.
@@ -16806,7 +16847,7 @@ class EditorMaskOps {
     this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
   }
   /**
-   * Make a mask the current mask (M8) and turn Quick Mask on.
+   * Make a mask the current mask and turn Quick Mask on.
    * @param layerId - Mask layer id.
    * @returns `false` if it is not a mask layer.
    */
@@ -17004,17 +17045,21 @@ function writeFloatPatch(s, f, m) {
   const before = new Uint8ClampedArray(current.data.data);
   copyPixels(before, r, f.original.data, hole);
   const next = new Uint8ClampedArray(current.data.data);
+  const exact = f.exact && affineEquals(m, liftMatrix(f)) ? f.exact : null;
   const at = plain ? dest : intersectRect(dest, r);
-  const src = plain ? f.pixels.data : resampleRgba(f.pixels.data, f.area.width, f.area.height, m, at);
-  if (f.cover) landMaskPixels(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
-  else compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  if (exact) copyPixels(next, r, exact.data.data, exact.rect);
+  else {
+    const src = plain ? f.pixels.data : resampleRgba(f.pixels.data, f.area.width, f.area.height, m, at);
+    if (f.cover) landMaskPixels(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+    else compositeOver(next, r.width, r.height, src, at.width, at.height, at.x - r.x, at.y - r.y);
+  }
   s.store.write(f.layerId, r.x, r.y, new ImageData(next, r.width, r.height));
   const after = s.store.read(f.layerId, r);
   if (after) {
     const beforeData = new ImageData(before, r.width, r.height);
     const bytes = before.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
-    recordSelectionMove(s, f.selBefore, s.selection.current, true);
+    if (!f.shape) recordSelectionMove(s, f.selBefore, s.selection.current, true);
     if (f.carry) writeCarryPatch(s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
   }
   s.runtime.touch(f.layerId);
@@ -17279,7 +17324,7 @@ class TransformOps {
   get active() {
     return this.current() !== null;
   }
-  /** Whether a TEXT layer session is running (no float; M11b). */
+  /** Whether a TEXT layer session is running (no float). */
   get textActive() {
     return this.current()?.text != null;
   }
@@ -17345,7 +17390,7 @@ class TransformOps {
    * commit, one undo step). Selection sessions end but the float STAYS: its
    * matrix is kept over the original lifted pixels (a later session resumes
    * from it, no accumulated resampling), the display is resampled once
-   * (`FloatOps.bake`), and the float commits by the M10 rules later.
+   * (`FloatOps.bake`), and the float commits by the floating-selection rules later.
    * @returns `true` if layer pixels changed (never for a selection session).
    */
   commit() {
@@ -17585,7 +17630,7 @@ class FloatOps {
   }
   s;
   f = null;
-  /** Free Transform sessions over this float (M11). */
+  /** Free Transform sessions over this float. */
   transform;
   /** The float itself (read-only view for `transformOps.ts`), or `null`. */
   get state() {
@@ -17607,6 +17652,10 @@ class FloatOps {
   /** Current offset of the float from where it was lifted (document px), or `null`. */
   get offset() {
     return this.f ? { dx: this.f.dx, dy: this.f.dy } : null;
+  }
+  /** Whether the float is a shape tool's result in its Free Transform session (`shapeFloat.ts`). */
+  get shape() {
+    return this.f?.shape === true;
   }
   /** Layer the float belongs to, or `null`. */
   get layerId() {
@@ -17659,7 +17708,7 @@ class FloatOps {
     return this.f ? true : this.liftFrom(false, null);
   }
   /**
-   * Whole-layer lift from the layer's kept original (M11b), if it has a
+   * Whole-layer lift from the layer's kept original, if it has a
    * valid one and there is no selection.
    * @returns `true` if a float exists afterwards.
    */
@@ -17812,7 +17861,7 @@ class FloatOps {
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
     this.bump(f);
-    s.selection.set(f.selBefore);
+    if (!f.shape) s.selection.set(f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
     s.events.emit("history", void 0);
@@ -17847,7 +17896,7 @@ class FloatOps {
     this.s.runtime.bump(f.layerId);
     if (f.carry) this.s.runtime.bump(f.carry.key);
   }
-  /** Display of a store key while floating: the float's own key, or its carried lmask (M14b). */
+  /** Display of a store key while floating: the float's own key, or its carried lmask. */
   preview(layerId) {
     const f = this.f;
     if (!f) return null;
@@ -18362,7 +18411,7 @@ class PixelOps {
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
-      // M5: confined to (and scaled by) the selection.
+      // Confined to (and scaled by) the selection.
       clip: s.selection.coverage(bounds),
       under: own ?? void 0
     });
@@ -18377,10 +18426,9 @@ class PixelOps {
     if (under) blendCoverageBehind(next.data, bbox, under, bounds.width, color, req.opacity);
     s.store.write(layer.id, docRect.x, docRect.y, next);
     const after = s.store.read(layer.id, docRect);
-    if (after) {
-      const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
-    }
+    if (!after || sameBytes$1(before.data.data, after.data.data)) return false;
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
     s.runtime.touch(layer.id);
     s.afterEdit();
     return true;
@@ -18412,7 +18460,7 @@ class PixelOps {
     }
     s.store.write(key, docRect.x, docRect.y, next);
     const after = s.store.read(key, docRect);
-    if (!after || sameBytes(before.data.data, after.data.data)) return false;
+    if (!after || sameBytes$1(before.data.data, after.data.data)) return false;
     const bytes = before.data.data.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: key, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
     s.runtime.touch(key);
@@ -18558,7 +18606,7 @@ class PixelOps {
     return visibleScene(this.s);
   }
 }
-function sameBytes(a, b) {
+function sameBytes$1(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
@@ -18801,9 +18849,10 @@ class SelectionOps {
   }
   /**
    * Ctrl+click on a layer row (Photoshop's thumbnail Ctrl+click): the layer's
-   * alpha becomes the selection coverage (soft edges stay partial), combined
-   * by `mode`. A mask uses its effective coverage (per-mask invert applied,
-   * as the overlay shows it). Works on hidden layers; does not change the
+   * pixels become the selection, combined by `mode`. The selection is hard:
+   * full strength wherever the alpha is > 0 (soft edges are not kept as
+   * partial coverage). A mask uses its effective coverage (per-mask invert
+   * applied, as the overlay shows it). Works on hidden layers; does not change the
    * current layer, Quick Mask or solo. An empty layer notes and leaves the
    * selection unchanged.
    * @param layerId - Paint, text or mask layer id.
@@ -18845,26 +18894,35 @@ class SelectionOps {
   }
   /**
    * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
-   * target (on the mask target: add coverage, colour ignored; on a targeted
-   * layer mask the same: paint white = hide, swatches ignored).
+   * target (on the mask target: add coverage, colour ignored). On a targeted
+   * layer mask the colour is ignored and the `slot` mask swatch decides, as
+   * for the brush / bucket: white = hide, black = reveal.
    * @param color - CSS hex colour.
+   * @param slot - Which swatch the key uses (`fg` = Alt, `bg` = Ctrl).
    * @returns `true` if pixels changed.
    */
-  fillSelected(color) {
+  fillSelected(color, slot = "fg") {
     const layer = this.editableTarget();
     if (!layer) return false;
-    if (this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, true);
+    if (this.onLayerMask(layer)) {
+      const fgWhite = this.s.layerMasks.fgWhite;
+      return paintMaskArea(this.s, layer, 1, true, slot === "fg" ? fgWhite : !fgWhite);
+    }
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
   }
   /**
-   * "Selection to mask": add the selection coverage to the mask layer
-   * (whatever the paint target is; a mask layer is added if missing).
+   * "Selection to mask": with a layer mask targeted, hide the selection
+   * on that lmask (white, soft coverage kept, through the edit gate so the
+   * lmask-only view exception applies); otherwise add the selection coverage
+   * to the current mask layer (a mask layer is added if missing).
    * @returns `true` if pixels changed.
    */
   toMask() {
     const s = this.s;
     if (!this.ready()) return false;
+    const lmaskLayer = targetedMaskLayer(s);
+    if (lmaskLayer) return this.canEdit(lmaskLayer) && paintMaskArea(s, lmaskLayer, 1, true, true);
     const layer = s.ensureMask();
     if (!this.canEdit(layer)) return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
@@ -18892,7 +18950,7 @@ class SelectionOps {
     }
     return true;
   }
-  /** Whether pixel commands on `layer` go to its targeted layer mask (M14). */
+  /** Whether pixel commands on `layer` go to its targeted layer mask. */
   onLayerMask(layer) {
     return targetedMaskLayer(this.s)?.id === layer.id;
   }
@@ -19000,8 +19058,7 @@ class TextOps {
     this.commit();
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
-    const masked = targetedMaskLayer(s);
-    const note = masked ? layerMaskBlockNote(s, masked, "other") : null;
+    const note = this.viewBlockNote();
     if (note) {
       s.events.emit("note", note);
       return null;
@@ -19016,7 +19073,8 @@ class TextOps {
   }
   /**
    * Open an existing text layer for editing (makes it active). Commits any
-   * other open edit first; locked / hidden layers show a note.
+   * other open edit first; locked / hidden layers show a note, and so does
+   * the lmask-only view (the text isn't visible there).
    * @param layerId - Text layer id.
    * @returns `true` if the edit is open.
    */
@@ -19027,7 +19085,7 @@ class TextOps {
     s.settleFloat();
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    const note = editBlockNote(s, layer);
+    const note = this.viewBlockNote() ?? editBlockNote(s, layer);
     if (note) {
       s.events.emit("note", note);
       return false;
@@ -19058,7 +19116,7 @@ class TextOps {
   }
   /**
    * Rotation (degrees) of a text layer that is not being edited (Text tool
-   * angle field; M11b). Consecutive changes on the same layer merge into
+   * angle field). Consecutive changes on the same layer merge into
    * one text step (gesture `text-angle`), like arrow nudges.
    * @param layerId - Text layer id.
    * @param deg - Rotation, degrees.
@@ -19138,6 +19196,14 @@ class TextOps {
     s.afterEdit();
     emitLayerEvents(s);
     return true;
+  }
+  /**
+   * In the lmask-only view (Alt+click) text layers aren't visible, so neither
+   * creating text nor opening an existing one for editing is allowed.
+   * @returns Note, or `null` when allowed.
+   */
+  viewBlockNote() {
+    return this.s.layerMasks.view !== null ? LAYER_MASK_TOOL_NOTE : null;
   }
   removeEmpty(layer, e) {
     const s = this.s;
@@ -19276,7 +19342,7 @@ class RegionOps {
   // ── Edits ───────────────────────────────────────────────────────────────
   /**
    * Create a region in the lowest empty slot (or a given one) and select it.
-   * @param rect - Rect in image px (clamped to the paint area).
+   * @param rect - Rect in image px (clamped to the region area).
    * @param slot - Empty slot to fill; default = lowest empty slot.
    * @returns New region id, or null (no empty slot, slot taken, bad rect).
    */
@@ -19312,7 +19378,7 @@ class RegionOps {
   /**
    * Set a region's rect.
    * @param id - Region id.
-   * @param rect - Rect in image px (clamped to the paint area).
+   * @param rect - Rect in image px (clamped to the region area).
    */
   setRect(id, rect) {
     const region = this.find(id);
@@ -19485,6 +19551,104 @@ class ResolutionOps {
     return true;
   }
 }
+class ShapeFloatOps {
+  /**
+   * @param s - Shared editor state.
+   * @param float - Float commands (the session runs on a float).
+   */
+  constructor(s, float) {
+    this.s = s;
+    this.float = float;
+  }
+  s;
+  float;
+  /**
+   * End the current shape stroke as a float in a Free Transform session (see
+   * module doc). A shape that changes no pixel ends without anything.
+   * @returns `true` if a session runs.
+   */
+  end() {
+    const s = this.s;
+    const layerId = s.strokeLayerId;
+    if (!s.stroke.active || !layerId) return false;
+    const sel = s.selection.current;
+    const rect = sel ? intersectRect(s.stroke.touched, selectionExtent(sel, s.store.bounds)) : s.stroke.touched;
+    const before = isEmptyRect(rect) ? null : s.store.read(layerId, rect);
+    if (!before) {
+      s.cancelStroke();
+      return false;
+    }
+    const r = before.rect;
+    const alone = createSurface(r.width, r.height);
+    s.stroke.compositeInto(alone, r);
+    s.stroke.commit(s.store.ensure(layerId));
+    s.strokeLayerId = null;
+    const after = s.store.read(layerId, r);
+    s.store.write(layerId, r.x, r.y, before.data);
+    s.runtime.bump(layerId);
+    const shape = alone.ctx.getImageData(0, 0, r.width, r.height);
+    releaseSurface(alone);
+    if (!after || sameBytes(before.data.data, after.data.data)) {
+      s.afterEdit();
+      return false;
+    }
+    const area = alphaBox(shape.data, r) ?? r;
+    const pixels = cropPixels(shape, r, area);
+    const surface = createSurface(area.width, area.height);
+    surface.ctx.putImageData(pixels, 0, 0);
+    const f = {
+      layerId,
+      area,
+      original: before.data,
+      holeRect: r,
+      pixels,
+      surface,
+      dx: 0,
+      dy: 0,
+      selBefore: null,
+      selBase: null,
+      xf: null,
+      baked: null,
+      dragBase: null,
+      preview: null,
+      inserted: true,
+      shape: true,
+      exact: { rect: r, data: after.data }
+    };
+    if (!this.float.adoptInserted(f)) return false;
+    return this.float.transform.enter();
+  }
+}
+function alphaBox(px, rect) {
+  let x0 = rect.width;
+  let y0 = rect.height;
+  let x1 = -1;
+  let y1 = -1;
+  for (let y = 0; y < rect.height; y++) {
+    for (let x = 0; x < rect.width; x++) {
+      if (px[(y * rect.width + x) * 4 + 3] === 0) continue;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+  }
+  return x1 < 0 ? null : { x: rect.x + x0, y: rect.y + y0, width: x1 - x0 + 1, height: y1 - y0 + 1 };
+}
+function cropPixels(image, rect, area) {
+  if (area.width === rect.width && area.height === rect.height) return image;
+  const out = new Uint8ClampedArray(area.width * area.height * 4);
+  for (let y = 0; y < area.height; y++) {
+    const s = ((area.y - rect.y + y) * rect.width + (area.x - rect.x)) * 4;
+    out.set(image.data.subarray(s, s + area.width * 4), y * area.width * 4);
+  }
+  return new ImageData(out, area.width, area.height);
+}
+function sameBytes(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 class Editor extends EditorBase {
   /** Layer list commands (add/delete/duplicate/reorder/rename/visibility/lock/opacity/active). */
   layerOps;
@@ -19496,25 +19660,26 @@ class Editor extends EditorBase {
   layerMove;
   /** Selection (session state, undoable) and its pixel commands. */
   selection;
-  /** Text tool: create / edit / commit text layers (M6b). */
+  /** Text tool: create / edit / commit text layers. */
   text;
   /** Region rectangles, output options and metadata gesture transactions. */
   regionOps;
-  /** Floating selection (M10a): lift / move / commit / cancel selected pixels. */
+  /** Floating selection: lift / move / commit / cancel selected pixels. */
   float;
   /** Outline-only selection drag (selection tools, plain drag inside). */
   selectionMove;
-  /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
+  /** Copy / cut / paste pixels (the clipboards themselves live in the UI). */
   clipboard;
   /** Drawing-grid vs image resolution check + Match image resolution. */
   resolution;
-  /** Image sources (M12): insert as a new layer in Free Transform (`sourceInsert.ts`). */
+  /** Image sources: insert as a new layer in Free Transform (`sourceInsert.ts`). */
   insert;
-  /** Image Mask row (M13a): background alpha, restore / upload bookkeeping, Duplicate. */
+  /** Image Mask row: background alpha, restore / upload bookkeeping, Duplicate. */
   imageMask;
-  /** Layer masks (M14): add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
+  /** Layer masks: add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
   layerMask;
   maskOps;
+  shapes;
   /**
    * @param doc - Document (copied).
    * @param source - Origin of its frame size.
@@ -19537,6 +19702,7 @@ class Editor extends EditorBase {
     this.resolution = new ResolutionOps(this.s);
     this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
     this.imageMask = new ImageMaskOps(this.s);
+    this.shapes = new ShapeFloatOps(this.s, this.float);
     this.layerMask = new LayerMaskOps(
       this.s,
       (sel, mode) => this.selection.apply(sel, mode),
@@ -19631,6 +19797,13 @@ class Editor extends EditorBase {
     copy.ctx.drawImage(canvas, 0, 0);
     copy.ctx.putImageData(patch.data, patch.x - b.x, patch.y - b.y);
     return copy.canvas;
+  }
+  /**
+   * End a shape stroke as a float in a Free Transform session (`shapeFloat.ts`).
+   * @returns `true` if a session runs.
+   */
+  endShape() {
+    return this.shapes.end();
   }
   /** Commit a floating selection, if any (before queueing / serializing). */
   settle() {
@@ -19737,14 +19910,18 @@ class Editor extends EditorBase {
   // ── Undo / redo ─────────────────────────────────────────────────────────
   /**
    * Undo the last operation; with a text edit open: commit it, then undo it
-   * (a no-op edit just closes). A floating selection is cancelled instead.
+   * (a no-op edit just closes). A floating selection is cancelled instead;
+   * a Move-layer or region drag in progress is only cancelled.
    */
   undo() {
     if (this.float.active || this.float.transform.active) {
       this.float.cancel();
       return;
     }
-    this.layerMove.cancel();
+    if (this.layerMove.dragging) {
+      this.layerMove.cancel();
+      return;
+    }
     if (this.regionOps.active) {
       this.regionOps.cancel();
       return;
@@ -20766,7 +20943,6 @@ class MoveLayerTool {
     if (!dir) return false;
     if (this.start) return true;
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
-    if (editor.float.nudge(dir[0] * step, dir[1] * step)) return true;
     editor.layerMove.nudge(dir[0] * step, dir[1] * step);
     return true;
   }
@@ -20776,7 +20952,7 @@ class MoveLayerTool {
   }
   /**
    * Pick the layer under the pointer and make it the move target.
-   * @returns alse if nothing was hit (the drag moves nothing).
+   * @returns `false` if nothing was hit (the drag moves nothing).
    */
   autoSelect(editor, at) {
     if (editor.paintTarget === "mask") {
@@ -20803,7 +20979,7 @@ const WIDTH_OPTION = {
   kind: "number",
   key: "width",
   label: "Width",
-  title: "Line / stroke width",
+  title: "Line width ([ / ])",
   min: 1,
   max: 500,
   step: 1,
@@ -20827,8 +21003,10 @@ class ShapeTool {
   shortcut;
   icon;
   options;
-  /** Alt at pointer-down = temporary eyedropper (SPEC Tools table). */
+  /** Alt at pointer-down = temporary eyedropper (SPEC "Tools" > "Common mechanics"). */
   altEyedropper = true;
+  /** A press outside a shape's transform box commits it and draws the next shape. */
+  drawsShapes = true;
   /** Stored option values (edited in place through {@link options}). */
   values;
   drag = null;
@@ -20862,7 +21040,7 @@ class ShapeTool {
     if (!this.drag) return;
     this.update(editor, sample);
     this.drag = null;
-    editor.endStroke(null);
+    editor.endShape();
   }
   /** @inheritdoc */
   onCancel(editor) {
@@ -20879,6 +21057,8 @@ class ShapeTool {
   }
 }
 const BOX_OPTION_DESCRIPTORS = [
+  { ...WIDTH_OPTION, title: "Stroke width ([ / ])" },
+  OPACITY_OPTION,
   {
     kind: "select",
     key: "paint",
@@ -20889,9 +21069,7 @@ const BOX_OPTION_DESCRIPTORS = [
       { value: "fill", label: "Fill" },
       { value: "both", label: "Both" }
     ]
-  },
-  { ...WIDTH_OPTION, title: "Stroke width" },
-  OPACITY_OPTION
+  }
 ];
 class BoxShapeTool extends ShapeTool {
   /**
@@ -21457,27 +21635,71 @@ class TransformTool {
   ctrlMove = false;
   options;
   pressed = false;
+  /** Active rail tool (set by the registry on every resolve). */
+  active = null;
+  /** Temporary eyedropper for an Alt press outside the box (the registry's Alt rule), or `null`. */
+  altOutside = null;
+  /** Tool the current press was handed to (shape after shape, Alt eyedropper). */
+  passed = null;
   /**
    * @param editor - Session editor (the options read its transform).
    */
   constructor(editor) {
     this.options = new TransformSessionOptions(editor);
   }
+  /**
+   * Remember the active rail tool (a shape tool continues a press outside a
+   * shape session's box) and the registry's Alt substitute for it.
+   * @param active - Active rail tool.
+   * @param altOutside - Temporary eyedropper to run for an Alt press outside
+   *   the box (`null` = Alt is not the eyedropper for `active`). Alt on a
+   *   handle, inside the box or in the rotate zone keeps its transform meaning.
+   * @returns This tool.
+   */
+  withActive(active, altOutside = null) {
+    this.active = active;
+    this.altOutside = altOutside;
+    return this;
+  }
   /** @inheritdoc */
   onPointerDown(editor, samples) {
     const first = samples[0];
     if (!first) return;
+    this.passed = null;
     const t = editor.float.transform;
     const k = docPerScreenPx(editor);
-    this.pressed = t.beginDrag(t.hit(first, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k), first);
+    const hit = t.hit(first, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k);
+    const next = this.active;
+    if (hit.kind === "outside" && first.altKey && this.altOutside) {
+      this.passed = this.altOutside;
+      this.altOutside.onPointerDown(editor, samples);
+      return;
+    }
+    if (hit.kind === "outside" && next?.drawsShapes && editor.float.shape) {
+      t.commit();
+      this.passed = next;
+      next.onPointerDown(editor, samples);
+      return;
+    }
+    this.pressed = t.beginDrag(hit, first);
   }
   /** @inheritdoc */
   onPointerMove(editor, samples) {
+    if (this.passed) {
+      this.passed.onPointerMove(editor, samples);
+      return;
+    }
     const last = samples[samples.length - 1];
     if (this.pressed && last) editor.float.transform.dragTo(last, { shift: last.shiftKey, alt: last.altKey });
   }
   /** @inheritdoc */
   onPointerUp(editor, sample) {
+    const passed = this.passed;
+    this.passed = null;
+    if (passed) {
+      passed.onPointerUp(editor, sample);
+      return;
+    }
     if (!this.pressed) return;
     this.pressed = false;
     editor.float.transform.dragTo(sample, { shift: sample.shiftKey, alt: sample.altKey });
@@ -21486,6 +21708,12 @@ class TransformTool {
   }
   /** @inheritdoc */
   onCancel(editor) {
+    const passed = this.passed;
+    this.passed = null;
+    if (passed) {
+      passed.onCancel(editor);
+      return;
+    }
     if (!this.pressed) return;
     this.pressed = false;
     editor.float.transform.cancelDrag();
@@ -21515,7 +21743,7 @@ class TransformTool {
       case "rotate":
         return { kind: "icon", icon: "rotate" };
       case "outside":
-        return { kind: "icon", icon: "crosshair" };
+        return this.altOutside && !t.dragHit ? this.altOutside.cursor() : { kind: "icon", icon: "crosshair" };
     }
   }
 }
@@ -21573,7 +21801,7 @@ class TransformSessionOptions {
   }
   /**
    * A field session ended: an unlinked text W / H change asks to rasterize,
-   * deferred past the ending event (M11b).
+   * deferred past the ending event.
    * @param key - Option key.
    */
   endEdit(key) {
@@ -21740,7 +21968,7 @@ class ToolRegistry {
     const options = this.session ? this.session.options(this.active) : this.active.options;
     return this.barDecorator ? this.barDecorator(options, this.active) : options;
   }
-  /** Adds context controls to the bar (M14 layer mask controls), or `null`. */
+  /** Adds context controls to the bar (layer mask controls), or `null`. */
   barDecorator = null;
   /**
    * Install a bar decorator ({@link barOptions} passes its result through it).
@@ -21783,13 +22011,23 @@ class ToolRegistry {
    * @returns The effective tool.
    */
   resolve(altHeld, ctrlHeld = false, press) {
-    if (this.session?.active()) return this.session.tool;
     const active = this.active;
+    if (this.session?.active()) return this.session.tool.withActive(active, this.altSubstitute(active, altHeld));
     if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
       return this.outlineTool.wrap(active);
     }
     if (ctrlHeld && this.ctrlTool && this.ctrlTool !== active && ctrlMoves(active)) return this.ctrlTool;
-    return altHeld && active.altEyedropper && this.altTool ? this.altTool : active;
+    return this.altSubstitute(active, altHeld) ?? active;
+  }
+  /**
+   * The Alt rule: the temporary eyedropper while Alt is held and the tool
+   * has `Tool.altEyedropper`.
+   * @param active - Active rail tool.
+   * @param altHeld - Alt is down.
+   * @returns The Alt tool, or `null` when Alt means nothing for `active`.
+   */
+  altSubstitute(active, altHeld) {
+    return altHeld && active.altEyedropper && this.altTool ? this.altTool : null;
   }
 }
 function ctrlMoves(tool) {
@@ -21888,20 +22126,34 @@ function toBlob(canvas, type, quality) {
 const IDLE_UPLOAD_DELAY_MS = 5e3;
 const RETRY_MIN_MS = 15e3;
 const RETRY_MAX_MS = 12e4;
+const KNOWN_FILE_MAX_AGE_MS = 20 * 60 * 60 * 1e3;
+function manifestKnownFiles(doc, now2 = Date.now()) {
+  const known = /* @__PURE__ */ new Map();
+  for (const layer of doc.layers) {
+    if (layer.file) known.set(layer.file, now2);
+    if (layer.layerMask?.file) known.set(layer.layerMask.file, now2);
+  }
+  const imageMaskFile = doc.imageMask?.file;
+  if (imageMaskFile) known.set(imageMaskFile, now2);
+  return known;
+}
 const UPLOAD_FAILED_KEY = "upload-failed";
 const UPLOAD_RECOVERED_KEY = "upload-recovered";
 const UPLOAD_TOAST_WINDOW_MS = 6e4;
 class LayerUploader {
   /**
    * @param editor - Editor whose layers are uploaded.
-   * @param knownFiles - Every file reference this document has used (updated).
+   * @param knownFiles - Every file reference this document has used, with upload times (updated).
+   * @param now - Clock (epoch ms); tests inject one.
    */
-  constructor(editor, knownFiles) {
+  constructor(editor, knownFiles, now2 = Date.now) {
     this.editor = editor;
     this.knownFiles = knownFiles;
+    this.now = now2;
   }
   editor;
   knownFiles;
+  now;
   running = null;
   timer = null;
   /** The current failure streak has been toasted. */
@@ -21977,7 +22229,7 @@ class LayerUploader {
       try {
         const file = await this.uploadLayer(layer, paintQuality);
         if (this.disposed) return;
-        if (file) this.knownFiles.add(file);
+        if (file) this.knownFiles.set(file, this.now());
         this.editor.markUploaded(layer.id, version, file);
       } catch (error) {
         failures.push(error);
@@ -22013,7 +22265,7 @@ class LayerUploader {
     }, this.retryDelay);
   }
   /**
-   * M14: dirty layer masks, like mask layers (PNG, same folder and naming;
+   * Dirty layer masks, like mask layers (PNG, same folder and naming;
    * a fully hidden mask stores no file).
    */
   async uploadLayerMasks(paintQuality, failures) {
@@ -22022,7 +22274,7 @@ class LayerUploader {
       try {
         const file = await this.uploadLayer({ id: job.layerId, name: job.name, kind: "mask", file: job.file }, paintQuality, job.canvas);
         if (this.disposed) return;
-        if (file) this.knownFiles.add(file);
+        if (file) this.knownFiles.set(file, this.now());
         this.editor.layerMask.markUploaded(job.layerId, job.version, file);
       } catch (error) {
         failures.push(error);
@@ -22030,7 +22282,7 @@ class LayerUploader {
     }
   }
   /**
-   * M13a: the Image Mask coverage, like a mask layer (PNG, same folder and
+   * The Image Mask coverage, like a mask layer (PNG, same folder and
    * naming); dirty only after its source changed.
    */
   async uploadImageMask(paintQuality, failures) {
@@ -22042,7 +22294,7 @@ class LayerUploader {
     try {
       const file = await this.uploadLayer(info, paintQuality, canvas);
       if (this.disposed) return;
-      if (file) this.knownFiles.add(file);
+      if (file) this.knownFiles.set(file, this.now());
       mask.markUploaded(version, file);
     } catch (error) {
       failures.push(error);
@@ -22051,14 +22303,14 @@ class LayerUploader {
   /** @returns The file reference for the layer's current pixels (null = empty). */
   async uploadLayer(layer, paintQuality, canvas = this.editor.savedLayerCanvas(layer.id)) {
     if (isCanvasEmpty(canvas)) return null;
-    const currentFile = layer.file;
     const { blob: blob2, bytes, ext } = await encodeLayer(canvas, layer.kind, paintQuality).catch((error) => {
       log.warn(`encoding layer "${layer.name}" (${canvas.width}x${canvas.height}) failed:`, error);
       throw new EncodeError(layer.name);
     });
     const name = layerFileName(this.editor.doc.docId, contentHash(bytes), ext);
     const expected = `${DOCUMENT_SUBFOLDER}/${name} [input]`;
-    if (currentFile === expected || this.knownFiles.has(expected)) return expected;
+    const uploadedAt = this.knownFiles.get(expected);
+    if (uploadedAt !== void 0 && this.now() - uploadedAt < KNOWN_FILE_MAX_AGE_MS) return expected;
     return uploadImage(blob2, name);
   }
 }
@@ -22088,7 +22340,7 @@ async function uploadImage(blob2, name) {
 function isUploadResponse(value) {
   return typeof value === "object" && value !== null && typeof value.name === "string";
 }
-async function restoreLayers(editor, isAlive) {
+async function restoreLayers(editor, isAlive, knownFiles) {
   const layers2 = editor.doc.layers.filter((l) => l.file);
   const masks = editor.doc.layers.filter((l) => l.layerMask?.file);
   if (!layers2.length && !masks.length) return;
@@ -22097,7 +22349,7 @@ async function restoreLayers(editor, isAlive) {
   editor.beginLoading();
   try {
     await Promise.all([
-      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems)),
+      ...masks.map((layer) => restoreLayerMask(editor, layer, isAlive, problems, knownFiles)),
       ...layers2.map(async (layer) => {
         const item = parseAnnotatedFilename(layer.file, "input");
         if (!item) return;
@@ -22115,6 +22367,7 @@ async function restoreLayers(editor, isAlive) {
           editor.restoreLayerPixels(layer.id, image);
         } catch (error) {
           if (!isAlive()) return;
+          if (layer.file) knownFiles?.delete(layer.file);
           log.warn(`could not restore layer "${layer.name}" from ${layer.file}:`, error);
           if (!editor.recoverMissingLayer(layer.id)) problems.push({ name: layer.name, kind: classifyError(error) });
         }
@@ -22126,7 +22379,7 @@ async function restoreLayers(editor, isAlive) {
   const summary = isAlive() ? restoreSummary(problems) : null;
   if (summary) notify(summary.severity, summary.message, { key: `restore:${editor.doc.docId}:${summary.message}` });
 }
-async function restoreLayerMask(editor, layer, isAlive, problems) {
+async function restoreLayerMask(editor, layer, isAlive, problems, knownFiles) {
   const file = layer.layerMask?.file ?? null;
   const item = parseAnnotatedFilename(file, "input");
   if (!item) return;
@@ -22142,6 +22395,7 @@ async function restoreLayerMask(editor, layer, isAlive, problems) {
     editor.layerMask.restore(layer.id, image);
   } catch (error) {
     if (!isAlive()) return;
+    if (file) knownFiles?.delete(file);
     log.warn(`could not restore layer mask "${name}" from ${file}:`, error);
     editor.layerMask.restoreFailed(layer.id);
     problems.push({ name, kind: classifyError(error) });
@@ -22171,13 +22425,7 @@ function createSession(doc, source, editor) {
   releaseSession(doc.docId);
   const ed = editor ?? new Editor(doc, source);
   ed.setMaskStyleProvider(readFirstMaskStyle);
-  const knownFiles = /* @__PURE__ */ new Set();
-  for (const layer of ed.doc.layers) {
-    if (layer.file) knownFiles.add(layer.file);
-    if (layer.layerMask?.file) knownFiles.add(layer.layerMask.file);
-  }
-  const imageMaskFile = ed.doc.imageMask?.file;
-  if (imageMaskFile) knownFiles.add(imageMaskFile);
+  const knownFiles = manifestKnownFiles(ed.doc);
   const session = {
     docId: doc.docId,
     editor: ed,
@@ -22198,7 +22446,7 @@ function createSession(doc, source, editor) {
   });
   if (!editor) {
     const alive = () => session.alive;
-    session.ready = Promise.all([restoreLayers(ed, alive), restoreImageMask(ed, alive)]).then(() => void 0);
+    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)]).then(() => void 0);
   }
   sessions.set(doc.docId, session);
   return session;
@@ -22326,6 +22574,7 @@ class WorkflowSaver {
       if (session) {
         try {
           await session.ready;
+          session.editor.settle();
           await session.uploader.flush();
         } catch {
           if (!window.confirm("Upload failed; save anyway without the latest paint?")) return;
@@ -22390,9 +22639,9 @@ class PainterSketchController {
   loader;
   watcher;
   frame;
-  /** M12: `layer_source` history (per node instance, memory only). */
+  /** `layer_source` history (per node instance, memory only). */
   sources;
-  /** M13b: the `mask` input's Input Mask row. */
+  /** The `mask` input's Input Mask row. */
   inputMask;
   saver = new WorkflowSaver();
   disposed = false;
@@ -22445,7 +22694,7 @@ class PainterSketchController {
     else if (choice === "reset") this.attach(this.newEmptySession());
   }
   /**
-   * Value for the prompt: uploads dirty layers first (decision 8).
+   * Value for the prompt: uploads dirty layers first.
    * @returns Manifest string.
    * @throws If an upload failed (the toast has been shown); queueing stops so
    *   the output never silently differs from the editor.
@@ -22602,7 +22851,7 @@ class PainterSketchController {
     this.host.refreshScale();
     this.refresh();
   }
-  /** Push background + frame (and the Image Mask / M13b Input Mask source) to the editor when anything relevant changed. */
+  /** Push background + frame (and the Image Mask / Input Mask source) to the editor when anything relevant changed. */
   updateContent() {
     const session = this.session;
     if (this.disposed || !session) return;
@@ -22708,11 +22957,11 @@ function installPageGuards() {
   window.addEventListener("blur", flushQuietlyAll);
   window.addEventListener("beforeunload", flushGraphSync);
 }
-const colorPickerCss = "/*\n * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\r\n";
+const colorPickerCss = '/*\n * PainterSketch colour picker popover (SPEC "Colour"). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\n';
 const controlsCss = '/*\n * PainterSketch options bar, option controls and popovers (split from\n * editor.css to keep files small; theme variables are defined on .cps-root\n * there). Injected together by styles/inject.ts.\n */\n\n/* ── Main column: options bar + body ───────────────────────────────────── */\n\n.cps-main {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-bar {\n  flex: 0 0 var(--cps-bar-height);\n  display: flex;\n  align-items: center;\n  min-width: 0;\n  background: var(--cps-chrome-bg);\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-bar-leading,\n.cps-bar-trailing {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  padding: 0 4px;\n}\n\n.cps-bar-leading:empty {\n  display: none;\n}\n\n.cps-bar-trailing {\n  border-left: 1px solid var(--cps-border);\n}\n\n/* Outputs button, then a rule and some space before the side-panel toggle.\n   The rule is a pseudo-element so the button keeps its normal shape. */\n.cps-bar-trailing > .cps-outputs-button {\n  position: relative;\n  margin-right: 9px;\n}\n\n.cps-bar-trailing > .cps-outputs-button::after {\n  content: "";\n  position: absolute;\n  top: 3px;\n  bottom: 3px;\n  right: -7px;\n  border-right: 1px solid var(--cps-border);\n  pointer-events: none;\n}\n\n.cps-bar-scroller {\n  flex: 1 1 auto;\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  height: 100%;\n  padding: 0 6px;\n  overflow-x: auto;\n  overflow-y: hidden;\n  scrollbar-width: none;\n  white-space: nowrap;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  background: var(--cps-border);\n}\n\n/* Static caption option (e.g. "Layer Mask:"). */\n.cps-bar-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n  user-select: none;\n}\n\n/* Number option: scrubby label + value button. */\n.cps-num,\n.cps-select {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value,\n.cps-select select,\n.cps-num-input {\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n}\n\n/* Text option (font): menu, or a field while typing a custom value. */\n.cps-text-option select {\n  max-width: 11em;\n}\n\n.cps-text-field {\n  width: 10em;\n}\n\n.cps-text-field[hidden],\n.cps-text-option select[hidden] {\n  display: none;\n}\n\n.cps-num-value {\n  min-width: 3.4em;\n  text-align: right;\n  cursor: pointer;\n}\n\n.cps-num-value:hover,\n.cps-select select:hover {\n  border-color: var(--cps-fg-muted);\n}\n\n.cps-toggle {\n  flex: none;\n  height: 20px;\n  padding: 0 6px;\n  border: 1px solid var(--cps-border);\n  border-radius: 10px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-toggle:hover {\n  background: var(--cps-hover);\n}\n\n.cps-toggle.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n  color: var(--cps-fg);\n}\n\n/* Icon command buttons (Free Transform, flips, commit / cancel). */\n.cps-toggle.cps-icon-command {\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  width: 26px;\n  padding: 0;\n}\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Quick Mask indicator. */\n.cps-mask-badge {\n  padding: 2px 6px;\n  border-radius: 3px;\n  color: #fff;\n  font-weight: 600;\n  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);\n  white-space: nowrap;\n}\n\n/* Selection actions (shown while a selection exists). */\n.cps-selection-actions:not([hidden]) {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-selection-actions .cps-toggle {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: hidden;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 6px;\n  background: var(--cps-surface);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);\n}\n\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 48px;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n\n/* Collapsed option group (pen pressure): icon button + popover. */\n.cps-option-group {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-option-group.cps-on {\n  color: var(--cps-accent);\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-start;\n  gap: 6px;\n  min-width: 120px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n}\n\n/* ── Drawing resolution notice (options bar, every tool) ──────────────── */\n\n.cps-resolution-notice {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-right: 6px;\n  white-space: nowrap;\n}\n\n.cps-resolution-notice[hidden] {\n  display: none;\n}\n\n.cps-resolution-label {\n  color: var(--cps-danger);\n  font-size: 11px;\n}\n';
-const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Layer mask swatches (M14): black / white only, no picker; default = white over black. */\n.cps-swatches.cps-mask-swatches .cps-swatch {\n  cursor: default;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-fg {\n  background: #fff;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-bg {\n  background: #000;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n.cps-native-color {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  /* Fixed width: without these, the min-content width of a long nowrap\n     layer name (flex min-width: auto) would push the panel over the canvas. */\n  width: var(--cps-panel-width);\n  min-width: 0;\n  max-width: var(--cps-panel-width);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
+const editorCss = "/*\n * PainterSketch editor styles. Every selector is scoped under .cps-* so we\n * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.\n * Colours come from ComfyUI's palette variables where they exist (so the\n * editor follows the user's theme), with dark fallbacks.\n */\n\n.cps-root {\n  --cps-rail-width: 36px;\n  --cps-bar-height: 28px;\n  --cps-panel-width: 216px;\n  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);\n  --cps-surface: var(--comfy-menu-bg, #353535);\n  --cps-input-bg: var(--comfy-input-bg, #222);\n  --cps-fg: var(--input-text, #ddd);\n  --cps-fg-muted: var(--descrip-text, #999);\n  --cps-border: var(--border-color, #4e4e4e);\n  --cps-accent: var(--p-primary-color, #3b82f6);\n  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);\n  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);\n  --cps-danger: var(--p-red-400, #f87171);\n\n  position: relative;\n  box-sizing: border-box;\n  display: flex;\n  flex-direction: row;\n  width: 100%;\n  height: 100%;\n  /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */\n  min-height: 244px;\n  min-width: 0;\n  overflow: hidden;\n  background: var(--cps-chrome-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  color: var(--cps-fg);\n  font: 11px/1.2 system-ui, sans-serif;\n  user-select: none;\n}\n\n.cps-root *,\n.cps-root *::before,\n.cps-root *::after {\n  box-sizing: border-box;\n}\n\n.cps-root [hidden] {\n  display: none !important;\n}\n\n.cps-focus-sink {\n  position: absolute;\n  left: 0;\n  top: 0;\n  width: 1px;\n  height: 1px;\n  padding: 0;\n  border: 0;\n  opacity: 0;\n  pointer-events: none;\n}\n\n.cps-icon {\n  display: block;\n  flex: none;\n}\n\n/* ── Shared buttons ────────────────────────────────────────────────────── */\n\n.cps-rail-button,\n.cps-icon-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  padding: 0;\n  border: 1px solid transparent;\n  border-radius: 4px;\n  background: transparent;\n  color: var(--cps-fg);\n  cursor: pointer;\n}\n\n.cps-rail-button {\n  width: 28px;\n  height: 28px;\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n}\n\n.cps-rail-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-rail-button.cps-active,\n.cps-icon-button.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-rail-button:disabled {\n  color: var(--cps-fg-muted);\n  opacity: 0.5;\n  cursor: default;\n}\n\n/* ── Tool rail ─────────────────────────────────────────────────────────── */\n\n.cps-rail {\n  flex: 0 0 var(--cps-rail-width);\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-right: 1px solid var(--cps-border);\n}\n\n/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-rail {\n  box-shadow: inset 2px 0 0 #fff;\n}\n\n.cps-rail-tools {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 2px;\n  min-height: 0;\n  padding: 4px 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  scrollbar-width: none;\n}\n\n.cps-rail-tools::-webkit-scrollbar,\n.cps-bar-scroller::-webkit-scrollbar {\n  display: none;\n}\n\n.cps-rail-group {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  padding-bottom: 3px;\n  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-group:last-child {\n  border-bottom: 0;\n}\n\n/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */\n.cps-rail-clipboard {\n  padding-top: 3px;\n  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n}\n\n.cps-rail-spacer {\n  flex: 1 1 auto;\n}\n\n.cps-rail-swatches {\n  flex: none;\n  display: flex;\n  justify-content: center;\n  padding: 4px 0 6px;\n  border-top: 1px solid var(--cps-border);\n}\n\n/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */\n\n.cps-swatches {\n  position: relative;\n  width: 30px;\n  height: 30px;\n}\n\n.cps-swatch {\n  position: absolute;\n  width: 19px;\n  height: 19px;\n  padding: 0;\n  border: 1px solid #000;\n  border-radius: 2px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 0;\n  top: 0;\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  right: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap,\n.cps-swatch-reset {\n  position: absolute;\n  width: 11px;\n  height: 11px;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-swap {\n  right: 0;\n  top: 0;\n}\n\n.cps-swatch-reset {\n  left: 0;\n  bottom: 0;\n}\n\n.cps-swatch-swap:hover,\n.cps-swatch-reset:hover {\n  color: var(--cps-fg);\n}\n\n.cps-reset-bg,\n.cps-reset-fg {\n  position: absolute;\n  width: 6px;\n  height: 6px;\n  border: 1px solid var(--cps-fg-muted);\n}\n\n.cps-reset-fg {\n  left: 0;\n  top: 0;\n  background: #000;\n}\n\n.cps-reset-bg {\n  right: 0;\n  bottom: 0;\n  background: #fff;\n}\n\n/* Layer mask swatches: black / white only, no picker; default = white over black. */\n.cps-swatches.cps-mask-swatches .cps-swatch {\n  cursor: default;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-fg {\n  background: #fff;\n}\n\n.cps-swatches.cps-mask-swatches .cps-reset-bg {\n  background: #000;\n}\n\n/* Colours do not apply while painting the mask. */\n.cps-root.cps-quickmask .cps-swatches {\n  filter: grayscale(1);\n  opacity: 0.6;\n}\n\n/* ── Body: stage + side panel ──────────────────────────────────────────── */\n\n.cps-body {\n  flex: 1 1 auto;\n  display: flex;\n  flex-direction: row;\n  min-width: 0;\n  min-height: 0;\n}\n\n.cps-stage {\n  position: relative;\n  flex: 1 1 auto;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n  background: var(--cps-input-bg);\n  touch-action: none;\n  outline: none;\n  /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */\n  cursor: var(--cps-tool-cursor, crosshair);\n}\n\n.cps-stage.cps-pan-ready {\n  cursor: grab;\n}\n\n.cps-stage.cps-panning {\n  cursor: grabbing;\n}\n\n.cps-stage.cps-loading {\n  cursor: progress;\n}\n\n.cps-canvas {\n  position: absolute;\n  inset: 0;\n  display: block;\n  width: 100%;\n  height: 100%;\n  touch-action: none;\n}\n\n.cps-overlay {\n  pointer-events: none;\n}\n\n/* Text tool editor (ui/textOverlay.ts): laid out in document px, placed by a\n * transform; the canvas shows the glyphs, the textarea only the caret. */\n.cps-text-edit {\n  position: absolute;\n  left: 0;\n  top: 0;\n  box-sizing: content-box;\n  margin: 0;\n  padding: 0;\n  border: 0;\n  outline: 1px dashed rgba(128, 160, 255, 0.9);\n  background: transparent;\n  color: transparent;\n  resize: none;\n  overflow: hidden;\n  white-space: pre;\n  transform-origin: 0 0;\n  cursor: text;\n  letter-spacing: normal;\n  word-spacing: normal;\n  text-indent: 0;\n  text-transform: none;\n  font-kerning: auto;\n  touch-action: auto;\n}\n\n.cps-text-edit::selection {\n  background: rgba(80, 140, 255, 0.35);\n}\n\n.cps-note {\n  position: absolute;\n  left: 50%;\n  bottom: 8px;\n  transform: translateX(-50%);\n  max-width: calc(100% - 16px);\n  padding: 4px 8px;\n  border-radius: 4px;\n  background: rgba(0, 0, 0, 0.75);\n  color: #fff;\n  pointer-events: none;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-side {\n  flex: 0 0 var(--cps-panel-width);\n  /* Fixed width: without these, the min-content width of a long nowrap\n     layer name (flex min-width: auto) would push the panel over the canvas. */\n  width: var(--cps-panel-width);\n  min-width: 0;\n  max-width: var(--cps-panel-width);\n  overflow: hidden;\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n  background: var(--cps-chrome-bg);\n  border-left: 1px solid var(--cps-border);\n}\n\n.cps-side-content {\n  flex: 1 1 auto;\n  min-height: 0;\n  min-width: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n.cps-side-placeholder {\n  padding: 6px 8px;\n  color: var(--cps-fg-muted);\n  font-weight: 600;\n  border-bottom: 1px solid var(--cps-border);\n}\n";
 const fullscreenCss = `/*
- * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
+ * Widget container + fullscreen overlay (SPEC "Canvas, view and fullscreen", ui/fullscreen.ts).
  *
  * .cps-widget is the DOM widget element and never moves; the editor root is
  * its child and moves into .cps-fullscreen (on document.body) while
@@ -22812,7 +23061,7 @@ const fullscreenCss = `/*
 }
 `;
 const layersCss = `/*
- * PainterSketch layers panel (M3.3): header (title + opacity), scrolling row
+ * PainterSketch layers panel (SPEC "Layers" > "Layers panel"): header (title + opacity), scrolling row
  * list, footer actions. Lives inside .cps-side-content (editor.css); theme
  * variables come from .cps-root. Injected by styles/inject.ts.
  */
@@ -22909,7 +23158,7 @@ const layersCss = `/*
   border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);
 }
 
-/* Current mask (M8): thick left bar in the mask's own colour, always; the
+/* Current mask: thick left bar in the mask's own colour, always; the
    selected background adds on top while Quick Mask is on. The 2px extra
    border is taken from the padding so content doesn't shift. */
 .cps-layer-row.cps-current-mask,
@@ -22984,7 +23233,7 @@ const layersCss = `/*
   margin: 2px 0 0 42px;
 }
 
-/* M13b: "Run the workflow to load this mask" under the Input Mask row. */
+/* Hint "Run the workflow to load this mask" under the Input Mask row (while it waits for a run). */
 .cps-layer-hint {
   margin: 2px 0 0 42px;
   font-size: 11px;
@@ -23039,7 +23288,7 @@ const layersCss = `/*
   background-size: 8px 8px;
 }
 
-/* M14 layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
+/* Layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
    thumbnail; the edit target's thumbnail is framed. Fixed size, so long
    names ellipsize instead of widening the row. */
 .cps-layer-mask-slot {
@@ -23178,22 +23427,14 @@ const layersCss = `/*
   height: 18px;
 }
 
-.cps-layers .cps-native-color {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
 /* Move drawing icon: the image is much finer than the drawing grid. */
 .cps-layers-move-drawing.cps-resolution-warn {
   color: var(--cps-danger);
 }
 `;
 const toolGroupsCss = "/* ── Tool group slot + flyout (ui/toolGroupSlot.ts) ─────────────────────── */\n\n.cps-rail-grouped {\n  position: relative;\n}\n\n/* Photoshop's corner triangle: this slot holds more tools. */\n.cps-rail-corner {\n  position: absolute;\n  right: 2px;\n  bottom: 2px;\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid currentColor;\n  opacity: 0.7;\n  pointer-events: none;\n}\n\n.cps-tool-flyout {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 120px;\n}\n\n.cps-tool-flyout-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  padding: 3px 6px;\n  border: 1px solid transparent;\n  border-radius: 3px;\n  background: transparent;\n  color: var(--cps-fg);\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-tool-flyout-item:hover {\n  background: var(--cps-hover);\n}\n\n.cps-tool-flyout-item.cps-active {\n  border-color: var(--cps-accent);\n  background: var(--cps-active-bg);\n}\n\n.cps-tool-flyout-key {\n  margin-left: auto;\n  color: var(--cps-fg-muted);\n}\n";
-const outputsCss = '/* Side panel tabs (Layers / Outputs) and the Outputs tab cards (M9).\n   Titles, rename field, eye/delete buttons reuse the layer row classes\n   (`cps-layer-name`, `cps-layer-rename`, `cps-layer-button`). */\n\n/* ── Tabs ─────────────────────────────────────────────────────────────── */\n\n.cps-side-content {\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n}\n\n.cps-side-tabs {\n  display: flex;\n  flex: none;\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-side-tabs button {\n  flex: 1;\n  padding: 5px;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-side-tabs button.cps-active {\n  color: var(--cps-fg);\n  background: var(--cps-active-bg);\n  box-shadow: inset 0 -2px var(--cps-accent);\n}\n\n.cps-side-content > .cps-layers,\n.cps-outputs {\n  flex: 1;\n  min-height: 0;\n}\n\n.cps-side-content > [hidden],\n.cps-outputs [hidden] {\n  display: none !important;\n}\n\n/* ── Outputs list ─────────────────────────────────────────────────────── */\n\n.cps-outputs {\n  display: flex;\n  flex-direction: column;\n  font-size: 11px;\n  overflow: hidden;\n}\n\n.cps-outputs-list {\n  overflow-y: auto;\n  min-height: 0;\n  overscroll-behavior: contain;\n}\n\n.cps-outputs-hint {\n  flex: none;\n  padding: 5px 6px;\n  color: var(--cps-fg-muted);\n  line-height: 1.35;\n}\n\n/* ── Cards ────────────────────────────────────────────────────────────── */\n\n.cps-output-card {\n  padding: 3px 4px 4px;\n  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  border-left: 2px solid transparent;\n  user-select: none;\n}\n\n.cps-output-card:hover {\n  background: var(--cps-hover);\n}\n\n.cps-output-card.cps-selected {\n  background: var(--cps-active-bg);\n  border-left-color: var(--cps-accent);\n}\n\n.cps-output-header {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  min-height: 22px;\n}\n\n.cps-output-title {\n  flex: 1;\n  min-width: 0;\n}\n\n.cps-output-card.cps-hidden-layer .cps-output-title {\n  opacity: 0.55;\n}\n\n.cps-output-size {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-empty {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  width: 100%;\n  padding: 3px 6px;\n  border: 0;\n  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-output-empty:hover {\n  background: var(--cps-hover);\n  color: var(--cps-fg);\n}\n\n/* ── Fields ───────────────────────────────────────────────────────────── */\n\n.cps-output-geometry {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 0 4px;\n}\n\n.cps-output-field {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n  min-width: 0;\n  margin: 2px 0;\n}\n\n.cps-output-field > span,\n.cps-output-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-scrub {\n  cursor: ew-resize;\n  touch-action: none;\n  user-select: none;\n}\n\n/* Number fields: no spin arrows, so 4-5 digit sizes fit (scrub the label instead). */\n.cps-output-card input[type="number"] {\n  appearance: textfield;\n  -moz-appearance: textfield;\n}\n\n.cps-output-card input[type="number"]::-webkit-inner-spin-button,\n.cps-output-card input[type="number"]::-webkit-outer-spin-button {\n  -webkit-appearance: none;\n  margin: 0;\n}\n\n.cps-output-card input,\n.cps-output-card select {\n  flex: 1;\n  min-width: 0;\n  width: 100%;\n  padding: 2px 3px;\n  font: inherit;\n  color: var(--cps-fg);\n  background: var(--cps-input-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n}\n\n.cps-output-card input:focus {\n  outline: 1px solid var(--cps-accent);\n}\n\n/* Line 1: Modify + dropdown + Alpha / Fill swatch. Line 2: Crop / border extras. */\n.cps-output-options {\n  display: flex;\n  flex-direction: column;\n  gap: 3px;\n  margin-top: 2px;\n}\n\n.cps-output-options-line {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-output-options .cps-output-field {\n  flex: none;\n  margin: 0;\n}\n\n/* Pad / border width: 4 digits (max 4096) + padding and border. */\n.cps-output-options .cps-output-field > input {\n  flex: none;\n  width: calc(4ch + 8px);\n}\n\n.cps-output-swatch {\n  flex: none;\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid var(--cps-fg-muted);\n  border-radius: 3px;\n  cursor: pointer;\n}\n\n/* Takes the free width but never shrinks below its longest option. */\n.cps-output-options .cps-output-mode {\n  flex: 1 0 auto;\n  width: auto;\n  min-width: max-content;\n}\n\n.cps-output-check {\n  display: inline-flex;\n  flex: none;\n  align-items: center;\n  gap: 2px;\n  color: var(--cps-fg-muted);\n  white-space: nowrap;\n  cursor: pointer;\n}\n\n.cps-output-check > input {\n  margin: 0;\n}\n\n.cps-output-check[hidden] {\n  display: none;\n}\n';
-const imagesCss = "/* ── Images button + panel (ui/imagesPanel.ts, M12) ─────────────────────── */\n\n.cps-images-button {\n  position: relative;\n}\n\n.cps-images-badge {\n  position: absolute;\n  top: 0;\n  right: 0;\n  min-width: 12px;\n  height: 12px;\n  padding: 0 2px;\n  box-sizing: border-box;\n  border-radius: 6px;\n  background: var(--cps-accent);\n  color: #fff;\n  font-size: 9px;\n  line-height: 12px;\n  text-align: center;\n  pointer-events: none;\n}\n\n.cps-images-popover {\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n.cps-images-panel {\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n}\n\n.cps-images-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n}\n\n.cps-images-item {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 88px;\n  height: 88px;\n  padding: 2px;\n  box-sizing: border-box;\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  background: var(--cps-input-bg);\n  cursor: pointer;\n}\n\n.cps-images-item:hover {\n  border-color: var(--cps-accent);\n}\n\n.cps-images-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  object-fit: contain;\n  pointer-events: none;\n}\n";
+const outputsCss = '/* Side panel tabs (Layers / Outputs) and the Outputs tab cards.\n   Titles, rename field, eye/delete buttons reuse the layer row classes\n   (`cps-layer-name`, `cps-layer-rename`, `cps-layer-button`). */\n\n/* ── Tabs ─────────────────────────────────────────────────────────────── */\n\n.cps-side-content {\n  display: flex;\n  flex-direction: column;\n  min-height: 0;\n}\n\n.cps-side-tabs {\n  display: flex;\n  flex: none;\n  border-bottom: 1px solid var(--cps-border);\n}\n\n.cps-side-tabs button {\n  flex: 1;\n  padding: 5px;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-side-tabs button.cps-active {\n  color: var(--cps-fg);\n  background: var(--cps-active-bg);\n  box-shadow: inset 0 -2px var(--cps-accent);\n}\n\n.cps-side-content > .cps-layers,\n.cps-outputs {\n  flex: 1;\n  min-height: 0;\n}\n\n.cps-side-content > [hidden],\n.cps-outputs [hidden] {\n  display: none !important;\n}\n\n/* ── Outputs list ─────────────────────────────────────────────────────── */\n\n.cps-outputs {\n  display: flex;\n  flex-direction: column;\n  font-size: 11px;\n  overflow: hidden;\n}\n\n.cps-outputs-list {\n  overflow-y: auto;\n  min-height: 0;\n  overscroll-behavior: contain;\n}\n\n.cps-outputs-hint {\n  flex: none;\n  padding: 5px 6px;\n  color: var(--cps-fg-muted);\n  line-height: 1.35;\n}\n\n/* ── Cards ────────────────────────────────────────────────────────────── */\n\n.cps-output-card {\n  padding: 3px 4px 4px;\n  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  border-left: 2px solid transparent;\n  user-select: none;\n}\n\n.cps-output-card:hover {\n  background: var(--cps-hover);\n}\n\n.cps-output-card.cps-selected {\n  background: var(--cps-active-bg);\n  border-left-color: var(--cps-accent);\n}\n\n.cps-output-header {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  min-height: 22px;\n}\n\n.cps-output-title {\n  flex: 1;\n  min-width: 0;\n}\n\n.cps-output-card.cps-hidden-layer .cps-output-title {\n  opacity: 0.55;\n}\n\n.cps-output-size {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-empty {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  width: 100%;\n  padding: 3px 6px;\n  border: 0;\n  border-bottom: 2px solid color-mix(in srgb, var(--cps-border) 60%, transparent);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n}\n\n.cps-output-empty:hover {\n  background: var(--cps-hover);\n  color: var(--cps-fg);\n}\n\n/* ── Fields ───────────────────────────────────────────────────────────── */\n\n.cps-output-geometry {\n  display: grid;\n  grid-template-columns: repeat(4, minmax(0, 1fr));\n  gap: 0 4px;\n}\n\n.cps-output-field {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n  min-width: 0;\n  margin: 2px 0;\n}\n\n.cps-output-field > span,\n.cps-output-label {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-output-scrub {\n  cursor: ew-resize;\n  touch-action: none;\n  user-select: none;\n}\n\n/* Number fields: no spin arrows, so 4-5 digit sizes fit (scrub the label instead). */\n.cps-output-card input[type="number"] {\n  appearance: textfield;\n  -moz-appearance: textfield;\n}\n\n.cps-output-card input[type="number"]::-webkit-inner-spin-button,\n.cps-output-card input[type="number"]::-webkit-outer-spin-button {\n  -webkit-appearance: none;\n  margin: 0;\n}\n\n.cps-output-card input,\n.cps-output-card select {\n  flex: 1;\n  min-width: 0;\n  width: 100%;\n  padding: 2px 3px;\n  font: inherit;\n  color: var(--cps-fg);\n  background: var(--cps-input-bg);\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n}\n\n.cps-output-card input:focus {\n  outline: 1px solid var(--cps-accent);\n}\n\n/* Line 1: Modify + dropdown + Alpha / Fill swatch. Line 2: Crop / border extras. */\n.cps-output-options {\n  display: flex;\n  flex-direction: column;\n  gap: 3px;\n  margin-top: 2px;\n}\n\n.cps-output-options-line {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-output-options .cps-output-field {\n  flex: none;\n  margin: 0;\n}\n\n/* Pad / border width: 4 digits (max 4096) + padding and border. */\n.cps-output-options .cps-output-field > input {\n  flex: none;\n  width: calc(4ch + 8px);\n}\n\n.cps-output-swatch {\n  flex: none;\n  width: 22px;\n  height: 18px;\n  padding: 0;\n  border: 1px solid var(--cps-fg-muted);\n  border-radius: 3px;\n  cursor: pointer;\n}\n\n/* Takes the free width but never shrinks below its longest option. */\n.cps-output-options .cps-output-mode {\n  flex: 1 0 auto;\n  width: auto;\n  min-width: max-content;\n}\n\n.cps-output-check {\n  display: inline-flex;\n  flex: none;\n  align-items: center;\n  gap: 2px;\n  color: var(--cps-fg-muted);\n  white-space: nowrap;\n  cursor: pointer;\n}\n\n.cps-output-check > input {\n  margin: 0;\n}\n\n.cps-output-check[hidden] {\n  display: none;\n}\n';
+const imagesCss = "/* ── Images button + panel (ui/imagesPanel.ts) ────────────────────────── */\n\n.cps-images-button {\n  position: relative;\n}\n\n.cps-images-badge {\n  position: absolute;\n  top: 0;\n  right: 0;\n  min-width: 12px;\n  height: 12px;\n  padding: 0 2px;\n  box-sizing: border-box;\n  border-radius: 6px;\n  background: var(--cps-accent);\n  color: #fff;\n  font-size: 9px;\n  line-height: 12px;\n  text-align: center;\n  pointer-events: none;\n}\n\n.cps-images-popover {\n  display: flex;\n  flex-direction: column;\n  overflow: hidden;\n}\n\n.cps-images-panel {\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n}\n\n.cps-images-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n}\n\n.cps-images-item {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 88px;\n  height: 88px;\n  padding: 2px;\n  box-sizing: border-box;\n  border: 1px solid var(--cps-border);\n  border-radius: 4px;\n  background: var(--cps-input-bg);\n  cursor: pointer;\n}\n\n.cps-images-item:hover {\n  border-color: var(--cps-accent);\n}\n\n.cps-images-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  object-fit: contain;\n  pointer-events: none;\n}\n";
 const STYLE_ELEMENT_ID = "cps-styles";
 function injectStyles() {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;
@@ -23227,9 +23468,9 @@ function createPainterSketchWidget(node, inputName, inputData) {
 }
 const REGION_OUTPUT_COUNT = 2 * MAX_REGIONS;
 function regionSlotLabels(slot, source) {
-  if (source === null) return [`region ${slot}`, `region ${slot} mask`];
+  if (source === null) return [`Region ${slot}`, `Region ${slot} mask`];
   const region = source.find((r) => r.slot === slot);
-  if (!region) return [`region ${slot} (missing)`, `region ${slot} mask (missing)`];
+  if (!region) return [`Region ${slot} (missing)`, `Region ${slot} mask (missing)`];
   const name = regionName(region);
   return [name, `${name} mask`];
 }

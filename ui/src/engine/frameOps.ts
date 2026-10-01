@@ -1,5 +1,5 @@
 /**
- * Frame / background operations of the editor core (decision 4): what is
+ * Frame / background operations of the editor core (`frameMap.ts`): what is
  * drawn under the paint, adopting a new frame for empty documents, and
  * Clear (one undoable step holding full before/after snapshots).
  */
@@ -15,6 +15,7 @@ import type { EditorState } from "./editorState";
 import { minimumFrame } from "./drawingResolution";
 import { dropMaskSurface, installMaskSurface, resetMaskSurfaces } from "./layerMask";
 import { applyOutputs, captureOutputs, outputsKey } from "./regionHistory";
+import { selectionBytes } from "./selection";
 
 /**
  * Background, frame and Clear handling over a shared {@link EditorState}.
@@ -46,7 +47,7 @@ export class FrameOps {
   /**
    * A new current-image size arrived (upstream image, or the widgets while
    * disconnected; call after {@link setBackground}): an empty document
-   * adopts it, otherwise it is only a display mapping (decision 4).
+   * adopts it, otherwise it is only a display mapping.
    * Deferred while layer files are loading.
    * @param size - Current image size.
    */
@@ -107,7 +108,8 @@ export class FrameOps {
     const frame = minimumFrame(size);
     const source: FrameSource = !s.backgroundSize ? s.frameSource : s.background.kind === "image" ? "image" : "widgets";
     const before = this.captureSnapshot();
-    const after: DocSnapshot = { frame, bounds: frameRect(frame), source, pixels: null };
+    // The frame may change, so the selection (document coords) is dropped; undo brings it back.
+    const after: DocSnapshot = { frame, bounds: frameRect(frame), source, pixels: null, selection: null };
     this.applySnapshot(after);
     s.solo.clear();
     s.history.push({ kind: "clear", before, after, bytes: snapshotBytes(before) });
@@ -145,7 +147,7 @@ export class FrameOps {
       // A cleared layer is empty again (it re-uploads blank, but may adopt frames).
       const rt = s.runtime.get(layer.id);
       if (rt) rt.hasContent = data !== undefined || textData !== undefined;
-      // Layer masks (M14): Clear removes them; undo brings them back.
+      // Layer masks: Clear removes them; undo brings them back.
       const lm = state.layerMasks?.get(layer.id);
       if (lm) {
         layer.layerMask = { ...lm.mask };
@@ -155,6 +157,7 @@ export class FrameOps {
         dropMaskSurface(s, layer.id);
       }
     }
+    s.selection.set(state.selection ?? null);
     s.syncViewFrame();
     s.events.emit("placement", undefined);
     s.events.emit("layers", undefined);
@@ -192,13 +195,13 @@ export class FrameOps {
     const placement = s.doc.placement ? { ...s.doc.placement } : undefined;
     return {
       frame: { ...s.doc.frame }, bounds: s.store.bounds, source: s.frameSource, ...(placement ? { placement } : {}), pixels, text, outputs: captureOutputs(s),
-      ...(layerMasks.size ? { layerMasks } : {}),
+      ...(layerMasks.size ? { layerMasks } : {}), selection: s.selection.current,
     };
   }
 }
 
 function snapshotBytes(state: DocSnapshot): number {
-  let bytes = state.outputs ? outputsKey(state.outputs).length * 2 : 0;
+  let bytes = (state.outputs ? outputsKey(state.outputs).length * 2 : 0) + selectionBytes(state.selection ?? null);
   if (state.pixels) for (const data of state.pixels.values()) bytes += data.data.byteLength;
   if (state.layerMasks) for (const m of state.layerMasks.values()) bytes += m.data.data.byteLength;
   return bytes;

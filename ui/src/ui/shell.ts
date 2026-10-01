@@ -1,5 +1,5 @@
 /**
- * Editor shell layout (M3.1). Regions inside the editor root:
+ * Editor shell layout (SPEC "Editor shell and focus"). Regions inside the editor root:
  *
  * ```
  * root (.cps-root)
@@ -8,14 +8,14 @@
  * │  ├─ bar      top options bar: `bar.leading` | `bar.scroller` (h-scroll) | `bar.trailing`
  * │  └─ body
  * │     ├─ stage       canvas area
- * │     └─ sidePanel   right panel (collapsible; M3.3 mounts layers)
+ * │     └─ sidePanel   right panel (collapsible; Layers / Outputs tabs)
  * └─ popoverHost  floating panels (inside the root so fullscreen carries them)
  * ```
  *
  * The shell only builds and sizes regions; components (rail, options bar,
- * swatches, stage renderer) render into them. Later stages plug in via:
- * `sidePanel` (M3.3), `popoverHost` + `requestColorPick` / `pick-color`
- * (M3.2) and the `fullscreen` event + `root` (M3.4).
+ * swatches, stage renderer) render into them. Other components plug in via:
+ * `sidePanel` (the Layers / Outputs tabs), `popoverHost` + `requestColorPick` /
+ * `pick-color` (colour picker) and the `fullscreen` event + `root` (fullscreen).
  */
 
 import type { ColorSlot } from "../engine/colors";
@@ -26,14 +26,12 @@ import { SidePanel } from "./sidePanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-/** A swatch was clicked: M3.2's picker handles it (else a native fallback). */
+/** A swatch was clicked: the EditorHost opens the colour picker. */
 export interface ColorPickRequest {
   /** Which colour to edit. */
   slot: ColorSlot;
   /** Element to anchor a popover to. */
   anchor: HTMLElement;
-  /** Set to `true` by a listener that opened its own picker. */
-  handled: boolean;
 }
 
 /** Shell events. */
@@ -88,8 +86,6 @@ export class EditorShell {
   /** Opens the side panel on the Outputs tab (region mode); next to the panel toggle. */
   readonly outputsButton: HTMLButtonElement;
   private readonly resizeObserver: ResizeObserver;
-  private nativeInput: HTMLInputElement | null = null;
-  private nativeApply: ((hex: string) => void) | null = null;
 
   constructor() {
     this.root = div("cps-root");
@@ -135,17 +131,13 @@ export class EditorShell {
   }
 
   /**
-   * Ask for a colour picker for a swatch: emits `pick-color`; if no listener
-   * handles it, falls back to the native colour input.
+   * Ask for a colour picker for a swatch: emits `pick-color` (the EditorHost
+   * opens the picker popover and applies the colour).
    * @param slot - Foreground or background.
    * @param anchor - Swatch element.
-   * @param current - Current colour (`#rrggbb`).
-   * @param apply - Called with each picked colour.
    */
-  requestColorPick(slot: ColorSlot, anchor: HTMLElement, current: string, apply: (hex: string) => void): void {
-    const request: ColorPickRequest = { slot, anchor, handled: false };
-    this.events.emit("pick-color", request);
-    if (!request.handled) this.nativeColorPick(current, apply);
+  requestColorPick(slot: ColorSlot, anchor: HTMLElement): void {
+    this.events.emit("pick-color", { slot, anchor });
   }
 
   /**
@@ -181,32 +173,6 @@ export class EditorShell {
     this.panelButton.classList.toggle("cps-active", open);
     this.panelButton.setAttribute("aria-pressed", String(open));
     this.panelButton.title = open ? "Hide side panel" : "Show side panel";
-  }
-
-  /** Fallback picker until M3.2: a hidden native `<input type=color>`. */
-  private nativeColorPick(current: string, apply: (hex: string) => void): void {
-    let input = this.nativeInput;
-    if (!input) {
-      const created = document.createElement("input");
-      created.type = "color";
-      created.className = "cps-native-color";
-      created.tabIndex = -1;
-      created.addEventListener("input", () => this.nativeApply?.(created.value));
-      created.addEventListener("change", () => this.nativeApply?.(created.value));
-      this.popoverHost.element.appendChild(created);
-      this.nativeInput = input = created;
-    }
-    this.nativeApply = apply;
-    input.value = current;
-    if (typeof input.showPicker === "function") {
-      try {
-        input.showPicker();
-        return;
-      } catch {
-        // Not allowed outside a user gesture in some browsers; click() below.
-      }
-    }
-    input.click();
   }
 }
 

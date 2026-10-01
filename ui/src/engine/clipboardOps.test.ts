@@ -1,6 +1,6 @@
 /**
  * Paste placement, paste-drops-selection and copy merged under Quick Mask
- * through the editor core (M10b). The test environment has no canvas: a
+ * through the editor core (SPEC "Clipboard and drop"). The test environment has no canvas: a
  * small fake stores real RGBA bytes (drawImage copies 1:1, ignoring a
  * destination size), and `ImageData` is polyfilled.
  */

@@ -161,7 +161,7 @@ export class ToolRegistry {
     return this.barDecorator ? this.barDecorator(options, this.active) : options;
   }
 
-  /** Adds context controls to the bar (M14 layer mask controls), or `null`. */
+  /** Adds context controls to the bar (layer mask controls), or `null`. */
   private barDecorator: ((options: ToolOptions | null, active: Tool) => ToolOptions | null) | null = null;
 
   /**
@@ -212,13 +212,25 @@ export class ToolRegistry {
    * @returns The effective tool.
    */
   resolve(altHeld: boolean, ctrlHeld = false, press?: { shift: boolean; inSelection: boolean }): Tool {
-    if (this.session?.active()) return this.session.tool;
     const active = this.active;
+    // A session takes all input; it only borrows the Alt eyedropper for a press outside its box (Ctrl is ignored).
+    if (this.session?.active()) return this.session.tool.withActive(active, this.altSubstitute(active, altHeld));
     if (press?.inSelection && !press.shift && !altHeld && !ctrlHeld && active.combinesSelection && !(active.pending?.() ?? false)) {
       return this.outlineTool.wrap(active);
     }
     if (ctrlHeld && this.ctrlTool && this.ctrlTool !== active && ctrlMoves(active)) return this.ctrlTool;
-    return altHeld && active.altEyedropper && this.altTool ? this.altTool : active;
+    return this.altSubstitute(active, altHeld) ?? active;
+  }
+
+  /**
+   * The Alt rule: the temporary eyedropper while Alt is held and the tool
+   * has `Tool.altEyedropper`.
+   * @param active - Active rail tool.
+   * @param altHeld - Alt is down.
+   * @returns The Alt tool, or `null` when Alt means nothing for `active`.
+   */
+  private altSubstitute(active: Tool, altHeld: boolean): Tool | null {
+    return altHeld && active.altEyedropper && this.altTool ? this.altTool : null;
   }
 }
 

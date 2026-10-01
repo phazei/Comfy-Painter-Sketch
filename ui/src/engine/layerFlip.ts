@@ -1,12 +1,12 @@
 /**
  * Flip H / V of a whole layer without a selection or a transform session
- * (SPEC M11 "Transform button and flips"): the current edit layer's content
+ * (SPEC "Free Transform and flips"): the current edit layer's content
  * is mirrored about its content centre -- an exact pixel mirror inside the
  * content bbox, so the bounds never change -- as ONE patch undo step. The
  * pixel-edit gate runs first (lock / hidden notes, text rasterize prompt).
  * With a float (or a selection, lifted first) the float gets an exact
  * mirror matrix and stays floating ({@link flipOutsideSession}). A layer's
- * lmask mirrors with it (M14b, `layerMaskCarry.flipMaskPatch`); a selection
+ * lmask mirrors with it (`layerMaskCarry.flipMaskPatch`); a selection
  * flip follows the target like any float (pixels or the lmask's pixels).
  */
 
@@ -48,7 +48,7 @@ export function flipLayer(s: EditorState, axis: "h" | "v"): boolean {
     s.history.push({ kind: "patch", layerId: layer.id, x: before.rect.x, y: before.rect.y, before: before.data, after: after.data, bytes });
   }
   s.runtime.touch(layer.id);
-  // The lmask mirrors with its layer, same centre, same step (M14b).
+  // The lmask mirrors with its layer, same centre, same step.
   const maskPatch = flipMaskPatch(s, layer, before.rect, axis);
   if (maskPatch) {
     if (after) s.history.joinNext();

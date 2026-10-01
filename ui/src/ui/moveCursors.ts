@@ -1,5 +1,5 @@
 /**
- * Photoshop-style move cursors (SPEC M10a): while hovering, the stage cursor
+ * Photoshop-style move cursors (SPEC "Shortcuts" > "Cursors (current state)"): while hovering, the stage cursor
  * shows what a drag would do right now -- decided from the tool
  * `ToolRegistry.resolve` picks for the held modifiers and whether the
  * pointer is inside the selection (coverage >= 50 %, the test the press uses).

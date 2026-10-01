@@ -1,5 +1,5 @@
 /*
- * Widget container + fullscreen overlay (M3.4, ui/fullscreen.ts).
+ * Widget container + fullscreen overlay (SPEC "Canvas, view and fullscreen", ui/fullscreen.ts).
  *
  * .cps-widget is the DOM widget element and never moves; the editor root is
  * its child and moves into .cps-fullscreen (on document.body) while

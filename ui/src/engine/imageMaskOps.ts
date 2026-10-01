@@ -1,11 +1,12 @@
 /**
- * Image Mask row commands (M13a, SPEC "Image Mask / Input Mask"), exposed as
+ * Image Mask row commands (SPEC "Layers" > "Image Mask / Input Mask row"),
+ * exposed as
  * `Editor.imageMask`. The record is `doc.imageMask` (`document/imageMask.ts`),
  * the coverage `EditorState.imageMask` (`imageMask.ts`).
  *
  * - The widget feeds it: {@link ImageMaskOps.setFromAlpha} when the
  *   background source's alpha has been read (a fully opaque image removes the
- *   row), {@link ImageMaskOps.restore} from the saved file, and (M13b) while
+ *   row), {@link ImageMaskOps.restore} from the saved file, and while
  *   the `mask` input is connected {@link ImageMaskOps.setInput} (the "Input
  *   Mask": no file, never uploaded; `widget/inputMaskSync.ts`). None is an
  *   undo step: the row follows the source like the background does. Eye,
@@ -107,19 +108,19 @@ export class ImageMaskOps {
     return true;
   }
 
-  /** M13b: the row shows the `mask` input ("Input Mask"). */
+  /** The row shows the `mask` input ("Input Mask"). */
   get isInput(): boolean {
     const mask = this.s.doc.imageMask;
     return mask !== undefined && isInputMaskKey(mask.sourceKey);
   }
 
-  /** M13b: the Input Mask has no coverage until a run delivers it (row hint). */
+  /** The Input Mask has no coverage until a run delivers it (row hint). */
   get waiting(): boolean {
     return this.isInput && this.s.imageMask.waiting;
   }
 
   /**
-   * M13b: show the `mask` input as the row ("Input Mask"): settings of an
+   * Show the `mask` input as the row ("Input Mask"): settings of an
    * existing row are kept, no file (Python has the tensor), never uploaded.
    * Not an undo step.
    * @param sourceKey - Input Mask key (`INPUT_MASK_KEY_PREFIX`...).

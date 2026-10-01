@@ -1,5 +1,5 @@
 /**
- * Paste into the lmask-only view (M14b): the image lands on the viewed lmask
+ * Paste into the lmask-only view: the image lands on the viewed lmask
  * as an lmask float (luminance x alpha; our own lmask copy round-trips
  * exactly) at the normal placement; move / commit / cancel / undo like other
  * lmask floats; oversized pastes open Free Transform on the lmask. Outside

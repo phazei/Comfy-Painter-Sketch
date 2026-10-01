@@ -8,7 +8,7 @@
  * never more than `maxSide` per axis. (Was 3x per axis until 2026-09-27: a
  * 1:4 frame got a huge margin along its long side.)
  *
- * The document -> image mapping (decision 4) lives in `frameMap.ts`; bounds
+ * The document -> image mapping lives in `frameMap.ts`; bounds
  * never change when the upstream image size does.
  */
 

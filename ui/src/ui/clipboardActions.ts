@@ -1,5 +1,5 @@
 /**
- * Copy / cut / paste glue of one editor host (SPEC M10 Clipboard). The engine
+ * Copy / cut / paste glue of one editor host (SPEC "Clipboard and drop"). The engine
  * (`Editor.clipboard`) makes and consumes pixels; this module owns the
  * clipboards:
  *
@@ -20,7 +20,7 @@
  * placed by `engine/pastePlacement.ts` (drops: at the drop point, clamped), a new "Pasted" layer, one
  * undo step each (the selection is dropped in it). In the lmask-only view
  * every source (and drop) goes into the viewed lmask instead, as an lmask
- * float (`ClipboardOps.paste`, M14b). Sources:
+ * float (`ClipboardOps.paste`). Sources:
  * - Ctrl+V / Paste button "System": `pasteChoice.ts` (system image, else
  *   the internal copy, else clipspace).
  * - Ctrl+Shift+V: the internal copy in place, handled on keydown (the
@@ -62,7 +62,7 @@ interface InternalClip {
   signature: ImageSignature | null;
   /** The PNG reached the system clipboard. */
   systemWritten: boolean;
-  /** Editor the copy was made in (paste in place only there). */
+  /** Editor the copy was made in: a plain Ctrl+V there lands at the copied position (`pasteContext`); paste in place (Ctrl+Shift+V) works from any node. */
   from: Editor;
 }
 

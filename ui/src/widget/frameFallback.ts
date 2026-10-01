@@ -1,6 +1,6 @@
 /**
  * The "current image" used when no image is connected: `width` x `height`
- * filled with `background` (the document's own frame maps onto it, decision 4).
+ * filled with `background` (the document's own frame maps onto it).
  *
  * Pure: takes raw widget values (unknown) and returns sanitized values.
  */
@@ -64,7 +64,7 @@ export function sanitizeDimension(value: unknown, fallback: number): number {
 /**
  * Build the "current image" used when no image is connected: `width` x
  * `height` filled with `background`. The document maps onto it like onto any
- * upstream image (decision 4); Python builds the same background.
+ * upstream image; Python builds the same background.
  *
  * @param width - `width` widget value.
  * @param height - `height` widget value.

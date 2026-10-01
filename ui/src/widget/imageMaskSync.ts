@@ -1,9 +1,9 @@
 /**
- * M13a Image Mask, widget side: reads the background source's alpha
+ * Image Mask, widget side: reads the background source's alpha
  * (`/view?...&channel=a`, `viewUrl.ts` `withAlphaChannel`) into the
  * editor (`Editor.imageMask`), and restores the row's saved file.
  *
- * Rules (SPEC "Image Mask / Input Mask"):
+ * Rules (SPEC "Layers" > "Image Mask / Input Mask row"):
  * - Only an upstream `/view` file is read (LoadImage-style). While the
  *   background comes from our own executed preview (RGB; only ever from a
  *   run with the same upstream link) the row is kept as it is; other
@@ -15,7 +15,7 @@
  * - Once per source key per session, after the session's restore: a row
  *   already made from this key (or restored from its file) is not read
  *   again, so a reload does not refetch; a changed key reads again.
- * - M13b: while `mask` is connected this module is not used (`inputMaskSync.ts`
+ * - While `mask` is connected this module is not used (`inputMaskSync.ts`
  *   owns the row); after a disconnect an Input Mask row is read again from the
  *   image's alpha (or removed when there is nothing to read).
  * - Any pixel alpha < 255 -> the row (coverage 255 - alpha, uploaded through
@@ -52,7 +52,7 @@ const pending = new WeakMap<EditorSession, Promise<void>>();
 export function syncImageMask(session: EditorSession, status: BackgroundStatus): void {
   if (!session.alive) return;
   let action = imageMaskAction(status, session.editor.imageMask.info?.sourceKey);
-  // M13b: an Input Mask row left from a disconnected `mask` has no file to
+  // An Input Mask row left from a disconnected `mask` has no file to
   // keep: back to the image's alpha (read) or no row (settings go with it).
   if (action === "keep" && session.editor.imageMask.isInput && status.kind !== "unresolved") action = "remove";
   if (action === "keep") return;
@@ -75,7 +75,7 @@ export function syncImageMask(session: EditorSession, status: BackgroundStatus):
 }
 
 /**
- * Forget the source read last (M13b: the Input Mask took the row over), so
+ * Forget the source read last (the Input Mask took the row over), so
  * the image's alpha is read again when `mask` is disconnected; an alpha read
  * in flight is discarded.
  * @param session - Session.
@@ -138,7 +138,7 @@ async function readAlpha(session: EditorSession, background: LoadedBackground): 
 
 /**
  * Download and decode an image to RGBA pixels (exact values: no premultiply,
- * no colour conversion; also the M13b Input Mask reads).
+ * no colour conversion; also what the Input Mask reads).
  * @param url - Image URL.
  * @returns The pixels.
  * @throws {HttpError} / network / decode errors.

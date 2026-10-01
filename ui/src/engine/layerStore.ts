@@ -2,7 +2,7 @@
  * Pixel storage: one offscreen canvas per layer, all sized to the document's
  * `bounds`. Canvas pixel `(px, py)` is document point
  * `(bounds.x + px, bounds.y + py)` -- the same mapping as the saved PNGs.
- * Layer masks (M14) live here too, under `layerMaskKey(layerId)`; a mask
+ * Layer masks live here too, under `layerMaskKey(layerId)`; a mask
  * whose `outside` hides is marked with {@link LayerStore.setHideOutside}
  * so bounds growth / resampling fill the new area white (hidden, like mask
  * layer coverage) instead of transparent (shown).

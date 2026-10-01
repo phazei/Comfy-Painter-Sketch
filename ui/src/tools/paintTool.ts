@@ -6,7 +6,7 @@
  *
  * `size` is in image px (what the user sees on the current background); it
  * is divided by the frame-map scale to get document px, so a 20 px brush
- * looks 20 px on any image size (decision 4). The paint colour is the
+ * looks 20 px on any image size. The paint colour is the
  * editor's foreground colour (`editor.colors.fg`).
  */
 
@@ -19,7 +19,7 @@ import { OptionSet } from "./options";
 import type { OptionDescriptor, OptionGroup } from "./options";
 import type { PaintOptions, Tool, ToolCursor, ToolPointer } from "./types";
 
-/** Options bar layout shared by brush-like tools (SPEC Tools table, Pressure). */
+/** Options bar layout shared by brush-like tools (SPEC "Tools" > "Brush (B) and Eraser (E)"). */
 export const PAINT_OPTION_DESCRIPTORS: readonly OptionDescriptor[] = [
   { kind: "number", key: "size", label: "Size", title: "Brush size ([ / ])", min: 1, max: 1000, step: 1, unit: "px", curve: "pow" },
   { kind: "number", key: "hardness", label: "Hard", title: "Hardness (Shift+[ / ])", min: 0, max: 100, step: 1, unit: "%", scale: 100 },

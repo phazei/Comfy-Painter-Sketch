@@ -1,5 +1,5 @@
 /**
- * Free Transform of text layers (M11b) through the editor core: uniform
+ * Free Transform of text layers through the editor core: uniform
  * scale -> `textData.size`, rotation -> `textData.rotation`, ONE text undo
  * step, the layer stays text; non-uniform scale / flip -> the rasterize
  * prompt (No = stay text, Yes = rasterized as its own step + a pixel
@@ -127,7 +127,7 @@ function dragCorner(ed: EditorClass, dx: number, dy: number, shift: boolean): vo
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("text transform (M11b)", () => {
+describe("text transform", () => {
   it("uniform scale -> size, angle -> rotation, box centre kept; ONE text step; still text", () => {
     const { ed, id } = setup();
     ed.selection.apply(rectSelection({ x: 0, y: 0, width: 10, height: 10 }), "replace");

@@ -34,7 +34,7 @@ describe("readPlacement (lenient, mirrors nodes/document.py)", () => {
 });
 
 describe("placement in the manifest", () => {
-  it("is omitted when identity (pre-M5 manifests stay byte-identical)", () => {
+  it("is omitted when identity (manifests without a placement stay byte-identical)", () => {
     const doc = createEmptyDocument({ width: 100, height: 50 }, "docid0001");
     const before = stringifyDocument(doc);
     expect(before).not.toContain("placement");

@@ -4,7 +4,7 @@
  *
  * They style the FIRST mask of a document -- the one a new document is
  * created with, or the one added lazily to a document saved without a mask.
- * Existing masks are never changed. Further masks (M8) take the first
+ * Existing masks are never changed. Further masks take the first
  * {@link MASK_PALETTE} colour no mask uses yet ({@link nextMaskStyle}).
  *
  * Pure (no ComfyUI imports) so the sanitizers are unit-testable; reading the
@@ -84,7 +84,7 @@ export function firstMaskStyleFrom(read: (id: string) => unknown): MaskStyle {
 }
 
 
-// ── Palette (M8) ──────────────────────────────────────────────────────────────
+// ── Palette ──────────────────────────────────────────────────────────────────
 
 /** Colours of the 2nd..7th mask: blue, green, yellow, magenta, cyan, orange. */
 export const MASK_PALETTE: readonly string[] = ["#0000ff", "#00ff00", "#ffff00", "#ff00ff", "#00ffff", "#ff8000"];

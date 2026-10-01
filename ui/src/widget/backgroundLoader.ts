@@ -215,7 +215,7 @@ export class BackgroundLoader {
         image,
         size: { width: image.naturalWidth, height: image.naturalHeight },
         origin: source.origin,
-        // M13a: only an upstream file has alpha worth reading (our executed preview is RGB).
+        // Only an upstream file has alpha worth reading (our executed preview is RGB).
         alphaUrl: source.origin === "upstream" ? withAlphaChannel(source.url) : null,
       };
       this.onSettled();

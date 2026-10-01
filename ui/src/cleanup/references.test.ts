@@ -26,7 +26,7 @@ describe("extractReferences", () => {
     expect([...extractReferences(workflow)]).toEqual([A]);
   });
 
-  it("finds the M13a Image Mask file of a serialized document", () => {
+  it("finds the Image Mask file of a serialized document", () => {
     const doc = createEmptyDocument({ width: 8, height: 8 }, "abcd1234");
     doc.imageMask = { ...createImageMask("k", { width: 8, height: 8 }, DEFAULT_MASK_STYLE), file: `painter-sketch/${B} [input]` };
     const workflow = JSON.stringify({ nodes: [{ widgets_values: [stringifyDocument(doc)] }] });

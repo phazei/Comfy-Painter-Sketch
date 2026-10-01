@@ -1,5 +1,5 @@
 /**
- * Magic wand glue (SPEC Tools table, W): the paint bucket's flood fill
+ * Magic wand glue (SPEC "Fill and wand sampling"): the paint bucket's flood fill
  * (`floodFill.ts`: tolerance, contiguous, anti-alias) run over sampled
  * pixels of a document area, turned into a document-space
  * {@link Selection}. Pure; the pixel sampling (current layer / all layers)

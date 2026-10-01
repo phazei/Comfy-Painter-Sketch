@@ -1,5 +1,5 @@
 /**
- * M13b Input Mask source rule (`inputMaskRule.ts`): live for a MASK slot of
+ * Input Mask source rule (`inputMaskRule.ts`): live for a MASK slot of
  * any node with a `/view` file (LoadImageMask only on alpha); otherwise wait for a run;
  * our executed preview wins once it belongs to the current link (and live
  * source); preview items / keys.

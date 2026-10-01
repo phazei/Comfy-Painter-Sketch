@@ -1,5 +1,5 @@
 /**
- * M13a Image Mask pure conversions: alpha -> coverage polarity (LoadImage's
+ * Image Mask pure conversions: alpha -> coverage polarity (LoadImage's
  * MASK = 1 - alpha), opaque images give no row, the mask-file format, and
  * resampling into document coords through the frame map.
  */

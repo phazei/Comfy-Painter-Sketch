@@ -1,6 +1,6 @@
 /**
- * Dropping images on the stage = paste at the drop point (SPEC M10
- * Clipboard): each image becomes its own "Pasted" layer (in order, one undo
+ * Dropping images on the stage = paste at the drop point (SPEC
+ * "Clipboard and drop"): each image becomes its own "Pasted" layer (in order, one undo
  * step each), centred on the drop point.
  *
  * Which drags are claimed is the pure `pasteChoice.shouldClaimDrag`: image

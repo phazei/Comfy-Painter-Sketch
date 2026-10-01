@@ -4,7 +4,7 @@
  * (capturing earlier would retarget the row's `click`). While dragging, the
  * row under the pointer shows a drop line above or below it; the list
  * auto-scrolls near its edges. Paint rows drop only onto paint rows and mask
- * rows only onto mask rows (M8), so masks stay above paint layers and the
+ * rows only onto mask rows, so masks stay above paint layers and the
  * Background row never moves.
  */
 

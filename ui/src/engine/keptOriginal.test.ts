@@ -1,5 +1,5 @@
 /**
- * Kept originals (M11b): a whole-layer transform commit keeps the
+ * Kept originals (SPEC "Free Transform and flips"): a whole-layer transform commit keeps the
  * pre-transform pixels + cumulative matrix, so repeated transforms resample
  * once from the original (5 x 10 deg == one 50 deg, byte for byte). Any
  * other edit, undo / redo or delete drops it; memory is capped. Same RGBA
@@ -175,7 +175,7 @@ function shape(ed: EditorClass): void {
   fill(ed, { x: 8, y: 15, width: 3, height: 4 }, "#0000ff");
 }
 
-describe("kept original (M11b)", () => {
+describe("kept original", () => {
   it("5 x 10 deg equals one 50 deg resample, byte for byte", () => {
     const a = editor();
     const b = editor();

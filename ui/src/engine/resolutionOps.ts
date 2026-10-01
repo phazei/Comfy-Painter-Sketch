@@ -1,5 +1,5 @@
 /**
- * Match image resolution (SPEC "Drawing resolution"): resample every paint and
+ * Match image resolution (SPEC "Layers" > "Background row and drawing resolution"): resample every paint and
  * mask layer once so the frame becomes what it would be if it were set from
  * the current image, keeping the drawing exactly where it is on the image.
  * Text layers re-render from scaled `textData`. Not undoable: history is
@@ -94,7 +94,7 @@ export class ResolutionOps {
     for (const layer of s.doc.layers) {
       if (s.runtime.get(layer.id)?.hasContent) s.runtime.touch(layer.id);
       else s.runtime.bump(layer.id);
-      // Layer masks (M14) were resampled with their layer: always a new file.
+      // Layer masks were resampled with their layer: always a new file.
       if (layer.layerMask) s.runtime.touch(layerMaskKey(layer.id));
     }
     s.history.clear();

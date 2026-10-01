@@ -1,5 +1,5 @@
 /**
- * Browser side of pasting (SPEC M10 Clipboard): reading the system clipboard
+ * Browser side of pasting (SPEC "Clipboard and drop"): reading the system clipboard
  * (the `paste` event's data, or `navigator.clipboard.read()` from the rail
  * button), image files of a drop, ComfyUI's clipspace, decoding, and image
  * fingerprints. The source ORDER is the pure `pasteChoice.ts`.

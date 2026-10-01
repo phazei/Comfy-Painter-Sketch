@@ -1,5 +1,5 @@
 /**
- * Merge Down (Ctrl+E, SPEC M10a), exposed as `Editor.mergeDown`: merge the
+ * Merge Down (Ctrl+E, SPEC "Layers" > "Merge Down and Clear"), exposed as `Editor.mergeDown`: merge the
  * current row (the active paint-like layer, or the current mask under Quick
  * Mask) into the next row below it in the same group -- paint/text into
  * paint-like, mask into mask; never into the background (not a layer).
@@ -13,7 +13,7 @@
  *   or nothing mergeable is below.
  * - ONE undo step: a group entry `[rasterize..., patch on lower, remove upper]`.
  *   A solo on the removed layer ends (the `layers` event prunes it).
- * - Layer masks (M14b): the upper layer's enabled lmask is applied to its
+ * - Layer masks: the upper layer's enabled lmask is applied to its
  *   pixels first (what you see; note "Layer mask applied."; undo brings the
  *   layer and its mask back). The lower layer keeps its lmask and settings
  *   unchanged: the merged pixels go under it.
@@ -110,7 +110,7 @@ function mergePixels(s: EditorState, upper: Layer, lower: Layer): HistoryEntry |
   if (upper.kind === "mask") {
     mergeMaskCoverage(up.data.data, upper.invert === true, next, lower.invert === true);
   } else {
-    // What you see of the upper layer: its enabled lmask applied (M14b).
+    // What you see of the upper layer: its enabled lmask applied.
     const lm = upper.layerMask;
     const mask = lm?.enabled ? s.store.read(layerMaskKey(upper.id), r) : null;
     if (lm && mask) applyMaskAlpha(up.data.data, mask.data.data, lm.invert);

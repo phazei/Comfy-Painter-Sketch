@@ -44,7 +44,7 @@ export type PaintOptions = {
   gamma: number;
 };
 
-/** Free Transform handle cursors: native resize axes and the curved rotate arrow (M11). */
+/** Free Transform handle cursors: native resize axes and the curved rotate arrow. */
 export type TransformCursorIcon = "resize-ns" | "resize-ew" | "resize-nwse" | "resize-nesw" | "rotate";
 
 /** Named stage cursor icon; the CSS definitions live in `ui/cursors.ts`. */
@@ -86,6 +86,12 @@ export interface Tool {
    * stage shows the matching badge on the cursor (`ui/cursors.ts`).
    */
   readonly combinesSelection?: boolean;
+  /**
+   * Shape tool: its shapes end in a Free Transform session; while that
+   * session runs, a press outside the box commits it and starts the next
+   * shape in the same gesture (`transformTool.ts`).
+   */
+  readonly drawsShapes?: boolean;
 
   /**
    * `false` = hidden tool: registered in the registry and activatable,

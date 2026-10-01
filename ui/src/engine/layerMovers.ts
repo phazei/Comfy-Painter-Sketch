@@ -1,10 +1,11 @@
 /**
  * Per-layer-kind "move this layer by (dx, dy)" handlers: the seam between the
- * Move tool (`moveOps.ts`) and how a kind stores its content (SPEC M6a).
+ * Move tool (`moveOps.ts`) and how a kind stores its content
+ * (SPEC "Moving (Move layer, Move drawing)").
  *
  * - `paint` / `mask`: translate pixels (`layerTranslate.ts`; a paint layer's
- *   lmask moves with it in the same entry, M14b).
- * - `text` (M6b): shift `textData`'s anchor and re-render the layer,
+ *   lmask moves with it in the same entry).
+ * - `text`: shift `textData`'s anchor and re-render the layer,
  *   recording a text undo entry (`textLayer.ts`); never rasterizes.
  *   Kinds without a handler can't be moved (the tool shows
  *   {@link UNMOVABLE_LAYER_NOTE}).

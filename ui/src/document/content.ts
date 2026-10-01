@@ -5,7 +5,7 @@ import { cloneRegion } from "./regions";
 import type { PainterDocument } from "./types";
 
 /**
- * Whether M9 metadata carries user work even with no painted pixels/files.
+ * Whether output metadata (Main options, regions) carries user work even with no painted pixels/files.
  * Explicit Main options (even default/inactive fields) count, and so does a hidden background.
  * @param doc - Document.
  * @returns Whether output metadata must survive persistence and detach.
@@ -19,7 +19,7 @@ export function hasOutputMetadata(doc: PainterDocument): boolean {
  * File references count even when restoration failed (preserve recovery).
  * @param doc - Document.
  * @param hasPaint - Runtime content flag, including unuploaded paint.
- * An Image Mask row (M13a) counts: Python needs the manifest to combine it.
+ * An Image Mask row counts: Python needs the manifest to combine it.
  * @returns True for paint, retained file references, output metadata or an Image Mask.
  */
 export function hasDocumentContent(doc: PainterDocument, hasPaint = false): boolean {
@@ -27,7 +27,7 @@ export function hasDocumentContent(doc: PainterDocument, hasPaint = false): bool
 }
 
 /**
- * Stable identity of M9 metadata, independent of paint files and preview size.
+ * Stable identity of output metadata, independent of paint files and preview size.
  * @param doc - Document.
  * @returns Signature normalizing missing Main defaults and region order.
  */

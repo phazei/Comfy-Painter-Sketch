@@ -1,5 +1,5 @@
 /**
- * Free Transform sessions and flips (M11a) through the editor core: one
+ * Free Transform sessions and flips through the editor core: one
  * patch + one undo step per commit, exact cancel, identity = no step,
  * selection follow, exact flips. The test environment has no canvas: the
  * same small fake as `floatOps.test.ts` stores real RGBA bytes, and the

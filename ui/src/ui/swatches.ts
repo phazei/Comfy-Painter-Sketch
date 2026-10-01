@@ -2,9 +2,9 @@
  * FG/BG swatch widget (Photoshop style): two overlapping squares -- the
  * foreground on top-left, background bottom-right -- with a small swap
  * arrow (X) and a reset icon (D, black/white). Clicking a square asks the
- * shell for a colour picker (`pick-color`, M3.2) via `actions.pick`.
+ * shell for a colour picker (`pick-color`) via `actions.pick`.
  *
- * Mask mode (M14, while a layer mask is the edit target): the same squares
+ * Mask mode (while a layer mask is the edit target): the same squares
  * show the black / white MASK swatches instead of the colours (the host
  * passes them to {@link SwatchWidget.setColors}); only the titles, the reset
  * icon (white over black) and the cursor change -- the host ignores square

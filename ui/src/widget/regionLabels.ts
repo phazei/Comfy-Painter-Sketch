@@ -25,13 +25,13 @@ export type RegionSource = readonly Pick<Region, "slot" | "name">[] | null;
  * @param slot - Slot 1..6.
  * @param source - Source regions, or null when unresolvable.
  * @returns `[image, mask]`: `name` / `name mask` for a filled slot,
- *   `region N (missing)` / `region N mask (missing)` for an empty one,
- *   `region N` / `region N mask` when the source is unresolvable.
+ *   `Region N (missing)` / `Region N mask (missing)` for an empty one,
+ *   `Region N` / `Region N mask` when the source is unresolvable.
  */
 export function regionSlotLabels(slot: number, source: RegionSource): [string, string] {
-  if (source === null) return [`region ${slot}`, `region ${slot} mask`];
+  if (source === null) return [`Region ${slot}`, `Region ${slot} mask`];
   const region = source.find((r) => r.slot === slot);
-  if (!region) return [`region ${slot} (missing)`, `region ${slot} mask (missing)`];
+  if (!region) return [`Region ${slot} (missing)`, `Region ${slot} mask (missing)`];
   const name = regionName(region);
   return [name, `${name} mask`];
 }

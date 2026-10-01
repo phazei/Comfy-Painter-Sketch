@@ -1,24 +1,23 @@
 /**
- * Editor keyboard shortcuts (SPEC "Brush shortcuts", "Canvas / view",
- * "Undo / Redo", "Color", Tools table incl. Quick Mask `Q`; Photoshop
- * conventions). Returns whether a key was handled so the keyboard scope
+ * Editor keyboard shortcuts (SPEC "Shortcuts", incl. Quick Mask `Q`;
+ * Photoshop conventions). Returns whether a key was handled so the keyboard scope
  * stops only those.
  *
  * | Key | Action |
  * |---|---|
  * | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y | undo / redo |
  * | Ctrl+0 / Ctrl+1 / Ctrl+= / Ctrl+- | fit / 100% / zoom in / out |
- * | `[` `]` (Shift: hardness) | size (tools with a `size` / `hardness` option) |
+ * | `[` `]` (Shift: hardness) | size (tools with a `size` / `hardness` option); shape tools: width (1..500) |
  * | `1`..`9`, `0` | opacity 10%..90%, 100% |
  * | Q | Quick Mask |
- * | X / D | swap / reset FG-BG colours (with a layer mask targeted: the black / white mask swatches, M14) |
+ * | X / D | swap / reset FG-BG colours (with a layer mask targeted: the black / white mask swatches) |
  * | F | toggle fullscreen (shell `fullscreen` event) |
  * | O | Outputs tab / region mode (toggle) |
  * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
  * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
  * | Shift+group key | cycle the group (Shift+U shapes) |
  * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
- * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace) |
+ * | selection keys | `selectionShortcuts.ts` (Ctrl+A/D, Shift+F7, Delete, Alt/Ctrl+Backspace; arrows nudge the outline with a selection tool) |
  * | float / merge / transform keys | `floatShortcuts.ts` (Enter / Esc while floating, Ctrl+E Merge Down, Ctrl+Alt+T Free Transform) |
  * | clipboard keys | `clipboardShortcuts.ts` (Ctrl+C, Ctrl+Shift+C, Ctrl+X, Ctrl+V, Ctrl+Shift+V) |
  */
@@ -28,7 +27,10 @@ import type { EditorSession } from "../widget/sessions";
 import type { ClipboardActions } from "./clipboardActions";
 import { handleClipboardShortcut } from "./clipboardShortcuts";
 import { handleFloatShortcut } from "./floatShortcuts";
-import { handleSelectionShortcut } from "./selectionShortcuts";
+import { handleOutlineNudge, handleSelectionShortcut } from "./selectionShortcuts";
+
+/** Largest shape-tool width `]` steps to (matches the Width option). */
+const MAX_SHAPE_WIDTH = 500;
 
 /** Side effects the shortcuts need from the UI. */
 export interface ShortcutEffects {
@@ -40,6 +42,8 @@ export interface ShortcutEffects {
   cancelDrag(): void;
   /** Esc: cancel a tool drag in progress (e.g. a shape). @returns `true` if one was cancelled. */
   cancelToolDrag?(): boolean;
+  /** A stage tool press is in progress (button down). Absent = never. */
+  isToolDragging?(): boolean;
   /** Fullscreen requested. */
   fullscreen(): void;
   /** `O`: open the Outputs tab (region mode), or leave it. */
@@ -88,13 +92,16 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (event.altKey || ctrl) return false;
   // Tool-specific keys first (Move: arrow nudges; a Free Transform session's tool wins).
   if (tools.resolve(false).onKey?.(editor, event)) return true;
+  // Selection tools: arrows nudge the selection outline (a float nudge was handled above).
+  if (handleOutlineNudge(event, tools.active, editor, effects.isToolDragging?.() ?? false)) return true;
 
   const options = tools.active.options;
   if (event.code === "BracketLeft" || event.code === "BracketRight" || key === "[" || key === "]") {
     const up = event.code === "BracketRight" || key === "]" || key === "}";
     const changed = event.shiftKey
       ? stepOption(options, "hardness", (v) => stepHardness(v, up))
-      : stepOption(options, "size", (v) => stepSize(v, up));
+      : (stepOption(options, "size", (v) => stepSize(v, up)) ??
+        stepOption(options, "width", (v) => stepSize(v, up, MAX_SHAPE_WIDTH)));
     if (changed === null) return false;
     if (changed) effects.optionsChanged();
     return true;
@@ -119,12 +126,12 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (key.length !== 1) return false;
   switch (key) {
     case "q":
-      // Quick Mask: toggle the paint target (decision 6).
+      // Quick Mask: toggle the paint target.
       effects.cancelDrag();
       editor.togglePaintTarget();
       return true;
     case "x":
-      // M14: while a layer mask is targeted X / D act on the black / white mask swatches.
+      // While a layer mask is targeted X / D act on the black / white mask swatches.
       if (!editor.layerMask.swapSwatches()) editor.colors.swap();
       return true;
     case "d":
@@ -166,12 +173,13 @@ function stepOption(options: ToolOptions | null, key: string, next: (value: numb
  * Photoshop-like bracket steps: finer for small brushes.
  * @param size - Current diameter.
  * @param up - Increase.
- * @returns New diameter (1..1000).
+ * @param max - Upper bound (default 1000; shape widths use 500).
+ * @returns New diameter (1..max).
  */
-export function stepSize(size: number, up: boolean): number {
+export function stepSize(size: number, up: boolean, max = 1000): number {
   const step = size < 10 ? 1 : size < 50 ? 5 : size < 100 ? 10 : size < 300 ? 25 : 50;
   const next = up ? size + step : size - (size <= 10 ? 1 : size <= 50 ? 5 : size <= 100 ? 10 : size <= 300 ? 25 : 50);
-  return Math.min(1000, Math.max(1, Math.round(next)));
+  return Math.min(max, Math.max(1, Math.round(next)));
 }
 
 /**

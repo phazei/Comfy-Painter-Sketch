@@ -153,7 +153,7 @@ export abstract class EditorBase {
 
   /**
    * Replace the current stroke's content with one shape (shape tools: live
-   * preview on every move, rasterized into the layer by {@link endStroke}).
+   * preview on every move; `Editor.endShape` turns it into a float in Free Transform).
    * @param shape - Shape in document coords.
    */
   drawShape(shape: ShapeSpec): void {

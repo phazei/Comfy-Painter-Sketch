@@ -104,7 +104,7 @@ export function withRgbChannel(url: string): string {
 }
 
 /**
- * Ask `/view` for the image's alpha (`channel=a`, M13a Image Mask). Server
+ * Ask `/view` for the image's alpha (`channel=a`, for the Image Mask). Server
  * side (`server.py` `view_image`): without `preview` it returns an RGBA PNG
  * with black RGB and the file's alpha in A (a file without an alpha channel:
  * 255 everywhere); with `preview` it would return the whole image as lossy

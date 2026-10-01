@@ -194,7 +194,7 @@ describe("Outputs tab slot cards", () => {
     expect(swatch.hidden).toBe(true);
   });
 
-  it("Alpha toggle (M13c): undoable per output, hidden but kept while Modify = Fill mask", async () => {
+  it("Alpha toggle: undoable per output, hidden but kept while Modify = Fill mask", async () => {
     const { ALPHA_TITLE } = await import("./outputOptionsRow");
     const { ops, paint, root } = await setup();
     const id = ops.addDefault(1)!;

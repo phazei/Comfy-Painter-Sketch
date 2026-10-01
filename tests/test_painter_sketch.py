@@ -204,5 +204,38 @@ class TestFingerprintSize(unittest.TestCase):
         self.assertNotEqual(self._fp(512, 512), self._fp(512, 512, image=None))
 
 
+class TestFingerprintUnsafeFiles(unittest.TestCase):
+    """Unsafe file values hash as missing and never touch the filesystem."""
+
+    @staticmethod
+    def _doc(file_val: str) -> str:
+        doc = json.loads(_manifest(8, 4))
+        doc["layers"][0]["file"] = file_val
+        return json.dumps(doc)
+
+    def test_unsafe_names_skip_filesystem(self) -> None:
+        fs = painter_sketch.folder_paths
+        for bad in ("../secret.png [input]", "other/x.png [input]",
+                    "painter-sketch/../../x.png [input]", "painter-sketch\\..\\x.png [input]",
+                    "painter-sketch/a [b/../../x.png", "painter-sketch/x.png [output]",
+                    "painter-sketch/x.png [temp]"):
+            with self.subTest(file=bad), \
+                    mock.patch.object(fs, "exists_annotated_filepath") as exists, \
+                    mock.patch.object(fs, "get_annotated_filepath") as get, \
+                    mock.patch.object(painter_sketch.os, "stat") as stat:
+                PainterSketch.fingerprint_inputs(
+                    document=self._doc(bad), invert_mask=False, width=8, height=4)
+                exists.assert_not_called()
+                get.assert_not_called()
+                stat.assert_not_called()
+
+    def test_safe_name_is_checked(self) -> None:
+        fs = painter_sketch.folder_paths
+        with mock.patch.object(fs, "exists_annotated_filepath", return_value=False) as exists:
+            PainterSketch.fingerprint_inputs(
+                document=_manifest(8, 4), invert_mask=False, width=8, height=4)
+            exists.assert_called_once_with("painter-sketch/ps-test.png [input]")
+
+
 if __name__ == "__main__":
     unittest.main()

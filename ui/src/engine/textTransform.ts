@@ -1,5 +1,6 @@
 /**
- * Free Transform of a text layer (SPEC M11b): the session box is the text's
+ * Free Transform of a text layer
+ * (SPEC "Free Transform and flips"): the session box is the text's
  * unrotated edit box at session start, and the session parameters map onto
  * `textData` instead of pixels:
  *

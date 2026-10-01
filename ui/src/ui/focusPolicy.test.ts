@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hoverMayTakeFocus, isScopeActive, isTextEntry, mayKeepFocus, pointerFocusAction } from "./focusPolicy";
+import { hoverMayTakeFocus, isScopeActive, isTextEntry, mayKeepFocus, pointerFocusAction, swallowsIdleArrow } from "./focusPolicy";
 
 const input = (type: string) => ({ tagName: "INPUT", type });
 
@@ -58,5 +58,28 @@ describe("scope state", () => {
     expect(hoverMayTakeFocus({ tagName: "BUTTON" })).toBe(true);
     expect(hoverMayTakeFocus({ tagName: "TEXTAREA" })).toBe(false);
     expect(hoverMayTakeFocus(input("text"))).toBe(false);
+  });
+});
+
+describe("unused arrow keys", () => {
+  const chord = (key: string, mods: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean } = {}) =>
+    ({ key, ctrlKey: false, metaKey: false, altKey: false, ...mods });
+  const hover = { engaged: false, fullscreen: false };
+  const engaged = { engaged: true, fullscreen: false };
+  const fullscreen = { engaged: false, fullscreen: true };
+
+  it("are swallowed while engaged or fullscreen, passed through while only hover-focused", () => {
+    for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) {
+      expect(swallowsIdleArrow(engaged, chord(key))).toBe(true);
+      expect(swallowsIdleArrow(fullscreen, chord(key))).toBe(true);
+      expect(swallowsIdleArrow(hover, chord(key))).toBe(false);
+    }
+  });
+
+  it("ignore other keys and Alt / Ctrl / Cmd combos", () => {
+    expect(swallowsIdleArrow(engaged, chord("a"))).toBe(false);
+    expect(swallowsIdleArrow(engaged, chord("ArrowLeft", { altKey: true }))).toBe(false);
+    expect(swallowsIdleArrow(engaged, chord("ArrowLeft", { ctrlKey: true }))).toBe(false);
+    expect(swallowsIdleArrow(engaged, chord("ArrowLeft", { metaKey: true }))).toBe(false);
   });
 });

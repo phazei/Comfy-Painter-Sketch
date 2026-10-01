@@ -1,5 +1,5 @@
 /**
- * Line and Arrow tools (U / Shift+U, SPEC Tools table): one implementation,
+ * Line and Arrow tools (U / Shift+U, SPEC "Tools" > "Line and Arrow (U group)"): one implementation,
  * two tools -- Arrow is a line whose arrowhead option defaults to "end".
  * Round caps, foreground colour, Shift snaps the angle to 15 degrees.
  */

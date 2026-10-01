@@ -1,5 +1,5 @@
 /**
- * width/height visibility follows the `image` link (M12 follow-up), and the
+ * width/height visibility follows the `image` link, and the
  * inserted-source layer naming helpers.
  */
 

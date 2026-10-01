@@ -1,6 +1,6 @@
 /**
- * Document -> image mapping (decision 4, SPEC "Saved-file contract", frame
- * mismatch). Layer pixels live in the document's own `frame` coordinates and
+ * Document -> image mapping (SPEC "Python execution", frame map and
+ * placement). Layer pixels live in the document's own `frame` coordinates and
  * are never resampled; the editor and Python both map them onto the current
  * image with the same contain-and-centre transform:
  *
@@ -8,8 +8,8 @@
  *   ox = (W - fw * s) / 2,  oy = (H - fh * s) / 2
  *   image = offset + doc * s
  *
- * The Move tool's document `placement {x, y, scale}` (SPEC "Saved-file
- * contract", Placement) is composed in: scaling by `k = scale` about the
+ * The Move tool's document `placement {x, y, scale}`
+ * (SPEC "Python execution") is composed in: scaling by `k = scale` about the
  * frame centre `c = (fw/2, fh/2)` and moving by `(x, y)` document px gives
  *
  *   effective scale  = s * k

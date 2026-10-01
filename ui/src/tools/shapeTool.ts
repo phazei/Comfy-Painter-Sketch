@@ -3,8 +3,11 @@
  * pointer-down opens a stroke on the paint target (layer or Quick Mask),
  * every move rebuilds the whole shape from the drag start and the current
  * pointer (`editor.drawShape`, a live preview in the stroke buffer), and
- * pointer-up rasterizes it into the layer as one undo patch. Cancel (Esc,
- * tool switch, pointer cancel) drops it.
+ * pointer-up turns it into a float on the target in a Free Transform
+ * session (`editor.endShape`; commit = one undo patch, cancel = gone).
+ * Cancel during the drag (Esc, tool switch, pointer cancel) drops it.
+ * While that session runs, a press outside its box commits it and starts
+ * the next shape in the same gesture (`transformTool.ts`, {@link Tool.drawsShapes}).
  *
  * Widths are in image px like brush size and are converted to document px
  * through the frame-map scale at pointer-down. Colours are read from
@@ -12,7 +15,7 @@
  *
  * Modifiers are read from every sample (the stage re-sends the last sample
  * when Shift/Alt change mid-drag). Alt at pointer-down belongs to the
- * temporary eyedropper (SPEC Tools table), which takes the whole press
+ * temporary eyedropper (SPEC "Tools" > "Common mechanics"), which takes the whole press
  * before the tool sees it, so an Alt seen here was pressed during the drag
  * (Photoshop: Alt = from centre once the drag has started).
  */
@@ -61,7 +64,7 @@ export const WIDTH_OPTION: OptionDescriptor = {
   kind: "number",
   key: "width",
   label: "Width",
-  title: "Line / stroke width",
+  title: "Line width ([ / ])",
   min: 1,
   max: 500,
   step: 1,
@@ -91,8 +94,10 @@ export abstract class ShapeTool<V extends ShapeBaseOptions> implements Tool {
   readonly shortcut: string;
   readonly icon: string;
   readonly options: OptionSet;
-  /** Alt at pointer-down = temporary eyedropper (SPEC Tools table). */
+  /** Alt at pointer-down = temporary eyedropper (SPEC "Tools" > "Common mechanics"). */
   readonly altEyedropper = true;
+  /** A press outside a shape's transform box commits it and draws the next shape. */
+  readonly drawsShapes = true;
   /** Stored option values (edited in place through {@link options}). */
   readonly values: V;
   private drag: Omit<ShapeDrag, "pointer"> | null = null;
@@ -137,7 +142,8 @@ export abstract class ShapeTool<V extends ShapeBaseOptions> implements Tool {
     if (!this.drag) return;
     this.update(editor, sample);
     this.drag = null;
-    editor.endStroke(null);
+    // The shape floats on the target in a Free Transform session (`engine/shapeFloat.ts`).
+    editor.endShape();
   }
 
   /** @inheritdoc */

@@ -21,10 +21,23 @@
  * Fullscreen ({@link KeyboardScope.setCaptureScope}): active without hover;
  * unhandled keys filtered by {@link fullscreenKeyPolicy}.
  *
+ * Arrow keys: a nudge (float, transform session, Move tools, selection
+ * outline with a selection tool) always stops
+ * them. Unused arrows are still swallowed while engaged or fullscreen, but
+ * reach ComfyUI while the editor is only hover-focused ({@link swallowsIdleArrow}).
+ *
  * Alt/Space/Shift/Ctrl modifier tracking is delegated to {@link ModifierScope}.
  */
 
-import { describeElement, hoverMayTakeFocus, isScopeActive, isTextEntry, mayKeepFocus, pointerFocusAction } from "./focusPolicy";
+import {
+  describeElement,
+  hoverMayTakeFocus,
+  isScopeActive,
+  isTextEntry,
+  mayKeepFocus,
+  pointerFocusAction,
+  swallowsIdleArrow,
+} from "./focusPolicy";
 import { fullscreenKeyPolicy } from "./fullscreenKeys";
 import { ModifierScope } from "./modifierScope";
 import { isSaveChord } from "./saveKey";
@@ -349,7 +362,12 @@ export class KeyboardScope {
       // ModifierScope handles the state update via its own capture listener.
       return;
     }
-    if (this.handlers.onKeyDown(event) || (this.captureScope && fullscreenKeyPolicy(event) === "swallow")) {
+    const fullscreen = this.captureScope !== null;
+    if (
+      this.handlers.onKeyDown(event) ||
+      (fullscreen && fullscreenKeyPolicy(event) === "swallow") ||
+      swallowsIdleArrow({ engaged: this.engaged, fullscreen }, event)
+    ) {
       event.preventDefault();
       event.stopPropagation();
     }

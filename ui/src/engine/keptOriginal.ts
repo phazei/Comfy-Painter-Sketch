@@ -1,5 +1,5 @@
 /**
- * Kept originals (SPEC "Free Transform (M11)", M11b): after a transform
+ * Kept originals (SPEC "Free Transform and flips"): after a transform
  * commit lands in a layer, the layer keeps its pre-transform pixels and the
  * cumulative matrix in memory, so the next whole-layer Free Transform
  * resamples ONCE from that original (5 x 10 deg = one 50 deg resample)

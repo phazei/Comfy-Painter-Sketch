@@ -1,5 +1,6 @@
 /**
- * Lasso tool (L, SPEC Tools table + "Selection"): freehand polygon from the
+ * Lasso tool (L, SPEC "Tools" > "Marquees (M group), Lasso (L), Magic wand (W)",
+ * SPEC "Selection"): freehand polygon from the
  * pointer samples (decimated to ~1 image px), anti-aliased
  * (`engine/selectionRaster.ts`), one `selection` history entry.
  *

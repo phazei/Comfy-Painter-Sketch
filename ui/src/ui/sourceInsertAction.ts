@@ -1,5 +1,5 @@
 /**
- * Thumbnail click in the Images panel (SPEC "Image sources (M12)"): load the
+ * Thumbnail click in the Images panel (SPEC "Image sources and the Images panel"): load the
  * full source image and hand its pixels to `Editor.insert` (new layer in
  * Free Transform, `engine/sourceInsert.ts`).
  *

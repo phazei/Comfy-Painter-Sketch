@@ -696,15 +696,20 @@ Design: "Free Transform (M11) -- agreed design".
 - [x] M14c: composite transparency joins the output masks (see Decisions Log 2026-09-28 "Transparency in outputs")
 
 ### M7b -- Release polish (last)
-- [ ] README: real feature list, drawing-vs-image model (fit, paint area, Match image resolution), shortcuts table, screenshots/GIF, install, storage + cleanup explanation
-- [ ] Example workflows (`example_workflows/`): e.g. LoadImage -> PainterSketch -> inpaint (Crop to mask); regions -> per-person prompts
-- [ ] Selection "add" cursor badge (+) looks too much like the copy-move cursor (+); make them distinct
-- [ ] Maybe: cursor hints for lmask thumbnail modifiers (Alt+click = eye in a square, Shift+click = red X)
-- [ ] "Not allowed" cursor (circle with a cross) over the canvas when the current tool can't edit the current target (hidden, locked, wrong target kind)
-- [ ] Maybe: while soloed, a hidden layer is editable (you can see it)
-- [ ] Maybe: small mask glyph by the brush ring while painting on a mask / layer mask (overlay-drawn, not a CSS cursor)
-- [ ] Full manual checklist (AGENTS.md "Testing") in both renderers before the first release
-
+Plan agreed 2026-09-30. Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
+1. [~] **Spec rewrite.** New `docs/SPEC.md` = how everything works now, organised by area (not a log), verified against the code; brief "Why" notes only where they stop a known mistake. Old SPEC -> `docs/archive/`. Mismatches between old spec and code go to the user as a list (bug / intended), no code changes during the rewrite. Keeps the full message-text list. `AGENTS.md` stays in root (code style, practices, agent behaviour, index of where things live) and points to `docs/SPEC.md`; little overlap. Shortcuts: documented completely; no Photoshop-conformance flags.
+2. [ ] **Icons + cursors (Lucide style).** No npm dependency: Lucide SVG data copied into the repo (ISC licence note). Our custom icons (move drawing, etc.) redrawn on Lucide's grid/stroke; merge down -> Lucide `layers-arrow-down` style; mapping table approved by the user first.
+   - Every tool gets its own cursor (no OS fallbacks: the user's Windows cursor set must never show over the stage). Photoshop as reference for which tools use a ring vs an icon. Precise hotspots.
+   - Precise cross = the user's modified Lucide `locate`: centre dot, arms `M12 18v4 M12 2v4.5 M17.5 12H22 M2 12h4.5`, circle r=7.
+   - Brush = ring; eraser = ring + eraser icon bottom-right outside the ring. Text = Lucide `text-cursor`.
+   - Cursor composer with badge slots: bottom-right = mode (selection `+ − ×`, copy-move `copy-plus`), bottom/top-left = target (mask glyph on cmask/lmask), state = not-allowed (`ban`) when the tool can't edit the target (computed before the click; the reason still only shows as a note on click). Lucide `square-dashed-plus` / `-x` (+ a custom `-minus`) available for selection modes.
+   - Every modifier that changes what a click does gets an indicator (incl. lmask thumbnail Alt = eye-in-square, Shift = red X).
+   - Sizes / stroke width: CSS variables, chosen in the UI refresh; must read on any background.
+3. [ ] **UI refresh** (discuss first). Procreate-like styling and space, not minimalism; keep following ComfyUI theme colours; floating menus / fly-outs allowed; shorter long-press for tool-group fly-outs; more room while keeping every feature reachable in-node (not fullscreen-only). Includes the **help overlay**: `?` key + `?` button, sections of useful shortcuts; single source in its own file if a sensible display for all shortcuts exists.
+4. [ ] **Simple mode** (after the refresh; its requirements depend on the new layout). Per-node toggle saved in the document + setting for the default; no shortcut. Button `SIMPLE` / `ADVANCED` above the editor (header area: negative-margin DOM element in the empty title area, or a header draw path -- the user has a reference node for the Vue header). Contents: brush, eraser, bucket, eyedropper, Move layer, rectangle marquee; swatches + picker; undo/redo, zoom/pan, fullscreen; layers panel with paint layers + one cmask row (+ Image/Input Mask row when present), no blend/opacity; brush options size/hardness/opacity. Hidden tools' shortcuts still work (their icon makes it obvious). Output options keep applying.
+5. [ ] **README** (after the UI, with the user's screenshots; no install section): pitch, quick start, feature overview, I/O, condensed shortcuts, storage + cleanup, limitations, licence. Example workflow(s) = the node with its inputs attached. Use-case brainstorming for videos happens outside opencode from `docs/SPEC.md`.
+6. [ ] **Manual checklist** (AGENTS.md "Testing") with Nodes 2.0 off and on, then release.
+- Maybe: while soloed, a hidden layer is editable (you can see it).
 ### Handoff notes (for the next session)
 - M0-M6, M7a and M8-M13 are done and browser-verified; the user commits. Update checkboxes + Decisions Log as work lands.
 - Main (coordinating) session: read `AGENT_ORCHESTRATOR.md` for how to delegate to agents, verify, and report. Sub-agents don't need it.

@@ -91,10 +91,23 @@ class CleanupTest(unittest.TestCase):
         self._file(A)
         self._file(B, mtime=time.time())  # too new
         self._file("ps-abcd-12 (1).png")  # upload rename
-        self._file("ps-ABCD-12.png")  # upper case
+        self._file("ps-abcd-AB.png")  # upper-case hash: never written
+        self._file("ps-abcd-12.PNG")  # upper-case extension: never written
         self._file("other.png")
         os.makedirs(os.path.join(self.folder, "ps-dir-12.png"))
         self.assertEqual([c.name for c in find_candidates(self.folder, time.time())], [A])
+
+    def test_upper_case_doc_id_is_a_candidate(self) -> None:
+        """contentHash.ts keeps the doc id's case, so such files must be cleanable."""
+        kept = "ps-AbCd1234-0123456789abcd.png"
+        gone = "ps-XYZ98765-0123456789abcd.webp"
+        self._file(kept)
+        self._file(gone)
+        self._workflow("workflows/w.json", f'"painter-sketch\\/{kept} [input]"')
+        self.assertEqual([c.name for c in find_candidates(self.folder, time.time())], [kept, gone])
+        real = run_cleanup(self.folder, self.user_dir, set(), dry_run=False)
+        self.assertEqual(real["deleted"], [gone])
+        self.assertEqual(os.listdir(self.folder), [kept])
 
     def test_missing_folder(self) -> None:
         self.assertEqual(find_candidates(os.path.join(self.folder, "nope"), time.time()), [])

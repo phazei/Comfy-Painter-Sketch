@@ -5,14 +5,14 @@ All functions take plain tensors and return plain tensors; no PIL, no file I/O,
 no ComfyUI imports.  This keeps them unit-testable in isolation and lets the
 compositor be called from tests without a ComfyUI environment.
 
-Coordinate system (SPEC.md "Saved-file contract"):
+Coordinate system (SPEC "Document and saved files"):
     - Frame: the final output rectangle, W x H pixels.
     - Bounds: the layer's paint area in frame coords; may extend outside the
       frame (negative x/y, or width/height exceeding the frame).
     - Layer PNG: exactly bounds.width x bounds.height pixels; pixel (px, py)
       sits at frame coordinate (bounds.x + px, bounds.y + py).
 
-Frame-mismatch scaling (decision 4, SPEC.md "Saved-file contract"):
+Frame-mismatch scaling (SPEC "Python execution"):
     When the run-time image is W x H but the document recorded fw x fh:
         s = min(W/fw, H/fh)
         offset_x = (W - fw*s) / 2
@@ -21,7 +21,7 @@ Frame-mismatch scaling (decision 4, SPEC.md "Saved-file contract"):
         (offset_x + bounds.x * s, offset_y + bounds.y * s)
     then the whole result is cropped to W x H.
 
-Placement (Move tool, SPEC.md "Saved-file contract"):
+Placement (Move tool, SPEC "Python execution"):
     Document placement {x, y, scale} is composed into the map above, scaling
     about the frame centre c = (fw/2, fh/2):
         eff_s  = s * scale
@@ -31,25 +31,26 @@ Placement (Move tool, SPEC.md "Saved-file contract"):
     The frontend (`ui/src/engine/frameMap.ts`) evaluates the same expressions
     in the same order, so both round to the same integer rect.
 
-Compositing (SPEC.md "Paint layers"):
+Compositing (SPEC "Python execution"):
     Normal blend, straight-alpha "over":
         out_rgb = layer_rgb * (layer_alpha * opacity) + bg_rgb * (1 - layer_alpha * opacity)
     Applied bottom -> top; broadcast over the batch dimension.
 
-Mask combination (SPEC.md "Mask layers", decision 5):
+Mask combination (SPEC "Python execution"):
     Each visible mask layer's alpha channel -> optional per-layer invert ->
     max union over all visible mask layers -> node-level invert_mask.
     Areas outside the placed layer (not covered by the PNG) count as 0.0
     *before* the per-layer invert, so a fully-inverted mask layer with no
     paint covers the whole frame.
 
-Image Mask (M13a):
+Image Mask:
     The loaded Image Mask coverage (``layer_tensors[IMAGE_MASK_KEY]``, image
     px, exactly the run-time image size) joins the union like a visible mask
     layer: placed at the image origin (0 outside the image), its own invert,
-    then the max. Only when visible and not stale (M13b: or ``input_mask.py``).
+    then the max. Only when visible and not stale (the ``mask`` input's
+    coverage, from ``input_mask.py``, takes its place).
 
-Transparency in outputs (M14c, SPEC.md Decisions Log): with the Background eye
+Transparency in outputs (SPEC "Python execution"): with the Background eye
 off the layers composite over a transparent base (:func:`run_transparent_composite`);
 ``T = 1 - alpha`` joins the MASK after ``invert_mask`` (max, never inverted).
 With the eye on the composite is opaque and none of this runs.
@@ -235,7 +236,7 @@ def _placed_paint(
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Yield ``(rgb [H, W, 3], effective alpha [H, W, 1])`` of each visible paint/text layer, bottom -> top.
 
-    Effective alpha = the placed straight alpha (already multiplied by any M14
+    Effective alpha = the placed straight alpha (already multiplied by any
     layer mask) times the layer opacity. Arguments as in :func:`composite_paint_layers`.
     """
     iw, ih = image_size or (W, H)
@@ -258,7 +259,7 @@ def composite_premultiplied(
     image_size: tuple[int, int] | None = None,
     origin: tuple[int, int] = (0, 0),
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Composite the visible paint/text layers over a transparent base (M14c).
+    """Composite the visible paint/text layers over a transparent base.
 
     Same "over" as :func:`composite_paint_layers`, on premultiplied colour:
     ``P = rgb * a + P * (1 - a)``, ``A = a + A * (1 - a)``. Over a solid colour
@@ -301,7 +302,7 @@ def combine_mask_layers(
 ) -> torch.Tensor:
     """Build the final MASK tensor from visible mask layers.
 
-    Per SPEC decision 5:
+    Per SPEC "Python execution":
       1. Place each visible mask layer's alpha channel onto the W x H canvas
          (zeros outside the placed area, *before* per-layer invert).
       2. Apply per-layer ``invert`` (``1 - alpha``).
@@ -310,8 +311,8 @@ def combine_mask_layers(
     The Image Mask (``image_mask``) counts as one more visible mask layer,
     placed at the image origin instead of through the frame map.
 
-    Opacity and display color are intentionally ignored for masks (SPEC.md:
-    "opacity and color are display-only and do NOT affect MASK").
+    Opacity and display color are intentionally ignored for masks (SPEC "Python execution":
+    cmask opacity/color are display only).
 
     Args:
         layers:        All document layers (bottom -> top).
@@ -372,7 +373,7 @@ def combine_mask_layers(
 
 
 def _place_image_px(coverage: torch.Tensor, W: int, H: int, origin: tuple[int, int]) -> torch.Tensor:
-    """Copy an image-px ``[..., ih, iw]`` plane (M13b: a ``[Bm, ih, iw]`` batch) onto a W x H canvas at image px ``origin``.
+    """Copy an image-px ``[..., ih, iw]`` plane (or a ``[Bm, ih, iw]`` batch) onto a W x H canvas at image px ``origin``.
 
     Args:
         coverage: ``[..., ih, iw]`` float32 plane(s) at image px ``(0, 0)``.
@@ -461,7 +462,7 @@ def run_transparent_composite(
     image_size: tuple[int, int] | None = None,
     origin: tuple[int, int] = (0, 0),
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """:func:`run_composite` with the Background eye off: the composite's own transparency (M14c).
+    """:func:`run_composite` with the Background eye off: the composite's own transparency.
 
     The base is transparent instead of the input image. IMAGE = the layers
     flattened onto ``background``; MASK = ``max(mask layers incl. invert_mask,

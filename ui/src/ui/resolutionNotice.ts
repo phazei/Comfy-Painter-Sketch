@@ -1,5 +1,5 @@
 /**
- * Drawing-resolution mismatch notice (SPEC "Drawing resolution"): when the
+ * Drawing-resolution mismatch notice (SPEC "Layers" > "Background row and drawing resolution"): when the
  * current image is more than 1.5x finer than the drawing grid, the options bar
  * shows "Drawing grid W px -- image W px (N.Nx)" and a **Match image
  * resolution** button (every tool), the Move drawing footer icon turns red

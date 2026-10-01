@@ -1,5 +1,5 @@
 /**
- * Foreground / background colour state (SPEC "Color"): the brush paints the
+ * Foreground / background colour state (SPEC "Colour"): the brush paints the
  * foreground; `X` swaps, `D` resets to black/white. Session-scoped UI state,
  * never saved in the document. Colours are normalized `#rrggbb`.
  */

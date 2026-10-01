@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createEmptyDocument } from "./create";
-import { parseDocument } from "./parse";
+import { MAX_DOCUMENT_SIDE, parseDocument } from "./parse";
 import { stringifyDocument } from "./serialize";
 
 describe("createEmptyDocument", () => {
@@ -60,6 +60,7 @@ describe("parseDocument", () => {
     });
     expect(parseDocument({ version: 1, frame: { width: 0, height: 10 }, layers: [] }).status).toBe("invalid");
     expect(parseDocument({ version: 1, frame: { width: 10, height: 10 }, layers: "x" }).status).toBe("invalid");
+    expect(parseDocument({ version: 1, frame: { width: 10, height: 10 }, layers: null }).status).toBe("invalid");
     expect(
       parseDocument({
         version: 1,
@@ -128,5 +129,25 @@ describe("parseDocument", () => {
   it("adds a paint layer when none exists", () => {
     const result = parseDocument({ version: 1, frame: { width: 4, height: 4 }, layers: [] });
     expect(result.status === "ok" && result.document.layers[0]?.kind).toBe("paint");
+  });
+
+  it("treats a missing layers key as an empty stack (as Python)", () => {
+    const result = parseDocument({ version: 1, frame: { width: 4, height: 4 } });
+    if (result.status !== "ok") throw new Error("expected ok");
+    expect(result.repaired).toBe(true);
+    expect(result.skippedLayers).toBeUndefined();
+    expect(result.document.layers.map((l) => l.kind)).toEqual(["paint"]);
+  });
+
+  it("repairs an oversized bounds to the frame instead of rejecting", () => {
+    const result = parseDocument({
+      version: 1,
+      frame: { width: 4, height: 4 },
+      bounds: { x: 0, y: 0, width: MAX_DOCUMENT_SIDE + 1, height: 4 },
+      layers: [],
+    });
+    if (result.status !== "ok") throw new Error("expected ok");
+    expect(result.repaired).toBe(true);
+    expect(result.document.bounds).toEqual({ x: 0, y: 0, width: 4, height: 4 });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * Text tool operations of the editor core (SPEC M6b), exposed as
+ * Text tool operations of the editor core (SPEC "Tools" > "Text (T)"), exposed as
  * {@link Editor.text}: create a text layer, (re-)edit one, apply live
  * changes, commit.
  *
@@ -22,7 +22,7 @@ import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import type { Point } from "../geometry/rect";
 import { editBlockNote } from "./rasterize";
-import { layerMaskBlockNote, targetedMaskLayer } from "./layerMask";
+import { LAYER_MASK_TOOL_NOTE } from "./layerMask";
 import type { EditorState } from "./editorState";
 import { emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
 import type { LayerOps } from "./layerOps";
@@ -112,9 +112,9 @@ export class TextOps {
     this.commit();
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
-    // M14: text can't paint a layer mask (the brush, eraser and fill can).
-    const masked = targetedMaskLayer(s);
-    const note = masked ? layerMaskBlockNote(s, masked, "other") : null;
+    // A targeted lmask doesn't block new text (it makes a new text layer, never paints the
+    // lmask); only the lmask-only view does, where text layers aren't visible.
+    const note = this.viewBlockNote();
     if (note) {
       s.events.emit("note", note);
       return null;
@@ -130,7 +130,8 @@ export class TextOps {
 
   /**
    * Open an existing text layer for editing (makes it active). Commits any
-   * other open edit first; locked / hidden layers show a note.
+   * other open edit first; locked / hidden layers show a note, and so does
+   * the lmask-only view (the text isn't visible there).
    * @param layerId - Text layer id.
    * @returns `true` if the edit is open.
    */
@@ -141,7 +142,7 @@ export class TextOps {
     s.settleFloat();
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    const note = editBlockNote(s, layer);
+    const note = this.viewBlockNote() ?? editBlockNote(s, layer);
     if (note) {
       s.events.emit("note", note);
       return false;
@@ -174,7 +175,7 @@ export class TextOps {
 
   /**
    * Rotation (degrees) of a text layer that is not being edited (Text tool
-   * angle field; M11b). Consecutive changes on the same layer merge into
+   * angle field). Consecutive changes on the same layer merge into
    * one text step (gesture `text-angle`), like arrow nudges.
    * @param layerId - Text layer id.
    * @param deg - Rotation, degrees.
@@ -261,6 +262,15 @@ export class TextOps {
     s.afterEdit();
     emitLayerEvents(s);
     return true;
+  }
+
+  /**
+   * In the lmask-only view (Alt+click) text layers aren't visible, so neither
+   * creating text nor opening an existing one for editing is allowed.
+   * @returns Note, or `null` when allowed.
+   */
+  private viewBlockNote(): string | null {
+    return this.s.layerMasks.view !== null ? LAYER_MASK_TOOL_NOTE : null;
   }
 
   private removeEmpty(layer: Layer, e: EditSession): boolean {

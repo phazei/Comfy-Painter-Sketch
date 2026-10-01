@@ -1,5 +1,5 @@
 /**
- * Marching ants on the stage overlay (decision 7): the current selection's
+ * Marching ants on the stage overlay (SPEC "Selection"): the current selection's
  * cached outline (`Editor.selection.outline()`, document coords) and an
  * in-progress tool outline (marquee box, lasso path), drawn through the
  * document -> image map (`frameMap.ts` functions, so Move placement applies)

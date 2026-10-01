@@ -1,5 +1,5 @@
 /**
- * Floating selections (SPEC M10a "Floats"), exposed as `Editor.float`.
+ * Floating selections (SPEC "Floating selections"), exposed as `Editor.float`.
  *
  * A float is transient editor state -- never a document layer, never saved,
  * not in the layer list. Lifting reads the selected pixels of the current
@@ -22,7 +22,7 @@
  *   restores the selection: nothing happened.
  * - A float left at its lift position commits as a cancel (no-op step).
  *
- * Free Transform (M11) extends a float with an affine matrix
+ * Free Transform extends a float with an affine matrix
  * ({@link FloatOps.setTransform}; sessions live in `transformOps.ts`,
  * exposed as {@link FloatOps.transform}): the preview draws the float canvas
  * through the matrix (smoothed), the commit resamples ONCE from the lifted
@@ -32,7 +32,7 @@
  * display ({@link FloatOps.bake}); a later session restarts from the lifted
  * pixels with the cumulative matrix. Lifting itself is in `floatLift.ts`.
  *
- * Layer masks (M14b): an lmask-targeted float belongs to the mask key
+ * Layer masks: an lmask-targeted float belongs to the mask key
  * (`layerId`); a whole-layer float carries the layer's lmask (`carry`,
  * shown through {@link FloatOps.preview} for the mask key, landed and kept
  * with the layer -- `layerMaskCarry.ts`).
@@ -60,7 +60,7 @@ export type { FloatState } from "./floatLift";
  */
 export class FloatOps {
   private f: FloatState | null = null;
-  /** Free Transform sessions over this float (M11). */
+  /** Free Transform sessions over this float. */
   readonly transform: TransformOps;
 
   /**
@@ -97,6 +97,11 @@ export class FloatOps {
   /** Current offset of the float from where it was lifted (document px), or `null`. */
   get offset(): { dx: number; dy: number } | null {
     return this.f ? { dx: this.f.dx, dy: this.f.dy } : null;
+  }
+
+  /** Whether the float is a shape tool's result in its Free Transform session (`shapeFloat.ts`). */
+  get shape(): boolean {
+    return this.f?.shape === true;
   }
 
   /** Layer the float belongs to, or `null`. */
@@ -156,7 +161,7 @@ export class FloatOps {
   }
 
   /**
-   * Whole-layer lift from the layer's kept original (M11b), if it has a
+   * Whole-layer lift from the layer's kept original, if it has a
    * valid one and there is no selection.
    * @returns `true` if a float exists afterwards.
    */
@@ -288,7 +293,7 @@ export class FloatOps {
    */
   commit(): boolean {
     const f = this.f;
-    // No float: a text transform session (M11b) may be open instead.
+    // No float: a text transform session may be open instead.
     if (!f) return this.transform.textActive ? this.transform.commit() : false;
     const s = this.s;
     const m = this.matrix() ?? translation(f.area.x, f.area.y);
@@ -298,14 +303,14 @@ export class FloatOps {
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
-    // Kept original (M11b): only when the float is ALL the layer will hold (never an lmask float).
+    // Kept original: only when the float is ALL the layer will hold (never an lmask float).
     const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
     writeFloatPatch(s, f, m);
     releaseFloat(f);
     if (keep) {
       const params = f.params && affineEquals(paramsMatrix(f.params, f.area.width, f.area.height), m) ? f.params : undefined;
       s.kept.keep(f.layerId, { pixels: f.pixels, area: { ...f.area }, m, params, revision: s.runtime.revision(f.layerId) });
-      // The carried lmask keeps its own original (M14b), valid while the mask's revision holds.
+      // The carried lmask keeps its own original, valid while the mask's revision holds.
       const c = f.carry;
       if (c) s.kept.keep(c.key, { pixels: c.pixels, area: { ...c.area }, m: carryMatrix(c, liftMatrix(f), m), revision: s.runtime.revision(c.key) });
     }
@@ -327,7 +332,7 @@ export class FloatOps {
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
     this.bump(f);
-    s.selection.set(f.selBefore);
+    if (!f.shape) s.selection.set(f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
     s.events.emit("history", undefined);
@@ -367,7 +372,7 @@ export class FloatOps {
     if (f.carry) this.s.runtime.bump(f.carry.key);
   }
 
-  /** Display of a store key while floating: the float's own key, or its carried lmask (M14b). */
+  /** Display of a store key while floating: the float's own key, or its carried lmask. */
   private preview(layerId: string): HTMLCanvasElement | null {
     const f = this.f;
     if (!f) return null;

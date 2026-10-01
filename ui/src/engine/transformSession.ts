@@ -1,5 +1,5 @@
 /**
- * Free Transform session state (SPEC M11) and its handle drags, pure: the
+ * Free Transform session state (SPEC "Free Transform and flips") and its handle drags, pure: the
  * parameters a drag in progress asks for (`transformOps.ts` shows them).
  */
 
@@ -15,7 +15,7 @@ import type { Affine, TransformParams } from "./transformMath";
 export interface Session {
   /** The float it belongs to (the session ends when the float does); `null` for text. */
   float: Readonly<FloatState> | null;
-  /** Text layer session (M11b), or `null` for pixels. */
+  /** Text layer session, or `null` for pixels. */
   text: TextTransform | null;
   /** Box size (float-local / unrotated text box), px. */
   w: number;

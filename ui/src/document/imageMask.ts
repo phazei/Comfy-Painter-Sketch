@@ -1,5 +1,5 @@
 /**
- * Image Mask (M13a, SPEC "Image Mask / Input Mask"): the fixed mask row made
+ * Image Mask (SPEC "Layers" > "Image Mask / Input Mask row"): the fixed mask row made
  * from the background image's alpha (coverage = 255 - alpha, LoadImage's MASK
  * polarity). Unlike mask layers its pixels are CURRENT-IMAGE px (the file is
  * exactly `width x height`, the upstream image's size); it is never painted,
@@ -15,7 +15,7 @@
  * settings (eye, colour, invert, overlay opacity, solo) apply to it as they
  * are. Reading lives in `parse.ts` (shared guards).
  *
- * M13b, Input Mask: while the node's `mask` input is connected the same
+ * Input Mask: while the node's `mask` input is connected the same
  * record holds the row's settings, with `file: null` (Python has the tensor)
  * and a `sourceKey` starting with {@link INPUT_MASK_KEY_PREFIX}; its size is
  * the image's. Same manifest shape, no version bump. The name is not saved:
@@ -32,14 +32,14 @@ export const IMAGE_MASK_ID = "\u0000image-mask";
 /** Row name while it shows the image's alpha. */
 export const IMAGE_MASK_NAME = "Image Mask";
 
-/** Row name while the `mask` input is connected (M13b). */
+/** Row name while the `mask` input is connected. */
 export const INPUT_MASK_NAME = "Input Mask";
 
 /** `sourceKey` prefix of an Input Mask record (image source keys never start with it). */
 export const INPUT_MASK_KEY_PREFIX = "mask:";
 
 /**
- * Whether a record's source is the `mask` input (M13b) rather than the image's alpha.
+ * Whether a record's source is the `mask` input rather than the image's alpha.
  * @param sourceKey - Record `sourceKey`.
  * @returns `true` for Input Mask keys.
  */
@@ -59,7 +59,7 @@ export interface ImageMask extends Layer {
 
 /**
  * A new Image Mask record (visible, not inverted, no file yet), named after its source.
- * @param sourceKey - Background source key (M13b: an Input Mask key).
+ * @param sourceKey - Background source key (an Input Mask key while `mask` is connected).
  * @param size - Image size.
  * @param style - Overlay colour + opacity.
  * @returns The record.

@@ -1,5 +1,5 @@
 /**
- * Move-tool placement values (SPEC "Saved-file contract", Placement): the
+ * Move-tool placement values (SPEC "Document and saved files"): the
  * identity, the scale clamp and lenient validation. Mirrors
  * `nodes/document.py::parse_placement`. The mapping math lives in
  * `engine/frameMap.ts` (composed into the frame map) and the interaction

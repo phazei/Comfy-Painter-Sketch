@@ -1,5 +1,5 @@
 /**
- * Options-bar fields of a Free Transform session (SPEC M11), pure over the
+ * Options-bar fields of a Free Transform session (SPEC "Free Transform and flips"), pure over the
  * session parameters: X / Y = box centre in IMAGE px (through the document
  * map), W / H = unsigned scale fractions, angle in degrees.
  */

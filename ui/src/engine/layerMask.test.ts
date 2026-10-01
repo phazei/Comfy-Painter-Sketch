@@ -1,5 +1,5 @@
 /**
- * M14a layer masks in the engine, in the ComfyUI polarity (white / alpha 255
+ * Layer masks in the engine, in the ComfyUI polarity (white / alpha 255
  * = hidden, black / alpha 0 = shown): add modes, target switching, the
  * black / white mask swatches (X / D, swap), brush + bucket paint the
  * foreground swatch, eraser reveals, Delete / Alt+Backspace like mask
@@ -266,19 +266,32 @@ describe("painting the mask", () => {
     expect(px(ed, ed.layerCanvas(id), 3, 3)[3]).toBe(0); // layer pixels never filled
   });
 
-  it("Delete reveals and Alt+Backspace hides the selection, exactly like on a mask layer", () => {
+  it("Delete reveals; Alt / Ctrl+Backspace fill the selection with the FG / BG mask swatch", () => {
     const { ed, id, notes } = setup();
     const maskLayer = ed.doc.layers.find((l) => l.kind === "mask");
     if (!maskLayer) throw new Error("no mask layer");
     ed.layerMask.add(id, "reveal");
-    ed.layerMask.swapSwatches(); // swatches don't matter for Delete / Backspace
     expect(ed.selection.clearSelected()).toBe(false); // needs a selection, like mask layers
-    expect(ed.selection.fillSelected("#123456")).toBe(false);
+    expect(ed.selection.fillSelected("#123456", "fg")).toBe(false);
     expect(notes.length).toBe(2);
     ed.selection.apply(rectSelection({ x: 8, y: 8, width: 4, height: 4 }), "replace");
-    expect(ed.selection.fillSelected("#123456")).toBe(true);
+    // Default swatches: FG white, BG black. Ctrl+Backspace (BG) reveals: already revealed.
+    expect(ed.selection.fillSelected("#123456", "bg")).toBe(false);
+    expect(ed.selection.fillSelected("#123456", "fg")).toBe(true); // Alt+Backspace hides
     expect([maskA(ed, id, 10, 10), maskA(ed, id, 1, 1)]).toEqual([255, 0]);
-    expect(ed.selection.clearSelected()).toBe(true);
+    ed.selection.apply(rectSelection({ x: 8, y: 8, width: 2, height: 4 }), "replace");
+    expect(ed.selection.fillSelected("#123456", "bg")).toBe(true); // BG black reveals
+    expect([maskA(ed, id, 8, 10), maskA(ed, id, 10, 10)]).toEqual([0, 255]);
+    // Swapped (FG black, BG white): the keys swap roles, the colour is never used.
+    ed.layerMask.swapSwatches();
+    expect(ed.selection.fillSelected("#ffffff", "bg")).toBe(true);
+    expect(maskA(ed, id, 8, 10)).toBe(255);
+    ed.selection.apply(rectSelection({ x: 8, y: 8, width: 4, height: 4 }), "replace");
+    expect(ed.selection.fillSelected("#ffffff", "fg")).toBe(true);
+    expect(maskA(ed, id, 10, 10)).toBe(0);
+    ed.selection.fillSelected("#000000", "bg");
+    expect(maskA(ed, id, 10, 10)).toBe(255);
+    expect(ed.selection.clearSelected()).toBe(true); // Delete reveals whatever the swatches
     expect(maskA(ed, id, 10, 10)).toBe(0);
     // The same keys on the mask layer (Quick Mask): add / clear coverage.
     ed.setPaintTarget("mask");
@@ -295,8 +308,14 @@ describe("painting the mask", () => {
     ed.layerMask.add(id, "reveal");
     expect(ed.beginStroke({ ...BRUSH, shape: true }, 1)).toBe(false);
     expect(notes).toContain(LAYER_MASK_TOOL_NOTE);
+    // Text is not blocked by a targeted lmask: it makes a new text layer, never paints the lmask.
     const style = { font: "Arial", size: 12, color: "#000000", bold: false, italic: false, align: "left" as const };
-    expect(ed.text.create({ x: 4, y: 8 }, style)).toBeNull();
+    const textId = ed.text.create({ x: 4, y: 8 }, style);
+    expect(textId).not.toBeNull();
+    expect(ed.doc.layers.find((l) => l.id === textId)?.kind).toBe("text");
+    ed.text.commit(); // empty: dropped again
+    expect(ed.doc.layers.find((l) => l.id === id)?.layerMask).toBeDefined();
+    ed.layerOps.setActiveLayer(id);
     ed.layerMask.setTarget(id, "layer");
     expect(ed.beginStroke({ ...BRUSH, shape: true }, 1)).toBe(true);
     ed.cancelStroke();

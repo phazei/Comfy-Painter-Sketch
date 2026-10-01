@@ -1,5 +1,5 @@
 /**
- * Rectangle and Ellipse tools (U / Shift+U, SPEC Tools table). Paint mode
+ * Rectangle and Ellipse tools (U / Shift+U, SPEC "Tools" > "Rectangle and Ellipse (U group)"). Paint mode
  * stroke / fill / both: stroke and fill-only use the foreground colour;
  * "both" strokes with the foreground and fills with the background
  * (Photoshop's FG/BG pair). Shift = square/circle; Alt pressed during the
@@ -23,6 +23,8 @@ export type BoxShapeOptions = {
 
 /** Options bar layout of the rectangle/ellipse tools. */
 export const BOX_OPTION_DESCRIPTORS: readonly OptionDescriptor[] = [
+  { ...WIDTH_OPTION, title: "Stroke width ([ / ])" },
+  OPACITY_OPTION,
   {
     kind: "select",
     key: "paint",
@@ -34,8 +36,6 @@ export const BOX_OPTION_DESCRIPTORS: readonly OptionDescriptor[] = [
       { value: "both", label: "Both" },
     ],
   },
-  { ...WIDTH_OPTION, title: "Stroke width" },
-  OPACITY_OPTION,
 ];
 
 /**

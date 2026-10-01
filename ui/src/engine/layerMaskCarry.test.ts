@@ -1,10 +1,10 @@
 /**
- * M14b layer mask interactions (SPEC "Layer masks (M14)", "M14b
- * interactions"): whole-layer Move / Free Transform (incl. the mask's kept
- * original) / flip carry the lmask; selection floats follow the target
- * (pixels leave the lmask put, the lmask target lifts the mask's own
- * pixels); Merge Down with an upper / lower lmask; copy / cut on both
- * targets; Apply (invert, outside); Ctrl+click on the row ignores the lmask.
+ * Layer mask interactions (SPEC "Layer masks (lmask)", Carry): whole-layer
+ * Move / Free Transform (incl. the mask's kept original) / flip carry the
+ * lmask; selection floats follow the target (pixels leave the lmask put, the
+ * lmask target lifts the mask's own pixels); Merge Down with an upper /
+ * lower lmask; copy / cut on both targets; Apply (invert, outside);
+ * Ctrl+click on the row ignores the lmask.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

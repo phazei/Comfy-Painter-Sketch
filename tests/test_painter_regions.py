@@ -1,4 +1,4 @@
-"""Tests for the M9 node contract: PainterSketch outputs and the PainterSketch Regions helper."""
+"""Tests for the node contract: PainterSketch outputs and the PainterSketch Regions helper."""
 
 import json
 import unittest
@@ -184,7 +184,7 @@ class TestRegionFingerprints(unittest.TestCase):
     def test_file_stat_hashing_survives_new_metadata(self) -> None:
         """A changed layer file mtime changes the fingerprint."""
         document = _manifest(regions=[_region(6)], layers=[
-            {"id": "paint", "kind": "paint", "file": "paint.png [input]"},
+            {"id": "paint", "kind": "paint", "file": "painter-sketch/paint.png [input]"},
         ])
         with mock.patch.object(painter_sketch.folder_paths, "exists_annotated_filepath", return_value=True), \
                 mock.patch.object(painter_sketch.folder_paths, "get_annotated_filepath", return_value="paint.png"), \

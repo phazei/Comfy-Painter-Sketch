@@ -5,7 +5,7 @@
  * clipboard group (Copy, Cut, Paste with a long-press source menu,
  * `pasteButton.ts`; rules above and below), then
  * the always-visible actions (Undo, Redo, Fit, Clear, Fullscreen; SPEC
- * "Canvas / view"). Renders into the shell's `rail.tools` region; the swatch
+ * "Editor shell and focus"). Renders into the shell's `rail.tools` region; the swatch
  * widget lives in `rail.swatchSlot`.
  */
 
@@ -83,7 +83,7 @@ export class ToolRail {
       this.pasteButton.element,
     );
     this.undoButton = railButton("undo", "Undo (Ctrl+Z)", () => this.actions.undo());
-    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z)", () => this.actions.redo());
+    this.redoButton = railButton("redo", "Redo (Ctrl+Shift+Z / Ctrl+Y)", () => this.actions.redo());
     this.fullscreenButton = railButton("fullscreen", "Fullscreen (F)", () => this.actions.fullscreen());
     this.fullscreenButton.setAttribute("aria-pressed", "false");
     const actionGroup = group();
@@ -98,7 +98,7 @@ export class ToolRail {
   }
 
   /**
-   * Add a button to the clipboard group, after Paste (M12 Images button).
+   * Add a button to the clipboard group, after Paste (the Images button).
    * @param element - Button element.
    */
   appendClipboardButton(element: HTMLElement): void {

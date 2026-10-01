@@ -18,7 +18,7 @@ if _REPO not in sys.path:
 from nodes.document import (
     Bounds, Document, Frame, Layer,
     FRAME_MAX,
-    parse_document, frame_size,
+    parse_document,
 )
 
 
@@ -126,9 +126,12 @@ class TestBoundsValidation(unittest.TestCase):
         self.assertEqual(doc.bounds, Bounds(0, 0, 100, 200))
 
     def test_bounds_offset_cap_matches_editor(self):
-        """|x|, |y| up to 4 * 16384 are accepted (editor isInt); beyond falls back."""
-        ok = parse_document(_make_doc(bounds={"x": -65536, "y": 0, "width": 200, "height": 300}))
-        self.assertEqual(ok.bounds.x, -65536)
+        """|x|, |y| beyond 4 * 16384 are malformed and fall back (editor isInt).
+
+        In range, the frame-containment rule (bounds side <= 16384) is the real limit.
+        """
+        ok = parse_document(_make_doc(bounds={"x": -16000, "y": 0, "width": 16100, "height": 200}))
+        self.assertEqual(ok.bounds.x, -16000)
         bad = parse_document(_make_doc(bounds={"x": -65537, "y": 0, "width": 200, "height": 300}))
         self.assertEqual(bad.bounds, Bounds(0, 0, 100, 200))
 
@@ -228,13 +231,37 @@ class TestLayerParsing(unittest.TestCase):
         self.assertEqual([l.id for l in doc.layers], ["l0", "l1", "l2"])
 
 
-class TestFrameSize(unittest.TestCase):
-    def test_none_returns_none(self):
-        self.assertIsNone(frame_size(None))
+class TestEditorParity(unittest.TestCase):
+    """Manifests the editor rejects (parse.ts) are "no document" here too."""
 
-    def test_returns_tuple(self):
-        doc = parse_document(_make_doc())
-        self.assertEqual(frame_size(doc), (100, 200))
+    def test_bounds_not_containing_frame_returns_none(self):
+        for bounds in (
+            {"x": 2, "y": 0, "width": 100, "height": 200},    # starts right of 0
+            {"x": 0, "y": 1, "width": 100, "height": 200},    # starts below 0
+            {"x": 0, "y": 0, "width": 99, "height": 200},     # too narrow
+            {"x": -10, "y": 0, "width": 100, "height": 200},  # ends left of frame edge
+        ):
+            with self.subTest(bounds=bounds):
+                self.assertIsNone(parse_document(_make_doc(bounds=bounds)))
+
+    def test_bounds_equal_or_larger_than_frame_ok(self):
+        self.assertIsNotNone(parse_document(_make_doc(bounds={"x": 0, "y": 0, "width": 100, "height": 200})))
+        self.assertIsNotNone(parse_document(_make_doc(bounds={"x": -10, "y": -5, "width": 110, "height": 205})))
+
+    def test_malformed_bounds_still_repairs(self):
+        for bounds in ("x", {"x": 0}, {"x": 0, "y": 0, "width": 1.5, "height": 200}):
+            with self.subTest(bounds=bounds):
+                self.assertEqual(parse_document(_make_doc(bounds=bounds)).bounds, Bounds(0, 0, 100, 200))
+
+    def test_layers_not_a_list_returns_none(self):
+        for layers in ("x", {}, None, 3):
+            with self.subTest(layers=layers):
+                self.assertIsNone(parse_document(_make_doc(layers=layers)))
+
+    def test_missing_layers_is_empty(self):
+        d = json.loads(_make_doc())
+        del d["layers"]
+        self.assertEqual(parse_document(json.dumps(d)).layers, [])
 
 
 if __name__ == "__main__":

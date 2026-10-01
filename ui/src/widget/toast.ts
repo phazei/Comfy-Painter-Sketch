@@ -49,11 +49,3 @@ export function notify(severity: ToastSeverity, detail: string, options: NotifyO
     toast.add({ severity, summary: "PainterSketch", detail, life: severity === "error" ? 10000 : 6000 });
   }
 }
-
-/**
- * Forget a de-duplication key so the next occurrence toasts immediately.
- * @param key - Key passed to {@link notify}.
- */
-export function resetNotifyKey(key: string): void {
-  limiter.reset(key);
-}

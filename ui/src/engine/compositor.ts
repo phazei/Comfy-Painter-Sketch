@@ -1,11 +1,12 @@
 /**
  * Draws the scene to the display canvas. The view transform maps IMAGE
  * coordinates (the current background, or `doc.frame` when there is none) to
- * the stage; layers are drawn through the document -> image map (decision 4)
+ * the stage; layers are drawn through the document -> image map (`frameMap.ts`)
  * into the same integer rect Python places them in, so preview and output
- * agree. Order: neutral surround, transparency checker + background inside
- * the image rect (unless the background eye is off), visible paint layers bottom -> top at their opacity (Normal
- * blend, decision 11), visible mask layers as tinted overlays at their display
+ * agree (SPEC "Canvas, view and fullscreen"). Order: neutral surround,
+ * transparency checker + background inside the image rect (unless the
+ * background eye is off), visible paint layers bottom -> top at their opacity
+ * (Normal blend only), visible mask layers as tinted overlays at their display
  * opacity, then a dim veil over paint outside the image and the image outline.
  * With `paintArea`: the grown cobweb backdrop (`cobweb/`) over the surround
  * outside the maximum paint area, clipped so it never shows inside it (right
@@ -48,7 +49,7 @@ export interface MaskOverlay {
   invert: boolean;
   /** Move-tool drag preview: draw shifted by this many document px. */
   offset?: Point;
-  /** Image px coverage (the M13a Image Mask): drawn over the image rect, not through the frame map. */
+  /** Image px coverage (the Image Mask): drawn over the image rect, not through the frame map. */
   imageSpace?: boolean;
 }
 

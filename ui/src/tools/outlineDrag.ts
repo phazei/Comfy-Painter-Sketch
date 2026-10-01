@@ -1,5 +1,5 @@
 /**
- * Outline drag (SPEC M10a): with a selection tool (marquee / lasso / wand,
+ * Outline drag (SPEC "Selection"): with a selection tool (marquee / lasso / wand,
  * `Tool.combinesSelection`) a plain press (no Shift / Alt / Ctrl) inside the
  * selection drags only the selection outline -- one `selection` history
  * entry (`Editor.selectionMove`). A press that never moves past the click

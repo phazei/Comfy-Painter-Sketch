@@ -1,5 +1,5 @@
 """
-tests/test_input_mask.py -- M13b ``mask`` input: prepare, combine, preview, fingerprint.
+tests/test_input_mask.py -- The ``mask`` input: prepare, combine, preview, fingerprint.
 
 Needs ComfyUI on ``sys.path`` (``comfy_api``, ``folder_paths``). Preview
 saving is replaced by fakes (no files); the Image Mask file load is patched.

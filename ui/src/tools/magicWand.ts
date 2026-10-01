@@ -1,5 +1,6 @@
 /**
- * Magic wand (W, SPEC Tools table + "Selection"): click selects the pixels
+ * Magic wand (W, SPEC "Tools" > "Marquees (M group), Lasso (L), Magic wand (W)",
+ * SPEC "Selection"): click selects the pixels
  * matching the colour under the pointer -- the paint bucket's flood fill and
  * sampling (`Editor.pixelOps.wandSelection`, `engine/wand.ts`) turned into
  * a selection. Options mirror the bucket (Photoshop defaults: tolerance 32,

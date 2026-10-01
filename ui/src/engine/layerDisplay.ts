@@ -5,9 +5,9 @@
  * dirtied since the last frame. A Move-tool drag shows its layer offset
  * (`EditorState.movePreview`) without touching pixels; a floating selection
  * shows inside its layer (`EditorState.floatPreview`, `floatOps.ts`). Solo (`solo.ts`,
- * view only) decides which layers count as shown here. The M13a Image Mask
+ * view only) decides which layers count as shown here. The Image Mask
  * is the bottom overlay, drawn over the image rect (`imageMaskOps.ts`).
- * A paint layer with an enabled layer mask (M14) is drawn through its cached
+ * A paint layer with an enabled layer mask is drawn through its cached
  * masked composite; the Alt+click mask view replaces the whole list with the
  * mask alone (`layerMask.ts`).
  */
@@ -38,7 +38,7 @@ export class LayerDisplay {
    */
   compositeLayers(): CompositeLayer[] {
     const s = this.s;
-    // M14 Alt+click view: the mask alone, grayscale (display only).
+    // Alt+click view: the mask alone, grayscale (display only).
     const view = maskViewSource(s);
     if (view) return [{ source: view, opacity: 1 }];
     const out: CompositeLayer[] = [];

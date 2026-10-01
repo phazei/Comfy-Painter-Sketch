@@ -1,5 +1,5 @@
 /**
- * Pixel side of Free Transform (SPEC M11), pure typed-array code (no canvas,
+ * Pixel side of Free Transform (SPEC "Free Transform and flips"), pure typed-array code (no canvas,
  * so it is unit-testable and deterministic):
  *
  * - {@link resampleRgba}: the commit resample -- ONE pass from the original

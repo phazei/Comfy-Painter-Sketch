@@ -1,5 +1,5 @@
 /**
- * Compact colour picker popover (M3.2, SPEC "Color").
+ * Compact colour picker popover (SPEC "Colour").
  *
  * Usage: call {@link openColorPicker} with a {@link PopoverHost} and options;
  * it opens a popover and returns the {@link PopoverHandle}.
@@ -13,13 +13,14 @@
  *   (`recentColors.ts`)
  *
  * Keyboard:
- * - Esc reverts to initial and closes (handled by the popover element).
- * - Enter in the hex field applies.
+ * - Esc closes and keeps the current colour (same as clicking outside); it
+ *   never reverts. Only clicking the old half of the preview reverts.
+ * - Enter in the hex field applies the typed value; the picker stays open.
  * - Typing in the hex field does NOT trigger editor shortcuts (keyboard.ts
  *   recognises `<input type=text>` as a text field and lets keys through).
  *
- * Click-outside commits (default popover behaviour: `outside` pointerdown
- * closes the popover, which calls `onCommit` via `onClose`).
+ * Every close commits (click outside, Esc, programmatic close): `onCommit`
+ * runs if the colour changed, then `onClose`.
  *
  * Pointer / wheel events inside stay inside: the popover is inside the editor
  * root whose isolation guard already stops propagation to the graph.
@@ -49,13 +50,13 @@ export interface ColorPickerOptions {
    */
   onInput: (hex: string) => void;
   /**
-   * Called once when the picker commits (clicking outside, or Enter in the
-   * hex field). Not called when Esc reverts. Optional.
+   * Called once when the picker closes with a changed colour (click outside,
+   * Esc, or programmatic close). Optional.
    * @param hex - Committed colour.
    */
   onCommit?: (hex: string) => void;
-  /** Called on every close, including an unchanged colour or Escape (metadata transactions). */
-  onClose?: (cancelled: boolean) => void;
+  /** Called on every close, including an unchanged colour (metadata transactions). */
+  onClose?: () => void;
 }
 
 /**
@@ -73,8 +74,6 @@ export function openColorPicker(
   const initial = normalizeHex(opts.initial) ?? "#000000";
   let hsv: Hsv = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
   let current = initial;
-  let committed = false;
-  let escaped = false;
 
   // ── Build DOM ────────────────────────────────────────────────────────────
 
@@ -172,9 +171,10 @@ export function openColorPicker(
       applyHexField();
       hexInput.blur();
     }
-    // Don't stop other keys – let Esc bubble to the popover's keydown handler
-    // which calls handle.close() (revert path). Other letter keys are fine
+    // Esc: apply what was typed, then let it bubble to the popover's keydown
+    // handler, which closes (and so commits). Other letter keys are fine
     // because keyboard.ts marks input[type=text] as a foreign text target.
+    if (event.key === "Escape") applyHexField();
   });
 
   hexInput.addEventListener("blur", () => {
@@ -215,45 +215,19 @@ export function openColorPicker(
     renderRecentColors(recentsEl, applyHex);
   });
 
-  // ── Esc: revert and close ─────────────────────────────────────────────────
-  // The popover element intercepts Escape (popover.ts line 100-105) and calls
-  // handle.close(). We detect the revert path via the `escaped` flag set in
-  // onClose (before committed is true).
-
   // ── Open the popover ──────────────────────────────────────────────────────
+  // Esc is handled by the popover element (closes); every close commits.
 
   const handle = host.open(root, {
     anchor,
     placement: "below",
     onClose: () => {
-      if (!escaped && !committed) {
-        // Clicking outside = commit
-        committed = true;
-        if (current !== initial) {
-          saveRecentColor(current);
-          opts.onCommit?.(current);
-        }
-      } else if (escaped) {
-        // Esc = revert to initial
-        opts.onInput(initial);
+      if (current !== initial) {
+        saveRecentColor(current);
+        opts.onCommit?.(current);
       }
-      opts.onClose?.(escaped);
+      opts.onClose?.();
     },
   });
-
-  // Intercept the Escape key that the popover element forwards to handle.close()
-  // so we can mark the revert path. We listen on the content root's ancestor
-  // popover element (handle.element) in the capture phase.
-  handle.element.addEventListener(
-    "keydown",
-    (event) => {
-      if (event.key === "Escape") {
-        escaped = true;
-        // Let the event continue to the popover's own Escape handler.
-      }
-    },
-    true,
-  );
-
   return handle;
 }

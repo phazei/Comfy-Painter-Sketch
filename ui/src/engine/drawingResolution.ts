@@ -1,6 +1,5 @@
 /**
- * Drawing resolution (SPEC "Background row + drawing resolution" -> Drawing
- * resolution). Pure math, no DOM:
+ * Drawing resolution (SPEC "Layers" > "Background row and drawing resolution"). Pure math, no DOM:
  *
  * - {@link minimumFrame}: the frame a document gets when its frame is set from
  *   an image size -- short side boosted to >= 1024 px, the boost never pushing

@@ -1,5 +1,5 @@
 /**
- * Layer masks (M14, SPEC "Layer masks (M14) -- agreed design"): one optional
+ * Layer masks (SPEC "Layer masks (lmask)"): one optional
  * grayscale mask per PAINT layer that hides part of it non-destructively,
  * in the ComfyUI MASK convention of our mask layers: **white = hidden,
  * black = shown**. Editing masks only: they never reach the MASK outputs.

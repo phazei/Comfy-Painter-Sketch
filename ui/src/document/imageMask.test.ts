@@ -1,5 +1,5 @@
 /**
- * M13a `imageMask` manifest field: round trip, old manifests unchanged,
+ * `imageMask` manifest field: round trip, old manifests unchanged,
  * lenient reading, and that a row alone makes the document worth saving.
  */
 

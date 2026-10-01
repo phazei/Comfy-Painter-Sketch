@@ -1,5 +1,5 @@
 /**
- * Which image the background (and the M13a Image Mask row) may use: pure
+ * Which image the background (and the Image Mask row) may use: pure
  * rules plus the executed-preview provenance store. Used by
  * `backgroundLoader.ts` (source choice, status) and `imageMaskSync.ts`.
  *
@@ -168,7 +168,7 @@ export function shownBackground(status: BackgroundStatus): LoadedBackground | nu
 export type ImageMaskAction = "keep" | "remove" | "read";
 
 /**
- * Image Mask row rule (M13a): read an upstream file's alpha; keep the row
+ * Image Mask row rule: read an upstream file's alpha; keep the row
  * while unresolved (page reload restores it), while the row's own key is
  * (re)loading, and for our executed preview (same link by construction;
  * Python reads the alpha from the same uploaded file); otherwise (no

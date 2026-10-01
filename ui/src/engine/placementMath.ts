@@ -1,5 +1,5 @@
 /**
- * Move-tool interaction math (SPEC M5 Move tool): turning image-space drags,
+ * Move-tool interaction math (SPEC "Moving (Move layer, Move drawing)"): turning image-space drags,
  * nudges and wheel steps into document `placement` values. Placement is in
  * document-frame px; image deltas convert through the frame-fit scale `s`
  * only (not the placement scale), so a drag moves the drawing exactly with

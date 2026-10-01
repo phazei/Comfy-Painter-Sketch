@@ -3,7 +3,7 @@ nodes/cleanup.py -- Find and delete unreferenced PainterSketch layer files.
 
 Layer files accumulate in ``input/painter-sketch/`` by design: every edit
 uploads new content-hashed names, and older workflow versions / graph undo may
-still point at old ones (see SPEC "Saved-file contract" -> Cleanup).  The
+still point at old ones (see SPEC "Python execution", Cleanup route).  The
 settings button (``PainterSketch.Cleanup``) calls ``POST /painter-sketch/cleanup``
 (``cleanup_route.py``), which uses the helpers here.
 
@@ -35,8 +35,12 @@ log = logging.getLogger("paintersketch.cleanup")
 SUBFOLDER = "painter-sketch"
 """Subfolder of the ComfyUI input directory that holds our layer files."""
 
-CANDIDATE_RE = re.compile(r"^ps-[a-z0-9]+-[0-9a-f]+\.(?:png|webp)$")
-"""Exact file names the frontend writes (``contentHash.ts`` ``layerFileName``)."""
+CANDIDATE_RE = re.compile(r"^ps-[A-Za-z0-9]+-[0-9a-f]+\.(?:png|webp)$")
+"""Exact file names the frontend writes (``contentHash.ts`` ``layerFileName``).
+
+The doc-id part keeps the document id's case; the hash and extension are
+always lower case.  References are compared lower-cased (``REFERENCE_RE`` is
+case-insensitive)."""
 
 REFERENCE_RE = re.compile(
     r"painter-sketch(?:[\\/]|%2f){1,8}(ps-[a-z0-9]+-[0-9a-f]+\.(?:png|webp))",

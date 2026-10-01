@@ -96,9 +96,9 @@ export class PainterSketchController {
   private readonly loader: BackgroundLoader;
   private readonly watcher: SourceWatcher;
   private readonly frame: FrameSync;
-  /** M12: `layer_source` history (per node instance, memory only). */
+  /** `layer_source` history (per node instance, memory only). */
   private readonly sources: LayerSourceWatch;
-  /** M13b: the `mask` input's Input Mask row. */
+  /** The `mask` input's Input Mask row. */
   private readonly inputMask: InputMaskWatch;
   private readonly saver = new WorkflowSaver();
   private disposed = false;
@@ -189,7 +189,7 @@ export class PainterSketchController {
   }
 
   /**
-   * Value for the prompt: uploads dirty layers first (decision 8).
+   * Value for the prompt: uploads dirty layers first.
    * @returns Manifest string.
    * @throws If an upload failed (the toast has been shown); queueing stops so
    *   the output never silently differs from the editor.
@@ -366,7 +366,7 @@ export class PainterSketchController {
     this.refresh();
   }
 
-  /** Push background + frame (and the Image Mask / M13b Input Mask source) to the editor when anything relevant changed. */
+  /** Push background + frame (and the Image Mask / Input Mask source) to the editor when anything relevant changed. */
   private updateContent(): void {
     const session = this.session;
     if (this.disposed || !session) return;

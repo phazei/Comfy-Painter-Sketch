@@ -1,7 +1,8 @@
 /**
- * Undoable region / output-option editing (M9). A gesture (drag, field
- * session, picker) is one transaction: `begin` snapshots the metadata,
- * `commit` pushes one `outputs` history entry (or nothing for a no-op),
+ * Undoable region / output-option editing (SPEC "Outputs and regions (editor)").
+ * A gesture (drag, field session, picker) is one transaction: `begin`
+ * snapshots the metadata, `commit` pushes one `outputs` history entry (or
+ * nothing for a no-op),
  * `cancel` reverts. Transactions copy at most six small records, never pixels.
  *
  * Events: edits emit `outputs` + `change` + `render`; selection emits only
@@ -162,7 +163,7 @@ export class RegionOps {
 
   /**
    * Create a region in the lowest empty slot (or a given one) and select it.
-   * @param rect - Rect in image px (clamped to the paint area).
+   * @param rect - Rect in image px (clamped to the region area).
    * @param slot - Empty slot to fill; default = lowest empty slot.
    * @returns New region id, or null (no empty slot, slot taken, bad rect).
    */
@@ -201,7 +202,7 @@ export class RegionOps {
   /**
    * Set a region's rect.
    * @param id - Region id.
-   * @param rect - Rect in image px (clamped to the paint area).
+   * @param rect - Rect in image px (clamped to the region area).
    */
   setRect(id: string, rect: Rect): void {
     const region = this.find(id);

@@ -1,5 +1,5 @@
 /**
- * Clipboard shortcuts (SPEC M10 Clipboard, Photoshop), active only while the
+ * Clipboard shortcuts (SPEC "Clipboard and drop", Photoshop), active only while the
  * editor owns the keyboard (called from `shortcuts.ts`):
  *
  * | Key | Action |

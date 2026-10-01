@@ -13,11 +13,11 @@
  * (rail, swatches, options bar, selection actions, layers and outputs
  * panels) and region mode (Outputs tab <-> region tool).
  *
- * M3.2: handles `pick-color` from the shell by opening the custom
- * {@link openColorPicker} popover; sets `request.handled = true` to suppress
- * the native `<input type=color>` fallback in `shell.ts`.
+ * Handles `pick-color` from the shell by opening the custom
+ * {@link openColorPicker} popover (the only colour picker; there is no
+ * native fallback).
  *
- * M3.4: the `fullscreen` event toggles {@link FullscreenMount}, which moves
+ * The `fullscreen` event toggles {@link FullscreenMount}, which moves
  * `root` between the stable DOM widget element ({@link EditorHost.element})
  * and a body-level overlay. Entering opens the side panel and re-fits;
  * leaving restores the panel state and re-fits if the view was fitting.
@@ -94,7 +94,7 @@ export class EditorHost {
   /** Copy / cut / paste (keys, rail, drops). */
   private readonly clipboard: ClipboardActions;
   private readonly removeDrop: () => void;
-  /** M12: Images button + thumbnail panel. */
+  /** Images button + thumbnail panel. */
   private readonly images: ImagesPanel;
   private restoreState: FullscreenRestore | null = null;
 
@@ -121,7 +121,7 @@ export class EditorHost {
     this.element = this.fullscreen.container;
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
-    // ── M10b: clipboard (keys, rail buttons, image drops on the stage) ─────
+    // ── Clipboard (keys, rail buttons, image drops on the stage) ──────────
     this.clipboard = new ClipboardActions(() => this.session, this.stage);
     this.removeDrop = installDropImport(this.stage, this.clipboard, (text) => this.view.showNote(text));
 
@@ -136,7 +136,7 @@ export class EditorHost {
       this.shell,
       this.clipboard,
     );
-    // ── M12: Images button (next to Paste) + thumbnail panel ─────────────
+    // ── Images button (next to Paste) + thumbnail panel ───────────────────
     this.images = new ImagesPanel({
       history: sources, popovers: this.shell.popoverHost, root: this.root, stage: this.stage, toolBox: this.sync.rail.toolBox,
       beforeOpen: () => this.input.cancel(),
@@ -147,12 +147,11 @@ export class EditorHost {
     });
     this.sync.rail.appendClipboardButton(this.images.button);
 
-    // ── M3.2: wire the colour picker ──────────────────────────────────────
+    // ── Colour picker ─────────────────────────────────────────────────────
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
       if (!colors) return;
       const slot = request.slot;
-      request.handled = true;
       openColorPicker(this.shell.popoverHost, request.anchor, {
         initial: colors[slot],
         title: slot === "fg" ? "Foreground" : "Background",
@@ -183,12 +182,12 @@ export class EditorHost {
               viewChanged: () => this.view.requestRender(),
               cancelDrag: () => this.input.cancel(),
               cancelToolDrag: () => this.input.cancelToolDrag(),
+              isToolDragging: () => this.input.activeTool !== null,
               fullscreen: () => this.shell.events.emit("fullscreen", undefined),
               toggleOutputs: () => this.sync.toggleOutputs(),
               closePopover: () => {
                 if (!this.shell.popoverHost.isOpen) return false;
-                // Esc reverts an open output colour picker session.
-                this.session?.editor.regionOps.cancel();
+                // Esc closes and keeps: an open output colour session commits via its onClose.
                 return this.shell.popoverHost.close();
               },
               exitFullscreen: () => {
@@ -207,7 +206,7 @@ export class EditorHost {
       onDeactivate: () => this.events.onDisengage?.(),
     });
     this.shell.popoverHost.events.on("close", () => this.keyboard.reclaimFocus());
-    // ── M3.4: fullscreen (rail button and `F` emit this) ─────────────────
+    // ── Fullscreen (rail button and `F` emit this) ────────────────────────
     this.shell.events.on("fullscreen", () => this.fullscreen.toggle());
 
     this.textOverlay = new TextOverlay(this.stage, this.root, () => this.sync.optionsBar.refresh());
@@ -219,7 +218,7 @@ export class EditorHost {
 
   // ── Public API ──────────────────────────────────────────────────────────
 
-  /** Session currently shown (M3.2/M3.3 read its editor and tools). */
+  /** Session currently shown (the colour picker and panels read its editor and tools). */
   get current(): EditorSession | null {
     return this.session;
   }

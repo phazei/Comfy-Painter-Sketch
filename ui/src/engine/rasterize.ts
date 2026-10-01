@@ -2,8 +2,8 @@
  * The one gate every pixel-editing operation passes before it modifies a
  * layer (brush / eraser / shapes via `paintOps.ts`, bucket via
  * `pixelOps.ts`, selection fill / clear via `selectionOps.ts`): lock and
- * visibility notes, the Image Mask refusal (M13a: it is never edited), and
- * -- for text layers -- the rasterize prompt (SPEC M6b).
+ * visibility notes, the Image Mask refusal (it is never edited), and
+ * -- for text layers -- the rasterize prompt (SPEC "Layers" > "The edit gate").
  *
  * Rasterizing turns the layer into a paint layer (drops `textData`; the
  * pixels already hold the rendered text) as a text history entry, and asks
@@ -52,15 +52,15 @@ export function rasterizeDecision(layer: Pick<Layer, "kind">, confirm: () => boo
 export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
 
 /**
- * Why `layer` can't be edited right now, or `null`. The Image Mask row
- * (M13a, and the M13b Input Mask) never is. Order otherwise: hidden (eye) > hidden by another layer's
+ * Why `layer` can't be edited right now, or `null`. The Image Mask / Input Mask row
+ * never is. Order otherwise: hidden (eye) > hidden by another layer's
  * solo > locked -- showing it is the first fix. A soloed layer with its eye
- * off stays blocked (eye state wins). Exception (M14): in the lmask-only
+ * off stays blocked (eye state wins). Exception: in the lmask-only
  * view, the viewed layer's targeted mask is editable while the layer is
  * hidden (`editsViewedMask`); lock still refuses.
- * Layer masks (M14, `layerMask.ts`) come last: other pixel tools refuse on
+ * Layer masks (`layerMask.ts`) come last: other pixel tools refuse on
  * a targeted mask (`kind: "other"`); whole-layer operations (`kind:
- * "whole"`) carry the mask (M14b) and never get the lmask-only view exception.
+ * "whole"`) carry the mask and never get the lmask-only view exception.
  * @param s - Editor state (solos).
  * @param layer - Layer to edit.
  * @param kind - What the edit is (default: a mask-aware pixel edit).
@@ -68,7 +68,7 @@ export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
  */
 export function editBlockNote(s: EditorState, layer: Layer, kind: EditKind = "paint"): string | null {
   if (layer.id === IMAGE_MASK_ID) return imageMaskNote(layer.name);
-  // The lmask-only view edits its mask even with the layer hidden (M14); lock still refuses.
+  // The lmask-only view edits its mask even with the layer hidden; lock still refuses.
   const viewedMask = kind !== "whole" && editsViewedMask(s, layer);
   const hidden = viewedMask ? null : hiddenNote(s, layer);
   if (hidden) return hidden;
@@ -104,7 +104,7 @@ export function hiddenNote(s: EditorState, layer: Layer): string | null {
  *   the rasterize undo step -- synchronous callers may proceed right away).
  */
 export function preparePixelEdit(s: EditorState, layer: Layer, kind: EditKind = "paint"): PixelEditPlan {
-  // A floating selection lands before any other pixel edit (M10a).
+  // A floating selection lands before any other pixel edit.
   s.settleFloat();
   const note = editBlockNote(s, layer, kind);
   if (note) {

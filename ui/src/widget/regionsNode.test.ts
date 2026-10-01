@@ -58,8 +58,8 @@ describe("regionOutputLabels", () => {
     const source = [{ slot: 2, name: "face" }, { slot: 5, name: " " }];
     expect(regionSlotLabels(2, source)).toEqual(["face", "face mask"]);
     expect(regionSlotLabels(5, source)).toEqual(["Region 5", "Region 5 mask"]);
-    expect(regionSlotLabels(1, source)).toEqual(["region 1 (missing)", "region 1 mask (missing)"]);
-    expect(regionSlotLabels(3, null)).toEqual(["region 3", "region 3 mask"]);
+    expect(regionSlotLabels(1, source)).toEqual(["Region 1 (missing)", "Region 1 mask (missing)"]);
+    expect(regionSlotLabels(3, null)).toEqual(["Region 3", "Region 3 mask"]);
     expect(regionOutputLabels(null)).toHaveLength(12);
   });
 });
@@ -88,7 +88,7 @@ describe("updateRegionsNode", () => {
     const outputs = helper.outputs!;
     const splice = vi.spyOn(outputs, "splice");
     expect(updateRegionsNode(helper)).toBe(true);
-    expect(labels(helper).slice(0, 4)).toEqual(["face", "face mask", "region 2 (missing)", "region 2 mask (missing)"]);
+    expect(labels(helper).slice(0, 4)).toEqual(["face", "face mask", "Region 2 (missing)", "Region 2 mask (missing)"]);
     expect(helper.outputs).toBe(outputs);
     expect(outputs).toHaveLength(12);
     expect(splice).toHaveBeenCalledTimes(1);
@@ -125,7 +125,7 @@ describe("installRegionsNodeHooks", () => {
     expect(labels(helper)[0]).toBe("hand");
     helper.getInputNode = () => null;
     helper.onConnectionsChange?.call(helper, 1, 0, false, null, null);
-    expect(labels(helper)[0]).toBe("region 1");
+    expect(labels(helper)[0]).toBe("Region 1");
   });
 
   it("refreshRegionsNodes relabels live helpers; removed helpers are forgotten", () => {

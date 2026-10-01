@@ -36,8 +36,10 @@ export interface DocSnapshot {
   text?: ReadonlyMap<string, TextData>;
   /** Region geometry/reference and Main processing (no pixels). */
   outputs?: OutputMetadata;
-  /** Layer masks (M14) by layer id, pixels covering `bounds`; layers not listed have none (Clear removes them). */
+  /** Layer masks by layer id, pixels covering `bounds`; layers not listed have none (Clear removes them). */
   layerMasks?: ReadonlyMap<string, { mask: LayerMask; data: ImageData }>;
+  /** Selection (document coords of this snapshot's frame); absent = none (Clear drops it). */
+  selection?: Selection | null;
 }
 
 /** Whole-layer pixels kept by a structural entry (document coords). */
@@ -46,7 +48,7 @@ export interface LayerPixels {
   x: number;
   y: number;
   data: ImageData;
-  /** The layer's mask pixels (M14), same origin and size as `data`. */
+  /** The layer's mask pixels, same origin and size as `data`. */
   mask?: ImageData;
 }
 
@@ -58,7 +60,7 @@ export interface LayerMaskSide {
   pixels: LayerPixels | null;
 }
 
-/** Layer mask added / deleted / inverted (M14; pixel edits are plain patches on its key). */
+/** Layer mask added / deleted / inverted (pixel edits are plain patches on its key). */
 export interface LayerMaskEntry {
   kind: "layerMask";
   layerId: string;
@@ -100,7 +102,7 @@ export interface TranslateEntry {
    */
   content: Rect;
   /**
-   * The layer's lmask moved along (M14b): its content bbox (values other
+   * The layer's lmask moved along: its content bbox (values other
    * than its `outside`) BEFORE the move; the vacated part gets `outside`.
    */
   mask?: Rect;
@@ -119,7 +121,7 @@ export interface TextLayerState {
 }
 
 /**
- * Text layer change (SPEC M6b): an edit commit, a move, or rasterizing
+ * Text layer change (SPEC "Tools" > "Text (T)"): an edit commit, a move, or rasterizing
  * (`after.kind === "paint"`). Applying a text-kind side re-renders the layer.
  */
 export interface TextEntry {
@@ -151,8 +153,8 @@ export type HistoryEntry =
   | GroupEntry
   | LayerMaskEntry
   | { kind: "outputs"; before: OutputMetadata; after: OutputMetadata; bytes: number }
-  /** Selection change (new / all / deselect / invert); no pixels. */
-  | { kind: "selection"; before: Selection | null; after: Selection | null; bytes: number };
+  /** Selection change (new / all / deselect / invert / outline move); no pixels. `gesture` merges arrow nudges. */
+  | { kind: "selection"; before: Selection | null; after: Selection | null; bytes: number; gesture?: string };
 
 /**
  * One history step made of two (see `HistoryStack.joinNext`).
@@ -207,7 +209,7 @@ export const HIDDEN_LAYER_NOTE = "The layer is hidden.";
 export const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
 
 /**
- * Note shown when any pixel edit targets the Image Mask / Input Mask row (M13a/b).
+ * Note shown when any pixel edit targets the Image Mask / Input Mask row.
  * @param name - Row name.
  * @returns Note text.
  */

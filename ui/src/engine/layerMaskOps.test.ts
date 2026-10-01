@@ -1,9 +1,10 @@
 /**
- * M14a layer masks, the rest of the surface: the interim gate is gone (M14b),
- * Ctrl+click soft selection of the shown part (+ round trip), the
- * lmask-only view (follow / end rules) and its editing gate, restore / upload bookkeeping,
- * layer delete / duplicate / Clear / fork carrying the mask, and the
- * manifest (round trip, old documents, lenient reading, cleanup references).
+ * Layer masks, the rest of the surface (SPEC "Layer masks (lmask)"): the
+ * pixel operations work on a masked layer, Ctrl+click soft selection of the
+ * shown part (+ round trip), the lmask-only view (follow / end rules) and
+ * its editing gate, restore / upload bookkeeping, layer delete / duplicate /
+ * Clear / fork carrying the mask, and the manifest (round trip, old
+ * documents, lenient reading, cleanup references).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -18,6 +19,7 @@ import type { Editor as EditorClass } from "./editor";
 import { HIDDEN_LAYER_NOTE, LOCKED_LAYER_NOTE } from "./editorTypes";
 import type { BlendCanvas } from "./fakeCanvas.testutil";
 import { installBlendCanvasFakes, removeCanvasFakes } from "./fakeCanvas.testutil";
+import { LAYER_MASK_TOOL_NOTE } from "./layerMask";
 import { coverageAt, rectSelection } from "./selection";
 import type { Selection } from "./selection";
 
@@ -66,7 +68,7 @@ function masked(): { ed: EditorClass; id: string; notes: string[] } {
 
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("the M14a interim gate is gone (M14b)", () => {
+describe("pixel operations on a masked layer", () => {
   /** A masked layer that holds real (recorded) pixels. */
   function painted(): { ed: EditorClass; id: string; notes: string[] } {
     const r = setup();
@@ -306,6 +308,76 @@ describe("editing gate in the lmask-only view", () => {
     ed.layerMask.setTarget(id, "mask");
     expect(tryStroke(ed)).toBe(false); // id is hidden and not in the view
     expect(notes.at(-1)).toBe(HIDDEN_LAYER_NOTE);
+  });
+
+  it("text: allowed with an lmask targeted (normal view); creating and editing refused in the view", () => {
+    const doc = createEmptyDocument({ width: 16, height: 16 });
+    const td = { text: "T", x: 2, y: 2, font: "Arial", size: 12, color: "#000000", bold: false, italic: false, align: "left" as const };
+    doc.layers.push({ id: "tt", name: "T", kind: "text", visible: true, locked: false, opacity: 1, blendMode: "normal", file: null, textData: td });
+    const { ed, id, notes } = setup(doc);
+    ed.layerMask.add(id, "reveal"); // targets the lmask
+    const style = { font: "Arial", size: 12, color: "#000000", bold: false, italic: false, align: "left" as const };
+    expect(ed.text.create({ x: 4, y: 8 }, style)).not.toBeNull();
+    ed.text.commit(); // empty: the new layer is dropped again
+    expect(ed.text.edit("tt")).toBe(true);
+    ed.text.commit();
+    expect(notes).toEqual([]);
+    // Back on the masked layer, lmask targeted, lmask-only view on: text layers aren't visible.
+    ed.layerOps.setActiveLayer(id);
+    ed.layerMask.setTarget(id, "mask");
+    ed.layerMask.toggleView(id);
+    expect(ed.layerMask.viewing).toBe(id);
+    expect(ed.text.create({ x: 4, y: 8 }, style)).toBeNull();
+    expect(notes.at(-1)).toBe(LAYER_MASK_TOOL_NOTE);
+    expect(ed.text.edit("tt")).toBe(false);
+    expect(ed.text.editing).toBeNull();
+    expect(notes).toHaveLength(2);
+    expect(ed.layerMask.viewing).toBe(id); // the refusals never end the view
+    ed.layerMask.toggleView(id);
+    expect(ed.text.edit("tt")).toBe(true);
+    ed.text.commit();
+  });
+});
+
+describe("'To mask' with an lmask targeted", () => {
+  const soft: Selection = { rect: { x: 2, y: 2, width: 2, height: 1 }, data: new Uint8Array([255, 128]), outside: 0 };
+
+  it("hides the selection on the lmask (soft coverage kept), one undo step, no cmask added", () => {
+    const { ed, id } = masked();
+    ed.selection.apply(soft, "replace");
+    const layers = ed.doc.layers.length;
+    expect(ed.selection.toMask()).toBe(true);
+    expect(maskA(ed, id, 2, 2)).toBe(255);
+    expect(maskA(ed, id, 3, 2)).toBe(128);
+    expect(maskA(ed, id, 4, 2)).toBe(0);
+    expect(ed.doc.layers.length).toBe(layers);
+    const cmask = ed.maskLayer?.id;
+    if (cmask) expect(px(ed, ed.layerCanvas(cmask), 2, 2)[3]).toBe(0);
+    ed.undo();
+    expect(maskA(ed, id, 2, 2)).toBe(0);
+    expect(maskA(ed, id, 3, 2)).toBe(0);
+  });
+
+  it("goes through the edit gate: hidden layer refused outside the lmask-only view, allowed in it", () => {
+    const { ed, id, notes } = masked();
+    ed.selection.apply(soft, "replace");
+    ed.layerOps.setVisible(id, false);
+    expect(ed.selection.toMask()).toBe(false);
+    expect(notes.at(-1)).toBe(HIDDEN_LAYER_NOTE);
+    ed.layerMask.toggleView(id);
+    expect(ed.selection.toMask()).toBe(true);
+    expect(maskA(ed, id, 2, 2)).toBe(255);
+  });
+
+  it("pixels targeted: adds to the cmask as before (lmask untouched)", () => {
+    const { ed, id } = masked();
+    ed.layerMask.setTarget(id, "layer");
+    ed.selection.apply(soft, "replace");
+    expect(ed.selection.toMask()).toBe(true);
+    const cmask = ed.maskLayer?.id ?? "";
+    expect(px(ed, ed.layerCanvas(cmask), 2, 2)[3]).toBe(255);
+    expect(px(ed, ed.layerCanvas(cmask), 3, 2)[3]).toBe(128);
+    expect(maskA(ed, id, 2, 2)).toBe(0);
   });
 });
 

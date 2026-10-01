@@ -1,5 +1,5 @@
 /**
- * Region outlines on the stage overlay canvas (M9). In region mode: solid
+ * Region outlines on the stage overlay canvas (SPEC "Outputs and regions (editor)"). In region mode: solid
  * outlines, number badges, the selected region highlighted with handles, and
  * the image border highlighted while Main is selected. Outside region mode:
  * subdued -- thin, dashed, translucent, small number, no handles and no

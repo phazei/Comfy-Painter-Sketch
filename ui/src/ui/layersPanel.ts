@@ -1,8 +1,8 @@
 /**
- * Layers panel (M3.3 + M8, SPEC "### Layers"), mounted into the shell's side
+ * Layers panel (SPEC "Layers" > "Layers panel"), mounted into the shell's side
  * panel. Top -> bottom: mask rows (colour swatch, invert, overlay opacity),
- * paint layers, the M13a Image Mask row while the image has transparency
- * (M13b: the Input Mask while `mask` is connected; `imageMaskRow.ts`), and the static Background row, with a
+ * paint layers, the Image Mask row while the image has transparency
+ * (the Input Mask while the `mask` input is connected; `imageMaskRow.ts`), and the static Background row, with a
  * divider bar between the groups (`layerSections.ts`). Header: the opacity of the
  * selected row's layer; footer: Move drawing | New layer / New mask /
  * Duplicate / Merge Down / Delete.
@@ -12,7 +12,7 @@
  * current mask and turns Quick Mask on (so `Q`, the rail button and the panel
  * stay in sync). The current mask always has a left bar in its colour; solo
  * buttons (view only) dim the eyes of the other rows in a soloed group. Paint
- * rows carry the M14 layer mask slot (add icon / mask thumbnail; its clicks
+ * rows carry the layer mask slot (add icon / mask thumbnail; its clicks
  * select the row first). All edits go through the editor; the panel
  * re-renders from editor events only.
  */
@@ -209,7 +209,7 @@ export class LayersPanel {
         const layer = doc.layers[i];
         if (layer) add(isPaintLike(layer) ? "paint" : "mask", layer);
       }
-      // M13a: the Image Mask (M13b: Input Mask) row sits directly above the Background.
+      // The Image Mask (the Input Mask while `mask` is connected) row sits directly above the Background.
       if (doc.imageMask) add("imageMask", doc.imageMask, imageMaskHint(editor));
       const bg = this.rowFor("background", BACKGROUND_ID);
       const bgSolo = editor.solo.paint === BACKGROUND_ID ? "on" : "off";
@@ -292,7 +292,7 @@ export class LayersPanel {
       const invert = mask && layer.invert === true;
       const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
       row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
-      // M14: the layer mask thumbnail (grayscale, invert applied), same framing and throttle.
+      // The layer mask thumbnail (grayscale, invert applied), same framing and throttle.
       const lm = layer.layerMask;
       const maskCanvas = lm ? editor.layerMask.canvas(layer.id) : null;
       if (lm && maskCanvas && row.maskSlot) {
@@ -335,7 +335,7 @@ export class LayersPanel {
       },
       // Selection only: the current layer, Quick Mask and solo stay as they are.
       loadSelection: (id, mode) => this.withEditor((e) => e.selection.fromLayer(id, mode)),
-      // ── M14 layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
+      // ── Layer masks (row slot, `layerMaskThumb.ts`); these also select the row ──
       targetLayer: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "layer")),
       targetMask: (id) => this.withEditor((e) => e.layerMask.setTarget(id, "mask")),
       addLayerMask: (id, hideAll) =>

@@ -2,7 +2,7 @@
  * Top options bar: renders the active tool's option descriptors generically
  * (`optionControls.ts`) into the shell's horizontally scrolling bar region,
  * plus the Quick Mask "Mask" badge in the fixed leading area (the mask eye
- * toggle lives on the layers panel's mask row since M3.3). Groups the tool
+ * toggle lives on the layers panel's mask row). Groups the tool
  * lists in `ToolOptions.groups` (pen pressure) collapse behind one icon
  * button with a popover (`optionGroup.ts`); layout is {@link layoutOptions}.
  */
