@@ -1,6 +1,6 @@
 /**
- * Shape geometry for the shape tools (SPEC Tools table: Line / Arrow,
- * Rectangle / Ellipse). Pure, no DOM: angle snapping, box-from-drag with
+ * Shape geometry for the shape tools (SPEC "Tools" > "Line and
+ * Arrow (U group)", "Rectangle and Ellipse (U group)"). Pure, no DOM: angle snapping, box-from-drag with
  * Shift (square/circle) and Alt (from centre), arrowhead polygons, and the
  * dirty rect of a shape including stroke width and anti-aliasing. All
  * values are in document px. The engine rasterizes a {@link ShapeSpec} with

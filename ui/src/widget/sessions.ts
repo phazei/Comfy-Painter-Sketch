@@ -23,7 +23,8 @@ import type { FrameSource } from "../engine/editor";
 import { createDefaultTools } from "../tools/registry";
 import type { ToolRegistry } from "../tools/registry";
 import { restoreImageMask } from "./imageMaskSync";
-import { LayerUploader, restoreLayers } from "./persistence";
+import { LayerUploader, manifestKnownFiles, restoreLayers } from "./persistence";
+import type { KnownFiles } from "./persistence";
 
 /** Detached sessions kept for re-attachment. */
 export const MAX_DETACHED_SESSIONS = 6;
@@ -37,8 +38,8 @@ export interface EditorSession {
   readonly editor: Editor;
   readonly tools: ToolRegistry;
   readonly uploader: LayerUploader;
-  /** Every file reference this document has loaded or uploaded. */
-  readonly knownFiles: Set<string>;
+  /** Every file reference this document has loaded or uploaded, with its upload time. */
+  readonly knownFiles: KnownFiles;
   /** Last few {@link fileSignature}s, newest last. */
   readonly recentSignatures: string[];
   /** Controller currently showing it, or `null` when detached. */
@@ -67,13 +68,8 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   // User "Defaults" settings: a lazily added mask reads them when created;
   // pressure options are the tools' initial values (in-session edits win).
   ed.setMaskStyleProvider(readFirstMaskStyle);
-  const knownFiles = new Set<string>();
-  for (const layer of ed.doc.layers) {
-    if (layer.file) knownFiles.add(layer.file);
-    if (layer.layerMask?.file) knownFiles.add(layer.layerMask.file);
-  }
-  const imageMaskFile = ed.doc.imageMask?.file;
-  if (imageMaskFile) knownFiles.add(imageMaskFile);
+  // Manifest files are referenced by the open workflow, so they count as fresh.
+  const knownFiles = manifestKnownFiles(ed.doc);
   const session: EditorSession = {
     docId: doc.docId,
     editor: ed,
@@ -94,7 +90,7 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   });
   if (!editor) {
     const alive = (): boolean => session.alive;
-    session.ready = Promise.all([restoreLayers(ed, alive), restoreImageMask(ed, alive)]).then(() => undefined);
+    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)]).then(() => undefined);
   }
   sessions.set(doc.docId, session);
   return session;
@@ -111,7 +107,7 @@ export function findSession(docId: string): EditorSession | undefined {
 
 /**
  * Identity of a manifest's saved state: frame + per-layer files + output
- * metadata + the Image Mask file (M13a) + layer mask records (M14).
+ * metadata + the Image Mask file + layer mask records.
  * @param doc - Document.
  * @returns Signature string.
  */

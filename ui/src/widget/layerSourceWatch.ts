@@ -1,6 +1,6 @@
 /**
  * Feeds one node's {@link SourceHistory} from its `layer_source` input
- * (SPEC "Image sources (M12)"), with the same lookup as the background
+ * (SPEC "Image sources and the Images panel"), with the same lookup as the background
  * (`imageSource.ts`) applied to the `layer_source` slot:
  *
  * 1. while linked: the upstream node's preview (LoadImage widget value,

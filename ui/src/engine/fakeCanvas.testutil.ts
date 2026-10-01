@@ -107,14 +107,16 @@ export function installCanvasFakes(): void {
 
 // ── Compositing fake (layer masks) ────────────────────────────────────────────
 
-type BlendState = { alpha: number; op: string; fill: string };
+type BlendState = { alpha: number; op: string; fill: string; tx: number; ty: number };
 
 /**
  * 2D context stand-in that really composites straight-alpha RGBA: source-over,
  * destination-out, destination-in, difference, lighter; `globalAlpha`; save/restore;
  * `fillRect` with `#rgb` / `#rrggbb`; `drawImage` 3 / 5 / 9 args (no scaling;
  * composite ops apply inside the destination rect only, i.e. as if clipped
- * to it -- the engine always clips around them).
+ * to it -- the engine always clips around them). Paths: `fill()` fills the
+ * last `rect()` (through `translate`, whole px); other path ops and `stroke()`
+ * draw nothing (enough for filled rectangle shapes).
  */
 export class BlendContext {
   globalAlpha = 1;
@@ -123,9 +125,12 @@ export class BlendContext {
   imageSmoothingEnabled = true;
   imageSmoothingQuality = "low";
   private stack: BlendState[] = [];
+  private tx = 0;
+  private ty = 0;
+  private lastRect: [number, number, number, number] | null = null;
   constructor(readonly canvas: BlendCanvas) {}
   save(): void {
-    this.stack.push({ alpha: this.globalAlpha, op: this.globalCompositeOperation, fill: this.fillStyle });
+    this.stack.push({ alpha: this.globalAlpha, op: this.globalCompositeOperation, fill: this.fillStyle, tx: this.tx, ty: this.ty });
   }
   restore(): void {
     const s = this.stack.pop();
@@ -133,10 +138,29 @@ export class BlendContext {
     this.globalAlpha = s.alpha;
     this.globalCompositeOperation = s.op;
     this.fillStyle = s.fill;
+    this.tx = s.tx;
+    this.ty = s.ty;
   }
   setTransform(): void {}
-  beginPath(): void {}
-  rect(): void {}
+  translate(x: number, y: number): void {
+    this.tx += x;
+    this.ty += y;
+  }
+  beginPath(): void {
+    this.lastRect = null;
+  }
+  rect(x: number, y: number, w: number, h: number): void {
+    this.lastRect = [x, y, w, h];
+  }
+  moveTo(): void {}
+  lineTo(): void {}
+  closePath(): void {}
+  ellipse(): void {}
+  stroke(): void {}
+  fill(): void {
+    const r = this.lastRect;
+    if (r) this.fillRect(Math.round(r[0] + this.tx), Math.round(r[1] + this.ty), Math.round(r[2]), Math.round(r[3]));
+  }
   clip(): void {}
   clearRect(x: number, y: number, w: number, h: number): void {
     this.each(x, y, w, h, (i) => this.canvas.px.fill(0, i, i + 4));

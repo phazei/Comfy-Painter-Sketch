@@ -1,12 +1,12 @@
 """
-nodes/painter_sketch_regions.py -- "PainterSketch Regions" helper node (M9).
+nodes/painter_sketch_regions.py -- "PainterSketch Regions" helper node.
 
 Takes the ``regions`` (``PS_REGIONS``) output of a PainterSketch node and
 exposes its six region slots as twelve fixed sockets ``IMAGE 1``/``MASK 1`` ...
 ``IMAGE 6``/``MASK 6``. Sockets never appear or disappear; the frontend relabels
 them after the region names. An empty slot returns a silent
 ``ExecutionBlocker(None)`` for that pair only, so its downstream branch just
-doesn't run (SPEC.md "Output regions (M9) -- agreed design").
+doesn't run (SPEC "Node I/O" > "PainterSketch Regions").
 
 ``ExecutionBlocker`` is imported from ``comfy_execution.graph_utils``: importing
 ``comfy_execution.graph`` pulls in ComfyUI's own ``nodes`` module, which clashes

@@ -20,9 +20,9 @@ export interface RowFlags {
   current: boolean;
   /** Solo display state. */
   solo: SoloMark;
-  /** M14: strokes on this layer edit its mask. */
+  /** Strokes on this layer edit its mask. */
   maskTarget?: boolean;
-  /** M14: its mask is shown alone (Alt+click view). */
+  /** Its mask is shown alone (Alt+click view). */
   maskViewing?: boolean;
 }
 

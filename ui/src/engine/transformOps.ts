@@ -1,8 +1,8 @@
 /**
- * Free Transform sessions (SPEC "Free Transform (M11)", part a), exposed as
+ * Free Transform sessions (SPEC "Free Transform and flips"), exposed as
  * `Editor.float.transform`. A session IS a floating selection with a matrix:
  *
- * - {@link TransformOps.enter}: lifts the selection (M10 lift, same gate)
+ * - {@link TransformOps.enter}: lifts the selection (the floating-selection lift, same gate)
  *   or the whole edit layer (`FloatOps.liftWhole`); an existing float is
  *   adopted (its offset / matrix become the start parameters).
  * - Drags (`transformSession.ts`), nudges, fields and flips only change the
@@ -13,7 +13,7 @@
  * - The ants follow the transformed coverage (hidden during a drag).
  * - Flips outside a session: mirror matrix on a float, else `layerFlip.ts`.
  *
- * M11b: a text layer gets a float-less session over its text box
+ * A text layer gets a float-less session over its text box
  * (`textTransform.ts`; non-uniform drag / unlinked field (`textFieldEdit.ts`)
  * / flip -> {@link TransformOps.resolvePending}); a kept original restarts
  * whole-layer sessions (`FloatOps.liftKept`).
@@ -65,7 +65,7 @@ export class TransformOps {
     return this.current() !== null;
   }
 
-  /** Whether a TEXT layer session is running (no float; M11b). */
+  /** Whether a TEXT layer session is running (no float). */
   get textActive(): boolean {
     return this.current()?.text != null;
   }
@@ -138,7 +138,7 @@ export class TransformOps {
    * commit, one undo step). Selection sessions end but the float STAYS: its
    * matrix is kept over the original lifted pixels (a later session resumes
    * from it, no accumulated resampling), the display is resampled once
-   * (`FloatOps.bake`), and the float commits by the M10 rules later.
+   * (`FloatOps.bake`), and the float commits by the floating-selection rules later.
    * @returns `true` if layer pixels changed (never for a selection session).
    */
   commit(): boolean {

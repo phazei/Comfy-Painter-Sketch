@@ -33,7 +33,7 @@ export interface LoadedBackground {
   size: Size;
   /** Where the source came from (`imageSource.ts`). */
   origin: ImageSourceOrigin;
-  /** `/view?channel=a` URL of an upstream file (M13a Image Mask), else `null`. */
+  /** `/view?channel=a` URL of an upstream file (for the Image Mask), else `null`. */
   alphaUrl: string | null;
 }
 

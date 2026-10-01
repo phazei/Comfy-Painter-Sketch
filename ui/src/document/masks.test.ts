@@ -4,7 +4,7 @@ import { createEmptyDocument, createMaskLayer, createPaintLayer } from "./create
 import { activeEditLayer, ensureMaskLayer, findMaskLayer, findPaintLayer, maskDisplayColor, targetLayer } from "./masks";
 import type { PainterDocument } from "./types";
 
-/** A pre-M2 document: paint layers only. */
+/** A document with paint layers only (no mask layer). */
 function paintOnlyDoc(): PainterDocument {
   const doc = createEmptyDocument({ width: 8, height: 8 }, "doc00001");
   doc.layers = doc.layers.filter((l) => l.kind === "paint");

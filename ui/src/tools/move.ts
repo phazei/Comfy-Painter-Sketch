@@ -1,5 +1,5 @@
 /**
- * Move drawing tool (SPEC M5): repositions / scales the WHOLE drawing (all
+ * Move drawing tool (SPEC "Moving (Move layer, Move drawing)"): repositions / scales the WHOLE drawing (all
  * layers and masks together) relative to the current image by editing the
  * document placement (`Editor.placement`); pixels are never resampled.
  *
@@ -15,7 +15,7 @@
  * - Esc during a drag restores the placement from the drag start.
  * - Options bar: X / Y (image px), Scale %, "Reset position".
  *
- * Not undoable (SPEC M5): placement never enters the paint history.
+ * Not undoable (SPEC "Undo and redo"): placement never enters the paint history.
  */
 
 import type { Editor } from "../engine/editor";

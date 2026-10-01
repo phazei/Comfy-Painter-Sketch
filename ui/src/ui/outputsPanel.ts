@@ -1,5 +1,5 @@
 /**
- * Outputs tab (M9): the Main card plus six fixed slot cards. A filled slot
+ * Outputs tab (SPEC "Outputs and regions (editor)"): the Main card plus six fixed slot cards. A filled slot
  * shows a {@link RegionCard}; an empty slot is a one-line `+ Region N` row
  * that creates the default centred region in that slot. Card N always feeds
  * helper output pair N.

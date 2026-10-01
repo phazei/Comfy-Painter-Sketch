@@ -1,11 +1,11 @@
 """
-nodes/output_processing.py -- Main/region output processing and the PS_REGIONS value (M9).
+nodes/output_processing.py -- Main/region output processing and the PS_REGIONS value.
 
-SPEC.md "Output regions (M9) -- agreed design": the main node composites once,
+Per SPEC "Python execution", the main node composites once,
 then every output (Main and each of the six region slots) starts from that one
 composite + final mask and applies its own output options (None / Fill / Crop / Border,
-then the M13c Alpha checkbox: RGBA IMAGE, alpha = 1 - that output's final MASK).
-Main's options never affect regions. M14c: with the Background eye off the
+then the Alpha checkbox: RGBA IMAGE, alpha = 1 - that output's final MASK).
+Main's options never affect regions. With the Background eye off the
 composite's transparency is part of every output's mask (regions get their crop).
 
 Region geometry:
@@ -44,7 +44,7 @@ class RegionOutput:
 
     Attributes:
         image: ``[B, h, w, 3]`` float32 IMAGE (after the region's options;
-               ``[B, h, w, 4]`` with the region's M13c ``alpha``).
+               ``[B, h, w, 4]`` with the region's ``alpha``).
         mask:  ``[B, h, w]`` float32 MASK (after the region's options).
     """
     image: torch.Tensor
@@ -115,7 +115,7 @@ def apply_output_options(
     image: torch.Tensor, mask: torch.Tensor, options: OutputOptions,
     straight: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply None / Fill / Crop / Border, then the M13c alpha, keeping the batch dimension.
+    """Apply None / Fill / Crop / Border, then the alpha, keeping the batch dimension.
 
     Fill blends ``image * (1 - mask) + color * mask`` (MASK unchanged). Crop
     keeps ``mask > 0`` (union over the batch) plus padding, clamped to this
@@ -125,7 +125,7 @@ def apply_output_options(
     gets a 4th channel ``1 - mask`` of the returned MASK, so a masked border
     is transparent and an unmasked one opaque.
 
-    M14c: with the Background eye off, ``mask`` already holds the composite's
+    With the Background eye off, ``mask`` already holds the composite's
     transparency and ``straight`` is the un-premultiplied layer colour; outputs
     that blend by their mask (Fill, Alpha) start from ``straight`` so soft
     edges are not tinted by the background colour. Others keep ``image``
@@ -134,7 +134,7 @@ def apply_output_options(
     Args:
         image:    ``[B, H, W, 3]`` IMAGE.
         mask:     ``[B, H, W]`` final MASK (incl. ``invert_mask``, the
-                  Image / Input Mask and M14c transparency).
+                  Image / Input Mask and the Background-off transparency).
         options:  This output's options.
         straight: ``[1 | B, H, W, 3]`` un-premultiplied colour, or ``None``
                   (Background visible: no transparency).
@@ -151,7 +151,7 @@ def apply_output_options(
 
 
 def with_alpha(image: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    """RGBA IMAGE with alpha = ``1 - mask`` (M13c; masked = transparent).
+    """RGBA IMAGE with alpha = ``1 - mask`` (masked = transparent).
 
     Args:
         image: ``[B, h, w, 3]`` IMAGE.
@@ -240,7 +240,7 @@ def viewport_renderer(
         layer_tensors: Loaded layer RGBA tensors by layer id.
         invert_mask:   Node ``invert_mask``.
         background:    ``background`` widget colour as RGB floats.
-        transparent:   M14c, Background eye off: composite over a transparent
+        transparent:   Background eye off: composite over a transparent
                        base (``base_rgb`` only gives the batch size); the
                        transparency joins the mask and ``straight`` is returned.
 
@@ -277,9 +277,9 @@ def render_region(
     Args:
         region:   Parsed region.
         image:    Main composite ``[B, H, W, 3]`` (before Main's options).
-        mask:     Final mask ``[B, H, W]`` (M14c: incl. transparency).
+        mask:     Final mask ``[B, H, W]`` (incl. transparency).
         render:   Viewport renderer for regions reaching outside the image.
-        straight: M14c un-premultiplied colour ``[1, H, W, 3]``, or ``None``.
+        straight: Un-premultiplied colour ``[1, H, W, 3]`` (Background eye off), or ``None``.
 
     Returns:
         The region's :class:`RegionOutput`.
@@ -303,10 +303,10 @@ def build_regions(
 
     Args:
         image:    Main composite ``[B, H, W, 3]`` (before Main's options).
-        mask:     Final mask ``[B, H, W]`` (M14c: incl. transparency).
+        mask:     Final mask ``[B, H, W]`` (incl. transparency).
         doc:      Parsed document, or ``None`` (all slots empty).
         render:   Viewport renderer for regions reaching outside the image.
-        straight: M14c un-premultiplied colour ``[1, H, W, 3]``, or ``None``.
+        straight: Un-premultiplied colour ``[1, H, W, 3]`` (Background eye off), or ``None``.
 
     Returns:
         :class:`PainterRegions` with ``None`` for empty slots.

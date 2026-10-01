@@ -1,5 +1,5 @@
 /**
- * M13b widget side (`inputMaskSync.ts`) with a real editor: the row is named
+ * Input Mask widget side (`inputMaskSync.ts`) with a real editor: the row is named
  * "Input Mask" while `mask` is connected; live `channel=a` read from any
  * MASK output of a node showing a `/view` file (LoadImageMask only on
  * alpha); a node without one waits for a run;

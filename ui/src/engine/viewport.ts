@@ -4,7 +4,7 @@
  *
  * The view content is the current IMAGE (background, or `doc.frame` without
  * one); "doc" in the names below means that content space. Document (layer)
- * coordinates are one more step away, through `frameMap.ts` (decision 4).
+ * coordinates are one more step away, through `frameMap.ts`.
  *
  * Convention: `stage = content * scale + offset` (per axis).
  */

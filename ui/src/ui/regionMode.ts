@@ -1,5 +1,5 @@
 /**
- * Region mode = the Outputs tab (M9, pure rules). Opening the Outputs tab
+ * Region mode = the Outputs tab (SPEC "Outputs and regions (editor)", pure rules). Opening the Outputs tab
  * activates the hidden region tool; choosing any other tool shows the Layers
  * tab; leaving the Outputs tab returns to the last rail tool.
  */

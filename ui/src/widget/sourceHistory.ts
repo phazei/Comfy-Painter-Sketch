@@ -1,6 +1,5 @@
 /**
- * Session history of the images seen on the `layer_source` input (SPEC
- * "Image sources (M12)"): the last {@link SOURCE_HISTORY_SIZE} distinct
+ * Session history of the images seen on the `layer_source` input (SPEC "Image sources and the Images panel"): the last {@link SOURCE_HISTORY_SIZE} distinct
  * images, newest first; a repeat moves to the top. One instance per node
  * controller, in memory only (never in the manifest or the workflow).
  *

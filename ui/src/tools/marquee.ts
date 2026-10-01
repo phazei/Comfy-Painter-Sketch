@@ -1,5 +1,6 @@
 /**
- * Marquee selection tools (M / Shift+M, SPEC Tools table + "Selection").
+ * Marquee selection tools (M / Shift+M, SPEC "Tools" > "Marquees (M group), Lasso (L), Magic wand (W)",
+ * SPEC "Selection").
  * One {@link MarqueeTool} class; each member of the group supplies a
  * {@link MarqueeKind} (how a dragged box becomes coverage + its preview
  * outline): rectangle (hard edge) and ellipse (anti-aliased,

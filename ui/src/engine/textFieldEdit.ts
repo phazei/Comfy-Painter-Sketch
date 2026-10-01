@@ -1,5 +1,6 @@
 /**
- * Unlinked W / H field edits of a TEXT transform session (SPEC M11b), pure
+ * Unlinked W / H field edits of a TEXT transform session
+ * (SPEC "Free Transform and flips"), pure
  * over the session parameters. Text can only scale uniformly, so with Link
  * off a W or H field session previews linked (uniform) while it is open;
  * when it ends the requested non-uniform value is resolved here: uniform ->

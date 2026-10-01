@@ -1,7 +1,7 @@
 /**
  * Photoshop-style tool groups: several tools share one rail slot and one
  * shortcut key. The key selects the group's last-used tool; Shift+key
- * cycles through the group (e.g. shapes: U / Shift+U; M5 marquees: M /
+ * cycles through the group (e.g. shapes: U / Shift+U; marquees: M /
  * Shift+M). Member tools all declare the group's key as their `shortcut`.
  * Pure state, no DOM (the rail slot + flyout is `ui/toolGroupSlot.ts`).
  */

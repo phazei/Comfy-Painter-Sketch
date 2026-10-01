@@ -211,7 +211,7 @@ describe("selection bigger than its content", () => {
     expect(Array.from(ed.selection.current?.data ?? [])).toEqual(Array.from(expected?.data ?? [1]));
   });
 
-  it("M10 float (Move tool): the selection moves exactly, shape kept", () => {
+  it("floating selection (Move tool): the selection moves exactly, shape kept", () => {
     const { ed, sel } = setup();
     expect(ed.float.lift(false)).toBe(true);
     expect(ed.float.state?.area).toEqual(sel.rect);

@@ -1,5 +1,5 @@
 """
-tests/test_layer_masks.py -- M14 layer masks on the Python side (nodes/layer_masks.py,
+tests/test_layer_masks.py -- Layer masks on the Python side (nodes/layer_masks.py,
 nodes/layers.py ``load_layer_mask``, node execute + fingerprint).
 
 Needs ComfyUI on ``sys.path`` (``folder_paths``, ``comfy_api``).

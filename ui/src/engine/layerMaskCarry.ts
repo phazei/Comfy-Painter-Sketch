@@ -1,6 +1,6 @@
 /**
- * Layer masks in whole-layer operations and floats (M14b, SPEC "Layer masks
- * (M14)", "M14b interactions"). Mask pixels: white RGB, hidden amount in
+ * Layer masks in whole-layer operations and floats (SPEC "Layer masks
+ * (lmask)", Carry). Mask pixels: white RGB, hidden amount in
  * alpha (`layerMask.ts`).
  *
  * - Whole-layer Move / Free Transform / flip carry the lmask with the layer
@@ -13,7 +13,7 @@
  *   the mask surface stays untouched while floating (the display draws it
  *   through the carry matrix, {@link carryPreviewCanvas}) and lands in the
  *   layer's undo step ({@link writeCarryPatch}). The mask has its own kept
- *   original (M11b, keyed by its mask key, same revision rule as a layer's),
+ *   original (keyed by its mask key, same revision rule as a layer's),
  *   which restarts the carry when valid.
  * - lmask-targeted selection floats lift the mask's own pixels as opaque
  *   grayscale (value in RGB, selection coverage in alpha), so what lands

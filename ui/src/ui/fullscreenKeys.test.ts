@@ -19,11 +19,17 @@ describe("fullscreenKeyPolicy", () => {
     expect(fullscreenKeyPolicy(chord("w", { metaKey: true }))).toBe("pass");
     expect(fullscreenKeyPolicy(chord("Tab", { ctrlKey: true }))).toBe("pass");
     expect(fullscreenKeyPolicy(chord("PageDown", { ctrlKey: true }))).toBe("pass");
-    expect(fullscreenKeyPolicy(chord("I", { ctrlKey: true, shiftKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("J", { ctrlKey: true, shiftKey: true }))).toBe("pass");
+    // Ctrl+Shift+I / C are editor shortcuts (handled before the policy); unhandled they are swallowed.
+    expect(fullscreenKeyPolicy(chord("I", { ctrlKey: true, shiftKey: true }))).toBe("swallow");
+    expect(fullscreenKeyPolicy(chord("C", { ctrlKey: true, shiftKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("ArrowLeft", { altKey: true }))).toBe("pass");
   });
 
-  it("passes save and queue", () => {
+  it("passes save, queue and interrupt", () => {
+    expect(fullscreenKeyPolicy(chord("Enter", { ctrlKey: true, altKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("Enter", { metaKey: true, altKey: true }))).toBe("pass");
+    expect(fullscreenKeyPolicy(chord("Enter", { altKey: true }))).toBe("swallow");
     expect(fullscreenKeyPolicy(chord("s", { ctrlKey: true }))).toBe("pass");
     expect(fullscreenKeyPolicy(chord("Enter", { ctrlKey: true }))).toBe("pass");
     expect(fullscreenKeyPolicy(chord("Enter", { ctrlKey: true, shiftKey: true }))).toBe("pass");

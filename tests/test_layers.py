@@ -6,7 +6,9 @@ ComfyUI's input directory at a temp folder for the duration of each test.
 
 Covers:
   - lossless WebP with alpha and legacy PNG load to identical straight RGBA
-  - unsafe paths (outside ``painter-sketch/``, ``..``) are rejected
+  - unsafe paths (outside ``painter-sketch/``, ``..``, a fake mid-string
+    ``" ["`` annotation, ``[output]`` / ``[temp]``) are rejected; a bare or
+    ``[input]``-annotated painter-sketch/ path is accepted
   - missing / corrupt files load as empty (one warning, no exception)
   - a wrongly sized file is placed unscaled at the top-left (like the editor) with a warning
 """
@@ -26,7 +28,7 @@ if _REPO not in sys.path:
 import folder_paths  # noqa: E402
 
 from nodes.document import Bounds, Layer  # noqa: E402
-from nodes.layers import load_layer_rgba  # noqa: E402
+from nodes.layers import is_safe_file_value, load_layer_rgba  # noqa: E402
 
 
 def _layer(file: str) -> Layer:
@@ -68,6 +70,37 @@ class TestLoadLayerRgba(unittest.TestCase):
     def test_unsafe_paths_rejected(self) -> None:
         self.assertIsNone(load_layer_rgba(_layer("ps-a.webp [input]"), self._bounds))
         self.assertIsNone(load_layer_rgba(_layer("painter-sketch/../ps-a.webp [input]"), self._bounds))
+
+    def test_fake_annotation_bypass_rejected(self) -> None:
+        # ``" ["`` mid-string is not an annotation for ComfyUI: the whole value
+        # is the path, and ``..`` would walk out of painter-sketch/.
+        bad = "painter-sketch/a [b/../../ps-a.webp"
+        self.assertFalse(is_safe_file_value(bad))
+        with self.assertLogs("paintersketch.layers", level="WARNING") as logs:
+            self.assertIsNone(load_layer_rgba(_layer(bad), self._bounds))
+        self.assertIn("unsafe", logs.output[0])
+
+    def test_unannotated_value_is_accepted(self) -> None:
+        # No annotation also resolves under input/ in ComfyUI.
+        self.assertTrue(is_safe_file_value("painter-sketch/ps-a.webp"))
+        self.assertIsNotNone(load_layer_rgba(_layer("painter-sketch/ps-a.webp"), self._bounds))
+
+    def test_output_and_temp_annotations_rejected(self) -> None:
+        self.assertFalse(is_safe_file_value("painter-sketch/ps-a.webp [output]"))
+        self.assertFalse(is_safe_file_value("painter-sketch/ps-a.webp [temp]"))
+        self.assertIsNone(load_layer_rgba(_layer("painter-sketch/ps-a.webp [output]"), self._bounds))
+
+    def test_nested_traversal_rejected(self) -> None:
+        self.assertFalse(is_safe_file_value("painter-sketch/sub/../../ps-a.webp [input]"))
+        self.assertFalse(is_safe_file_value("painter-sketch/sub\\..\\..\\ps-a.webp [input]"))
+        # A nested subfolder without ``..`` is fine.
+        self.assertTrue(is_safe_file_value("painter-sketch/sub/ps-a.webp [input]"))
+
+    def test_unsafe_check_runs_before_filesystem(self) -> None:
+        self.assertFalse(is_safe_file_value(""))
+        self.assertFalse(is_safe_file_value(" [input]"))
+        self.assertFalse(is_safe_file_value("/painter-sketch/ps-a.webp [input]"))
+        self.assertFalse(is_safe_file_value(" painter-sketch/ps-a.webp [input]"))
 
     def test_missing_file_is_empty(self) -> None:
         self.assertIsNone(load_layer_rgba(_layer("painter-sketch/nope.webp [input]"), self._bounds))

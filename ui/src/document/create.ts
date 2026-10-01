@@ -45,7 +45,7 @@ export function createPaintLayer(name: string): Layer {
 }
 
 /**
- * A new, empty, visible text layer (SPEC M6b).
+ * A new, empty, visible text layer (SPEC "Tools" > "Text (T)").
  *
  * @param textData - Initial text data (usually empty text at the click point).
  * @returns Layer with `file: null`, named after its text.
@@ -54,13 +54,13 @@ export function createTextLayer(textData: TextData): Layer {
   return { ...createPaintLayer(nameFromText(textData.text)), kind: "text", textData };
 }
 
-/** Default mask display colour (decision 5). */
+/** Default mask display colour. */
 export const DEFAULT_MASK_COLOR = "#ff0000";
 
-/** Default mask display opacity (decision 5). */
+/** Default mask display opacity. */
 export const DEFAULT_MASK_OPACITY = 0.5;
 
-/** Name of a document's first mask layer (M8: "Mask N", lowest free N). */
+/** Name of a document's first mask layer (new ones: "Mask N", lowest free N). */
 export const FIRST_MASK_NAME = "Mask 1";
 
 /** Display style a new mask layer starts with (user settings may override the defaults). */
@@ -71,7 +71,7 @@ export interface MaskStyle {
   opacity: number;
 }
 
-/** Built-in style of a new mask layer (decision 5: red, 50 %). */
+/** Built-in style of a new mask layer (red, 50 %). */
 export const DEFAULT_MASK_STYLE: Readonly<MaskStyle> = { color: DEFAULT_MASK_COLOR, opacity: DEFAULT_MASK_OPACITY };
 
 /**

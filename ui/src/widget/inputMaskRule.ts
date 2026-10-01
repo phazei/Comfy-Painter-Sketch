@@ -1,5 +1,5 @@
 /**
- * Where the Input Mask row (M13b, SPEC "Image Mask / Input Mask") gets its
+ * Where the Input Mask row (SPEC "Layers" > "Image Mask / Input Mask row") gets its
  * pixels while the node's `mask` input is connected: pure rules plus the
  * executed-preview provenance store. Used by `inputMaskSync.ts`.
  *

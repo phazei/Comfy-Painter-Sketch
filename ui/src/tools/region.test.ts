@@ -139,6 +139,28 @@ describe("region mode gestures", () => {
     expect(notes).toHaveBeenCalledTimes(1);
   });
 
+  it("a full-slots draw never commits: an unrelated open transaction (colour picker) stays open", () => {
+    const ed = setup();
+    const tool = createRegionTool();
+    for (let slot = 1; slot <= 6; slot++) ed.regionOps.add({ x: slot, y: 0, width: 1, height: 1 });
+    const ops = ed.regionOps;
+    const commit = vi.spyOn(ops, "commit");
+    const cancel = vi.spyOn(ops, "cancel");
+    expect(ops.begin()).toBe(true);
+    const before = ops.options(null).fillColor;
+    ops.setOptions(null, { fillColor: before === "#123456" ? "#654321" : "#123456" });
+    drag(ed, tool, { x: 50, y: 50 }, { x: 70, y: 70 });
+    tool.onPointerDown(ed, [sample(ed, { x: 50, y: 50 })]);
+    tool.onPointerMove(ed, [sample(ed, { x: 70, y: 70 })]);
+    tool.onCancel(ed);
+    expect(commit).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(ops.active).toBe(true);
+    expect(ed.doc.regions).toHaveLength(6);
+    ops.cancel();
+    expect(ops.options(null).fillColor).toBe(before);
+  });
+
   it("cancel reverts a drag without consuming history; a zero move leaves no step", () => {
     const ed = setup();
     const tool = createRegionTool();

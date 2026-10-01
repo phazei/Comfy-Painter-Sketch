@@ -1,5 +1,5 @@
 /**
- * Upload timing for an attached session (SPEC "Upload timing") and the
+ * Upload timing for an attached session (SPEC "Persistence and sync") and the
  * matching ChangeTracker captures (`graphSync.ts`).
  *
  * Dirty layers upload when the editor disengages or leaves fullscreen, when
@@ -42,7 +42,7 @@ export function bindSessionUploads(node: LGraphNode, session: EditorSession, syn
 }
 
 /**
- * Queue-time flush (decision 8): wait for restore, upload dirty layers, and
+ * Queue-time flush: wait for restore, upload dirty layers, and
  * note a hidden mask that still affects the output.
  *
  * @param session - Attached session.
@@ -62,11 +62,15 @@ export async function flushForQueue(session: EditorSession): Promise<void> {
 }
 
 /**
- * Ctrl/Cmd+S in the editor: upload dirty layers, then run ComfyUI's save
- * command so the saved workflow references the new files (the widget value
- * is updated by the upload's `change` event before the save serializes).
- * If an upload failed (already toasted), ask before saving the workflow
- * without the latest paint; the pixels stay in memory either way.
+ * Ctrl/Cmd+S in the editor: commit a floating selection (as queue does, so
+ * the saved files are what the user sees), upload dirty layers, then run
+ * ComfyUI's save command so the saved workflow references the new files (the
+ * widget value is updated by the upload's `change` event before the save
+ * serializes). If an upload failed (already toasted), ask before saving the
+ * workflow without the latest paint; the pixels stay in memory either way.
+ *
+ * Only queue and Ctrl+S settle a float; the idle / blur / tab-hidden flushes
+ * (`Uploader.schedule` / `flush` callers) never do, since the user is mid-work.
  */
 export class WorkflowSaver {
   /** A flush + save is in progress. */
@@ -83,6 +87,9 @@ export class WorkflowSaver {
       if (session) {
         try {
           await session.ready;
+          // Settle before flushing so the committed pixels are what uploads
+          // (settle marks the layer dirty synchronously; flush picks it up).
+          session.editor.settle();
           await session.uploader.flush();
         } catch {
           if (!window.confirm("Upload failed; save anyway without the latest paint?")) return;

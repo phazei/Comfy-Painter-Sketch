@@ -8,10 +8,11 @@
  *   holding the before/after coverage (cropped, so small), so Ctrl+Z after a
  *   wrong marquee restores the previous selection (Photoshop keeps selection
  *   steps in its history too).
- * - Pixel commands on the paint target (Quick Mask aware, decision 6), one
+ * - Pixel commands on the paint target (Quick Mask aware), one
  *   undo patch each: clear (Delete/Backspace; paint: destination-out, mask:
  *   remove coverage), fill (Alt/Ctrl+Backspace; on the mask: add coverage),
- *   and "selection to mask" (adds the coverage to the mask layer).
+ *   and "selection to mask" (adds the coverage to the mask layer, or hides
+ *   it on a targeted layer mask).
  *
  * The selection lives in document coords; `selectAll` converts the current
  * image rect to document coords via {@link imageRectToDoc} so it always
@@ -147,9 +148,10 @@ export class SelectionOps {
 
   /**
    * Ctrl+click on a layer row (Photoshop's thumbnail Ctrl+click): the layer's
-   * alpha becomes the selection coverage (soft edges stay partial), combined
-   * by `mode`. A mask uses its effective coverage (per-mask invert applied,
-   * as the overlay shows it). Works on hidden layers; does not change the
+   * pixels become the selection, combined by `mode`. The selection is hard:
+   * full strength wherever the alpha is > 0 (soft edges are not kept as
+   * partial coverage). A mask uses its effective coverage (per-mask invert
+   * applied, as the overlay shows it). Works on hidden layers; does not change the
    * current layer, Quick Mask or solo. An empty layer notes and leaves the
    * selection unchanged.
    * @param layerId - Paint, text or mask layer id.
@@ -160,7 +162,7 @@ export class SelectionOps {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
     if (layerId === IMAGE_MASK_ID && s.doc.imageMask) {
-      // Image px coverage, resampled into document coords (M13a).
+      // The Image Mask's image-px coverage, resampled into document coords.
       const sel = imageMaskSelection(s);
       if (sel) return this.apply(sel, mode);
       s.events.emit("note", EMPTY_LAYER_NOTE);
@@ -176,10 +178,10 @@ export class SelectionOps {
       s.events.emit("note", EMPTY_LAYER_NOTE);
       return false;
     }
-      const next = layer.kind === "mask" && layer.invert === true ? invertSelection(alpha) : alpha;
-      // Full strength wherever the (effective) alpha is > 0: lifting then takes
-      // the pixels whole, so a move leaves no residue and keeps exact alpha.
-      return this.apply(hardenSelection(next), mode);
+    const next = layer.kind === "mask" && layer.invert === true ? invertSelection(alpha) : alpha;
+    // Full strength wherever the (effective) alpha is > 0: lifting then takes
+    // the pixels whole, so a move leaves no residue and keeps exact alpha.
+    return this.apply(hardenSelection(next), mode);
   }
 
   // ── Pixel commands (one undo patch each) ────────────────────────────────
@@ -198,27 +200,36 @@ export class SelectionOps {
 
   /**
    * Alt+Backspace (FG) / Ctrl+Backspace (BG): fill the selection on the paint
-   * target (on the mask target: add coverage, colour ignored; on a targeted
-   * layer mask the same: paint white = hide, swatches ignored).
+   * target (on the mask target: add coverage, colour ignored). On a targeted
+   * layer mask the colour is ignored and the `slot` mask swatch decides, as
+   * for the brush / bucket: white = hide, black = reveal.
    * @param color - CSS hex colour.
+   * @param slot - Which swatch the key uses (`fg` = Alt, `bg` = Ctrl).
    * @returns `true` if pixels changed.
    */
-  fillSelected(color: string): boolean {
+  fillSelected(color: string, slot: "fg" | "bg" = "fg"): boolean {
     const layer = this.editableTarget();
     if (!layer) return false;
-    if (this.onLayerMask(layer)) return paintMaskArea(this.s, layer, 1, true, true);
+    if (this.onLayerMask(layer)) {
+      const fgWhite = this.s.layerMasks.fgWhite;
+      return paintMaskArea(this.s, layer, 1, true, slot === "fg" ? fgWhite : !fgWhite);
+    }
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
   }
 
   /**
-   * "Selection to mask": add the selection coverage to the mask layer
-   * (whatever the paint target is; a mask layer is added if missing).
+   * "Selection to mask": with a layer mask targeted, hide the selection
+   * on that lmask (white, soft coverage kept, through the edit gate so the
+   * lmask-only view exception applies); otherwise add the selection coverage
+   * to the current mask layer (a mask layer is added if missing).
    * @returns `true` if pixels changed.
    */
   toMask(): boolean {
     const s = this.s;
     if (!this.ready()) return false;
+    const lmaskLayer = targetedMaskLayer(s);
+    if (lmaskLayer) return this.canEdit(lmaskLayer) && paintMaskArea(s, lmaskLayer, 1, true, true);
     const layer = s.ensureMask();
     if (!this.canEdit(layer)) return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
@@ -250,7 +261,7 @@ export class SelectionOps {
     return true;
   }
 
-  /** Whether pixel commands on `layer` go to its targeted layer mask (M14). */
+  /** Whether pixel commands on `layer` go to its targeted layer mask. */
   private onLayerMask(layer: Layer): boolean {
     return targetedMaskLayer(this.s)?.id === layer.id;
   }

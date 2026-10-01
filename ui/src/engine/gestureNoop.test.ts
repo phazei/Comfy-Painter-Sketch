@@ -1,6 +1,6 @@
 /**
- * Merged gestures that net to no change leave no undo step (SPEC M7a wart:
- * Esc in the mask colour picker). The test environment has no canvas, so a
+ * Merged gestures that net to no change leave no undo step (SPEC "Undo and
+ * redo"; e.g. Esc in the mask colour picker). The test environment has no canvas, so a
  * permissive fake (every context method is a no-op) stands in; these tests
  * only touch layer metadata.
  */

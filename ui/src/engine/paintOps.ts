@@ -1,7 +1,8 @@
 /**
  * Painting operations of the editor core: the Quick Mask paint target
- * (decision 6), strokes (brush dabs or one shape) through the stroke buffer, and undo/redo of
- * dirty-rect patches (decision 10). Patches are in document coords;
+ * (SPEC "Layers" > "cmasks, current mask and Quick Mask"), strokes (brush
+ * dabs or one shape) through the stroke buffer, and undo/redo of dirty-rect
+ * patches (SPEC "Undo and redo"). Patches are in document coords;
  * re-applying one first widens bounds to cover it. Structural layer entries
  * are applied by `layerHistory.ts`, Move-tool translate entries by
  * `layerTranslate.ts`, text entries by `textLayer.ts`; group entries
@@ -99,7 +100,7 @@ export class PaintOps {
     // A rasterize prompt silently ends this press (see rasterize.ts); the next stroke joins it.
     // Shapes can't paint a layer mask (the gate refuses them there).
     if (preparePixelEdit(s, layer, style.shape ? "other" : "paint") !== "proceed") return false;
-    // M14: a targeted layer mask takes the stroke (colour ignored; `layerMask.ts`).
+    // A targeted layer mask takes the stroke (colour ignored; `layerMask.ts`).
     const onMask = targetedMaskLayer(s)?.id === layer.id;
     const strokeStyle = onMask
       ? maskStrokeStyle(style, s.layerMasks.fgWhite)
@@ -247,7 +248,7 @@ export class PaintOps {
       applyLayerMaskEntry(s, entry, side === "after");
       return;
     }
-    // A patch: a layer's pixels, or a layer mask's (its key; M14).
+    // A patch: a layer's pixels, or a layer mask's (its key).
     if (!surfaceAlive(s, entry.layerId)) return;
     const data = side === "before" ? entry.before : entry.after;
     s.ensureBounds({ x: entry.x, y: entry.y, width: data.width, height: data.height }, false);

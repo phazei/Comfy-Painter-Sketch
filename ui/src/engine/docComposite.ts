@@ -2,7 +2,7 @@
  * "What the user sees", rendered in DOCUMENT coordinates, for tools that
  * sample all layers or only the background ({@link sceneFor}; paint bucket,
  * magic wand, eyedropper): the background (image or
- * fill) mapped through the inverse frame map (decision 4 -- the image may
+ * fill) mapped through the inverse frame map (the image may
  * have a different size than `doc.frame`), then visible paint layers bottom
  * -> top at their opacity (Normal blend). Mask tints are not included: they
  * are display-only. Outside the image rect and the paint bounds the result
@@ -65,7 +65,7 @@ export function visibleScene(s: EditorState): DocCompositeInput {
   for (const layer of s.doc.layers) {
     if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
     const source = s.store.ensure(layer.id).canvas;
-    // M14: what you see is the masked layer.
+    // What you see is the masked layer.
     layers.push({ source: layer.layerMask ? maskedSource(s, layer, source, false) : source, opacity: layer.opacity });
   }
   return {

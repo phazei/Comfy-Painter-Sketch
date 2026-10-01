@@ -1,5 +1,5 @@
 /**
- * Region mode pointer handling (M9). Hidden tool (`rail: false`, no
+ * Region mode pointer handling (SPEC "Outputs and regions (editor)"). Hidden tool (`rail: false`, no
  * shortcut, no Ctrl Move / Alt eyedropper): the Outputs tab activates it and
  * any other tool leaves it (`ui/hostSync.ts`).
  *
@@ -43,6 +43,8 @@ interface RegionDrag {
   handle: RegionHandle | null;
   /** Passed the click slop at least once. */
   moved: boolean;
+  /** This gesture opened a `regionOps` transaction (false when all slots were full). */
+  open: boolean;
 }
 
 // ── Hit testing ───────────────────────────────────────────────────────────────
@@ -96,12 +98,13 @@ export function createRegionTool(): Tool {
         drag = null;
         return;
       }
+      drag.open = true;
     }
     if (drag.mode !== "draw" && drag.id && drag.rect) {
       ops.setRect(drag.id, dragRegionRect(drag.rect, delta, editor.imageSize, drag.handle));
       return;
     }
-    if (!ops.active) return;
+    if (!drag.open) return;
     const rect = drawRegionRect(drag.start, p, editor.imageSize);
     if (drag.id) ops.setRect(drag.id, rect);
     else drag.id = ops.add(rect);
@@ -123,7 +126,7 @@ export function createRegionTool(): Tool {
       const start = docToImage(editor.frameMap, sample);
       const grab = sample.shiftKey ? null : grabAt(editor, start);
       if (grab?.id) editor.regionOps.select(grab.id);
-      drag = { start, moved: false, ...(grab ?? { mode: "draw", id: null, rect: null, handle: null }) };
+      drag = { start, moved: false, open: false, ...(grab ?? { mode: "draw", id: null, rect: null, handle: null }) };
     },
 
     onPointerMove(editor, samples) {
@@ -134,14 +137,15 @@ export function createRegionTool(): Tool {
     onPointerUp(editor, sample) {
       if (!drag) return;
       update(editor, sample);
-      const { moved, mode } = drag;
+      const { moved, mode, open } = drag;
       drag = null;
-      if (moved) editor.regionOps.commit();
-      else if (mode === "draw") editor.regionOps.select(null);
+      // A full-slots draw noted and opened nothing: there is nothing to commit.
+      if (open) editor.regionOps.commit();
+      else if (!moved && mode === "draw") editor.regionOps.select(null);
     },
 
     onCancel(editor) {
-      if (drag) editor.regionOps.cancel();
+      if (drag?.open) editor.regionOps.cancel();
       drag = null;
     },
 

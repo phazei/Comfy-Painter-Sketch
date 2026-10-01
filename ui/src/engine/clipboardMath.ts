@@ -1,6 +1,6 @@
 /**
- * Pure math behind copy / cut / paste (SPEC "Floating selections + clipboard
- * (M10)", Clipboard block). No DOM, no canvas: straight-alpha RGBA arrays
+ * Pure math behind copy / cut / paste (SPEC "Clipboard and drop").
+ * No DOM, no canvas: straight-alpha RGBA arrays
  * (what `getImageData` returns) and plain rects, so it is unit-testable.
  *
  * - {@link applyCoverage}: selection coverage -> alpha (copy of selected pixels).
@@ -93,10 +93,10 @@ export function unionMaskCoverage(union: Uint8Array, area: Rect, read: Rect | nu
 }
 
 /**
- * A pasted image -> lmask float pixels (paste into the lmask-only view,
- * M14b), in place: value = Rec.709 luminance x alpha (transparent = black =
- * shown) in RGB, coverage 255 (the paste replaces what it lands on). Our own
- * lmask copy (opaque grayscale) keeps its values exactly.
+ * A pasted image -> lmask float pixels (paste into the lmask-only view), in
+ * place: value = Rec.709 luminance x alpha (transparent = black = shown) in
+ * RGB, coverage 255 (the paste replaces what it lands on). Our own lmask copy
+ * (opaque grayscale) keeps its values exactly.
  * @param rgba - Straight-alpha RGBA (modified).
  */
 export function imageToMaskGray(rgba: Uint8ClampedArray): void {

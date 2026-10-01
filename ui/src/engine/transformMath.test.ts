@@ -1,5 +1,5 @@
 /**
- * Free Transform pure math (M11a): matrices, handle drags (proportional /
+ * Free Transform pure math: matrices, handle drags (proportional /
  * free / Alt / edge), rotate snap, resize-cursor choice, hit zones with
  * rotation, transformed bounds, and the exact resample / flip paths.
  */

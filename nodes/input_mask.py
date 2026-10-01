@@ -1,8 +1,8 @@
 """
-nodes/input_mask.py -- The optional ``mask`` input (M13b, SPEC "Image Mask / Input Mask").
+nodes/input_mask.py -- The optional ``mask`` input (SPEC "Python execution").
 
-While ``mask`` is connected it replaces the input image's alpha (the M13a
-Image Mask file) as the coverage of the fixed mask row; the row's settings
+While ``mask`` is connected it replaces the input image's alpha (the Image
+Mask file) as the coverage of the fixed mask row; the row's settings
 (eye, invert; colour / opacity are display-only) still come from the
 manifest's ``imageMask`` record, whose ``file`` is then ignored. Without a
 record the row has its defaults (visible, not inverted), like the editor.
@@ -18,7 +18,7 @@ Tensor rules (pure torch, no files):
       JoinImageWithAlpha: bilinear ``interpolate`` over ``[-1, 1, H, W]``).
 
 The prepared coverage is ``[1 | B, H, W]`` and joins the MASK union exactly
-like the M13a coverage (``composite.py``, key ``IMAGE_MASK_KEY``).
+like the Image Mask coverage (``composite.py``, key ``IMAGE_MASK_KEY``).
 """
 
 import dataclasses

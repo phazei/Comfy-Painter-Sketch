@@ -1,5 +1,5 @@
 /**
- * M13a Image Mask row in the editor: made from the source's alpha (not an
+ * Image Mask row in the editor: made from the source's alpha (not an
  * undo step, dirty until uploaded), opaque removes it, every pixel edit is
  * refused with the note, settings are ordinary (undoable) mask settings,
  * Ctrl+click selects its effective coverage, Duplicate makes an editable

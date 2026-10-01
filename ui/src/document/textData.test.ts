@@ -110,7 +110,7 @@ describe("recent fonts", () => {
   });
 });
 
-describe("text rotation (M11b)", () => {
+describe("text rotation", () => {
   it("reads, normalizes to (-180, 180] and drops 0 / junk", () => {
     expect(readTextData({ ...TD, rotation: 30 })?.rotation).toBe(30);
     expect(readTextData({ ...TD, rotation: 190 })?.rotation).toBe(-170);

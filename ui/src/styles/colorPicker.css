@@ -1,5 +1,5 @@
 /*
- * PainterSketch colour picker popover (M3.2). Scoped under .cps-* to avoid
+ * PainterSketch colour picker popover (SPEC "Colour"). Scoped under .cps-* to avoid
  * collisions with ComfyUI. Injected together with editor.css by inject.ts.
  * CSS variables are inherited from .cps-root (editor.css).
  */

@@ -43,7 +43,7 @@ export function pickLayer(
 }
 
 /**
- * Quick Mask auto-select (M8): the topmost visible, unlocked mask layer whose
+ * Quick Mask auto-select: the topmost visible, unlocked mask layer whose
  * RAW painted coverage (alpha, `invert` ignored) at the pick point exceeds
  * `threshold` -- you grab the mask by the strokes you can see and drag.
  * @param layers - Document layers, bottom -> top.

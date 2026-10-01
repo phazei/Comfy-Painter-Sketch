@@ -1,6 +1,6 @@
 /**
  * Pure pixel + selection math behind floating selections and Merge Down
- * (SPEC "Floating selections + clipboard (M10)"). No DOM, no canvas: every
+ * (SPEC "Floating selections"). No DOM, no canvas: every
  * function works on straight-alpha RGBA arrays (what `getImageData` returns)
  * or on {@link Selection} objects, so it is unit-testable.
  *

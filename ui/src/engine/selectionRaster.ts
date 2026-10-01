@@ -1,6 +1,7 @@
 /**
- * Anti-aliased coverage for the ellipse marquee and the lasso (SPEC Tools
- * table: both anti-aliased, the Photoshop default). Pure scanline
+ * Anti-aliased coverage for the ellipse marquee and the lasso (SPEC "Tools" >
+ * "Marquees (M group), Lasso (L), Magic wand (W)": both anti-aliased, the
+ * Photoshop default). Pure scanline
  * rasterizer in DOCUMENT coords, so it runs in unit tests without a canvas
  * (the alternative -- fill a `Path2D`, read back -- needs a DOM).
  *

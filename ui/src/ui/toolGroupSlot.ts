@@ -3,7 +3,7 @@
  * current tool icon with a small corner triangle. Click selects the current
  * tool; long-press or right-click opens a flyout (popover to the right)
  * listing the members. Generic over {@link ToolGroupSpec}: the shape group
- * (U) uses it now, the M5 marquee group (M) can reuse it unchanged.
+ * (U) and the marquee group (M) both use it.
  */
 
 import type { ToolGroupSpec } from "../tools/toolGroups";

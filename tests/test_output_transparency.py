@@ -1,7 +1,7 @@
 """
-tests/test_output_transparency.py -- M14c: the composite's transparency joins the output masks.
+tests/test_output_transparency.py -- The composite's transparency joins the output masks.
 
-SPEC.md Decisions Log "Transparency in outputs (M14c, agreed)": with the
+Transparency in outputs (SPEC "Python execution"): with the
 Background eye off, ``T = 1 - composite alpha`` joins the mask-layer union
 AFTER ``invert_mask`` (max, never inverted), for Main and every region. Fill
 fills holes, Crop includes them, Alpha makes them transparent with the

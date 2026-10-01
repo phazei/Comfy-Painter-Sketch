@@ -1,10 +1,10 @@
 /**
- * Options bar additions while a layer mask is the edit target (M14a): a
- * "Layer Mask:" caption, then the mask's Invert setting, Apply (M14b: bake
+ * Options bar additions while a layer mask is the edit target: a
+ * "Layer Mask:" caption, then the mask's Invert setting, Apply (bake
  * into the layer's pixels, one undo step) and Delete mask -- declarative
  * descriptors appended to whatever the bar shows for the active tool, so no
  * per-tool UI code. Hide / reveal is the black / white mask swatch on the
- * rail (X swaps), not a bar control.
+ * rail (X swaps), not a bar control (SPEC "Layer masks (lmask)").
  */
 
 import type { Editor } from "../engine/editor";

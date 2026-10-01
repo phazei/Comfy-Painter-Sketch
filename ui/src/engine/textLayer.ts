@@ -1,5 +1,5 @@
 /**
- * Text layers in the editor core (SPEC M6b): rendering `textData` into the
+ * Text layers in the editor core (SPEC "Tools" > "Text (T)"): rendering `textData` into the
  * layer canvas, text history entries ({@link TextEntry}), the text move
  * handler used by the Move tool and the text tool's Ctrl+drag
  * (`layerMovers.ts`), and hit-testing text boxes.
@@ -152,7 +152,7 @@ export function moveTextLayer(s: EditorState, layer: Layer, dx: number, dy: numb
 // ── Hit test ──────────────────────────────────────────────────────────────────
 
 /**
- * Top-most visible text layer whose (rotated, M11b) text box contains a
+ * Top-most visible text layer whose (rotated) text box contains a
  * point (pure: unrotated boxes come from `boxOf`; the point is rotated back
  * about the box centre).
  * @param layers - Document layers, bottom -> top.

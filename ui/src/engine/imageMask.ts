@@ -1,5 +1,6 @@
 /**
- * Image Mask pixels (M13a, `document/imageMask.ts`): the coverage plane in
+ * Image Mask pixels (`document/imageMask.ts`, SPEC "Layers" > "Image Mask /
+ * Input Mask row"): the coverage plane in
  * IMAGE px (one byte per pixel, `255 - alpha` of the background file) plus
  * the pure conversions around it:
  *
@@ -9,7 +10,7 @@
  *   format of every mask (white RGB, alpha = coverage, PNG);
  * - {@link coverageInDoc}: resample into a document rect through the frame
  *   map (Ctrl+click selection, Duplicate);
- * - M13b Input Mask: {@link coverageFromGray} (Python's mask preview) and
+ * - Input Mask: {@link coverageFromGray} (Python's mask preview) and
  *   {@link resampleCoverage} (to the image size).
  *
  * {@link ImageMaskPixels} is the per-editor state (`EditorState.imageMask`):
@@ -43,8 +44,8 @@ export function coverageFromAlpha(rgba: Uint8ClampedArray): Uint8Array | null {
 }
 
 /**
- * Coverage of a grayscale mask preview (M13b, Python `UI.PreviewMask`): the
- * gray value is the coverage (red channel read).
+ * Coverage of a grayscale mask preview (the Input Mask, Python
+ * `UI.PreviewMask`): the gray value is the coverage (red channel read).
  * @param rgba - RGBA pixels of the preview.
  * @returns Coverage per pixel.
  */
@@ -164,7 +165,7 @@ export class ImageMaskPixels {
   version = 0;
   /** Display cache key (tint, thumbnail); globally unique. */
   revision = 0;
-  /** M13b: no coverage yet, the Input Mask arrives with a run (row hint). */
+  /** Input Mask only: no coverage yet, it arrives with a run (row hint). */
   waiting = false;
 
   /** Coverage plane (treat as immutable), or `null` when none is loaded. */

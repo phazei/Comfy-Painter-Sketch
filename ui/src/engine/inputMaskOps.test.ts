@@ -1,5 +1,5 @@
 /**
- * M13b Input Mask row in the editor (`ImageMaskOps.setInput`): name switch,
+ * Input Mask row in the editor (`ImageMaskOps.setInput`): name switch,
  * settings carried over both ways, never dirty (no upload, no file), a saved
  * file is not restored onto it, the waiting hint state, edit refusal with its
  * own name, Ctrl+click / Duplicate / solo like the Image Mask; coverage

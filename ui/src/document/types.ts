@@ -1,7 +1,7 @@
 /**
  * PainterDocument v1: the versioned layer manifest stored (as JSON) in the
- * node's `document` widget. Shapes follow SPEC.md "Document Model (v1 sketch)"
- * and "Saved-file contract". Paint uses frame pixels; regions use current-image pixels.
+ * node's `document` widget. Shapes follow
+ * SPEC "Document and saved files". Paint uses frame pixels; regions use current-image pixels.
  */
 
 import type { Rect, Size } from "../geometry/rect";
@@ -17,10 +17,10 @@ export const DOCUMENT_VERSION = 1;
 /** Upload subfolder under ComfyUI's `input/`. */
 export const DOCUMENT_SUBFOLDER = "painter-sketch";
 
-/** Layer kinds (M1 creates only `paint`). */
+/** Layer kinds: raster `paint`, editable `text` (rasterized for saving) and cmask `mask`. */
 export type LayerKind = "paint" | "text" | "mask";
 
-/** Blend modes (Normal only in v1, decision 11). */
+/** Blend modes (Normal only in v1). */
 export type BlendMode = "normal";
 
 /** One layer. Pixel data lives in `file` (WebP or PNG sized exactly `bounds`). */
@@ -41,7 +41,7 @@ export interface Layer {
   invert?: boolean;
   /** Text layers only (`kind: "text"`): editable text, see `textData.ts`. */
   textData?: TextData;
-  /** Paint layers only (M14): the layer mask, see `layerMask.ts`. */
+  /** Paint layers only: the layer mask, see `layerMask.ts`. */
   layerMask?: LayerMask;
 }
 
@@ -59,7 +59,7 @@ export interface OutputOptions {
   /** Border area in the MASK: true = 1 (outpainting), false = 0. */
   borderMask: boolean;
   /**
-   * M13c: IMAGE as RGBA, alpha = 1 - this output's final mask (ignored with
+   * Alpha option: IMAGE as RGBA, alpha = 1 - this output's final mask (ignored with
    * `fill`). Normalized copies only carry it when `true`, so the manifest
    * writes it only when on; absent / `false` = off.
    */
@@ -82,7 +82,7 @@ export interface Region {
 /**
  * Move-tool placement of the whole drawing, in document-frame px: a document
  * point `p` is shown at `(p - c) * scale + c + (x, y)`, `c` = frame centre
- * (SPEC "Saved-file contract", Placement). See `document/placement.ts`.
+ * (SPEC "Document and saved files"). See `document/placement.ts`.
  */
 export interface Placement {
   x: number;
@@ -102,7 +102,7 @@ export interface PainterDocument {
   frame: Size;
   /** Paint area in frame coords; always contains the frame rect. */
   bounds: Rect;
-  /** Output regions (M9), at most one per slot. */
+  /** Output regions, at most one per slot. */
   regions: Region[];
   /** Missing = none / black / zero padding. */
   mainOutput?: OutputOptions;
@@ -112,7 +112,7 @@ export interface PainterDocument {
    * (saved only when `false`).
    */
   backgroundVisible?: boolean;
-  /** M13a Image Mask row (background alpha, image px); saved only while it exists (`imageMask.ts`). */
+  /** Image Mask row (background alpha, image px); saved only while it exists (`imageMask.ts`). */
   imageMask?: ImageMask;
   /** Move tool; `undefined` = identity (saved only when non-identity). */
   placement?: Placement;

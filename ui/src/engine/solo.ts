@@ -1,5 +1,5 @@
 /**
- * Solo (SPEC M8, view only): at most one soloed paint/text layer and one
+ * Solo (SPEC "Layers" > "Solo", view only): at most one soloed paint/text layer and one
  * soloed mask. While any solo is set, only soloed layers show (even if their
  * eye is off) -- the other group is hidden too unless it has its own solo;
  * with no solo, layers show by their eyes. Not saved, not

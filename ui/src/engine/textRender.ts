@@ -1,5 +1,5 @@
 /**
- * Text rendering for text layers (SPEC M6b): canvas 2D `font` strings,
+ * Text rendering for text layers (SPEC "Tools" > "Text (T)"): canvas 2D `font` strings,
  * multi-line layout with alignment, and drawing into a layer canvas.
  *
  * - {@link layoutText} is pure (the text measurer is injected), so line
@@ -12,7 +12,7 @@
  *   immutable, see `document/textData.ts`).
  *
  * Anchor: `(x, y)` = first line's baseline at its left / centre / right edge.
- * Rotation (M11b): about the centre of the unrotated edit box; `paint` is
+ * Rotation: about the centre of the unrotated edit box; `paint` is
  * the rotated ink bbox's AABB (bounds growth).
  */
 

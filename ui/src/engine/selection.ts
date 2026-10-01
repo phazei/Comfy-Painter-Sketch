@@ -1,5 +1,5 @@
 /**
- * Selection algebra (decision 7, SPEC "Selection"). A selection is a pixel
+ * Selection algebra (SPEC "Selection"). A selection is a pixel
  * coverage mask (0-255) in DOCUMENT coordinates, so it follows the drawing
  * (not the image) and survives frame-map / placement changes for free.
  *

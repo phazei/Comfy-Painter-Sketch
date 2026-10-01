@@ -1,5 +1,5 @@
 /**
- * Text layer data (SPEC M6b, decision 12): what a `kind: "text"` layer keeps
+ * Text layer data (SPEC "Tools" > "Text (T)"): what a `kind: "text"` layer keeps
  * so it stays editable. The layer's pixels are still saved like paint (the
  * frontend rasterizes; Python never renders text).
  *
@@ -39,7 +39,7 @@ export interface TextData {
   lineHeight?: number;
   /**
    * Rotation in degrees (clockwise on screen) around the centre of the
-   * unrotated edit box (M11b); missing = 0, normalized to (-180, 180].
+   * unrotated edit box; missing = 0, normalized to (-180, 180].
    */
   rotation?: number;
 }

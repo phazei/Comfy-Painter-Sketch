@@ -20,19 +20,21 @@
  *   `textRender.ts`, rasterize gate `rasterize.ts`)
  * - `floatOps.ts`   -- floating selections ({@link Editor.float}); every other
  *   edit commits a float first (`EditorState.settleFloat`)
+ * - `shapeFloat.ts` -- shapes end as a float in Free Transform ({@link Editor.endShape})
  * - `mergeDown.ts`  -- Merge Down ({@link Editor.mergeDown})
  * - `selectionFollow.ts` -- outline-only selection drags ({@link Editor.selectionMove})
  * - `clipboardOps.ts` -- copy / cut / paste pixels ({@link Editor.clipboard})
- * - `imageMaskOps.ts` -- the M13a Image Mask row ({@link Editor.imageMask})
- * - `layerMaskOps.ts` / `layerMask.ts` -- M14 layer masks ({@link Editor.layerMask});
- *   `layerMaskCarry.ts` -- M14b: masks in moves / transforms / flips / floats
+ * - `imageMaskOps.ts` -- the Image Mask row ({@link Editor.imageMask})
+ * - `layerMaskOps.ts` / `layerMask.ts` -- layer masks ({@link Editor.layerMask});
+ *   `layerMaskCarry.ts` -- masks in moves / transforms / flips / floats
  *
- * Coordinates (decision 4): pixels, bounds, patches and dabs are in DOCUMENT
+ * Coordinates: pixels, bounds, patches and dabs are in DOCUMENT
  * (frame) coords, never resampled; the view fits the current image and the
  * document is drawn through {@link Editor.frameMap} (frame fit + Move-tool
- * placement, `placementOps.ts`; not undoable). History (decision 10):
- * dirty-rect patches, Clear = full snapshots. Masks (decisions 5/6) are
- * ordinary layers whose alpha is coverage; Quick Mask picks the paint target.
+ * placement, `placementOps.ts`; not undoable). History (SPEC "Undo and redo"):
+ * dirty-rect patches, Clear = full snapshots. Masks (SPEC "Layers" >
+ * "cmasks, current mask and Quick Mask") are ordinary layers whose alpha is
+ * coverage; Quick Mask picks the paint target.
  */
 
 import type { MaskStyle } from "../document/create";
@@ -63,6 +65,7 @@ import { createSurface } from "./surface";
 import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
 import { ResolutionOps } from "./resolutionOps";
+import { ShapeFloatOps } from "./shapeFloat";
 import { SourceInsertOps } from "./sourceInsert";
 import { ImageMaskOps } from "./imageMaskOps";
 import { LayerMaskOps } from "./layerMaskOps";
@@ -91,26 +94,27 @@ export class Editor extends EditorBase {
   readonly layerMove: LayerMoveOps;
   /** Selection (session state, undoable) and its pixel commands. */
   readonly selection: SelectionOps;
-  /** Text tool: create / edit / commit text layers (M6b). */
+  /** Text tool: create / edit / commit text layers. */
   readonly text: TextOps;
   /** Region rectangles, output options and metadata gesture transactions. */
   readonly regionOps: RegionOps;
-  /** Floating selection (M10a): lift / move / commit / cancel selected pixels. */
+  /** Floating selection: lift / move / commit / cancel selected pixels. */
   readonly float: FloatOps;
   /** Outline-only selection drag (selection tools, plain drag inside). */
   readonly selectionMove: SelectionMoveOps;
-  /** Copy / cut / paste pixels (M10b; the clipboards themselves live in the UI). */
+  /** Copy / cut / paste pixels (the clipboards themselves live in the UI). */
   readonly clipboard: ClipboardOps;
   /** Drawing-grid vs image resolution check + Match image resolution. */
   readonly resolution: ResolutionOps;
-  /** Image sources (M12): insert as a new layer in Free Transform (`sourceInsert.ts`). */
+  /** Image sources: insert as a new layer in Free Transform (`sourceInsert.ts`). */
   readonly insert: SourceInsertOps;
-  /** Image Mask row (M13a): background alpha, restore / upload bookkeeping, Duplicate. */
+  /** Image Mask row: background alpha, restore / upload bookkeeping, Duplicate. */
   readonly imageMask: ImageMaskOps;
-  /** Layer masks (M14): add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
+  /** Layer masks: add / delete / invert / enable, target, Alt view, brush X, restore / upload. */
   readonly layerMask: LayerMaskOps;
 
   private readonly maskOps: EditorMaskOps;
+  private readonly shapes: ShapeFloatOps;
 
   /**
    * @param doc - Document (copied).
@@ -135,6 +139,7 @@ export class Editor extends EditorBase {
     this.resolution = new ResolutionOps(this.s);
     this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
     this.imageMask = new ImageMaskOps(this.s);
+    this.shapes = new ShapeFloatOps(this.s, this.float);
     this.layerMask = new LayerMaskOps(
       this.s,
       (sel, mode) => this.selection.apply(sel, mode),
@@ -244,6 +249,14 @@ export class Editor extends EditorBase {
     return copy.canvas;
   }
 
+  /**
+   * End a shape stroke as a float in a Free Transform session (`shapeFloat.ts`).
+   * @returns `true` if a session runs.
+   */
+  endShape(): boolean {
+    return this.shapes.end();
+  }
+
   /** Commit a floating selection, if any (before queueing / serializing). */
   settle(): void {
     this.s.settleFloat();
@@ -348,11 +361,12 @@ export class Editor extends EditorBase {
 
   /**
    * Undo the last operation; with a text edit open: commit it, then undo it
-   * (a no-op edit just closes). A floating selection is cancelled instead.
+   * (a no-op edit just closes). A floating selection is cancelled instead;
+   * a Move-layer or region drag in progress is only cancelled.
    */
   undo(): void {
     if (this.float.active || this.float.transform.active) { this.float.cancel(); return; }
-    this.layerMove.cancel();
+    if (this.layerMove.dragging) { this.layerMove.cancel(); return; }
     if (this.regionOps.active) { this.regionOps.cancel(); return; }
     if (!this.text.editing || this.text.commit()) this.paint.undo();
   }

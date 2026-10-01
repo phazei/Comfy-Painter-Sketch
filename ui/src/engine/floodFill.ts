@@ -16,7 +16,7 @@
  * 1 = matching but not reached (yet), 255 = filled. Global mode just keeps
  * every match. Anti-alias adds a 1 px soft fringe outside the filled area
  * (3x3 box average of the hard mask, inside stays fully covered so the fill
- * still meets its boundary). `clip` (M5 selection) restricts and scales the
+ * still meets its boundary). `clip` (the selection) restricts and scales the
  * coverage. `under` (the target layer's pixels) adds the fill-behind pass of
  * `fillUnder.ts` for the layer's own soft edges (anti-alias only). No DOM.
  */

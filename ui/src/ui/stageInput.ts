@@ -4,7 +4,7 @@
  * cursor (during a drag of a tool with `onWheel`, the tool gets the wheel:
  * Move scales). Pointer positions are converted through `getBoundingClientRect()`
  * on every event (the node is drawn at graph zoom; never cache a scale), then
- * stage -> image (view) -> document (inverse frame map, decision 4).
+ * stage -> image (view) -> document (inverse frame map).
  * During a tool drag, modifier key changes re-send the last sample
  * (`dragModifiers.ts`) and Esc can cancel the drag ({@link StageInput.cancelToolDrag}).
  * Between presses of a pending tool (`Tool.pending`: polygonal lasso with Alt

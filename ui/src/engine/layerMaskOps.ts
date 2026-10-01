@@ -1,11 +1,11 @@
 /**
- * Layer mask commands (M14a; Apply M14b), exposed as {@link Editor.layerMask}: add
- * (reveal all / selection / hide all), delete, invert and apply (one
- * history step each), enable (not undoable, like the layer eye), the per-layer
- * target (layer pixels vs mask), the Alt+click grayscale view, the black /
- * white mask swatches (X swaps, D resets), Ctrl+click selection from the
- * mask, the area pixel command of Delete / Alt+Backspace
- * ({@link paintMaskArea}), and restore / upload bookkeeping
+ * Layer mask commands (SPEC "Layer masks (lmask)"), exposed as
+ * {@link Editor.layerMask}: add (reveal all / selection / hide all), delete,
+ * invert and apply (one history step each), enable (not undoable, like the
+ * layer eye), the per-layer target (layer pixels vs mask), the Alt+click
+ * grayscale view, the black / white mask swatches (X swaps, D resets),
+ * Ctrl+click selection from the mask, the area pixel command of Delete /
+ * Alt+Backspace ({@link paintMaskArea}), and restore / upload bookkeeping
  * for `widget/persistence.ts`. Pixels, target state and the compositor cache
  * are in `layerMask.ts`; mask strokes and their patches go through the
  * normal stroke / patch paths in `paintOps.ts`.
@@ -201,7 +201,7 @@ export class LayerMaskOps {
   }
 
   /**
-   * Apply (options bar, M14b): bake the mask as it acts -- invert applied,
+   * Apply (options bar): bake the mask as it acts -- invert applied,
    * the `outside` value beyond the stored pixels -- into the layer's alpha
    * and remove the mask, as ONE undo step (`[patch on the layer, mask
    * removal]`). The layer gate runs first (hidden / locked notes).
@@ -448,7 +448,7 @@ export class LayerMaskOps {
   }
 
   /**
-   * Keep the lmask-only view on the targeted mask (SPEC): it follows the
+   * Keep the lmask-only view on the targeted mask (SPEC "Layer masks (lmask)"): it follows the
    * active paint layer while that layer targets its mask (another lmask
    * thumbnail, a row whose target is its mask), and ends otherwise -- a
    * layer without a mask or targeting its pixels, a text layer, any cmask
@@ -516,8 +516,9 @@ export function applyLayerMaskEntry(s: EditorState, entry: LayerMaskEntry, forwa
 /**
  * Hide (paint white) or reveal (clear to black) part of the targeted layer
  * mask: the selection (soft coverage, times `opacity`), or the whole mask
- * without one unless `needSelection`. Delete reveals and Alt / Ctrl+Backspace
- * hide, like Delete / fill on a mask layer (the bucket floods instead:
+ * without one unless `needSelection`. Delete reveals; Alt / Ctrl+Backspace
+ * follow the foreground / background mask swatch (`selectionOps.fillSelected`;
+ * the bucket floods instead:
  * `pixelOps.ts`). One patch on the mask key; a no-op change is no step.
  * @param s - Editor state.
  * @param layer - Layer whose mask is targeted (the gate already passed).

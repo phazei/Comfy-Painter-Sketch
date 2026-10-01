@@ -1,5 +1,5 @@
 /**
- * Free Transform handles on the stage overlay canvas (SPEC M11a): the
+ * Free Transform handles on the stage overlay canvas (SPEC "Free Transform and flips"): the
  * transformed box outline (dark halo under a light line), 8 square handles
  * and a small centre mark, all in screen-constant sizes and drawn crisp in
  * screen space (the box corners are mapped document -> image -> stage ->

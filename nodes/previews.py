@@ -1,16 +1,16 @@
 """
 nodes/previews.py -- The PainterSketch node's ``ui`` result.
 
-- ``images``: the first input frame (the editor's background; SPEC Node Contract).
-- :data:`LAYER_SOURCE_UI_KEY` (M12): the first ``layer_source`` frame, with a
+- ``images``: the first input frame (the editor's background; SPEC "Node I/O").
+- :data:`LAYER_SOURCE_UI_KEY`: the first ``layer_source`` frame, with a
   content id (``source_id``) the editor's source history dedupes by.
-- :data:`INPUT_MASK_UI_KEY` (M13b): the first Input Mask coverage as used for
+- :data:`INPUT_MASK_UI_KEY`: the first Input Mask coverage as used for
   the first image (resized to it), a grayscale PNG with a content id
   (``mask_id``). LoadImage's placeholder ("no mask") is one item
   ``{"mask_id": "none", "empty": True}`` without a file.
 
 Preview files get random temp names on every run, so the editor identifies
-them by the content ids (the M12 pattern).
+them by the content ids (as for ``layer_source``).
 """
 
 import hashlib

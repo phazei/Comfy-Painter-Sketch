@@ -1,5 +1,6 @@
 /**
- * Layer Move tool operations of the editor core (SPEC M6a), exposed as
+ * Layer Move tool operations of the editor core
+ * (SPEC "Moving (Move layer, Move drawing)"), exposed as
  * {@link Editor.layerMove}: move the active layer's content (the active
  * paint-like layer, or the mask under Quick Mask) by whole document px.
  *
@@ -9,10 +10,10 @@
  * - Nudge: {@link LayerMoveOps.nudge}; consecutive nudges of one layer merge
  *   into one undo entry.
  * - How a kind moves is the per-kind handler in `layerMovers.ts` (text
- *   layers: M6b).
+ *   layers shift their `textData` anchor).
  * - A selection moves with the layer by the same delta, in the same undo
  *   step (selectionFollow.ts). Moving only the selected pixels is a
- *   floating selection (loatOps.ts).
+ *   floating selection (floatOps.ts).
  *
  * Undo/redo cancels a drag preview (`paintOps.ts`).
  */
@@ -149,7 +150,7 @@ export class LayerMoveOps {
     if (!layer || blockedNote(s, layer)) return false;
     const mover = moverFor(layer);
     if (!mover) return false;
-    // The selection moves with the layer, in the same undo step (M10a).
+    // The selection moves with the layer, in the same undo step.
     if (!followSelection(s, dx, dy, gesture, () => mover.move(s, layer, dx, dy, gesture))) return false;
     s.afterEdit();
     return true;

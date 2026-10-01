@@ -1,5 +1,6 @@
 /**
- * Whole-drawing placement of the editor core (SPEC M5 Move tool), exposed as
+ * Whole-drawing placement of the editor core
+ * (SPEC "Moving (Move layer, Move drawing)"), exposed as
  * {@link Editor.placement}. Placement is document metadata composed into the
  * frame map (`frameMap.ts` / {@link documentMap}); pixels are never touched.
  *

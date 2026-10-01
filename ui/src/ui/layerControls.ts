@@ -2,7 +2,7 @@
  * Small controls of the layers panel that edit layer properties through the
  * editor's `layerOps`:
  *
- * - {@link layerOpacityControl}: the M3.1 scrubby number control
+ * - {@link layerOpacityControl}: the scrubby number control
  *   (`optionControls.ts`) over a one-descriptor {@link ToolOptions} adapter.
  *   Every pointer-down on the control starts a new undo "gesture", so a
  *   whole scrub (or one slider-popover session) is one history entry.
@@ -112,35 +112,4 @@ export class MaskColorPicker {
     };
     this.pick(anchor, { initial, title: "Mask colour", onInput: apply, onCommit: apply });
   }
-}
-
-/**
- * Native `<input type=color>` fallback picker (used when the M3.2 colour
- * picker is not available).
- * @param host - Element to keep the hidden input in.
- * @returns A {@link ColorPickFn} and a disposer.
- */
-export function nativeColorPick(host: HTMLElement): { pick: ColorPickFn; dispose: () => void } {
-  const input = document.createElement("input");
-  input.type = "color";
-  input.className = "cps-native-color";
-  input.tabIndex = -1;
-  host.appendChild(input);
-  let handlers: { onInput: (hex: string) => void; onCommit: (hex: string) => void } | null = null;
-  input.addEventListener("input", () => handlers?.onInput(input.value));
-  input.addEventListener("change", () => handlers?.onCommit(input.value));
-  const pick: ColorPickFn = (_anchor, options) => {
-    handlers = options;
-    input.value = options.initial;
-    if (typeof input.showPicker === "function") {
-      try {
-        input.showPicker();
-        return;
-      } catch {
-        // Needs a user gesture in some browsers; click() below.
-      }
-    }
-    input.click();
-  };
-  return { pick, dispose: () => input.remove() };
 }

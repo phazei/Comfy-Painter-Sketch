@@ -1,5 +1,5 @@
 /**
- * In-canvas text editor of the Text tool (SPEC M6b): a `<textarea>` laid
+ * In-canvas text editor of the Text tool (SPEC "Tools" > "Text (T)"): a `<textarea>` laid
  * over the edited text layer while `Editor.text` has an open edit, plus the
  * UI half of the rasterize prompt (`window.confirm`, installed on the
  * editor since the engine has no DOM UI).
@@ -13,7 +13,7 @@
  * placement), image -> stage through the view. So the caret lines up with
  * the glyphs at any zoom, pan, image size or graph zoom (the stage's own
  * CSS scale applies to the textarea too). It re-positions after every
- * stage render (`StageView.onRendered`). Rotated text (M11b) is edited in
+ * stage render (`StageView.onRendered`). Rotated text is edited in
  * place: the same CSS transform rotates the textarea about the box centre.
  *
  * Keys: Enter = new line; Esc or Ctrl+Enter commit. The keyboard scope
@@ -157,7 +157,7 @@ export class TextOverlay {
     const sx = (map.offsetX + left * map.scale) * view.scale + view.offsetX;
     const sy = (map.offsetY + lay.box.y * map.scale) * view.scale + view.offsetY;
     const style = area.style;
-    // Rotated text (M11b): the textarea turns about the box centre like the render.
+    // Rotated text: the textarea turns about the box centre like the render.
     const ox = lay.centre.x - left;
     const oy = lay.box.height / 2;
     const rot = lay.rotation ? ` translate(${ox}px, ${oy}px) rotate(${lay.rotation}deg) translate(${-ox}px, ${-oy}px)` : "";

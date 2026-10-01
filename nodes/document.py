@@ -8,17 +8,17 @@ fingerprinting code can use safely, without ever crashing on bad data.
 All functions are pure (no I/O, no side-effects) and therefore unit-testable
 without ComfyUI.  Layer-file *resolution* (disk access) lives in layers.py.
 
-Document model (v1, SPEC.md "Document Model" section):
+Document model (v1, SPEC "Document and saved files"):
     version: 1
     frame:  {width, height}               -- integer pixel dims of the image frame
     bounds: {x, y, width, height}         -- paint area in frame coords (may extend outside)
-    regions: Region[]                      -- output regions, image px (M9)
+    regions: Region[]                      -- output regions, image px
     mainOutput?: OutputOptions             -- independent Main post-processing
     placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
     backgroundVisible?: bool               -- Background row eye (missing = true)
     imageMask?: {file, visible, color, opacity, invert, sourceKey, width, height}
-                                           -- M13a Image Mask (input image's alpha, image px);
-                                              M13b: the Input Mask row's settings (file ignored)
+                                           -- Image Mask (input image's alpha, image px);
+                                              a connected ``mask`` input uses only its settings (file ignored)
     activeLayerId: str
     layers: Layer[]                        -- bottom -> top; background NOT included
 
@@ -31,7 +31,7 @@ Layer model:
     blendMode      -- "normal" only in v1
     file           -- "painter-sketch/<name>.<webp|png> [input]" or null
     invert         -- bool, mask layers only (non-boolean -> False)
-    layerMask?     -- {file, enabled, invert, outside}, paint layers only (M14, layer_masks.py)
+    layerMask?     -- {file, enabled, invert, outside}, paint layers only (layer_masks.py)
 """
 
 import json
@@ -53,7 +53,7 @@ _OFFSET_MAX = FRAME_MAX * 4
 """Largest `|bounds.x|` / `|bounds.y|` (the editor's `isInt` cap)."""
 
 PLACEMENT_MIN_SCALE = 0.05
-"""Smallest Move-tool scale (SPEC "Saved-file contract", Placement)."""
+"""Smallest Move-tool scale (SPEC "Document and saved files")."""
 
 PLACEMENT_MAX_SCALE = 10.0
 """Largest Move-tool scale."""
@@ -86,7 +86,7 @@ class Layer:
     opacity: float      # clamped to [0, 1]
     file: str | None    # annotated path or None
     invert: bool        # mask layers: invert alpha before union
-    layer_mask: LayerMask | None = None  # M14, paint layers only (layer_masks.py)
+    layer_mask: LayerMask | None = None  # paint layers only (layer_masks.py)
 
 
 @dataclass(frozen=True)
@@ -107,7 +107,7 @@ IDENTITY_PLACEMENT = Placement()
 
 @dataclass(frozen=True)
 class ImageMask:
-    """The Image Mask row (M13a): coverage read from the input image's alpha.
+    """The Image Mask row: coverage read from the input image's alpha.
 
     Unlike layers it is stored in current-image px: the file is exactly
     ``width x height`` (the image it was read from) and is used only when the
@@ -182,6 +182,15 @@ def _parse_bounds(raw: dict) -> Bounds | None:
     return Bounds(x=x, y=y, width=w, height=h)
 
 
+def _contains_frame(bounds: Bounds, frame: Frame) -> bool:
+    """Whether ``bounds`` covers the frame rect at (0, 0) (editor ``containsRect``)."""
+    return (
+        bounds.x <= 0 and bounds.y <= 0
+        and bounds.x + bounds.width >= frame.width
+        and bounds.y + bounds.height >= frame.height
+    )
+
+
 def _finite(value: object, default: float) -> float:
     """Return value as float if it is a finite number (bools excluded), else default."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -214,7 +223,7 @@ def parse_placement(raw: object) -> Placement:
 
 
 def parse_image_mask(raw: object) -> ImageMask | None:
-    """Leniently validate the optional ``imageMask`` object (M13a; never fails).
+    """Leniently validate the optional ``imageMask`` object (never fails).
 
     Missing -> ``None``. Not an object, no string ``sourceKey`` or no valid
     ``width`` / ``height`` -> ``None`` with a warning (the editor drops it
@@ -290,7 +299,7 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
         opacity=opacity,
         file=file_val,
         invert=invert,
-        # M14: paint layers only, like the editor (text / mask layers never have one).
+        # Paint layers only, like the editor (text / mask layers never have one).
         layer_mask=parse_layer_mask(raw.get("layerMask")) if kind == "paint" else None,
     )
 
@@ -310,7 +319,9 @@ def parse_document(raw: str) -> Document | None:
     - ``bounds`` must have positive int size <= 16384 and ``|x|, |y| <= 65536``.
     - Unknown layer kinds are skipped with a warning.  ``"text"`` is kept
       (rasterised by the frontend before saving, so Python sees it as paint).
-    - Missing ``bounds``: fall back to frame-sized bounds at (0, 0).
+    - Missing / malformed ``bounds``: fall back to frame-sized bounds at (0, 0).
+    - ``bounds`` that does not contain the frame, or a ``layers`` value that
+      is present but not a list: ``None`` (same as ``ui/src/document/parse.ts``).
     - ``placement`` is lenient (:func:`parse_placement`); missing = identity.
     - Regions/options are additive and tolerant; bad records never discard paint.
     - ``backgroundVisible`` is strict: only JSON ``false`` hides the input
@@ -355,11 +366,16 @@ def parse_document(raw: str) -> Document | None:
             bounds = Bounds(x=0, y=0, width=frame.width, height=frame.height)
     else:
         bounds = Bounds(x=0, y=0, width=frame.width, height=frame.height)
+    if not _contains_frame(bounds, frame):
+        # Like the editor: files are sized to the stored bounds, so a repaired
+        # bounds would misplace pixels.
+        log.warning("document: bounds does not contain the frame; treating as empty")
+        return None
 
     raw_layers = doc.get("layers", [])
     if not isinstance(raw_layers, list):
         log.warning("document: 'layers' is not an array; treating as empty")
-        raw_layers = []
+        return None
 
     layers: list[Layer] = []
     for idx, raw_layer in enumerate(raw_layers):
@@ -381,19 +397,3 @@ def parse_document(raw: str) -> Document | None:
         background_visible=raw_bg,
         image_mask=parse_image_mask(doc.get("imageMask")),
     )
-
-
-def frame_size(doc: Document | None) -> tuple[int, int] | None:
-    """Return ``(width, height)`` of the document frame, or ``None``.
-
-    Convenience wrapper kept for compatibility with M0 callers.
-
-    Args:
-        doc: Parsed document, or ``None``.
-
-    Returns:
-        ``(width, height)`` or ``None``.
-    """
-    if doc is None:
-        return None
-    return (doc.frame.width, doc.frame.height)

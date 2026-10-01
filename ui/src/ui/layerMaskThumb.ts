@@ -1,5 +1,5 @@
 /**
- * Layer mask slot of a paint row (M14a, SPEC "Layer masks (M14)"): right of
+ * Layer mask slot of a paint row (SPEC "Layer masks (lmask)"): right of
  * the layer thumbnail, a tiny "add layer mask" icon (click = reveal all /
  * all black, or show only the selection when there is one; Alt+click = hide
  * all / all white) that becomes the mask thumbnail once the layer has a

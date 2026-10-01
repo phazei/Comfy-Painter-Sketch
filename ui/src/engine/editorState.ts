@@ -40,15 +40,15 @@ export class EditorState {
   readonly stroke = new StrokeBuffer();
   readonly runtime = new LayerRuntimeTable();
   readonly store: LayerStore;
-  /** Pre-transform originals per layer (M11b, memory only; `keptOriginal.ts`). */
+  /** Pre-transform originals per layer (memory only; `keptOriginal.ts`). */
   readonly kept = new KeptOriginals();
   /** Current selection (session state, not saved); strokes are clipped to it. */
   readonly selection = new SelectionState(() => this.events.emit("selection", undefined));
-  /** Image Mask coverage (M13a, image px; metadata is `doc.imageMask`). */
+  /** Image Mask coverage (image px; metadata is `doc.imageMask`). */
   readonly imageMask = new ImageMaskPixels();
-  /** Layer masks (M14): targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
+  /** Layer masks: targets, Alt view, mask swatches, display caches (`layerMask.ts`). */
   readonly layerMasks = new LayerMaskState();
-  /** Solo (M8, view only; not saved/undoable, ignored by outputs). */
+  /** Solo (view only; not saved/undoable, ignored by outputs). */
   readonly solo = new SoloState(() => {
     this.events.emit("solo", undefined);
     this.events.emit("render", undefined);
@@ -68,7 +68,7 @@ export class EditorState {
   /** Quick Mask paint target (UI state, not saved). */
   target: PaintTarget = "paint";
   /**
-   * Current mask (M8): the last selected mask row, what Quick Mask paints
+   * Current mask: the last selected mask row, what Quick Mask paints
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId: string | null = null;
@@ -129,7 +129,7 @@ export class EditorState {
       const rows = this.doc.imageMask ? [...this.doc.layers, this.doc.imageMask] : this.doc.layers;
       this.solo.set(pruneSolo(this.solo.current, rows));
     });
-    // Kept originals (layers and their lmasks, M14b) die with their layer and with any other edit of it.
+    // Kept originals (layers and their lmasks) die with their layer and with any other edit of it.
     this.events.on("layers", () => this.kept.prune(surfaceKeys(this.doc.layers)));
     this.events.on("change", () => {
       for (const key of surfaceKeys(this.doc.layers)) if (this.kept.has(key)) this.kept.get(key, this.runtime.revision(key));
@@ -182,7 +182,7 @@ export class EditorState {
       for (const layer of this.doc.layers) {
         this.runtime.resized(layer.id);
         // A mask's new area holds its `outside` value: always a new file (and a new cache).
-        // Its pixels are unchanged, so a valid kept original stays valid (M14b).
+        // Its pixels are unchanged, so a valid kept original stays valid.
         if (layer.layerMask) {
           const key = layerMaskKey(layer.id);
           const kept = this.kept.get(key, this.runtime.revision(key));
@@ -195,7 +195,7 @@ export class EditorState {
 
   /**
    * The current mask layer, adding a default one (not dirty, no history)
-   * when the document has none -- documents saved before M2 get one lazily.
+   * when the document has none -- older documents with no mask layer get one lazily.
    * @returns The mask layer.
    */
   ensureMask(): Layer {

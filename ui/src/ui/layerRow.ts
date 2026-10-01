@@ -5,11 +5,11 @@
  * the overlay opacity control; the Background row is locked and not
  * selectable but has an eye and a solo button like the others. Text layers get a "T" badge on the thumbnail. The current mask
  * has a thick left bar in its own colour; paint/text/mask rows have a small
- * solo button (view only). The Image Mask row (M13a, `imageMask` kind) is a
+ * solo button (view only). The Image Mask row (`imageMask` kind) is a
  * mask row without rename or lock (it is never edited) and is not dragged
- * (`layerDrag.ts` only moves paint / mask rows); as the M13b Input Mask its
+ * (`layerDrag.ts` only moves paint / mask rows); as the Input Mask its
  * tooltips follow the name and a hint line can show under it. Paint rows
- * have the M14 layer mask slot right of the thumbnail (`layerMaskThumb.ts`);
+ * have the layer mask slot right of the thumbnail (`layerMaskThumb.ts`);
  * with a mask, the thumbnail being edited (pixels or mask) is framed. Rows are
  * reused across updates (keyed by layer id) so a double-click survives the
  * re-render the first click causes.
@@ -31,7 +31,7 @@ export type RowKind = "paint" | "mask" | "imageMask" | "background";
 /** Tooltip of the Image Mask row's name. */
 export const IMAGE_MASK_TOOLTIP = "From the image's transparency. A connected mask input will replace it.";
 
-/** Tooltip of the row's name while it shows the `mask` input (M13b). */
+/** Tooltip of the row's name while it shows the `mask` input (the Input Mask). */
 export const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces the image's transparency; disconnect it to use that again).";
 
 /**
@@ -58,18 +58,18 @@ export interface RowModel {
   color?: string;
   /** Mask invert. */
   invert?: boolean;
-  /** Current mask (M8): thick left bar in the mask's colour, Quick Mask on or off. */
+  /** Current mask: thick left bar in the mask's colour, Quick Mask on or off. */
   current?: boolean;
   /** Editable text layer ("T" badge on the thumbnail). */
   text?: boolean;
-  /** Small note under the row (M13b: the Input Mask waiting for a run). */
+  /** Small note under the row (e.g. the Input Mask waiting for a run). */
   hint?: string;
   /**
    * Solo display (view only): `"on"` = this row is soloed, `"dimmed"` =
    * another row of its group is soloed, `"off"` = its group has no solo.
    */
   solo?: SoloMark;
-  /** Paint rows (M14): layer mask slot; with a mask, the layer thumbnail frames the pixel target. */
+  /** Paint rows: layer mask slot; with a mask, the layer thumbnail frames the pixel target. */
   maskSlot?: MaskSlotModel;
 }
 
@@ -80,7 +80,7 @@ export type SoloMark = "on" | "dimmed" | "off";
 export interface RowActions extends MaskSlotActions {
   /** Plain row click (also the Background row, which isn't selectable: it only ends the lmask-only view). */
   select(id: string): void;
-  /** Plain click on a masked layer's thumbnail: edit its pixels (M14). */
+  /** Plain click on a masked layer's thumbnail: edit its pixels. */
   targetLayer(id: string): void;
   /** Ctrl(+Shift/Alt)+click: load the layer's pixels as the selection. */
   loadSelection(id: string, mode: SelectionMode): void;
@@ -109,7 +109,7 @@ export class LayerRow {
   private readonly textBadge: HTMLSpanElement | null = null;
   private readonly soloButton: HTMLButtonElement | null = null;
   private readonly hintEl: HTMLDivElement | null = null;
-  /** Paint rows: add-mask icon / mask thumbnail (M14). */
+  /** Paint rows: add-mask icon / mask thumbnail. */
   readonly maskSlot: LayerMaskSlot | null = null;
   private readonly thumbBox: HTMLSpanElement;
   private model: RowModel | null = null;
@@ -146,7 +146,7 @@ export class LayerRow {
       this.textBadge.hidden = true;
       setIcon(this.textBadge, "text", 12);
       thumbBox.appendChild(this.textBadge);
-      // M14: a plain click on a masked layer's thumbnail edits its pixels
+      // A plain click on a masked layer's thumbnail edits its pixels
       // (other clicks, e.g. Ctrl+click, reach the row as before).
       thumbBox.addEventListener("click", (event) => {
         if (!this.model?.maskSlot?.mask || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;

@@ -110,6 +110,21 @@ describe("frame adoption after Clear", () => {
     expect(s.history.mergeTarget()?.kind).toBe("clear");
   });
 
+  it("Clear drops the selection in the same step; undo brings it back, redo drops it again", () => {
+    const { s, frames, paint } = setup();
+    draw(s);
+    const sel = { rect: { x: 2, y: 3, width: 4, height: 5 }, data: new Uint8Array(20).fill(255), outside: 0 as const };
+    s.selection.set(sel);
+    const depth = s.history.undoDepth;
+    frames.clear();
+    expect(s.selection.current).toBeNull();
+    expect(s.history.undoDepth).toBe(depth + 1);
+    paint.undo();
+    expect(s.selection.current).toBe(sel);
+    paint.redo();
+    expect(s.selection.current).toBeNull();
+  });
+
   it("drawing after Clear blocks adoption again", () => {
     const { s, frames } = setup();
     draw(s);

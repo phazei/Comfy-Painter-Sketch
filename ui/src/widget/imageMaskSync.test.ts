@@ -1,5 +1,5 @@
 /**
- * M13a widget side (`imageMaskSync.ts`): the `/view?channel=a` read happens
+ * Image Mask widget side (`imageMaskSync.ts`): the `/view?channel=a` read happens
  * once per background source key (so the coverage uploads only when the
  * source changes), not at all for our executed preview (the row is kept),
  * not again after a restore of the same key; a non-file upstream, an opaque

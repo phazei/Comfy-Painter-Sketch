@@ -1,6 +1,6 @@
 """
-tests/test_placement.py -- Move-tool placement (SPEC.md "Saved-file contract",
-Placement): lenient parsing in nodes/document.py and its composition into the
+tests/test_placement.py -- Move-tool placement (SPEC "Document and saved files",
+SPEC "Python execution"): lenient parsing in nodes/document.py and its composition into the
 layer placement in nodes/composite.py.
 
 Run with:  python -m unittest tests.test_placement   (from repo root)

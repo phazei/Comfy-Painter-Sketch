@@ -71,7 +71,7 @@ export function readOutputOptions(value: unknown): OutputOptions {
 }
 
 /**
- * M13c `alpha`: only a literal `true` turns it on; the field exists only then.
+ * `alpha`: only a literal `true` turns it on; the field exists only then.
  * @param value - Untrusted / in-memory value.
  * @returns `{ alpha: true }` or an empty object.
  */

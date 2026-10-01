@@ -103,7 +103,7 @@ describe("hitTestText", () => {
   });
 });
 
-describe("rotated text (M11b)", () => {
+describe("rotated text", () => {
   it("rotatedAabb covers the rotated rect about a point", () => {
     const r = { x: 0, y: 0, width: 10, height: 4 };
     expect(rotatedAabb(r, 0, { x: 5, y: 2 })).toEqual(r);

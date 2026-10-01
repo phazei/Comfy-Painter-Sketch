@@ -1,17 +1,18 @@
 /**
  * Pixel-reading operations of the editor core: paint-bucket fills and
- * eyedropper sampling (SPEC Tools table, M4). Exposed as
+ * eyedropper sampling (SPEC "Fill and wand sampling",
+ * SPEC "Tools" > "Eyedropper (I)"). Exposed as
  * {@link Editor.pixelOps}.
  *
- * Fill: the target layer follows Quick Mask (decision 6; on the mask the fill
+ * Fill: the target layer follows Quick Mask (on the mask the fill
  * writes white coverage, like mask strokes). The fill area is the layer
  * bounds, first grown (chunked, capped, like painting) to cover the visible
  * image in document coords -- so a click anywhere on the image works even
  * when its aspect differs from `doc.frame`. Clicks outside both the image
- * and the bounds do nothing. One dirty-rect undo patch (decision 10) covering
+ * and the bounds do nothing. One dirty-rect undo patch covering
  * the coverage bbox. With anti-alias the fill also goes behind the target
  * layer's own soft edges next to it (`fillUnder.ts`), so filling around a
- * stroke leaves no halo. On a targeted layer mask (M14) the flooded region
+ * stroke leaves no halo. On a targeted layer mask the flooded region
  * gets the foreground mask swatch instead.
  *
  * Sampling (bucket, wand, eyedropper) goes through one path
@@ -185,7 +186,7 @@ export class PixelOps {
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     // A rasterized text layer is filled right away (the fill joins the rasterize step).
     if (!layer || preparePixelEdit(s, layer) === "blocked") return false;
-    // M14: on a targeted layer mask the flooded region gets the foreground mask swatch (see fillMask).
+    // On a targeted layer mask the flooded region gets the foreground mask swatch (see fillMask).
     const onMask = targetedMaskLayer(s)?.id === layer.id;
     const px = Math.floor(req.point.x);
     const py = Math.floor(req.point.y);
@@ -206,7 +207,7 @@ export class PixelOps {
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
-      // M5: confined to (and scaled by) the selection.
+      // Confined to (and scaled by) the selection.
       clip: s.selection.coverage(bounds),
       under: own ?? undefined,
     });
@@ -223,10 +224,10 @@ export class PixelOps {
     s.store.write(layer.id, docRect.x, docRect.y, next);
     // Re-read so the patch holds exactly what the canvas stores (premultiplied round trip).
     const after = s.store.read(layer.id, docRect);
-    if (after) {
-      const bytes = before.data.data.byteLength + after.data.data.byteLength;
-      s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
-    }
+    // No change (e.g. filling a colour over itself) = no undo step and no re-upload (like fillMask / endStroke).
+    if (!after || sameBytes(before.data.data, after.data.data)) return false;
+    const bytes = before.data.data.byteLength + after.data.data.byteLength;
+    s.history.push({ kind: "patch", layerId: layer.id, x: docRect.x, y: docRect.y, before: before.data, after: after.data, bytes });
     s.runtime.touch(layer.id);
     s.afterEdit();
     return true;

@@ -1,5 +1,5 @@
 /*
- * PainterSketch layers panel (M3.3): header (title + opacity), scrolling row
+ * PainterSketch layers panel (SPEC "Layers" > "Layers panel"): header (title + opacity), scrolling row
  * list, footer actions. Lives inside .cps-side-content (editor.css); theme
  * variables come from .cps-root. Injected by styles/inject.ts.
  */
@@ -96,7 +96,7 @@
   border-left-color: color-mix(in srgb, var(--cps-accent) 45%, transparent);
 }
 
-/* Current mask (M8): thick left bar in the mask's own colour, always; the
+/* Current mask: thick left bar in the mask's own colour, always; the
    selected background adds on top while Quick Mask is on. The 2px extra
    border is taken from the padding so content doesn't shift. */
 .cps-layer-row.cps-current-mask,
@@ -171,7 +171,7 @@
   margin: 2px 0 0 42px;
 }
 
-/* M13b: "Run the workflow to load this mask" under the Input Mask row. */
+/* Hint "Run the workflow to load this mask" under the Input Mask row (while it waits for a run). */
 .cps-layer-hint {
   margin: 2px 0 0 42px;
   font-size: 11px;
@@ -226,7 +226,7 @@
   background-size: 8px 8px;
 }
 
-/* M14 layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
+/* Layer mask slot (layerMaskThumb.ts): a tiny add icon, or the mask
    thumbnail; the edit target's thumbnail is framed. Fixed size, so long
    names ellipsize instead of widening the row. */
 .cps-layer-mask-slot {
@@ -363,14 +363,6 @@
 .cps-layer-opacity .cps-num-value {
   min-width: 3em;
   height: 18px;
-}
-
-.cps-layers .cps-native-color {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
 }
 
 /* Move drawing icon: the image is much finer than the drawing grid. */

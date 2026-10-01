@@ -1,10 +1,10 @@
 /**
  * Pure layer-list operations on a document's `layers` array (bottom -> top,
- * SPEC "Document Model"): where new layers go, "Layer N" naming, reorder
+ * SPEC "Layers" > "Kinds"): where new layers go, "Layer N" naming, reorder
  * constraints, and the reversible {@link LayerChange} records the editor's
  * structural undo entries are made of.
  *
- * Constraints (decision 5, M8): mask layers stay above every paint layer
+ * Constraints: mask layers stay above every paint layer
  * (paint reorders among paint, masks among masks), the last paint layer and
  * the last mask cannot be deleted, at most {@link MAX_MASKS} masks exist, and
  * masks are not duplicated. Pixels are opaque here (`P`), so everything is
@@ -54,7 +54,7 @@ export function paintLayerCount(layers: readonly Layer[]): number {
   return n;
 }
 
-/** Most mask layers a document may have (M8: main output + 6 M9 regions). */
+/** Most mask layers a document may have (the main output + 6 regions). */
 export const MAX_MASKS = 7;
 
 /**
@@ -78,8 +78,8 @@ export function canAddMask(layers: readonly Pick<Layer, "kind">[]): boolean {
 }
 
 /**
- * Lowest free "Mask N" name among the mask layers. A bare "Mask" (documents
- * from before M8) counts as "Mask 1".
+ * Lowest free "Mask N" name among the mask layers. A bare "Mask" (older
+ * documents) counts as "Mask 1".
  * @param layers - Layer list.
  * @returns E.g. `"Mask 2"`.
  */

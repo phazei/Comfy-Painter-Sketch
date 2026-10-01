@@ -1,5 +1,5 @@
 /**
- * Floating selections, selection-follows-move and Merge Down (M10a) through
+ * Floating selections, selection-follows-move and Merge Down (SPEC "Floating selections") through
  * the editor core. The test environment has no canvas: a small fake stores
  * real RGBA bytes (get/putImageData, clearRect, drawImage as a copy), and
  * `ImageData` is polyfilled, so pixel results can be compared byte for byte.
@@ -334,7 +334,35 @@ describe("selection follows layer moves", () => {
     ed.undo();
     expect(ed.selection.current).toBe(sel);
   });
+
+  it("outline nudges merge into one selection entry; pixels stay; back to start = no step", () => {
+    const ed = editor();
+    fill(ed, { x: 2, y: 2, width: 3, height: 3 }, "#ff0000");
+    const layer = paintId(ed);
+    const px = pixels(ed, layer);
+    select(ed, { x: 2, y: 2, width: 3, height: 3 });
+    const sel = ed.selection.current;
+    const depth = undoDepth(ed);
+    expect(ed.selectionMove.nudge(1, 0)).toBe(true);
+    expect(ed.selectionMove.nudge(10, 0)).toBe(true);
+    expect(ed.selectionMove.nudge(0, 1)).toBe(true);
+    expect(ed.selection.current?.rect).toEqual({ x: 13, y: 3, width: 3, height: 3 });
+    expect(pixels(ed, layer)).toEqual(px);
+    expect(undoDepth(ed)).toBe(depth + 1);
+    ed.undo();
+    expect(ed.selection.current).toBe(sel);
+    ed.selectionMove.nudge(1, 0);
+    ed.selectionMove.nudge(-1, 0);
+    expect(undoDepth(ed)).toBe(depth);
+    ed.selection.deselect();
+    expect(ed.selectionMove.nudge(1, 0)).toBe(false);
+  });
 });
+
+/** Undo depth through the internal state (the facade only exposes `canUndo`). */
+function undoDepth(ed: EditorClass): number {
+  return (ed as unknown as { s: { history: { undoDepth: number } } }).s.history.undoDepth;
+}
 
 // ── Merge Down ────────────────────────────────────────────────────────────────
 

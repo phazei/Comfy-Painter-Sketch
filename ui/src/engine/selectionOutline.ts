@@ -1,5 +1,5 @@
 /**
- * Marching-ants outline of a selection (decision 7): the boundary between
+ * Marching-ants outline of a selection: the boundary between
  * selected and unselected pixels at the 50% threshold (coverage >= 128), as
  * closed contours on the pixel grid in document coords.
  *

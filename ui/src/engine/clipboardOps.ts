@@ -1,6 +1,6 @@
 /**
- * Copy / cut / paste on the editor core (SPEC "Floating selections +
- * clipboard (M10)", Clipboard block), exposed as `Editor.clipboard`. The
+ * Copy / cut / paste on the editor core (SPEC "Clipboard and drop"),
+ * exposed as `Editor.clipboard`. The
  * engine only produces and consumes pixels; the system clipboard, clipspace
  * and the internal clipboard live in the UI (`ui/clipboardActions.ts`).
  *
@@ -19,7 +19,7 @@
  *   An active selection is dropped (Photoshop), in the same undo step.
  * - Copy merged under Quick Mask: the visible masks' effective union as
  *   grayscale (same format as a single-mask copy).
- * - Layer masks (M14b): with the pixels targeted, copy takes the masked
+ * - Layer masks: with the pixels targeted, copy takes the masked
  *   result (layer x the shown part of its enabled lmask) and cut clears the
  *   layer's pixels only (the lmask stays). With the lmask targeted, copy /
  *   cut act on the lmask like on a mask layer: grayscale, cut reveals
@@ -87,7 +87,7 @@ export interface PasteResult {
   /** The new layer (or, pasted into the lmask-only view, the layer owning the lmask). */
   layerId: string;
   name: string;
-  /** Pasted into the viewed lmask as an lmask float (M14b), no new layer. */
+  /** Pasted into the viewed lmask as an lmask float, no new layer. */
   intoMask?: true;
   /** The paste reached past the paint-area cap: it runs in a Free Transform session (nothing cropped yet). */
   transform: boolean;
@@ -188,7 +188,7 @@ export class ClipboardOps {
     const layer = createPaintLayer(pastedLayerName(s.doc.layers));
     const id = this.layers.addWithPixels(layer, index, { x: rect.x, y: rect.y, data });
     if (!id) return null;
-    // M11b: the paste is the layer's kept original (identity placement).
+    // The paste is the layer's kept original (identity placement).
     s.kept.keep(id, { pixels: data, area: { ...rect }, m: translation(rect.x, rect.y), revision: s.runtime.revision(id) });
     // Photoshop: a paste drops the selection, in the same undo step.
     const sel = s.selection.current;
@@ -212,7 +212,7 @@ export class ClipboardOps {
   }
 
   /**
-   * A paste in the lmask-only view (M14b): the image as lmask values
+   * A paste in the lmask-only view: the image as lmask values
    * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
    * the paint area (`rect` null) -- the full image in a Free Transform
    * session (native size at `full`, cropped on commit), like an oversized
@@ -279,7 +279,7 @@ export class ClipboardOps {
     return selectedSurfaceKey(this.s, layer) === layer.id ? "whole" : "paint";
   }
 
-  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask, M14b). */
+  /** Document area of a layer copy: the selection extent, or the content bbox (of the targeted lmask). */
   private layerArea(layer: Layer): Rect | null {
     const s = this.s;
     const sel = s.selection.current;
@@ -298,7 +298,7 @@ export class ClipboardOps {
     const sel = s.selection.current;
     const coverage = sel ? coverageFor(sel, read.rect) : null;
     const px = read.data.data;
-    // The pixels as shown: through the layer's enabled lmask (M14b).
+    // The pixels as shown: through the layer's enabled lmask.
     const lm = gray ? undefined : layer.layerMask;
     const mask = lm?.enabled ? s.store.read(layerMaskKey(layer.id), read.rect) : null;
     if (lm && mask) applyMaskAlpha(px, mask.data.data, lm.invert);

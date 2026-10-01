@@ -1,5 +1,5 @@
 /**
- * Selection moves that are not a new selection (SPEC M10a):
+ * Selection moves that are not a new selection (SPEC "Selection"):
  *
  * - {@link followSelection}: a whole-layer move (Move tool outside the
  *   selection, nudges) carries the selection by the same delta, folded into
@@ -9,6 +9,7 @@
  * - {@link SelectionMoveOps}: dragging only the outline (marquee / lasso /
  *   wand plain drag inside the selection), ONE `selection` history entry
  *   per drag -- the same entry kind every other selection change uses.
+ *   Arrow nudges ({@link SelectionMoveOps.nudge}) merge into one such entry.
  *
  * Selections are immutable and shifted by whole document px only
  * (`floatMath.offsetSelection`, the coverage bytes are shared).
@@ -19,6 +20,9 @@ import type { EditorState } from "./editorState";
 import { offsetSelection, selectionHit } from "./floatMath";
 import { selectionBytes, selectionsEqual } from "./selection";
 import type { Selection } from "./selection";
+
+/** Gesture key that merges consecutive outline arrow nudges. */
+export const SELECTION_NUDGE_GESTURE = "selection-nudge";
 
 /**
  * Push a `selection` entry that joins the newest history entry (one undo step).
@@ -130,5 +134,34 @@ export class SelectionMoveOps {
   cancel(): void {
     if (this.start) this.s.selection.set(this.start);
     this.start = null;
+  }
+
+  /**
+   * Arrow nudge of the outline only (selection tools, no float). Consecutive
+   * nudges merge into one `selection` history entry (like Move nudges); a
+   * run that returns to its start drops the entry.
+   * @param dx - Whole document px.
+   * @param dy - Whole document px.
+   * @returns `false` without a selection, while busy or mid-drag.
+   */
+  nudge(dx: number, dy: number): boolean {
+    const s = this.s;
+    if (this.start || s.loading || s.stroke.active) return false;
+    s.settleFloat();
+    const sel = s.selection.current;
+    if (!sel) return false;
+    if (dx === 0 && dy === 0) return true;
+    const after = offsetSelection(sel, dx, dy);
+    const top = s.history.mergeTarget();
+    if (top?.kind === "selection" && top.gesture === SELECTION_NUDGE_GESTURE && top.after === sel) {
+      top.after = after;
+      if (selectionsEqual(top.before, after)) s.history.discardNewest();
+    } else {
+      const bytes = selectionBytes(sel) + selectionBytes(after);
+      s.history.push({ kind: "selection", before: sel, after, bytes, gesture: SELECTION_NUDGE_GESTURE });
+    }
+    s.selection.set(after);
+    s.events.emit("history", undefined);
+    return true;
   }
 }

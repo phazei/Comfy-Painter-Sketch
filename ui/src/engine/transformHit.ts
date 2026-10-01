@@ -1,5 +1,5 @@
 /**
- * Free Transform hit zones and cursor choice (SPEC M11), pure: which handle /
+ * Free Transform hit zones and cursor choice (SPEC "Free Transform and flips"), pure: which handle /
  * zone a press lands in and which resize cursor a handle shows for the
  * current rotation / flips. Matrix and drag math live in `transformMath.ts`.
  */

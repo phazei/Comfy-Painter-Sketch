@@ -5,7 +5,7 @@ inside the node, and get `IMAGE` + `MASK` out. A fullscreen button opens the
 same editor bigger when you need room.
 
 > **Status: pre-release.** All v1 features are implemented; final polish is in
-> progress. See [SPEC.md](SPEC.md) for details and progress.
+> progress. See [docs/SPEC.md](docs/SPEC.md) for details and progress.
 
 ## Features
 

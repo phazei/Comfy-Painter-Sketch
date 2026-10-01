@@ -1,5 +1,5 @@
 """
-tests/test_image_mask.py -- M13a Image Mask: manifest parse, file load, MASK combine.
+tests/test_image_mask.py -- Image Mask: manifest parse, file load, MASK combine.
 
 Needs ComfyUI on ``sys.path`` (``folder_paths``, ``node_helpers``, ``comfy_api``).
 Points ComfyUI's input directory at a temp folder for the file tests.

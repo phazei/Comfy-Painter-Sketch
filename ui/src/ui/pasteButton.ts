@@ -1,5 +1,5 @@
 /**
- * The rail's Paste button (SPEC M10 Clipboard), following the tool-group
+ * The rail's Paste button (SPEC "Clipboard and drop"), following the tool-group
  * convention (`toolGroupSlot.ts`): long-press (or right-click) opens a small
  * menu with "System clipboard" / "Clipspace"; the chosen entry runs AND
  * becomes the button's main action and icon until changed. The choice lives

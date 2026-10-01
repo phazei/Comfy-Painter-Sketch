@@ -38,7 +38,7 @@ describe("output options", () => {
     expect(isDefaultOutputOptions({ ...cloneOutputOptions(), borderSize: 8 })).toBe(false);
   });
 
-  it("alpha (M13c): only a literal true is kept, and only then present", () => {
+  it("alpha: only a literal true is kept, and only then present", () => {
     expect(readOutputOptions({ alpha: true }).alpha).toBe(true);
     for (const alpha of [false, 1, "true", null, undefined]) {
       expect(readOutputOptions({ alpha })).not.toHaveProperty("alpha");
@@ -86,7 +86,7 @@ describe("output options", () => {
     expect(isDefaultOutputOptions()).toBe(true);
   });
 
-  it("accepts pre-M9 documents with no regions/Main processing", () => {
+  it("accepts older documents with no regions/Main processing", () => {
     const doc = createEmptyDocument({ width: 20, height: 30 });
     const { regions: _regions, ...legacy } = doc;
     const parsed = parseDocument(legacy);

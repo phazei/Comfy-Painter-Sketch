@@ -1,12 +1,12 @@
 /**
- * Lifting a float (SPEC M10a "Floats"), the entry half of `floatOps.ts`:
- * read the selected pixels of the current edit layer, coverage-weighted
+ * Lifting a float (SPEC "Floating selections"), the entry half of
+ * `floatOps.ts`: read the selected pixels of the current edit layer, coverage-weighted
  * (`floatMath.liftPixels`), and (for a move) leave the remainder on the
  * layer at once. A whole-layer lift (Free Transform without a selection)
  * takes every pixel. All functions are stateless over {@link EditorState};
  * `FloatOps` owns the resulting {@link FloatState}.
  *
- * Layer masks (M14b, `layerMaskCarry.ts`): a selection lift takes the
+ * Layer masks (`layerMaskCarry.ts`): a selection lift takes the
  * targeted part -- the layer's pixels (the lmask stays put) or, with the
  * lmask targeted, the mask's own pixels as grayscale. A whole-layer lift
  * always carries the layer's lmask along ({@link FloatState.carry}).
@@ -37,7 +37,7 @@ export const EMPTY_FLOAT_NOTE = "No pixels are selected.";
 
 /** One floating selection. */
 export interface FloatState {
-  /** Store key the float belongs to: a layer id, or a layer mask key (lmask-targeted lift, M14b). */
+  /** Store key the float belongs to: a layer id, or a layer mask key (lmask-targeted lift). */
   layerId: string;
   /** Lifted document rect (inside the bounds at lift time). */
   area: Rect;
@@ -45,7 +45,7 @@ export interface FloatState {
   original: ImageData;
   /**
    * Layer rect `original` covers when it differs from `area` (a lift from
-   * a kept original, M11b: the pixels are the original, the hole is the
+   * a kept original: the pixels are the original, the hole is the
    * layer's current content).
    */
   holeRect?: Rect;
@@ -57,9 +57,9 @@ export interface FloatState {
   pixels: ImageData;
   /** `pixels` on a canvas (display; lmask floats: the value as mask pixels). */
   surface: Surface;
-  /** lmask float (M14b): the coverage as mask pixels (display, `layerMaskCarry.ts`). */
+  /** lmask float: the coverage as mask pixels (display, `layerMaskCarry.ts`). */
   cover?: Surface;
-  /** Whole-layer lift of a layer with an lmask: the mask travelling with it (M14b). */
+  /** Whole-layer lift of a layer with an lmask: the mask travelling with it. */
   carry?: MaskCarry;
   /** Current offset, whole document px. */
   dx: number;
@@ -80,8 +80,19 @@ export interface FloatState {
   dragBase: { dx: number; dy: number } | null;
   /** Display cache: layer + float, sized to the bounds. */
   preview: { surface: Surface; key: string } | null;
-  /** An inserted image (M12, `sourceInsert.ts`): has no lift position, so a commit always lands. */
+  /** An inserted image (`sourceInsert.ts`): has no lift position, so a commit always lands. */
   inserted?: boolean;
+  /**
+   * A shape tool's result (`shapeFloat.ts`): independent of the selection
+   * (commit and cancel leave it alone; the shape was clipped when drawn).
+   */
+  shape?: boolean;
+  /**
+   * Layer pixels over `rect` as an untouched commit lands them (the shape
+   * composited exactly as a direct commit would); used while the matrix is
+   * still the lift matrix.
+   */
+  exact?: { rect: Rect; data: ImageData };
   /** Called once when the float ends: `true` = committed (landed), `false` = cancelled. */
   onEnd?: (landed: boolean) => void;
 }
@@ -130,7 +141,7 @@ export function liftFloat(s: EditorState, copy: boolean, sel: Selection | null):
   if (s.loading || s.stroke.active) return null;
   const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
   if (!layer) return null;
-  // A selection lift takes the targeted part (lmask or pixels, M14b); a whole-layer lift the pixels + carry.
+  // A selection lift takes the targeted part (lmask or pixels); a whole-layer lift the pixels + carry.
   const key = sel ? selectedSurfaceKey(s, layer) : layer.id;
   const gray = key !== layer.id;
   if (preparePixelEdit(s, layer, liftKind(layer, key)) === "blocked") return null;
@@ -163,7 +174,7 @@ export function liftFloat(s: EditorState, copy: boolean, sel: Selection | null):
 }
 
 /**
- * Whole-layer lift from the layer's kept original (M11b; no selection):
+ * Whole-layer lift from the layer's kept original (no selection):
  * the float's pixels are the pre-transform original at its cumulative
  * matrix, the hole is the layer's current content. Same gate as a lift.
  * @param s - Editor state.

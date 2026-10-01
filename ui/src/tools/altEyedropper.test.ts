@@ -46,7 +46,7 @@ describe("Alt = temporary eyedropper", () => {
     expect(set[set.length - 1]).toEqual(["fg", "#123456"]);
   });
 
-  it("is refused with a note while a layer mask is targeted (M14)", () => {
+  it("is refused with a note while a layer mask is targeted", () => {
     const set: Array<[string, string]> = [];
     const notes: string[] = [];
     const editor = {

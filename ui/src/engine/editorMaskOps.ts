@@ -60,13 +60,13 @@ export class EditorMaskOps {
   }
 
   /**
-   * Make a mask the current mask (M8) and turn Quick Mask on.
+   * Make a mask the current mask and turn Quick Mask on.
    * @param layerId - Mask layer id.
    * @returns `false` if it is not a mask layer.
    */
   selectMask(layerId: string): boolean {
     const s = this.s;
-    // Mask layers and the Image Mask row (M13a; pixel edits on it are refused).
+    // Mask layers and the Image Mask row (pixel edits on it are refused).
     if (findAnyLayer(s.doc, layerId)?.kind !== "mask") return false;
     const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId;
     if (changed && s.stroke.active) s.cancelStroke();

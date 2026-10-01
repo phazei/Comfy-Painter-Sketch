@@ -40,7 +40,7 @@ export function changesBytes(changes: readonly LayerChange<LayerPixels>[]): numb
 }
 
 /**
- * Whole-layer pixels for a history record (with its layer mask, M14), or
+ * Whole-layer pixels for a history record (with its layer mask), or
  * `null` when the layer never held paint and has no mask (keeps empty
  * layers free in the history budget).
  * @param s - Editor state.

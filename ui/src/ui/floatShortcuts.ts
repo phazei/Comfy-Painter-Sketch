@@ -1,13 +1,14 @@
 /**
- * Floating-selection and layer-merge shortcuts (SPEC M10a, Photoshop), active
+ * Floating-selection and layer-merge shortcuts (SPEC "Floating selections", SPEC "Shortcuts", Photoshop), active
  * only while the editor owns the keyboard (called first from `shortcuts.ts`):
  *
  * | Key | Action |
  * |---|---|
  * | Enter | commit the floating selection (one undo step) |
  * | Esc | cancel the floating selection (everything back) |
+ * | Arrows (Shift = 10 px) | nudge the floating selection, whatever the active tool (a Free Transform session's tool nudges the session instead) |
  * | Ctrl+E | Merge Down (current row into the row below, one undo step) |
- * | Ctrl+Alt+T | Free Transform (M11; Enter commits the session -- a selection float stays floating until the next Enter; Esc cancels the float) |
+ * | Ctrl+Alt+T | Free Transform (Enter commits the session -- a selection float stays floating until the next Enter; Esc cancels the float) |
  *
  * Ctrl+T is deliberately unbound: Chrome reserves it (new tab), pages can't cancel it.
  *
@@ -15,6 +16,15 @@
  */
 
 import type { Editor } from "../engine/editor";
+import { nudgeStep } from "../engine/translateMath";
+
+/** Arrow key -> unit direction. */
+const ARROWS: Readonly<Record<string, readonly [number, number]>> = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1],
+};
 
 /** UI callbacks the float keys need. */
 export interface FloatShortcutEffects {
@@ -47,11 +57,20 @@ export function handleFloatShortcut(event: KeyboardEvent, editor: Editor, effect
     }
     return true;
   }
-  // A text transform session (M11b) has no float but takes Enter / Esc too.
+  // A text transform session has no float but takes Enter / Esc too.
   if (!(editor.float.active || editor.float.transform.active) || ctrl || event.altKey) return false;
   if (key === "escape") {
     effects.cancelDrag();
     editor.float.cancel();
+    return true;
+  }
+  const dir = ARROWS[event.key];
+  if (dir) {
+    // A session's own tool (transformTool.onKey) nudges the session.
+    if (editor.float.transform.active) return false;
+    const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    // Mid-drag the float refuses the nudge; the key is still swallowed.
+    editor.float.nudge(dir[0] * step, dir[1] * step);
     return true;
   }
   if (key === "enter" && !event.shiftKey) {

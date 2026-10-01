@@ -1,5 +1,5 @@
 /**
- * Pure paste decisions (SPEC M10 Clipboard), kept free of `app` / DOM so they
+ * Pure paste decisions (SPEC "Clipboard and drop"), kept free of `app` / DOM so they
  * are unit-testable; the browser side is `pasteSources.ts`.
  *
  * Source order of Ctrl+V and the Paste button's "System" mode

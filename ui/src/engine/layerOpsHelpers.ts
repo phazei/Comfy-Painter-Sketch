@@ -29,7 +29,7 @@ import {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Find a layer by id in the document, including the M13a Image Mask row
+ * Find a layer by id in the document, including the Image Mask row
  * (its eye, colour, invert and opacity edit like a mask's).
  * @param s - Shared editor state.
  * @param layerId - Layer id or `IMAGE_MASK_ID`.

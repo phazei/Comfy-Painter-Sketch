@@ -1,4 +1,4 @@
-"""Tests for nodes/document_regions.py: M9 manifest fields, legacy slots, bad-record isolation."""
+"""Tests for nodes/document_regions.py: manifest fields, legacy slots, bad-record isolation."""
 
 import json
 import unittest

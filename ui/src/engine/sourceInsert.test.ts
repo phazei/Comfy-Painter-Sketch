@@ -1,5 +1,5 @@
 /**
- * Image-source insertion (M12): new layer in Free Transform; commit = ONE
+ * Image-source insertion: new layer in Free Transform; commit = ONE
  * undo step (layer add + transform), cancel = no layer and no step; large
  * sources start fitted to the image area, small ones at native size.
  */

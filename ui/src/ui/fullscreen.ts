@@ -1,5 +1,5 @@
 /**
- * Fullscreen by re-parenting (SPEC decision 1, M3.4): ONE editor instance
+ * Fullscreen by re-parenting (SPEC "Canvas, view and fullscreen"): ONE editor instance
  * whose root element moves between the node and a fixed full-viewport
  * overlay on `document.body`.
  *

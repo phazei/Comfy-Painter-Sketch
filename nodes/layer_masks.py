@@ -1,7 +1,8 @@
 """
-nodes/layer_masks.py -- M14 layer masks: parse the per-layer ``layerMask`` record and
-apply a mask to its paint layer before compositing, exactly like the editor
-(``ui/src/document/layerMask.ts``, ``ui/src/engine/layerMask.ts``).
+nodes/layer_masks.py -- Layer masks (SPEC "Layer masks (lmask)"): parse the
+per-layer ``layerMask`` record and apply a mask to its paint layer before
+compositing, exactly like the editor (``ui/src/document/layerMask.ts``,
+``ui/src/engine/layerMask.ts``).
 
 Manifest (additive, paint layers only; older documents have none, no version bump)::
 

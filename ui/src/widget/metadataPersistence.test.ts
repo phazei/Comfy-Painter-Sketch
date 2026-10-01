@@ -43,6 +43,7 @@ vi.mock("../engine/editor", () => {
 vi.mock("../tools/registry", () => ({ createDefaultTools: () => ({}) }));
 vi.mock("./persistence", () => ({
   restoreLayers: async () => undefined,
+  manifestKnownFiles: () => new Map(),
   LayerUploader: class {
     busy = false;
     flush = vi.fn(async () => undefined);

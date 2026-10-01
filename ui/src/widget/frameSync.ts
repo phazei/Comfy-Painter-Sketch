@@ -4,7 +4,7 @@
  * widgets) to the editor, and keeps those widgets in step with the canvas.
  *
  * An empty editor adopts the current image's size and a painted one only
- * maps onto it (never resampling, decision 4). Pushes are de-duplicated by a
+ * maps onto it (never resampling). Pushes are de-duplicated by a
  * content key so polls and repeated refreshes cost a string compare.
  *
  * Each newly pushed image also writes its size into `width` / `height`
@@ -101,7 +101,7 @@ export class FrameSync {
   /**
    * The current image while disconnected: `width` x `height` filled with
    * `background`. Like any upstream image, an empty document adopts it and a
-   * painted one is shown through the frame map (decision 4).
+   * painted one is shown through the frame map.
    * @returns Sanitized fallback frame.
    */
   fallbackFrame(): FallbackFrame {

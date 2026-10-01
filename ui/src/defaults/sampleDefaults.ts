@@ -1,6 +1,7 @@
 /**
  * The "Defaults" settings for what the paint bucket and magic wand sample
- * ("Background" / "Current layer" / "All layers"; SPEC "Tools", "Settings").
+ * ("Background" / "Current layer" / "All layers"; SPEC "Fill and wand sampling",
+ * SPEC "Settings").
  *
  * Like the pressure defaults they are the INITIAL option values of a new
  * editor session: changes in the options bar win, and changing a setting never

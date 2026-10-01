@@ -42,7 +42,7 @@ function readMode(value: string): OutputOptions["applyMask"] | null {
   return value === "none" || value === "fill" || value === "crop" || value === "border" ? value : null;
 }
 
-/** Tooltip of the M13c Alpha checkbox. */
+/** Tooltip of the Alpha checkbox. */
 export const ALPHA_TITLE = "Output the image with the mask as transparency (RGBA). Some nodes use RGB only and drop it.";
 
 /**
@@ -86,7 +86,7 @@ export class OutputOptionsRow {
   private readonly borderSize: OutputField;
   private readonly borderMask: HTMLLabelElement;
   private readonly borderMaskBox: HTMLInputElement;
-  /** M13c: RGBA IMAGE (hidden, value kept, while Modify = Fill mask). */
+  /** Alpha: RGBA IMAGE (hidden, value kept, while Modify = Fill mask). */
   private readonly alpha: HTMLLabelElement;
   private readonly alphaBox: HTMLInputElement;
 
@@ -189,14 +189,14 @@ export class OutputOptionsRow {
     this.alpha.hidden = fill;
   }
 
-  /** Close the picker / revert open sessions. */
+  /** Close an open colour picker (its `onClose` commits the session) and the number controls. */
   dispose(): void {
     this.ctx.popovers.closeAnchoredIn(this.element);
     this.padding.dispose();
     this.borderSize.dispose();
   }
 
-  /** Fill / border colour picker: one session = one undo step; Esc reverts. */
+  /** Fill / border colour picker: one session = one undo step; Esc / click-outside keep the colour. */
   private pickColor(): void {
     const { popovers, editor } = this.ctx;
     const ops = editor.regionOps;
@@ -212,9 +212,8 @@ export class OutputOptionsRow {
         if (!ops.active) return;
         ops.setOptions(this.id, border ? { borderColor: hex } : { fillColor: hex });
       },
-      onClose: (cancelled) => {
-        if (cancelled) ops.cancel();
-        else ops.commit();
+      onClose: () => {
+        ops.commit();
       },
     });
   }

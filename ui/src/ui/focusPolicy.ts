@@ -104,6 +104,26 @@ export function isScopeActive(state: ScopeState): boolean {
   return state.hovered || state.held || state.engaged || state.fullscreen;
 }
 
+/** Arrow `KeyboardEvent.key` values. */
+const ARROW_KEYS: ReadonlySet<string> = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]);
+
+/**
+ * Whether an arrow key the editor did not use (nothing to nudge) is still
+ * swallowed. Engaged (clicked inside) or fullscreen: always, so ComfyUI does
+ * not jump to another node. Only hover-focused: never (arrows reach ComfyUI).
+ * Alt / Ctrl / Cmd combos are left alone (browser history, fullscreen policy).
+ * @param state - Engaged / fullscreen flags of the scope.
+ * @param chord - Key and modifiers of the event.
+ * @returns `true` to `preventDefault()` + `stopPropagation()` the key.
+ */
+export function swallowsIdleArrow(
+  state: Pick<ScopeState, "engaged" | "fullscreen">,
+  chord: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+): boolean {
+  if (!ARROW_KEYS.has(chord.key) || chord.ctrlKey || chord.metaKey || chord.altKey) return false;
+  return state.engaged || state.fullscreen;
+}
+
 /**
  * Whether hovering may move focus to the key sink. Hover never steals focus
  * from a text field (ours or another node's); a click does (see module doc).

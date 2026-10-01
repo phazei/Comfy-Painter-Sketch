@@ -1,11 +1,16 @@
 /**
- * Free Transform on the tool side (SPEC M11a):
+ * Free Transform on the tool side (SPEC "Free Transform and flips"):
  *
  * - {@link TransformTool}: a hidden tool that receives ALL stage input while
  *   a session runs (`ToolRegistry.setSession`: it wins over the active tool,
  *   Ctrl and Alt) -- handle drags, hover cursors per zone, arrow nudges.
  *   It never becomes the active tool, so switching tools still commits the
- *   session through the float's settle hook.
+ *   session through the float's settle hook. In a shape's session
+ *   (`engine/shapeFloat.ts`) with a shape tool active, a press outside the
+ *   box and rotate zone commits it and is handed to the shape tool, which
+ *   draws the next shape in the same gesture. An Alt press outside the box
+ *   with a tool that has `altEyedropper` runs the temporary eyedropper (the
+ *   registry's Alt rule) without committing or cancelling the session.
  * - {@link TransformSessionOptions}: the options bar while transforming
  *   (X / Y = box centre in image px, W / H %, angle, proportion lock, Flip H /
  *   V, commit, cancel), replacing the tool's own options.
@@ -65,6 +70,12 @@ export class TransformTool implements Tool {
   readonly ctrlMove = false;
   readonly options: ToolOptions;
   private pressed = false;
+  /** Active rail tool (set by the registry on every resolve). */
+  private active: Tool | null = null;
+  /** Temporary eyedropper for an Alt press outside the box (the registry's Alt rule), or `null`. */
+  private altOutside: Tool | null = null;
+  /** Tool the current press was handed to (shape after shape, Alt eyedropper). */
+  private passed: Tool | null = null;
 
   /**
    * @param editor - Session editor (the options read its transform).
@@ -73,33 +84,80 @@ export class TransformTool implements Tool {
     this.options = new TransformSessionOptions(editor);
   }
 
+  /**
+   * Remember the active rail tool (a shape tool continues a press outside a
+   * shape session's box) and the registry's Alt substitute for it.
+   * @param active - Active rail tool.
+   * @param altOutside - Temporary eyedropper to run for an Alt press outside
+   *   the box (`null` = Alt is not the eyedropper for `active`). Alt on a
+   *   handle, inside the box or in the rotate zone keeps its transform meaning.
+   * @returns This tool.
+   */
+  withActive(active: Tool, altOutside: Tool | null = null): this {
+    this.active = active;
+    this.altOutside = altOutside;
+    return this;
+  }
+
   /** @inheritdoc */
   onPointerDown(editor: Editor, samples: readonly ToolPointer[]): void {
     const first = samples[0];
     if (!first) return;
+    this.passed = null;
     const t = editor.float.transform;
     const k = docPerScreenPx(editor);
-    this.pressed = t.beginDrag(t.hit(first, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k), first);
+    const hit = t.hit(first, HANDLE_GRAB_PX * k, ROTATE_REACH_PX * k);
+    const next = this.active;
+    if (hit.kind === "outside" && first.altKey && this.altOutside) {
+      // Alt outside the box: the temporary eyedropper; the session stays open.
+      this.passed = this.altOutside;
+      this.altOutside.onPointerDown(editor, samples);
+      return;
+    }
+    if (hit.kind === "outside" && next?.drawsShapes && editor.float.shape) {
+      // Shape after shape: land this one, the press draws the next.
+      t.commit();
+      this.passed = next;
+      next.onPointerDown(editor, samples);
+      return;
+    }
+    this.pressed = t.beginDrag(hit, first);
   }
 
   /** @inheritdoc */
   onPointerMove(editor: Editor, samples: readonly ToolPointer[]): void {
+    if (this.passed) {
+      this.passed.onPointerMove(editor, samples);
+      return;
+    }
     const last = samples[samples.length - 1];
     if (this.pressed && last) editor.float.transform.dragTo(last, { shift: last.shiftKey, alt: last.altKey });
   }
 
   /** @inheritdoc */
   onPointerUp(editor: Editor, sample: ToolPointer): void {
+    const passed = this.passed;
+    this.passed = null;
+    if (passed) {
+      passed.onPointerUp(editor, sample);
+      return;
+    }
     if (!this.pressed) return;
     this.pressed = false;
     editor.float.transform.dragTo(sample, { shift: sample.shiftKey, alt: sample.altKey });
     editor.float.transform.endDrag();
-    // Text session (M11b): a non-uniform drag asks to rasterize once the press has fully ended.
+    // Text session: a non-uniform drag asks to rasterize once the press has fully ended.
     if (editor.float.transform.pending) setTimeout(() => editor.float.transform.resolvePending(), 0);
   }
 
   /** @inheritdoc */
   onCancel(editor: Editor): void {
+    const passed = this.passed;
+    this.passed = null;
+    if (passed) {
+      passed.onCancel(editor);
+      return;
+    }
     if (!this.pressed) return;
     this.pressed = false;
     editor.float.transform.cancelDrag();
@@ -132,7 +190,7 @@ export class TransformTool implements Tool {
       case "rotate":
         return { kind: "icon", icon: "rotate" };
       case "outside":
-        return { kind: "icon", icon: "crosshair" };
+        return this.altOutside && !t.dragHit ? this.altOutside.cursor() : { kind: "icon", icon: "crosshair" };
     }
   }
 }
@@ -200,7 +258,7 @@ export class TransformSessionOptions implements ToolOptions {
 
   /**
    * A field session ended: an unlinked text W / H change asks to rasterize,
-   * deferred past the ending event (M11b).
+   * deferred past the ending event.
    * @param key - Option key.
    */
   endEdit(key: string): void {
@@ -257,8 +315,8 @@ export class TransformButtons implements ToolOptions {
 
 /** What the tool registry needs to route input and the bar during sessions. */
 export interface TransformSession {
-  /** The tool that takes all stage input while {@link TransformSession.active}. */
-  readonly tool: Tool;
+  /** The tool that takes all stage input while {@link TransformSession.active} (pass it the active tool, {@link TransformTool.withActive}). */
+  readonly tool: TransformTool;
   /** Whether a session runs. */
   active(): boolean;
   /**

@@ -1,5 +1,5 @@
 /**
- * Layer commands of the editor core (layers panel, SPEC "### Layers"):
+ * Layer commands of the editor core (layers panel, SPEC "Layers"):
  * add / duplicate / delete / reorder / rename / opacity / mask colour and
  * invert (undoable {@link LayersEntry} history entries), plus visibility,
  * lock and the active layer (not undoable, like Photoshop and the mask eye).
@@ -75,7 +75,7 @@ export class LayerOps {
   }
 
   /**
-   * Whether another mask can be added (M8: at most `MAX_MASKS`).
+   * Whether another mask can be added (at most `MAX_MASKS`).
    * @returns `true` if below the limit.
    */
   canAddMask(): boolean {
@@ -340,7 +340,7 @@ export class LayerOps {
   }
 
   /**
-   * Per-mask invert (applied before the union, decision 5).
+   * Per-mask invert (applied before the union).
    * @param layerId - Mask layer id.
    * @param invert - Invert state.
    * @returns `true` if changed.

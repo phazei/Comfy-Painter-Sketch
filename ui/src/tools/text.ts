@@ -1,5 +1,5 @@
 /**
- * Text tool (T, SPEC M6b): point text on text layers.
+ * Text tool (T, SPEC "Tools" > "Text (T)"): point text on text layers.
  *
  * - Click empty canvas: new text layer above the active paint layer, opened
  *   in the in-canvas `<textarea>` (`ui/textOverlay.ts`). Quick Mask is
@@ -16,7 +16,7 @@
  *   "Custom font..."), size in image px (converted with the frame-map
  *   scale, like brush size), bold, italic, alignment. Colour = FG. While
  *   editing, option and FG changes apply live to the edited text.
- * - Angle (M11b): rotation of the edited text, else of the active text
+ * - Angle: rotation of the edited text, else of the active text
  *   layer (one merged text step per run of changes, `TextOps.setRotation`).
  */
 
@@ -57,7 +57,7 @@ type TextToolValues = {
   bold: boolean;
   italic: boolean;
   align: TextAlign;
-  /** Rotation of the selected / edited text layer, degrees (mirrors the layer; M11b). */
+  /** Rotation of the selected / edited text layer, degrees (mirrors the layer). */
   angle: number;
 };
 

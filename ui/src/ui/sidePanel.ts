@@ -1,5 +1,5 @@
 /**
- * Right side panel of the editor shell (~180 px, collapsible) with tabs
+ * Right side panel of the editor shell (216 px, collapsible) with tabs
  * (Layers / Outputs, {@link SidePanel.setTabs}; `tab` event on change). Collapse follows
  * `sidePanelState.ts`: automatic by editor width, user toggle wins until the
  * next size-class change.
@@ -24,7 +24,7 @@ export interface SidePanelEvents {
 export class SidePanel {
   /** Panel element (a region of the shell body). */
   readonly element: HTMLDivElement;
-  /** Mount point for panel content (placeholder "Layers" until M3.3). */
+  /** Mount point for panel content (`setTabs` mounts the tab bar and panels; a "Layers" placeholder shows until then). */
   readonly content: HTMLDivElement;
   readonly events = new Emitter<SidePanelEvents>();
   private state: Readonly<PanelState> = INITIAL_PANEL_STATE;

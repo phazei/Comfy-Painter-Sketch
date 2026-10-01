@@ -86,7 +86,7 @@ export function curvePressure(pressure: number, gamma: number): number {
 }
 
 /**
- * Pressure -> size factor (SPEC "Pressure": min size %, gamma):
+ * Pressure -> size factor (SPEC "Brush engine": min size %, gamma):
  * `min + (1 - min) * pressure^gamma`, so zero pressure gives `min` and full
  * pressure gives 1.
  * @param pressure - 0..1 (normalized).
