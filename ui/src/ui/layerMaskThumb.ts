@@ -12,7 +12,11 @@
  * - Shift+click = off / on;
  * - Alt+click = view the mask alone in the stage and edit it (again = end);
  * - Ctrl(+Shift / +Alt / +Shift+Alt)+click = selection from the mask's
- *   shown (black) part.
+ * shown (black) part.
+ *
+ * While hovered, the held modifier shows what a click will do (`data-mod`,
+ * set by `layerSelectHover.ts`): on the thumbnail Alt = an eye in corner
+ * brackets, Shift = a red X; on the add icon Alt = the inverted mask glyph.
  *
  * The slot never widens the row beyond the thumbnail box; the name wraps
  * to 2 lines and ellipsizes instead (CSS). All clicks stop at the slot (the row's own click
@@ -20,7 +24,7 @@
  */
 
 import type { SelectionMode } from "../engine/selection";
-import { setIcon } from "./icons";
+import { iconSvg, setIcon } from "./icons";
 import { layerSelectMode } from "./moveCursors";
 import { Thumbnail } from "./thumbnails";
 
@@ -70,7 +74,9 @@ export class LayerMaskSlot {
     this.addButton.type = "button";
     this.addButton.className = "cps-icon-button cps-layer-button cps-layer-mask-add";
     this.addButton.title = "Add layer mask (reveals all, or shows only the selection; Alt+click hides all)";
-    setIcon(this.addButton, "layerMaskAdd", 12);
+    // Alt (hide all) shows the inverted glyph (`layerSelectHover.ts` sets `data-mod`).
+    this.addButton.innerHTML =
+      `<span class="cps-mod-plain">${iconSvg("layerMaskAdd", 12)}</span><span class="cps-mod-alt">${iconSvg("maskInverted", 12)}</span>`;
     this.addButton.addEventListener("click", (event) => {
       stop(event);
       actions.addLayerMask(id, event.altKey);
@@ -83,7 +89,11 @@ export class LayerMaskSlot {
     this.off.className = "cps-layer-mask-off";
     this.off.hidden = true;
     setIcon(this.off, "close", 30);
-    this.thumbBox.append(this.thumb.canvas, this.off);
+    // Modifier indicators: what a click does now (Alt = view alone, Shift = off / on).
+    const mods = document.createElement("span");
+    mods.className = "cps-layer-mask-mods";
+    mods.innerHTML = `<span class="cps-mod-alt">${iconSvg("maskView", 18)}</span><span class="cps-mod-shift">${iconSvg("close", 22)}</span>`;
+    this.thumbBox.append(this.thumb.canvas, this.off, mods);
     this.thumbBox.addEventListener("click", (event) => this.thumbClick(event));
     this.element.append(this.addButton, this.thumbBox);
   }

@@ -2,7 +2,7 @@
  * Drawing-resolution mismatch notice (SPEC "Layers" > "Background row and drawing resolution"): when the
  * current image is more than 1.5x finer than the drawing grid, the options bar
  * shows "Drawing grid W px -- image W px (N.Nx)" and a **Match image
- * resolution** button (every tool), the Move drawing footer icon turns red
+ * resolution** button (every tool), the Align drawing footer icon turns red
  * (via `setWarning`) and a one-time toast per document per session points to
  * the button. Second case (same button / icon, own toast): the image area
  * doesn't fit the maximum paint area. If both apply, the resolution message
@@ -47,7 +47,7 @@ export class ResolutionNotice {
   private shown: string | null = null;
 
   /**
-   * @param setWarning - Turns the Move drawing icon red / back.
+   * @param setWarning - Turns the Align drawing icon red / back.
    * @param beforeMatch - Cancel drags / pending tool interactions first.
    */
   constructor(

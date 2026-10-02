@@ -1,5 +1,5 @@
 /**
- * Move-drawing placement limits (SPEC "Moving (Move layer, Move drawing)"). Rule: the MAXIMUM
+ * Align-drawing placement limits (SPEC "Moving (Move layer, Align drawing)"). Rule: the MAXIMUM
  * paint area ({@link boundsCap} of the frame), mapped to image px through the
  * placement-aware document map, must contain the current image area expanded
  * by {@link PLACEMENT_MARGIN} image px on every side -- so the whole image

@@ -179,6 +179,51 @@ describe("region mode gestures", () => {
   });
 });
 
+// ── Cursor and keys ───────────────────────────────────────────────────────────
+
+describe("region mode cursor and keys", () => {
+  const at = (ed: EditorClass, p: Point): Point => imageToDoc(ed.frameMap, p);
+
+  it("move over a region, resize on the selected one's handles, cross elsewhere and with Shift", () => {
+    const ed = setup();
+    const tool = createRegionTool();
+    const id = ed.regionOps.add(box)!;
+    ed.regionOps.select(null); // adding selects it
+    const none = { shift: false };
+    expect(tool.cursorAt?.(ed, at(ed, { x: 80, y: 70 }), none)).toEqual({ kind: "icon", icon: "crosshair", ban: false });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 20, y: 24 }), none)).toEqual({ kind: "icon", icon: "move" });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 20, y: 24 }), { shift: true })).toEqual({ kind: "icon", icon: "crosshair", ban: false });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 30, y: 36 }), none)).toEqual({ kind: "icon", icon: "move" }); // no handles until selected
+    ed.regionOps.select(id);
+    expect(tool.cursorAt?.(ed, at(ed, { x: 30, y: 36 }), none)).toEqual({ kind: "icon", icon: "resize-nwse" });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 30, y: 12 }), none)).toEqual({ kind: "icon", icon: "resize-nesw" });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 20, y: 12 }), none)).toEqual({ kind: "icon", icon: "resize-ns" });
+  });
+
+  it("the cross gets the ban badge with all six slots used", () => {
+    const ed = setup();
+    const tool = createRegionTool();
+    for (let slot = 1; slot <= 6; slot++) ed.regionOps.add({ x: slot, y: 0, width: 1, height: 1 });
+    expect(tool.cursorAt?.(ed, at(ed, { x: 50, y: 50 }), { shift: false })).toEqual({ kind: "icon", icon: "crosshair", ban: true });
+  });
+
+  it("Delete removes the selected region (one undo step); with Main selected it is still handled", () => {
+    const ed = setup();
+    const tool = createRegionTool();
+    const id = ed.regionOps.add(box)!;
+    ed.regionOps.select(null); // adding selects it
+    const key = (k: string): KeyboardEvent => ({ key: k, repeat: false }) as KeyboardEvent;
+    expect(tool.onKey?.(ed, key("Delete"))).toBe(true);
+    expect(ed.doc.regions).toHaveLength(1); // Main selected: nothing removed
+    ed.regionOps.select(id);
+    expect(tool.onKey?.(ed, key("Backspace"))).toBe(true);
+    expect(ed.doc.regions).toHaveLength(0);
+    ed.undo();
+    expect(ed.doc.regions).toHaveLength(1);
+    expect(tool.onKey?.(ed, key("a"))).toBe(false);
+  });
+});
+
 // ── Registry / mode ───────────────────────────────────────────────────────────
 
 describe("region mode switching", () => {

@@ -6,6 +6,7 @@ import {
   applyLayerChange,
   canDeleteLayer,
   canDuplicateLayer,
+  maskAfterRemoval,
   nextLayerName,
   paintInsertIndex,
   propsDiffer,
@@ -73,6 +74,18 @@ describe("delete / duplicate constraints", () => {
     expect(activeAfterRemoval(doc.layers, 1)).toBe("A");
     doc.layers.splice(0, 1); // remove A (index 0): nothing below
     expect(activeAfterRemoval(doc.layers, 0)).toBe("C");
+  });
+
+  it("makes the mask below a deleted current mask current, else above; paint layers never", () => {
+    const doc = threeLayerDoc();
+    const mask = doc.layers[3]!;
+    doc.layers = [doc.layers[0]!, { ...mask, id: "M1" }, { ...mask, id: "M2" }, { ...mask, id: "M3" }];
+    doc.layers.splice(2, 1); // remove M2
+    expect(maskAfterRemoval(doc.layers, 2)).toBe("M1");
+    doc.layers.splice(1, 1); // remove M1: only paint below
+    expect(maskAfterRemoval(doc.layers, 1)).toBe("M3");
+    doc.layers.splice(1, 1);
+    expect(maskAfterRemoval(doc.layers, 1)).toBeUndefined();
   });
 });
 

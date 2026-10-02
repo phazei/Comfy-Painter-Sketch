@@ -135,7 +135,7 @@ function contentRect(ed: EditorClass, id: string): Rect {
 describe("paste placement", () => {
   it("centres on the current image (frame map + placement), whatever the pan/zoom", () => {
     const ed = new Editor(createEmptyDocument({ width: 40, height: 30 }), "widgets");
-    // Image 100 x 60: frame map scale 2, offset (10, 0); plus a Move-drawing offset.
+    // Image 100 x 60: frame map scale 2, offset (10, 0); plus a Align-drawing offset.
     ed.setBackground({ kind: "fill", color: "#fff" }, { width: 100, height: 60 });
     ed.placement.set({ x: 3, y: -2, scale: 1 });
     ed.view.setStage({ width: 301, height: 199 }, 1);

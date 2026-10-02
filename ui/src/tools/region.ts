@@ -7,6 +7,10 @@
  * - Plain drag inside a region moves it; the selected region's handles resize.
  * - Shift-drag always draws a new region, even starting inside one.
  * - A click (no drag) on empty canvas selects Main; on a region selects it.
+ * - Delete / Backspace removes the selected region; it never reaches the
+ *   image selection (hidden while the Outputs tab is open).
+ * - Cursor: move over a region body, resize over the selected one's handles,
+ *   otherwise (or with Shift) the precise cross, with `ban` when all slots are used.
  *
  * Selection is never a document edit; only a real drag opens a transaction.
  */
@@ -16,7 +20,7 @@ import { docToImage } from "../engine/frameMap";
 import { dragRegionRect, drawRegionRect, hitRegionHandle, insideRegion } from "../engine/regionGeometry";
 import type { RegionHandle } from "../engine/regionGeometry";
 import type { Point, Rect } from "../geometry/rect";
-import type { Tool, ToolPointer } from "./types";
+import type { Tool, ToolCursor, ToolPointer } from "./types";
 
 /** Tool id (used by the host to map the Outputs tab to region mode). */
 export const REGION_TOOL_ID = "region";
@@ -70,6 +74,28 @@ function grabAt(editor: Editor, p: Point): Pick<RegionDrag, "mode" | "id" | "rec
   return top ? { mode: "move", id: top.id, rect: { ...top.rect }, handle: null } : null;
 }
 
+/**
+ * Resize cursor for a handle.
+ * @param handle - Handle axes.
+ * @returns The matching resize cursor.
+ */
+function handleCursor(handle: RegionHandle): ToolCursor {
+  const icon = handle.x === 0 ? "resize-ns" : handle.y === 0 ? "resize-ew" : handle.x === handle.y ? "resize-nwse" : "resize-nesw";
+  return { kind: "icon", icon };
+}
+
+/**
+ * Cursor for a grab (or a new region when `grab` is null).
+ * @param editor - Live editor.
+ * @param grab - What the press would grab.
+ * @returns Cursor description.
+ */
+function grabCursor(editor: Editor, grab: Pick<RegionDrag, "mode" | "handle"> | null): ToolCursor {
+  if (grab?.mode === "resize" && grab.handle) return handleCursor(grab.handle);
+  if (grab?.mode === "move") return { kind: "icon", icon: "move" };
+  return { kind: "icon", icon: "crosshair", ban: !editor.regionOps.canAdd() };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Tool
 // ═══════════════════════════════════════════════════════════════════════════
@@ -119,6 +145,20 @@ export function createRegionTool(): Tool {
     rail: false,
     ctrlMove: false,
     cursor: () => ({ kind: "icon", icon: "crosshair" }),
+
+    cursorAt(editor, at, mods) {
+      // During a drag the gesture's own cursor stays (a draw crossing a region keeps the cross).
+      if (drag) return drag.mode === "draw" ? { kind: "icon", icon: "crosshair" } : grabCursor(editor, drag);
+      return grabCursor(editor, mods.shift ? null : grabAt(editor, docToImage(editor.frameMap, at)));
+    },
+
+    onKey(editor, event) {
+      if (event.key !== "Delete" && event.key !== "Backspace") return false;
+      // Always handled: Delete in region mode must never clear the (hidden) image selection.
+      const id = editor.regionOps.selectedId;
+      if (id && !drag && !event.repeat) editor.regionOps.remove(id);
+      return true;
+    },
 
     onPointerDown(editor, samples) {
       const sample = samples[0];

@@ -2,7 +2,7 @@
  * Output regions (SPEC "Outputs and regions (editor)"): validation, stable slots, names and geometry. Pure.
  *
  * Regions are stored in current-image pixels from the top-left and are never
- * rescaled (not on input image or width/height changes, not by Move drawing).
+ * rescaled (not on input image or width/height changes, not by Align drawing).
  * They may extend outside the image, up to one image size beyond each edge
  * (the region area, `regionArea`: the image plus its own width / height on
  * every side; not the paint area, which is the document bounds cap).

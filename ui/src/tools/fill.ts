@@ -49,6 +49,7 @@ export class FillTool implements Tool {
   readonly shortcut = "g";
   readonly icon = "bucket";
   readonly altEyedropper = true;
+  readonly editsPixels = "paint";
   /** Sample defaults to the background (fill regions of the input image); the setting `PainterSketch.BucketSample` can change it. */
   readonly values: FillOptions;
   readonly options: OptionSet;

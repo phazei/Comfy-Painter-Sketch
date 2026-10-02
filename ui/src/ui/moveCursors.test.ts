@@ -24,12 +24,12 @@ describe("moveCursorKind", () => {
 });
 
 describe("moveCursorCss", () => {
-  it("plain move is the native keyword; badged kinds are cached SVG URLs with hotspot + fallback", () => {
-    expect(moveCursorCss("move")).toBe("move");
+  it("every kind is a cached pointer-layout SVG URL with hotspot + fallback", () => {
+    expect(moveCursorCss("move")).toMatch(/^url\("data:image\/svg\+xml,.+"\) 3 3, move$/);
     const cut = moveCursorCss("cut");
-    expect(cut).toMatch(/^url\("data:image\/svg\+xml,.+"\) 11 11, move$/);
+    expect(cut).toMatch(/^url\("data:image\/svg\+xml,.+"\) 3 3, move$/);
     expect(moveCursorCss("cut")).toBe(cut);
     expect(moveCursorCss("copy")).not.toBe(cut);
-    expect(moveCursorCss("outline")).toMatch(/\) 2 2, default$/);
+    expect(moveCursorCss("outline")).toMatch(/\) 3 3, default$/);
   });
 });

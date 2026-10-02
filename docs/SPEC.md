@@ -22,7 +22,7 @@ maintainer) who need to understand a piece of the codebase before changing it.
 - Never write just "mask". Both use the ComfyUI polarity: white = masked / hidden.
 - **Output**: Main or a region (it has a result and output options).
   **Region**: the rectangle itself. Main is an output, not a region.
-- **View**: pan/zoom of the stage. **Move drawing**: whole-drawing placement.
+- **View**: pan/zoom of the stage. **Align drawing**: whole-drawing placement.
   **Move layer**: the `V` tool.
 - **Frame**: the grid the paint was made on. **Bounds** (paint area): the
   document's pixel extent. **Image**: the current input image (or the
@@ -48,7 +48,7 @@ maintainer) who need to understand a piece of the codebase before changing it.
 16. Floating selections
 17. Clipboard and drop
 18. Free Transform and flips
-19. Moving (Move layer, Move drawing)
+19. Moving (Move layer, Align drawing)
 20. Image sources and the Images panel
 21. Outputs and regions (editor)
 22. Settings
@@ -503,7 +503,7 @@ current image (not the frame): `stage = content * scale + offset`.
 - Wheel on the stage zooms about the cursor by `exp(-clamp(delta, +-300) *
   0.0015)` (line mode x16, page mode x stage height); Ctrl+wheel and pinch the
   same. Ctrl+= / Ctrl+- zoom x1.25 / x0.8 about the stage centre. During a drag
-  of a tool with `onWheel` (Move drawing) the tool gets the wheel.
+  of a tool with `onWheel` (Align drawing) the tool gets the wheel.
 - Pan: middle-drag, or Space + left-drag (Space typed in a text field is text,
   not pan; with Ctrl/Alt/Meta the key is not prevented but still arms pan). Pan
   is clamped so at least `min(64, on-screen size)` px of the image stays visible.
@@ -621,7 +621,7 @@ class="cps-focus-sink">` or a text field inside the root has focus.
 - **Arrow keys**: while engaged or fullscreen they are always swallowed, even
   when nothing nudges (ComfyUI would jump to another node). While only
   hover-focused they pass through to ComfyUI unless they nudge something (a
-  float, a transform session, the Move layer / Move drawing tool, or the
+  float, a transform session, the Move layer / Align drawing tool, or the
   selection outline with a selection tool and a selection). Alt/Ctrl+arrow
   combos are left alone in-node. Keyboard graph navigation never moves the
   pointer, so it can't make the node grab arrows in passing.
@@ -710,7 +710,7 @@ style; later ones take the first colour not used by a cmask from blue
   control). Paint drops onto paint rows, cmask onto cmask rows; past the group
   end snaps to its edge row; the list auto-scrolls near its edges. One undo
   step; the selection is unchanged.
-- **Footer**: `[Move drawing] | [New layer] [New mask] [Duplicate] [Merge Down]
+- **Footer**: `[Align drawing] | [New layer] [New mask] [Duplicate] [Merge Down]
   [Delete]`.
   - New layer: above the active paint layer, active, Quick Mask off.
   - New mask: above the current cmask, becomes current (Quick Mask on).
@@ -721,9 +721,10 @@ style; later ones take the first colour not used by a cmask from blue
   - Delete: the selected target (the current cmask under Quick Mask, otherwise
     the active layer; with an lmask targeted it deletes the layer -- the lmask is
     deleted only from the options bar). The layer below becomes active, else the
-    nearest above; deleting the current cmask makes the top-most one current.
+    nearest above; deleting the current cmask likewise makes the cmask below it
+    current, else the nearest above (`maskAfterRemoval`).
     Undo restores pixels and lmask.
-  - Move drawing: toggles the hidden Move drawing tool (section 19); its icon
+  - Align drawing: toggles the hidden Align drawing tool (section 19); its icon
     turns red while the resolution notice shows.
 - New layers, duplicates and new cmasks take over their group's solo when a solo
   is on.
@@ -956,7 +957,7 @@ Files: `engine/colors.ts`, `ui/swatches.ts`, `colorPicker.ts`, `hsvControls.ts`,
   insert + transform commit, float + lmask carry). A stroke that changes no
   pixel adds no step.
 - Not undoable: eyes (layer and Background), lock, solo, active layer, Quick Mask
-  and current cmask, lmask enable/target/view/swatches, FG/BG, Move drawing
+  and current cmask, lmask enable/target/view/swatches, FG/BG, Align drawing
   placement, view, Match image resolution (clears history), Image/Input Mask
   source changes. Frame adoption on an empty document drops history (after a
   Clear: truncates to it).
@@ -988,7 +989,7 @@ Files: `engine/history.ts`, `editorTypes.ts`, `layerHistory.ts`, `paintOps.ts`,
 | Lasso | `lasso` | L |
 | Magic wand | `wand` | W |
 
-Hidden tools (no rail button, no key): `move` (Move drawing, layers footer),
+Hidden tools (no rail button, no key): `move` (Align drawing, layers footer),
 `region` (Outputs tab / O), `transform` (a Free Transform session), and
 `selection-outline` (substituted at pointer-down).
 
@@ -1006,7 +1007,7 @@ advances to the next (wraps).
 2. A plain press (no Shift/Alt/Ctrl) inside the selection with a selection tool
    (marquees, lasso, wand; not mid-polygon) -> outline drag.
 3. Ctrl -> temporary Move layer with auto-select, for rail tools that allow it
-   (`ctrlMove`, default on; off for Text, Move layer, Move drawing, region,
+   (`ctrlMove`, default on; off for Text, Move layer, Align drawing, region,
    transform, and a lasso with an open polygon).
 4. Alt -> temporary eyedropper, for tools with `altEyedropper`: Brush, Bucket,
    Line, Arrow, Rectangle, Ellipse.
@@ -1066,7 +1067,7 @@ a normal selection's bbox (an inverted selection: no limit).
 - Esc / pointer-cancel drops the stroke.
 - Alt = temporary eyedropper (brush only; not the eraser). Ctrl = temporary
   Move.
-- Cursor: crosshair + size ring (section 13).
+- Cursor: a dot + the overlay size ring with its indicators (section 24 "Cursors").
 
 ### Paint bucket (G)
 
@@ -1086,7 +1087,7 @@ a normal selection's bbox (an inverted selection: no limit).
   halo.
 - cmask: white coverage at the opacity. lmask: the foreground mask swatch.
 - A text layer: rasterize confirm, then the fill continues.
-- Cursor: bucket icon, hotspot at the drip (19, 20).
+- Cursor: pointer tip (hotspot) + bucket glyph (section 24 "Cursors").
 
 ### Eyedropper (I)
 
@@ -1106,7 +1107,7 @@ a normal selection's bbox (an inverted selection: no limit).
   hidden/locked state.
 - Refused while an lmask is targeted (also the temporary one).
 - While picking, a loupe ring shows the new colour (top) and the previous one
-  (bottom). Cursor: eyedropper icon, hotspot at the tip (3, 21).
+  (bottom). Cursor: pipette, hotspot at the tip; Alt adds the background-slot badge.
 
 ### Line and Arrow (U group)
 
@@ -1178,8 +1179,8 @@ a normal selection's bbox (an inverted selection: no limit).
   another text opens that one. Quick Mask switches off. A click on a text layer
   (topmost visible, rotated box plus a 15 % margin) re-edits it; locked/hidden
   layers show their note. Otherwise new text at the click (new layer above the
-  active paint layer, named from its text on commit); creating text never
-  clears the selection. Point text only (no wrapping boxes).
+  active paint layer, named from its text on commit). Any non-Ctrl click drops the selection
+  (its own undo step; not in the lmask-only view, which refuses the click). Point text only (no wrapping boxes).
 - **Editing**: a `<textarea>` overlay (transparent text; the canvas shows the
   real rendering). Enter = new line; Esc or Ctrl+Enter commits; Ctrl+Z in the
   field is native text undo. Option and FG changes apply live. It also commits on
@@ -1191,11 +1192,13 @@ a normal selection's bbox (an inverted selection: no limit).
 - Pixel edits on a text layer ask "Rasterize text layer? It will no longer be
   editable as text."; OK converts it to paint in the same undo step (strokes and
   shapes abort that press; the bucket continues).
-- Cursor: I-beam; `move` during a Ctrl+drag.
+- Cursor: `text-cursor` I-beam (with `ban` in the lmask-only view); the move cursor while Ctrl is held and during a Ctrl+drag.
+- Keys in the field are the field's: letter shortcuts type, Ctrl+Z is text undo.
+  Ctrl+D is only prevented (no browser bookmark).
 
-### Move layer (V), Move drawing, region, outline drag, transform
+### Move layer (V), Align drawing, region, outline drag, transform
 
-Described in sections 19 (Move layer, Move drawing), 21 (region tool), 15
+Described in sections 19 (Move layer, Align drawing), 21 (region tool), 15
 (outline drag) and 18 (Free Transform).
 
 ### Marquees (M group), Lasso (L), Magic wand (W)
@@ -1394,7 +1397,7 @@ intersect; hover cursor shows the mode):
 (coverage >= 128) with a marquee, lasso or wand drags only the outline, whole
 doc px, one `selection` entry; Esc restores it; a press that never leaves the
 click slop is replayed to the tool as a click. With a float alive it commits the
-float first. Cursor: arrow + dotted-rectangle badge.
+float first. Cursor: pointer tip + dashed square.
 
 **Following**: a whole-layer move (drag outside the selection, or nudges)
 carries the selection in the same undo step.
@@ -1576,7 +1579,7 @@ Files: `engine/transformOps.ts`, `transformMath.ts`, `transformHit.ts`,
 `textTransform.ts`, `textFieldEdit.ts`, `keptOriginal.ts`, `layerFlip.ts`,
 `tools/transformTool.ts`, `ui/transformOverlay.ts`, `ui/floatShortcuts.ts`.
 
-## 19. Moving (Move layer, Move drawing)
+## 19. Moving (Move layer, Align drawing)
 
 **Move layer (V)**
 
@@ -1592,7 +1595,7 @@ Files: `engine/transformOps.ts`, `transformMath.ts`, `transformHit.ts`,
   visible, unlocked cmasks by raw coverage and makes the hit current (Quick Mask
   stays on). Nothing hit = nothing moves. Off while a selection exists.
 - **Ctrl = temporary Move layer** for every rail tool except Text, Move layer,
-  Move drawing and the region tool (and a pending lasso). Precedence Ctrl > Alt >
+  Align drawing and the region tool (and a pending lasso). Precedence Ctrl > Alt >
   active tool, locked for the drag; a Free Transform session beats all.
 - Arrows nudge 1 image px (>= 1 doc px), Shift 10; consecutive nudges merge into
   one step; swallowed mid-drag. Esc / pointer-cancel aborts a drag.
@@ -1600,7 +1603,7 @@ Files: `engine/transformOps.ts`, `transformMath.ts`, `transformHit.ts`,
   selected." Loading or an active stroke: silent.
 - Bar: Auto-select, Transform, Flip H, Flip V.
 
-**Move drawing** (hidden tool; layers-footer toggle, no shortcut; toggling again
+**Align drawing** (hidden tool; layers-footer toggle, no shortcut; toggling again
 returns to the last rail tool)
 
 - Edits `doc.placement`: the whole drawing (all layers, cmasks, lmasks) relative
@@ -1660,8 +1663,10 @@ Opening the tab activates it; choosing any other tool shows the Layers tab;
 clicking Layers restores the last rail tool. The Outputs button (options bar,
 trailing, "Output regions (O)") and **O** toggle: with the panel open in region
 mode they return to Layers; otherwise they open the panel on Outputs. Collapsing
-the panel doesn't leave region mode. Esc doesn't leave it; Delete never deletes a
-region (only the card's trash button).
+the panel doesn't leave region mode. Esc doesn't leave it. Delete / Backspace
+removes the selected region (one undo step; with Main selected it does nothing).
+The image selection is hidden in region mode (no marching ants) and out of reach:
+Delete, Ctrl+C/X/A/D and Alt/Ctrl+Backspace never touch it (they are swallowed).
 
 **Pointer** (current-image px):
 
@@ -1862,14 +1867,14 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | Q | Toggle Quick Mask |
 | F | Toggle fullscreen |
 | O | Toggle the Outputs tab (region mode; with the panel collapsed, opens it on Outputs) |
-| Delete / Backspace (Shift optional) | Clear the selection on the target; without a selection, or on key repeat, swallowed (never deletes graph nodes). Ctrl+Delete / Alt+Delete are not bound. No key deletes a region |
+| Delete / Backspace (Shift optional) | Clear the selection on the target; without a selection, or on key repeat, swallowed (never deletes graph nodes). Ctrl+Delete / Alt+Delete are not bound. In region mode it removes the selected region instead |
 | F5 / Ctrl+R / Cmd+R / Ctrl+Shift+R | Page-wide, only while uploads are pending: flush (3 s), confirm if that failed, then reload |
 
 ### View
 
 | Keys | Action |
 |---|---|
-| Wheel (any modifier) | Zoom about the cursor (Move drawing drag: scale) |
+| Wheel (any modifier) | Zoom about the cursor (Align drawing drag: scale) |
 | Middle-drag, Space+drag | Pan |
 | Ctrl+0 / Fit button | Fit (sticky) |
 | Ctrl+1 | 100 % |
@@ -1943,14 +1948,14 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 
 | Keys | Action |
 |---|---|
-| Arrows / Shift+arrows | Nudge 1 / 10 image px (any float, transform session, Move layer, Move drawing; the selection outline with a selection tool). Swallowed while engaged even when nothing nudges |
+| Arrows / Shift+arrows | Nudge 1 / 10 image px (any float, transform session, Move layer, Align drawing; the selection outline with a selection tool). Swallowed while engaged even when nothing nudges |
 | Alt+drag inside a selection (Move layer) | Lift a copy (Alt outside a selection and Shift axis-lock are not bound) |
 | Ctrl+Alt+T | Free Transform |
 | Enter / Esc | Commit / cancel a float or transform |
 | Shift (handle drag) | Toggle proportional |
 | Alt (handle drag) | Scale about the centre |
 | Shift (rotate) | 15 degree steps |
-| Wheel while dragging (Move drawing) | Scale the drawing |
+| Wheel while dragging (Align drawing) | Scale the drawing |
 
 ### Clipboard
 
@@ -1979,6 +1984,7 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | Drag empty canvas / Shift+drag | New region / new region even inside another |
 | Drag a region / a handle | Move / resize |
 | Click empty canvas | Select Main |
+| Delete / Backspace | Remove the selected region |
 | Double-click a card title | Rename (Enter / blur commit, Esc cancels) |
 | X / Y / W / H fields | Enter commits, Esc reverts; label scrub 2 px per step, Shift x10 |
 
@@ -2009,28 +2015,39 @@ before the Shift+group-cycle lookup in `shortcuts.ts`; F1 must be handled by
 the editor's own handler, which runs before the fullscreen pass-through
 (outside fullscreen the browser's F1 help opens otherwise).
 
-### Cursors (current state)
+### Cursors
 
-The stage cursor is the CSS variable `--cps-tool-cursor`; pan classes
-(`cps-pan-ready` grab, `cps-panning` grabbing) and loading (progress) win. Icon
-cursors are SVG data URLs: bucket and eyedropper 24 px (4 px `#111` outline +
-1.75 px white stroke, from the rail icon paths, `ui/cursors.ts`); move, outline,
-row and rotate cursors 32 px (black fill, white outline, `ui/moveCursors.ts`);
-the mode-badge crosshair 32 px (3 px / 1 px strokes).
+Every stage cursor is an SVG data URL from the composer (`ui/cursorArt.ts`;
+names -> drawings in `ui/cursors.ts`, move kinds in `ui/moveCursors.ts`), so
+the OS cursor set never shows over the stage (native keywords are only the
+fallback). 64 x 64 canvas; glyphs 24 px with a 4 px halo under a 2 px stroke;
+badges 16 px (3.5 / 1.5 px). Badge slots: mode bottom-right (selection
+`square-dashed-plus` / `square-dashed-minus` / `square-dashed-x`, eyedropper
+background slot; `ban` replaces it), target further left (mask glyph in
+the accent colour). Colours: `--cps-cursor-fg`, `-halo`, `-ban`, `-accent` on
+`.cps-root` (`editor.css`); the stage reads them on render and rebuilds the
+cursors on a change. The stage cursor is `--cps-tool-cursor`; pan / busy use
+`--cps-cursor-grab`, `-grabbing`, `-busy` (written by the stage), which win.
+Mid-drag the cursor kind and badges stay as at pointer-down.
 
 | Tool / state | Cursor | Hotspot |
 |---|---|---|
-| Brush, Eraser | CSS `crosshair` + overlay size ring (black + white circles) | centre |
-| Bucket | bucket icon | (19, 20) |
-| Eyedropper (and Alt) | eyedropper icon; loupe while picking | (3, 21) |
-| Shapes, region tool, transform outside the box | CSS `crosshair` (eyedropper icon with Alt held outside the box) | centre |
-| Text | CSS `text`; `move` during Ctrl+drag | native |
-| Move layer, Move drawing, transform inside the box | CSS `move` | native |
-| Move inside a selection | move arrows + scissors (cut), + "+" with Alt (copy) | (11, 11) |
-| Outline drag, Ctrl over a layer row | arrow + dotted-rectangle badge (+ mode mark on rows) | (2, 2) |
-| Marquee, lasso, wand | `crosshair`; with a selection and Shift/Alt: 32 px crosshair + `+` / `-` / `x` badge | (11, 11) |
-| Transform handles | native `ns/ew/nwse/nesw-resize` by on-screen direction | native |
-| Transform rotate zone | circling arrows SVG | (16, 16) |
+| Brush, Eraser | nothing in the centre (`cursor: none`) while the ring is under 300 CSS px on screen, a dot (8 px) from 300 px on; the overlay draws the ring and, just outside it on the diagonals, the mask badge (bottom-left) and the eraser glyph or `ban` (bottom-right); badges 16-24 px, growing with the ring (`ui/ringCursor.ts`). Ring under 6 CSS px on screen: precise cross | centre |
+| Bucket, Lasso, Polygonal lasso (while a polygon path runs) | pointer tip (`mouse-pointer-2` rotated so its left edge is vertical, 12 px, top-left) + glyph lower-right | (3, 3) |
+| Move layer, Ctrl temporary Move, Align drawing, transform inside the box, Text Ctrl+drag | pointer tip + `move`; inside a selection: + `scissors` (cut), Alt + `copy-plus` (copy); + `ban` while the layer move would be refused (`layerMove.blocked()`; not when the press picks the layer: Ctrl / Auto-select without a selection) | (3, 3) |
+| Outline drag; Ctrl over a layer row | pointer tip + dashed square (rows: with the mode mark) | (3, 3) |
+| Eyedropper (and Alt temporary) | `pipette`; the eyedropper itself with Alt: + background-slot badge; loupe while picking | tip (22, 42) |
+| Magic wand | wand (the user's drawing) | star point (41, 23) |
+| Shapes, marquees, region tool, transform outside the box | precise cross (Alt outside the box: eyedropper) | centre |
+| Region tool | over a region body: pointer tip + `move`; on the selected region's handles: the resize cursors; elsewhere or with Shift: precise cross, + `ban` when all 6 slots are used | centre (move: the tip) |
+| Text | `text-cursor` (+ `ban` in the lmask-only view, `ToolCursor.ban`); while Ctrl is held (and during the Ctrl+drag): pointer tip + `move` (`Tool.ctrlCursor`) | centre |
+| Transform handles / rotate zone | `move-vertical`, `move-horizontal`, `move-diagonal(-2)` by on-screen direction / `refresh-cw` | centre |
+| Pan ready / panning / loading | `hand` / `hand-grab` / `hourglass` | centre |
+| Pixel tools (brush, eraser, bucket, shapes) on a cmask / lmask | + mask badge; `ban` while the edit gate (`editBlockNote`) would refuse (the reason still shows as a note on click) | -- |
+
+**lmask slot indicators** (hover; `layerSelectHover.ts` writes `data-mod`):
+thumbnail + Alt = `scan-eye`, + Shift = red `x`; add-mask icon + Alt = the
+inverted mask glyph. Ctrl shows the row's load-selection cursor instead.
 
 ## 25. Remaining work
 
@@ -2040,27 +2057,81 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
 
 1. [x] **Spec rewrite** -- this file; old spec archived; mismatches ruled on and
    fixed (2026-09-30).
-2. [ ] **Icons and cursors, Lucide style.** No npm dependency: Lucide SVG data is
-   copied into the repo (ISC licence note). Our own icons (Move drawing, etc.)
-   are redrawn on Lucide's grid and stroke; Merge Down uses Lucide's
-   `layers-arrow-down` style. A mapping table is approved by the user first.
-   - Every tool gets its own cursor; the OS cursor set must never show over the
-     stage. Photoshop is the reference for which tools use a ring vs an icon.
-     Hotspots stay exact.
-   - Precise cross = the user's modified Lucide `locate`: centre dot, arms
-     `M12 18v4 M12 2v4.5 M17.5 12H22 M2 12h4.5`, circle r = 7.
-   - Brush = ring; Eraser = ring + an eraser icon bottom-right outside the ring.
-     Text = Lucide `text-cursor`.
-   - A cursor composer with badge slots: bottom-right = mode (selection
-     `+ - x`, copy-move `copy-plus`); left = target (a mask glyph on cmask/lmask
-     targets); not-allowed (`ban`) when the tool can't edit the target, computed
-     before the click (the reason still only shows as a note on click).
-     `square-dashed-plus` / `-x` (+ a custom `-minus`) are available for
-     selection modes.
-   - Every modifier that changes what a click does gets an indicator (incl.
-     lmask thumbnail: Alt = eye in a square, Shift = red X).
-   - Sizes and stroke width as CSS variables, chosen in the UI refresh; must read
-     on any background.
+2. [x] **Icons and cursors, Lucide style** (mapping approved 2026-10-01; visual
+   review page `docs/temp/icon-preview.html`). No npm dependency: the Lucide
+   1.49.0 markup we use is copied into a source module with the ISC licence
+   note; only those icons are bundled. Icons become multi-element inner markup
+   (Lucide uses path/circle/rect/line/ellipse), stroke 2 for now (final
+   size/stroke are CSS variables chosen in the UI refresh).
+   **Done 2026-10-01** (checked in-app by the user):
+   `ui/lucideIcons.ts` (generated copy, ISC + Feather MIT notes), `ui/icons.ts`
+   (names -> Lucide / custom), `ui/cursorArt.ts` (composer), `ui/cursors.ts`,
+   `ui/moveCursors.ts`, `ui/ringCursor.ts`; current behaviour is in section 24
+   "Cursors". Tune during testing: badge positions / sizes, halo widths, the
+   accent colour, the 6 px ring-to-cross and 300 px centre-dot thresholds. `ui/vendor/` is only the
+   source of the copy (not used by the build).
+   - [x] **Rename** Move drawing -> **Align drawing** (user-visible text and
+     docs; code ids such as `move.ts` / tool id `move` unchanged).
+   - **Icon mapping** (current key -> Lucide name, or custom):
+     brush `brush`; eraser `eraser`; bucket `paint-bucket`; eyedropper
+     `pipette`; line `slash`; arrow `move-up-right`; rectangle
+     `rectangle-horizontal`; ellipse `ellipse`; text and the text-layer badge
+     `type`; move `move`; marqueeRect `square-dashed`; marqueeEllipse
+     `circle-dashed`; lasso `lasso`; magicWand custom (user's); region `vector-square`;
+     transform `scaling`; copy `copy`; cut `scissors`; paste custom (user's clipboard with two lines);
+     undo/redo `undo-2`/`redo-2`; fit `fullscreen`; clear `brush-cleaning`;
+     fullscreen/exit `maximize-2`/`minimize-2`; images `images`; panel
+     `panel-right`; stylus `pen`; flipH `triangles-centerline-dashed-vertical`;
+     flipV `triangles-centerline-dashed-horizontal`; check `check`; close and
+     the disabled-lmask X `x`; trash `trash`; invert (selection, cmask row)
+     `contrast`; text Bold/Italic toggles `bold`/`italic`; New layer
+     custom (user's open-corner sheet + plus); duplicate `copy`; mergeDown `layers-arrow-down`;
+     eye/eyeOff `eye`/`eye-off`; lock/unlock `lock`/`lock-open`; solo
+     `circle-dot`; "+ Region N" `plus`. **Kept**: FG/BG swap (current icon),
+     reset squares. **Custom** (24 grid, stroke 2): alignDrawing (user's
+     markup: bottom sheet `M4 11.5 1.5 13 12 19l10.5-6-2.5-1.5` + an
+     isometric move arrow drawn 0.5 thinner than `--cps-icon-stroke`,
+     `M7 6.2l10 6.4M7 12.6l10-6.4M10.5 6 7 6.2v2.1M13.5 6l3.5.2v2.1M10.5 12.8 7 12.6v-2.1M13.5 12.8l3.5-.2v-2.1`);
+     quickMask (rect + outline circle); pasteClipspace (`clipboard` + the user's filled slanted "C");
+     mask glyph (rounded square + filled circle; also the cursor target badge)
+     and its inverted form; maskAdd (the New layer sheet + filled circle; New mask and add lmask);
+     selectionToMask (square-dashed + filled circle); `square-dashed-minus`.
+   - **Precise cross** (user's; no circle): arms `M12 2v3M12 22v-3M2 12h3M22 12h-3`,
+     plus filled inward wedges `M11 5H13L12 10.5ZM11 19H13L12 13.5ZM5 11V13L10.5 12ZM19 11V13L13.5 12Z`;
+     centre open. Hotspot (12, 12).
+   - **Cursors**: SVG data URLs up to 64 x 64, glyph ~24 px drawn as a dark halo
+     under a light stroke; badges ~16 px, spread outside the glyph: mode
+     bottom-right, target (mask glyph) further left. Colours are shared CSS
+     variables (`--cps-cursor-fg`, `-halo`, `-ban`, `-accent`) read when the
+     cursors are built (data URLs can't use CSS variables) and rebuilt on change.
+     The OS cursor set never shows over the stage.
+     - Brush / Eraser: CSS cursor = a tiny dot; the overlay draws the ring and
+       its indicators just outside the ring on the 45-degree diagonals (target
+       bottom-left; eraser glyph and mode bottom-right), with a minimum offset
+       from the centre; badges grow slightly with large rings. When the ring is
+       too small on screen, the CSS cursor becomes the precise cross.
+     - Photoshop-style pointer tools: a tiny arrow tip (`mouse-pointer-2`) at
+       the top-left is the hotspot, the tool glyph sits larger to the lower
+       right: Bucket, Lasso, Polygonal lasso, Move (with `move`), cut-move (with
+       `scissors`), copy-move (with `copy-plus`), outline drag / Ctrl over a layer
+       row (with `square-dashed`).
+     - Eyedropper `pipette`, hotspot at the tip; Alt-from-background adds the
+       BG-slot badge (user's markup `M14 20a2 2 0 002 2h4a2 2 0 002-2v-4a2 2 0 00-2-2v6z`,
+       `M14 20a6 6 0 006-6`, rect 8,8 8x8 rx 2). Magic wand `wand`, hotspot at
+       the tip. Text `text-cursor`. Shapes, marquees, region tool and transform
+       outside the box: precise cross. Transform handles `move-horizontal`,
+       `move-vertical`, `move-diagonal`, `move-diagonal-2`; rotate zone
+       `refresh-cw`. Align drawing `move`. Pan `hand` / `hand-grab`; loading
+       `hourglass`.
+     - Selection mode badges `square-dashed-plus` / `square-dashed-minus` /
+       `square-dashed-x` (fall back to plain `+ - x` if they read badly).
+       Region tool Shift (new region inside another): `square-dashed-plus`.
+     - Not-allowed: `ban` replaces the mode badge when the tool can't edit the
+       target, computed before the click (the reason still shows as a note on
+       click).
+   - **Modifier indicators**: lmask thumbnail Alt = `scan-eye`, Shift = red `x`,
+     Ctrl = the selection pointer; add-mask button with Alt = inverted mask
+     glyph. Drag-only constraints (Shift square, Alt from centre) get none.
 3. [ ] **UI refresh** (discuss first). Procreate-like styling and spacing, not
    minimalism; keep following ComfyUI theme colours; floating menus and fly-outs
    allowed; a shorter long-press for fly-outs (both `LONG_PRESS_MS` constants);
@@ -2094,3 +2165,5 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
 - Pasting pixels onto an existing layer as a float; pasting into a cmask.
 - Curve smoothing of pointer samples.
 - Measure flow < 100 % and pressure -> opacity against Photoshop.
+- Text align as icon toggles (`text-align-start/center/end`) instead of the
+  select (UI refresh).

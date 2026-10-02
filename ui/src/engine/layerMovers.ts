@@ -1,7 +1,7 @@
 /**
  * Per-layer-kind "move this layer by (dx, dy)" handlers: the seam between the
  * Move tool (`moveOps.ts`) and how a kind stores its content
- * (SPEC "Moving (Move layer, Move drawing)").
+ * (SPEC "Moving (Move layer, Align drawing)").
  *
  * - `paint` / `mask`: translate pixels (`layerTranslate.ts`; a paint layer's
  *   lmask moves with it in the same entry).

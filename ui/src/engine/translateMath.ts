@@ -1,6 +1,6 @@
 /**
  * Pure math of the layer Move tool
- * (SPEC "Moving (Move layer, Move drawing)"): drag / nudge deltas, the
+ * (SPEC "Moving (Move layer, Align drawing)"): drag / nudge deltas, the
  * content bbox of a layer, whether a translation fits after bounds growth
  * (so it can be a lossless `translate` history entry instead of a pixel
  * patch), and the bookkeeping of applying / reverting / merging such entries.

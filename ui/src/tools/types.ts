@@ -44,17 +44,23 @@ export type PaintOptions = {
   gamma: number;
 };
 
-/** Free Transform handle cursors: native resize axes and the curved rotate arrow. */
+/** Free Transform handle cursors: resize axes and the rotate arrows. */
 export type TransformCursorIcon = "resize-ns" | "resize-ew" | "resize-nwse" | "resize-nesw" | "rotate";
 
-/** Named stage cursor icon; the CSS definitions live in `ui/cursors.ts`. */
-export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move" | "text" | TransformCursorIcon;
+/**
+ * Named stage cursor; the drawings live in `ui/cursors.ts`. `crosshair` is
+ * the precise cross.
+ */
+export type CursorIcon = "crosshair" | "eyedropper" | "bucket" | "move" | "text" | "lasso" | "polygonLasso" | "wand" | TransformCursorIcon;
 
 /**
- * Cursor the stage should show: a brush-size ring (drawn on the overlay, over
- * a crosshair) or a named CSS cursor icon.
+ * Cursor the stage should show: a brush-size ring (drawn on the overlay with
+ * its indicators; the CSS cursor is a dot) or a named cursor. `glyph` is an
+ * icon drawn just outside the ring, bottom-right (the eraser's). `ban` adds
+ * the refused badge for a tool whose refusal the edit gate can't report
+ * (Text in the lmask-only view).
  */
-export type ToolCursor = { kind: "ring"; diameter: number } | { kind: "icon"; icon: CursorIcon };
+export type ToolCursor = { kind: "ring"; diameter: number; glyph?: string } | { kind: "icon"; icon: CursorIcon; ban?: boolean };
 
 /** A tool. */
 export interface Tool {
@@ -81,6 +87,11 @@ export interface Tool {
    */
   readonly ctrlMove?: boolean;
   /**
+   * Cursor while Ctrl (Cmd) is held over the stage, for a tool with its own
+   * Ctrl gesture (Text: Ctrl+drag moves the text). Applied by the stage.
+   */
+  readonly ctrlCursor?: CursorIcon;
+  /**
    * Selection tool: with a selection, Shift / Alt / Shift+Alt at
    * pointer-down add / subtract / intersect (`selectionModifiers.ts`). The
    * stage shows the matching badge on the cursor (`ui/cursors.ts`).
@@ -92,6 +103,12 @@ export interface Tool {
    * shape in the same gesture (`transformTool.ts`).
    */
   readonly drawsShapes?: boolean;
+  /**
+   * Pixel tool: what its edits are for the edit gate (`engine/rasterize.ts`
+   * `editBlockNote`). The stage shows the mask-target badge while it would
+   * paint a cmask / lmask, and `ban` while the gate would refuse.
+   */
+  readonly editsPixels?: "paint" | "other";
 
   /**
    * `false` = hidden tool: registered in the registry and activatable,
@@ -173,9 +190,10 @@ export interface Tool {
    * present and the pointer is over the stage, it replaces {@link Tool.cursor}.
    * @param editor - Editor.
    * @param at - Hover position, document coords.
+   * @param mods - Held modifiers (region tool: Shift draws a new region anywhere).
    * @returns Cursor description.
    */
-  cursorAt?(editor: Editor, at: Point): ToolCursor;
+  cursorAt?(editor: Editor, at: Point, mods: { shift: boolean }): ToolCursor;
   /**
    * Transient stage overlay (e.g. the eyedropper loupe), drawn at the
    * pointer instead of the cursor ring. Polled on every overlay redraw.

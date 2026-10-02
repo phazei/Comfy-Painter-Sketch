@@ -8,10 +8,12 @@
  */
 
 import { findAnyLayer } from "../document/imageMask";
-import { findMaskLayer } from "../document/masks";
+import { findMaskLayer, targetLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer } from "../document/types";
 import type { EditorState } from "./editorState";
+import { targetedMaskLayer } from "./layerMask";
+import { editBlockNote } from "./rasterize";
 import type { PaintOps } from "./paintOps";
 
 /**
@@ -83,5 +85,20 @@ export class EditorMaskOps {
    */
   setMaskVisible(visible: boolean): void {
     this.paint.setMaskVisible(visible);
+  }
+
+  /**
+   * What a pixel tool would edit now (cursor badges; nothing is changed):
+   * whether it paints a cmask (Quick Mask) or a targeted lmask, and whether
+   * the edit gate (`editBlockNote`) would refuse it. A missing mask counts
+   * as editable (the first stroke adds one).
+   * @param kind - The tool's edit kind (`Tool.editsPixels`).
+   * @returns Target facts.
+   */
+  editTarget(kind: "paint" | "other"): { mask: boolean; blocked: boolean } {
+    const s = this.s;
+    const layer = targetLayer(s.doc, s.target, s.currentMaskId);
+    const mask = s.target === "mask" || targetedMaskLayer(s) !== null;
+    return { mask, blocked: !s.loading && layer !== undefined && editBlockNote(s, layer, kind) !== null };
   }
 }

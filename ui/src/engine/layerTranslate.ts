@@ -1,6 +1,6 @@
 /**
  * Pixel side of the layer Move tool
- * (SPEC "Moving (Move layer, Move drawing)") for paint and mask layers:
+ * (SPEC "Moving (Move layer, Align drawing)") for paint and mask layers:
  * shift a layer's content by whole document px and record it.
  *
  * - Bounds first grow (chunked, capped, like painting) to cover the moved

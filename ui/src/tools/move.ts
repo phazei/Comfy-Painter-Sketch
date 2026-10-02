@@ -1,9 +1,9 @@
 /**
- * Move drawing tool (SPEC "Moving (Move layer, Move drawing)"): repositions / scales the WHOLE drawing (all
+ * Align drawing tool (SPEC "Moving (Move layer, Align drawing)"): repositions / scales the WHOLE drawing (all
  * layers and masks together) relative to the current image by editing the
  * document placement (`Editor.placement`); pixels are never resampled.
  *
- * Activated by the "Move drawing" toggle in the layers panel footer -- not a
+ * Activated by the "Align drawing" toggle in the layers panel footer -- not a
  * rail tool and has no keyboard shortcut (V is the per-layer Move tool,
  * `moveLayer.ts`).
  *
@@ -55,7 +55,7 @@ interface MoveDrag {
 }
 
 /**
- * Options of the Move drawing tool: live views of the editor's placement.
+ * Options of the Align drawing tool: live views of the editor's placement.
  */
 class MoveOptions implements ToolOptions {
   readonly descriptors = DESCRIPTORS;
@@ -105,15 +105,15 @@ class MoveOptions implements ToolOptions {
 }
 
 /**
- * The Move drawing tool: repositions and scales the whole drawing without
+ * The Align drawing tool: repositions and scales the whole drawing without
  * entering the rail or consuming a keyboard shortcut.
  */
 export class MoveTool implements Tool {
   readonly id = "move";
-  readonly label = "Move drawing";
+  readonly label = "Align drawing";
   /** No keyboard shortcut; V is the layer Move tool (`moveLayer.ts`). */
   readonly shortcut = "";
-  readonly icon = "moveDrawing";
+  readonly icon = "alignDrawing";
   /** Hidden from the tool rail; activated by the layers panel footer toggle. */
   readonly rail = false;
   /** Ctrl never swaps in the layer Move tool while moving the drawing. */
@@ -200,7 +200,7 @@ export class MoveTool implements Tool {
 }
 
 /**
- * Create the Move drawing tool for a session's editor.
+ * Create the Align drawing tool for a session's editor.
  * @param editor - Session editor.
  * @returns The tool.
  */

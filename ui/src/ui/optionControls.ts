@@ -234,7 +234,13 @@ function toggleControl(desc: ToggleOption, ctx: ControlContext): OptionControl {
   const element = document.createElement("button");
   element.type = "button";
   element.className = "cps-toggle";
-  element.textContent = desc.label;
+  if (desc.icon) {
+    element.classList.add("cps-icon-command");
+    element.setAttribute("aria-label", desc.label);
+    setIcon(element, desc.icon, 16);
+  } else {
+    element.textContent = desc.label;
+  }
   if (desc.title) element.title = desc.title;
   element.addEventListener("click", () => {
     if (ctx.options.set(desc.key, ctx.options.get(desc.key) !== true)) ctx.changed();

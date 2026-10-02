@@ -81,6 +81,7 @@ export class PaintTool implements Tool {
   readonly icon: string;
   readonly options: OptionSet;
   readonly altEyedropper: boolean;
+  readonly editsPixels = "paint";
   /** Stored option values (edited in place through {@link options}). */
   readonly values: PaintOptions;
   private readonly mode: StrokeMode;
@@ -155,7 +156,8 @@ export class PaintTool implements Tool {
 
   /** @inheritdoc -- like Photoshop's cursor, the ring shrinks with softness (`ringDiameter`). */
   cursor(): ToolCursor {
-    return { kind: "ring", diameter: ringDiameter(this.values.size, this.values.hardness) };
+    const diameter = ringDiameter(this.values.size, this.values.hardness);
+    return this.mode === "erase" ? { kind: "ring", diameter, glyph: "eraser" } : { kind: "ring", diameter };
   }
 
   private feed(editor: Editor, samples: readonly ToolPointer[]): void {

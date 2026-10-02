@@ -106,7 +106,7 @@ export function isolateEvents(options: IsolationOptions): EventIsolation {
     // The middle button's pointerup was lost (released outside the window,
     // no capture): a press/move without the middle button ends the guard and
     // passes through untouched -- otherwise every later press (e.g. the
-    // layers panel's "Move drawing" button) would be swallowed into the stage.
+    // layers panel's "Align drawing" button) would be swallowed into the stage.
     if (!middle && (event.type === "pointerdown" || event.type === "pointermove")) {
       middleDrag = false;
       sync();

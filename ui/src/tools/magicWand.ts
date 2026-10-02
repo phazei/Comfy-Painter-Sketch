@@ -86,7 +86,7 @@ export class MagicWandTool implements Tool {
 
   /** @inheritdoc */
   cursor(): ToolCursor {
-    return { kind: "icon", icon: "crosshair" };
+    return { kind: "icon", icon: "wand" };
   }
 }
 
