@@ -73,6 +73,15 @@ export interface KeyboardHandlers {
   onDeactivate?(): void;
 }
 
+/**
+ * Ctrl/Cmd+D (our deselect, the browser's "bookmark page").
+ * @param event - The key event.
+ * @returns Whether it is that chord.
+ */
+function isBookmarkChord(event: KeyboardEvent): boolean {
+  return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "d";
+}
+
 /** Root class while the editor owns the keyboard. */
 const HAS_KEYS_CLASS = "cps-has-keys";
 
@@ -346,7 +355,11 @@ export class KeyboardScope {
       if (!event.repeat) this.handlers.onSave?.();
       return;
     }
-    if (this.isForeignTextTarget(event.target)) return;
+    if (this.isForeignTextTarget(event.target)) {
+      // Ctrl+D means nothing in a text field; in ours, don't let the browser bookmark the page.
+      if (isBookmarkChord(event) && this.isInside(event.target)) event.preventDefault();
+      return;
+    }
     if (event.key === "Alt") {
       // Temporary eyedropper. Not stopped (the graph may track modifiers),
       // only prevented -- together with keyup this keeps Windows browsers

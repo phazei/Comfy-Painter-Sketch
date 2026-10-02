@@ -186,7 +186,7 @@ ui/src/
   group (`tools/toolGroups.ts`); Shift+key cycles. `altEyedropper = true` on a
   tool makes Alt-at-pointer-down a temporary eyedropper. Rail tools also get
   Ctrl = temporary Move layer with auto-select (`ctrlMove`, default on; off for
-  Move layer, Text, hidden tools such as Move drawing and the region tool behind
+  Move layer, Text, hidden tools such as Align drawing and the region tool behind
   the Outputs tab). Precedence: Ctrl > Alt > active tool; resolved
   at pointer-down, locked for the drag. Modifier tracking is observe-only.
 - Optional Tool hooks: `onWheel` (Move scale-while-dragging), `onKey` (arrow

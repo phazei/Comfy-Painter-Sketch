@@ -57,7 +57,7 @@ export class HostSync {
   readonly resolution: ResolutionNotice;
 
   /**
-   * Last active rail tool per registry (restored when "Move drawing" is
+   * Last active rail tool per registry (restored when "Align drawing" is
    * toggled off). Keyed by registry so a host showing another session (tab
    * switch, hand-off, fork) never restores a stale id; the toggle's
    * highlight itself is always derived from `tools.active` ({@link syncMoveMode}).
@@ -190,7 +190,7 @@ export class HostSync {
   }
 
   /**
-   * Toggle "Move drawing" mode from the registry's state (single source of
+   * Toggle "Align drawing" mode from the registry's state (single source of
    * truth): if the Move tool is active, return to the last rail tool (brush
    * as fallback), else activate Move. Any drag or pending interaction (open
    * text edit, polygonal lasso) is committed/cancelled first so it cannot
@@ -292,7 +292,7 @@ export class HostSync {
     tools.setActive(next);
   }
 
-  /** Sync the "Move drawing" button on the layers panel. */
+  /** Sync the "Align drawing" button on the layers panel. */
   private syncMoveMode(): void {
     const active = this.getSession()?.tools.active;
     this.layers.setMoveDrawing(active?.id === "move");

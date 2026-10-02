@@ -200,6 +200,25 @@ export function activeAfterRemoval(layers: readonly Layer[], removed: number): s
 }
 
 /**
+ * Mask to make current after removing the current one at `removed`: the
+ * nearest mask below it, else the nearest above (same rule as `activeAfterRemoval`).
+ * @param layers - Layers after the removal.
+ * @param removed - Index the removed mask had.
+ * @returns Mask id, or `undefined` when no mask is left.
+ */
+export function maskAfterRemoval(layers: readonly Layer[], removed: number): string | undefined {
+  for (let i = Math.min(removed - 1, layers.length - 1); i >= 0; i--) {
+    const layer = layers[i];
+    if (layer?.kind === "mask") return layer.id;
+  }
+  for (let i = Math.max(0, removed); i < layers.length; i++) {
+    const layer = layers[i];
+    if (layer?.kind === "mask") return layer.id;
+  }
+  return undefined;
+}
+
+/**
  * Final index for dragging `id` next to `targetId` (display: `above` = higher
  * in the stack = larger index). Paint-like layers move only among paint-like
  * layers and masks only among masks, so masks always stay on top.

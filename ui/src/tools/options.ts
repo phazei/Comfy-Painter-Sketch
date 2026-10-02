@@ -51,6 +51,8 @@ export interface NumberOption extends BaseOption {
 /** Boolean option (pill toggle). */
 export interface ToggleOption extends BaseOption {
   kind: "toggle";
+  /** Icon shown instead of the label (`ui/icons.ts`; the label becomes the aria-label). */
+  icon?: string;
 }
 
 /** Choice among fixed string values. */

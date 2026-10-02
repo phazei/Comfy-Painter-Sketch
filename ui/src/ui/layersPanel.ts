@@ -4,7 +4,7 @@
  * paint layers, the Image Mask row while the image has transparency
  * (the Input Mask while the `mask` input is connected; `imageMaskRow.ts`), and the static Background row, with a
  * divider bar between the groups (`layerSections.ts`). Header: the opacity of the
- * selected row's layer; footer: Move drawing | New layer / New mask /
+ * selected row's layer; footer: Align drawing | New layer / New mask /
  * Duplicate / Merge Down / Delete.
  *
  * Selection follows the paint target: clicking a paint row makes it the
@@ -53,7 +53,7 @@ export interface LayersPanelContext {
   beforeEdit(): void;
   /** A text field of the panel lost focus: hand keyboard focus back. */
   releaseFocus(): void;
-  /** Toggle the "Move drawing" mode (activates / deactivates the Move tool). */
+  /** Toggle the "Align drawing" mode (activates / deactivates the Move tool). */
   toggleMoveDrawing(): void;
 }
 
@@ -99,7 +99,7 @@ export class LayersPanel {
 
     this.list = el("div", "cps-layers-list");
     const footer = el("div", "cps-layers-footer");
-    this.addButton = footerButton("plus", "New layer (above the active layer)", () => this.addLayer());
+    this.addButton = footerButton("layerAdd", "New layer (above the active layer)", () => this.addLayer());
     this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => duplicateRow(e, this.selectedTarget()?.layerId ?? null)));
     this.mergeButton = footerButton("mergeDown", "Merge Down (Ctrl+E)", () => this.withEditor((e) => e.mergeDown()));
@@ -151,8 +151,8 @@ export class LayersPanel {
   }
 
   /**
-   * Sync the "Move drawing" toggle button highlight to the current mode.
-   * @param active - The Move drawing tool is currently active.
+   * Sync the "Align drawing" toggle button highlight to the current mode.
+   * @param active - The Align drawing tool is currently active.
    */
   setMoveDrawing(active: boolean): void {
     this.moveDrawingButton.classList.toggle("cps-active", active);
@@ -160,7 +160,7 @@ export class LayersPanel {
   }
 
   /**
-   * Red Move drawing icon while the image is much finer than the drawing grid.
+   * Red Align drawing icon while the image is much finer than the drawing grid.
    * @param on - Mismatch notice showing.
    */
   setMoveDrawingWarning(on: boolean): void {

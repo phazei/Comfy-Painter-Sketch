@@ -19,6 +19,13 @@
   --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);
   --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);
   --cps-danger: var(--p-red-400, #f87171);
+  /* Stage cursor colours (ui/cursorArt.ts reads them; cursors rebuild on change). */
+  --cps-cursor-fg: #ffffff;
+  --cps-cursor-halo: #111111;
+  --cps-cursor-ban: #e5484d;
+  --cps-cursor-accent: #b48cff;
+  /* Icon stroke width (24-unit grid; final value chosen in the UI refresh). */
+  --cps-icon-stroke: 2;
 
   position: relative;
   box-sizing: border-box;
@@ -62,6 +69,7 @@
 
 .cps-icon {
   display: block;
+  stroke-width: var(--cps-icon-stroke, 2);
   flex: none;
 }
 
@@ -291,15 +299,15 @@
 }
 
 .cps-stage.cps-pan-ready {
-  cursor: grab;
+  cursor: var(--cps-cursor-grab, grab);
 }
 
 .cps-stage.cps-panning {
-  cursor: grabbing;
+  cursor: var(--cps-cursor-grabbing, grabbing);
 }
 
 .cps-stage.cps-loading {
-  cursor: progress;
+  cursor: var(--cps-cursor-busy, progress);
 }
 
 .cps-canvas {

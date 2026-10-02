@@ -98,6 +98,7 @@ export abstract class ShapeTool<V extends ShapeBaseOptions> implements Tool {
   readonly altEyedropper = true;
   /** A press outside a shape's transform box commits it and draws the next shape. */
   readonly drawsShapes = true;
+  readonly editsPixels = "other";
   /** Stored option values (edited in place through {@link options}). */
   readonly values: V;
   private drag: Omit<ShapeDrag, "pointer"> | null = null;

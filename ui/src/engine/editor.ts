@@ -327,6 +327,13 @@ export class Editor extends EditorBase {
   get maskLayer(): Readonly<Layer> | undefined { return this.maskOps.maskLayer; }
 
   /**
+   * What a pixel tool would edit now (cursor badges): a cmask / lmask, and refused by the edit gate.
+   * @param kind - The tool's edit kind.
+   * @returns Target facts.
+   */
+  editTarget(kind: "paint" | "other"): { mask: boolean; blocked: boolean } { return this.maskOps.editTarget(kind); }
+
+  /**
    * Switch the paint target (Quick Mask, `Q`); adds a mask layer if missing.
    * @param target - New target.
    */

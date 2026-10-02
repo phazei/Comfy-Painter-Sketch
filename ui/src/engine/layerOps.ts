@@ -17,6 +17,7 @@ import { createId, createMaskLayer, createPaintLayer } from "../document/create"
 import { nextMaskStyle } from "../defaults/maskDefaults";
 import {
   activeAfterRemoval,
+  maskAfterRemoval,
   canAddMask,
   canDeleteLayer,
   canDuplicateLayer,
@@ -262,7 +263,8 @@ export class LayerOps {
 
   /**
    * Delete a paint layer or mask (not the last of its kind). The pixels stay
-   * in the undo entry. Deleting the current mask makes the top mask current.
+   * in the undo entry. Deleting the current mask makes the next one below it
+   * current (else the one above), like the active paint layer.
    * @param layerId - Layer (default: the active layer).
    * @returns `true` if deleted.
    */
@@ -278,7 +280,7 @@ export class LayerOps {
     s.runtime.remove(layerId);
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
-    if (s.currentMaskId === layerId) s.currentMaskId = null;
+    if (s.currentMaskId === layerId) s.currentMaskId = maskAfterRemoval(s.doc.layers, index) ?? null;
     recordLayerChange(s, [{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }

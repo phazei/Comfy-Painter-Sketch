@@ -23,6 +23,7 @@
  */
 
 import type { ToolOptions } from "../tools/options";
+import { REGION_TOOL_ID } from "../tools/region";
 import type { EditorSession } from "../widget/sessions";
 import type { ClipboardActions } from "./clipboardActions";
 import { handleClipboardShortcut } from "./clipboardShortcuts";
@@ -74,11 +75,16 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (key === "escape" && !ctrl && !event.altKey) {
     return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
   }
+  // Outputs tab (region tool): the image selection is hidden and out of reach --
+  // no copy/cut/select/clear on it; Delete goes to the region tool (removes the region).
+  const regionMode = tools.active.id === REGION_TOOL_ID;
+  // Their chords are still swallowed (so Ctrl+C doesn't copy graph nodes, Ctrl+D doesn't bookmark).
+  if (regionMode && ((ctrl && !event.altKey && "cxad".includes(key) && key.length === 1) || ((ctrl || event.altKey) && key === "backspace"))) return true;
   // Clipboard: Ctrl+C / Ctrl+Shift+C / Ctrl+X; Ctrl+V only stopped (the `paste` event does the work).
-  if (effects.clipboard && handleClipboardShortcut(event, effects.clipboard, () => effects.cancelDrag())) return true;
+  if (!regionMode && effects.clipboard && handleClipboardShortcut(event, effects.clipboard, () => effects.cancelDrag())) return true;
   if (ctrl && !event.altKey && key === "v") return false;
   // Selection: Ctrl+A/D, Shift+F7, Delete/Backspace, Alt/Ctrl+Backspace.
-  if (handleSelectionShortcut(event, editor, () => effects.cancelDrag())) return true;
+  if (!regionMode && handleSelectionShortcut(event, editor, () => effects.cancelDrag())) return true;
 
   if (ctrl && !event.altKey) {
     if (key === "z" && !event.shiftKey) return run(() => editor.undo());

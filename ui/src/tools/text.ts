@@ -126,6 +126,8 @@ export class TextTool implements Tool {
   readonly icon = "text";
   /** Ctrl+drag moves the text layer itself (below), so Ctrl never swaps in the Move tool. */
   readonly ctrlMove = false;
+  /** Ctrl+drag moves the text: show the move cursor as soon as Ctrl is held. */
+  readonly ctrlCursor = "move";
   readonly options: OptionSet;
   /** Stored option values (edited in place through {@link options}). */
   readonly values: TextToolValues = { font: "sans-serif", size: 48, bold: false, italic: false, align: "left", angle: 0 };
@@ -152,8 +154,8 @@ export class TextTool implements Tool {
         previewFont: true,
       },
       { kind: "number", key: "size", label: "Size", title: "Font size in image px ([ / ])", min: 1, max: MAX_SIZE_OPTION, step: 1, unit: "px", curve: "pow" },
-      { kind: "toggle", key: "bold", label: "B", title: "Bold", group: "style" },
-      { kind: "toggle", key: "italic", label: "I", title: "Italic", group: "style" },
+      { kind: "toggle", key: "bold", label: "Bold", title: "Bold", icon: "bold", group: "style" },
+      { kind: "toggle", key: "italic", label: "Italic", title: "Italic", icon: "italic", group: "style" },
       {
         kind: "select",
         key: "align",
@@ -192,6 +194,9 @@ export class TextTool implements Tool {
       this.startMove(editor, p);
       return;
     }
+    // A text click drops the selection (it would otherwise linger over the new text).
+    // Not in the lmask-only view, where the click is refused.
+    if (editor.layerMask.viewing === null) editor.selection.deselect();
     const open = editor.text.editing;
     const hit = editor.text.hitTest(p);
     if (open) {
@@ -241,7 +246,9 @@ export class TextTool implements Tool {
 
   /** @inheritdoc */
   cursor(): ToolCursor {
-    return { kind: "icon", icon: this.moveStart ? "move" : "text" };
+    if (this.moveStart) return { kind: "icon", icon: "move" };
+    // The lmask-only view refuses creating and editing text (no text is visible there).
+    return { kind: "icon", icon: "text", ban: this.editor.layerMask.viewing !== null };
   }
 
   // ── Internals ───────────────────────────────────────────────────────────

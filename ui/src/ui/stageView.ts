@@ -1,6 +1,6 @@
 /**
  * Stage rendering: display canvas (compositor output), overlay canvas (brush
- * ring, loupe, selection marching ants via `marchingAnts.ts`, output regions
+ * ring + indicators via `ringCursor.ts`, loupe, selection marching ants via `marchingAnts.ts`, output regions
  * via `regionOverlay.ts`) and the transient note, inside the shell's stage element. Redraws
  * are rAF-coalesced. Owns this stage's cobweb backdrop (grown around the
  * maximum paint area; a plain click on it regrows it, `webClick.ts`). Backing-store size follows stage CSS size x device
@@ -17,14 +17,16 @@ import type { Point, Rect, Size } from "../geometry/rect";
 import { REGION_TOOL_ID } from "../tools/region";
 import type { Tool, ToolCursor } from "../tools/types";
 import type { EditorSession } from "../widget/sessions";
-import { cssCursor, cursorBadge } from "./cursors";
-import type { CursorBadge } from "./cursors";
+import { CURSOR_PALETTE_VARS, setCursorPalette } from "./cursorArt";
+import { cssCursor, cursorBadge, stateCursors } from "./cursors";
+import type { CursorBadge, CursorExtras } from "./cursors";
 import { drawLoupe } from "./loupe";
 import { moveCursorCss, moveCursorKind } from "./moveCursors";
 import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
 import { drawResolutionLabel } from "./resolutionLabel";
+import { drawRingCursor } from "./ringCursor";
 import { drawTransformOverlay } from "./transformOverlay";
 import { WebClick } from "./webClick";
 
@@ -47,6 +49,8 @@ export class StageView {
   private disposed = false;
   /** Last value written to `--cps-tool-cursor`. */
   private cursorValue = "";
+  /** The pan / busy cursor variables have been written for the current palette. */
+  private stateCursorsSet = false;
   /** Selection outline animation (redraws only while the stage is visible). */
   private readonly ants = new MarchingAnts(() => {
     // rAF pauses in background tabs; a hidden stage ends the loop until the next render.
@@ -191,7 +195,7 @@ export class StageView {
         alt: this.altDown,
       });
     }
-    const value = !tool ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind) : cssCursor(this.toolCursor(tool, session), this.badge);
+    const value = !tool || !session ? "crosshair" : this.moveKind ? moveCursorCss(this.moveKind, this.moveBlocked(tool, session)) : this.toolCss(tool, session);
     if (value !== this.cursorValue) {
       this.cursorValue = value;
       this.stage.style.setProperty("--cps-tool-cursor", value);
@@ -215,11 +219,68 @@ export class StageView {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  /** The tool's cursor, per hover position for tools with `cursorAt` (Free Transform zones). */
+  /**
+   * CSS cursor of a (non-move) tool with its badges: the selection mode (or
+   * Alt on the eyedropper: background slot), and for pixel tools the mask target and
+   * `ban` while the edit gate would refuse.
+   */
+  private toolCss(tool: Tool, session: EditorSession): string {
+    // A tool's own Ctrl gesture (Text: Ctrl+drag moves) shows its cursor while Ctrl is held.
+    if (this.ctrlDown && tool.ctrlCursor && this.getDragTool() === null) return cssCursor({ kind: "icon", icon: tool.ctrlCursor });
+    const cursor = this.toolCursor(tool, session);
+    if (cursor.kind === "ring") return cssCursor(cursor, {}, cursor.diameter * session.editor.view.current.scale);
+    const extras = this.cursorExtras(tool, session);
+    return cssCursor(cursor, cursor.ban ? { ...extras, ban: true } : extras);
+  }
+
+  /**
+   * Whether the Move layer drag would be refused (`ban`): not for a float or
+   * the outline drag, and not when the press picks the layer under the
+   * pointer (Ctrl or Auto-select without a selection; known only at the click).
+   */
+  private moveBlocked(tool: Tool, session: EditorSession): boolean {
+    const { editor } = session;
+    if (this.moveKind === "outline" || editor.float.active) return false;
+    const picks = (this.ctrlDown || tool.options?.get("autoSelect") === true) && !editor.selection.active;
+    return !picks && editor.layerMove.blocked();
+  }
+
+  /** Badges of the tool in effect now. */
+  private cursorExtras(tool: Tool, session: EditorSession): CursorExtras {
+    const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
+    const eyedropperAlt = tool.id === "eyedropper" && tool === session.tools.active && this.altDown;
+    const mode = this.badge ?? (eyedropperAlt ? "bgSlot" : null);
+    return { mode, target: target?.mask ?? false, ban: target?.blocked ?? false };
+  }
+
+  /**
+   * Read the `--cps-cursor-*` colours; on a change rebuild the cursors
+   * (data URLs can't use CSS variables) and the pan / busy cursor variables.
+   */
+  private syncPalette(): void {
+    const style = getComputedStyle(this.stage);
+    const read = (name: string): string => style.getPropertyValue(name).trim();
+    const changed = setCursorPalette({
+      fg: read(CURSOR_PALETTE_VARS.fg),
+      halo: read(CURSOR_PALETTE_VARS.halo),
+      ban: read(CURSOR_PALETTE_VARS.ban),
+      accent: read(CURSOR_PALETTE_VARS.accent),
+    });
+    if (!changed && this.stateCursorsSet) return;
+    this.stateCursorsSet = true;
+    const states = stateCursors();
+    this.stage.style.setProperty("--cps-cursor-grab", states.grab);
+    this.stage.style.setProperty("--cps-cursor-grabbing", states.grabbing);
+    this.stage.style.setProperty("--cps-cursor-busy", states.busy);
+    this.cursorValue = "";
+  }
+
+  /** The tool's cursor, per hover position for tools with `cursorAt` (Free Transform zones, regions). */
   private toolCursor(tool: Tool, session: EditorSession | null): ToolCursor {
     if (!session || !this.hover || !tool.cursorAt) return tool.cursor();
     const { editor } = session;
-    return tool.cursorAt(editor, imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover)));
+    const at = imageToDoc(editor.frameMap, stageToDoc(editor.view.current, this.hover));
+    return tool.cursorAt(editor, at, { shift: this.shiftDown });
   }
 
   /** Whether the hover point is inside the selection (the press test, `selectionMove.hit`). */
@@ -270,6 +331,7 @@ export class StageView {
       cobweb: this.cobweb,
     });
     this.stage.classList.toggle("cps-loading", editor.loading);
+    this.syncPalette();
     this.drawOverlay();
     this.onRendered?.();
   }
@@ -290,9 +352,11 @@ export class StageView {
     const hover = this.hover;
     const pr = this.pixelRatio;
     const overlay = tool?.overlay?.() ?? null;
-    // Marching ants (selection + in-progress marquee) are drawn regardless of hover.
-    if (session) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
-    if (session) drawRegionOverlay(ctx, session.editor, pr, session.tools.active.id === REGION_TOOL_ID);
+    // Marching ants (selection + in-progress marquee) are drawn regardless of hover,
+    // but not on the Outputs tab: regions are a separate space and the selection is out of reach there.
+    const regionMode = session?.tools.active.id === REGION_TOOL_ID;
+    if (session && !regionMode) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
+    if (session) drawRegionOverlay(ctx, session.editor, pr, regionMode);
     if (session) drawTransformOverlay(ctx, session.editor, pr);
     if (session) drawResolutionLabel(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
@@ -304,14 +368,8 @@ export class StageView {
     const cursor = tool.cursor();
     if (cursor.kind !== "ring") return;
     const radius = Math.max(1, (cursor.diameter * session.editor.view.current.scale * pr) / 2);
-    ctx.lineWidth = Math.max(1, pr);
-    ctx.beginPath();
-    ctx.arc(hover.x * pr, hover.y * pr, radius, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(hover.x * pr, hover.y * pr, radius + ctx.lineWidth, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
-    ctx.stroke();
+    const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
+    const indicators = { glyph: cursor.glyph, target: target?.mask ?? false, ban: target?.blocked ?? false };
+    drawRingCursor(ctx, hover.x * pr, hover.y * pr, radius, pr, indicators, () => this.requestOverlay());
   }
 }

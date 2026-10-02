@@ -98,17 +98,17 @@ export function footerButton(icon: string, title: string, onClick: () => void): 
 }
 
 /**
- * Build the "Move drawing" toggle button for the footer left side.
+ * Build the "Align drawing" toggle button for the footer left side.
  * @param onClick - Called when the button is clicked.
  * @returns The button.
  */
 export function moveDrawingBtn(onClick: () => void): HTMLButtonElement {
   const button = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
   button.type = "button";
-  button.title = "Move drawing \u2014 reposition/scale all layers against the image";
-  button.setAttribute("aria-label", "Move drawing \u2014 reposition/scale all layers against the image");
+  button.title = "Align drawing \u2014 reposition/scale all layers against the image";
+  button.setAttribute("aria-label", "Align drawing \u2014 reposition/scale all layers against the image");
   button.setAttribute("aria-pressed", "false");
-  setIcon(button, "moveDrawing", 16);
+  setIcon(button, "alignDrawing", 16);
   button.addEventListener("click", onClick);
   return button;
 }

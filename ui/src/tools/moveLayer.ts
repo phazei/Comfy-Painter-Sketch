@@ -1,7 +1,7 @@
 /**
- * Move tool (V, SPEC "Moving (Move layer, Move drawing)"): moves the ACTIVE LAYER's content -- the active
+ * Move tool (V, SPEC "Moving (Move layer, Align drawing)"): moves the ACTIVE LAYER's content -- the active
  * paint-like layer, or the mask under Quick Mask -- by whole document px.
- * (Moving the whole drawing is the separate "Move drawing" mode, `move.ts`.)
+ * (Moving the whole drawing is the separate "Align drawing" mode, `move.ts`.)
  *
  * - Drag: live preview draws the layer offset; release commits one undo
  *   entry (`Editor.layerMove`). Esc / pointer cancel aborts.

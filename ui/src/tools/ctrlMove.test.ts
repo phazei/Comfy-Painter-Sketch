@@ -9,7 +9,7 @@ import type { MoveLayerTool } from "./moveLayer";
 import { ToolRegistry, ctrlMoves } from "./registry";
 import type { Tool, ToolPointer } from "./types";
 
-/** Minimal stand-in for tools that opt out / are hidden (Text, Move drawing). */
+/** Minimal stand-in for tools that opt out / are hidden (Text, Align drawing). */
 function stubTool(id: string, extra: Partial<Tool> = {}): Tool {
   return {
     id,

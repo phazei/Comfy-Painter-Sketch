@@ -1,5 +1,5 @@
 /**
- * Move-drawing placement through the editor core: image-size changes never
+ * Align-drawing placement through the editor core: image-size changes never
  * touch it, Reset is identity, interactions from a violating state don't jump.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";

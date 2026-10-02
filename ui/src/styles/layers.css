@@ -46,7 +46,7 @@
   border-top: 1px solid var(--cps-border);
 }
 
-/* "Move drawing" toggle sits at the left; a thin divider separates it from
+/* "Align drawing" toggle sits at the left; a thin divider separates it from
    the Add/Duplicate/Delete buttons on the right. */
 .cps-layers-move-drawing {
   margin-right: auto;
@@ -276,6 +276,34 @@
   pointer-events: none;
 }
 
+/* Modifier indicators (data-mod from ui/layerSelectHover.ts): what a click does now. */
+.cps-layer-mask-mods {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--cps-cursor-fg, #fff);
+  filter: drop-shadow(0 0 1px var(--cps-cursor-halo, #111)) drop-shadow(0 0 1px var(--cps-cursor-halo, #111));
+}
+
+.cps-layer-mask-mods .cps-mod-shift {
+  color: var(--cps-cursor-ban, #e5484d);
+}
+
+.cps-layer-mask-mods > span,
+.cps-layer-mask-add .cps-mod-alt,
+.cps-layer-mask-add[data-mod="alt"] .cps-mod-plain {
+  display: none;
+}
+
+.cps-layer-mask-thumb[data-mod="alt"] .cps-mod-alt,
+.cps-layer-mask-thumb[data-mod="shift"] .cps-mod-shift,
+.cps-layer-mask-add[data-mod="alt"] .cps-mod-alt {
+  display: block;
+}
+
 .cps-layer-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -365,7 +393,7 @@
   height: 18px;
 }
 
-/* Move drawing icon: the image is much finer than the drawing grid. */
+/* Align drawing icon: the image is much finer than the drawing grid. */
 .cps-layers-move-drawing.cps-resolution-warn {
   color: var(--cps-danger);
 }

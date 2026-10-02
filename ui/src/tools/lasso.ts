@@ -155,7 +155,7 @@ export class LassoTool implements Tool {
 
   /** @inheritdoc */
   cursor(): ToolCursor {
-    return { kind: "icon", icon: "crosshair" };
+    return { kind: "icon", icon: this.path?.polygon ? "polygonLasso" : "lasso" };
   }
 
   /** @inheritdoc */

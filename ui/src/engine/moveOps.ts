@@ -1,6 +1,6 @@
 /**
  * Layer Move tool operations of the editor core
- * (SPEC "Moving (Move layer, Move drawing)"), exposed as
+ * (SPEC "Moving (Move layer, Align drawing)"), exposed as
  * {@link Editor.layerMove}: move the active layer's content (the active
  * paint-like layer, or the mask under Quick Mask) by whole document px.
  *
@@ -126,6 +126,17 @@ export class LayerMoveOps {
   private restoreSelection(): void {
     if (this.selStart) this.s.selection.set(this.selStart);
     this.selStart = null;
+  }
+
+  /**
+   * Whether a drag of the active layer would be refused now (the cursor's
+   * `ban` badge; no note, nothing changes). Loading is not a refusal.
+   * @returns `true` if {@link begin} would refuse.
+   */
+  blocked(): boolean {
+    const s = this.s;
+    const layer = activeEditLayer(s.doc, s.target, s.currentMaskId);
+    return !s.loading && layer !== undefined && blockedNote(s, layer) !== null;
   }
 
   /** The layer to move, if it can be moved now (emits the reason otherwise). */
