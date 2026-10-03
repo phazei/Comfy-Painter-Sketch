@@ -1,0 +1,388 @@
+/*
+ * PainterSketch layers panel rows (design handoff "Layers tab"): row layout and
+ * states, 36 x 28 thumbnails and badges, the lmask slot (ui/layerMaskThumb.ts),
+ * name / sub-line, inline rename and row buttons (ui/layerRow.ts). The panel
+ * shell, header, sections and footer are in panel.css. Injected by
+ * styles/inject.ts.
+ */
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+
+.cps-layer-row {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 6px 5px 0;
+  border-radius: 9px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.cps-layer-row.cps-layer-background {
+  cursor: default;
+}
+
+.cps-layer-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.cps-layer-row.cps-standby {
+  background: var(--cps-acc-09);
+}
+
+.cps-layer-row.cps-selected,
+.cps-layer-row.cps-selected:hover {
+  background: var(--cps-acc-24);
+}
+
+/* Current mask bar (3 px, the mask's colour); a spacer on other rows. */
+.cps-layer-bar {
+  flex: none;
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+}
+
+.cps-layer-row.cps-current-mask .cps-layer-bar {
+  background: var(--cps-mask-color, var(--cps-accent));
+}
+
+.cps-layer-row.cps-dragging {
+  opacity: 0.5;
+}
+
+.cps-layer-row.cps-drop-above::before,
+.cps-layer-row.cps-drop-below::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--cps-accent);
+  pointer-events: none;
+}
+
+.cps-layer-row.cps-drop-above::before {
+  top: -1px;
+}
+
+.cps-layer-row.cps-drop-below::after {
+  bottom: -1px;
+}
+
+/* Hidden (eye off, or hidden by a solo) rows dim. */
+.cps-layer-row.cps-hidden-layer .cps-layer-thumb-box,
+.cps-layer-row.cps-hidden-layer .cps-layer-mask-slot,
+.cps-layer-row.cps-hidden-layer .cps-layer-text {
+  opacity: 0.55;
+}
+
+/* ── Thumbnails (36 x 28; ui/thumbnails.ts) ────────────────────────────── */
+
+.cps-layer-thumb-box {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--cps-field-bg);
+  box-shadow: 0 0 0 1px var(--cps-line-2);
+}
+
+.cps-layer-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%),
+    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%);
+  background-position: 0 0, 4px 4px;
+  background-size: 8px 8px;
+}
+
+.cps-layer-mask .cps-layer-thumb,
+.cps-layer-image-mask .cps-layer-thumb,
+.cps-layer-mask-thumb .cps-layer-thumb {
+  background: #000;
+}
+
+/* The targeted thumbnail (pixels or lmask) of the selected row. */
+.cps-layer-row.cps-selected .cps-layer-thumb-box.cps-target {
+  box-shadow: 0 0 0 2px var(--cps-ring);
+}
+
+.cps-layer-row.cps-standby .cps-layer-thumb-box.cps-target {
+  box-shadow: 0 0 0 1px var(--cps-fg-muted);
+}
+
+/* "T" (text layer) and lock (read-only row) badges, bottom right. */
+.cps-layer-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--cps-chip-bg);
+  color: var(--cps-fg-icon);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Layer mask slot (ui/layerMaskThumb.ts): add icon, or the lmask thumbnail. */
+.cps-layer-mask-slot {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.cps-icon-button.cps-layer-button.cps-layer-mask-add {
+  width: 20px;
+  height: 28px;
+  border-radius: 5px;
+  color: var(--cps-fg-hint);
+}
+
+.cps-layer-mask-thumb.cps-viewing {
+  outline: 2px dashed var(--cps-accent);
+  outline-offset: 2px;
+}
+
+/* Disabled lmask: red X over the thumbnail. */
+.cps-layer-mask-off {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--cps-danger-strong);
+  pointer-events: none;
+}
+
+/* Modifier indicators (data-mod from ui/layerSelectHover.ts): what a click does now. */
+.cps-layer-mask-mods {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: var(--cps-cursor-fg, #fff);
+  filter: drop-shadow(0 0 1px var(--cps-cursor-halo, #111)) drop-shadow(0 0 1px var(--cps-cursor-halo, #111));
+}
+
+.cps-layer-mask-mods .cps-mod-shift {
+  color: var(--cps-cursor-ban, #e5484d);
+}
+
+.cps-layer-mask-mods > span,
+.cps-layer-mask-add .cps-mod-alt,
+.cps-layer-mask-add[data-mod="alt"] .cps-mod-plain {
+  display: none;
+}
+
+.cps-layer-mask-thumb[data-mod="alt"] .cps-mod-alt,
+.cps-layer-mask-thumb[data-mod="shift"] .cps-mod-shift,
+.cps-layer-mask-add[data-mod="alt"] .cps-mod-alt {
+  display: block;
+}
+
+/* ── Name and sub-line ─────────────────────────────────────────────────── */
+
+.cps-layer-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+}
+
+.cps-layer-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+/* Row names (layerRow.ts LAYER_NAME_CLAMP_CLASS): up to 2 lines, then an
+   ellipsis; 2 x 13px x 1.05 = 27.3px fits the 28px thumbnail, so the row
+   height never changes. Rows with a sub-line keep the name to 1 line. The
+   one-line rename field lifts the clamp. */
+.cps-layer-name.cps-layer-name-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  max-height: 2.1em;
+  line-height: 1.05;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.cps-layer-row.cps-has-sub .cps-layer-name.cps-layer-name-clamp {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  max-height: 1.2em;
+  line-height: 1.2;
+}
+
+.cps-layer-name.cps-layer-name-clamp.cps-renaming {
+  display: block;
+  max-height: none;
+}
+
+.cps-layer-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cps-fg-hint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cps-layer-row.cps-layer-mask .cps-layer-sub,
+.cps-layer-row.cps-layer-image-mask .cps-layer-sub {
+  color: var(--cps-fg-muted);
+}
+
+/* "Overlay N%": the scrubby opacity control drawn as plain text. */
+.cps-layer-sub .cps-num {
+  gap: 3px;
+}
+
+.cps-layer-sub .cps-num-label {
+  color: inherit;
+}
+
+.cps-layer-sub .cps-num-value {
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.cps-layer-sub .cps-num-label:hover,
+.cps-layer-sub .cps-num-value:hover {
+  color: var(--cps-fg);
+}
+
+/* Input Mask waiting for a run. */
+.cps-layer-hint {
+  overflow: hidden;
+  color: var(--cps-fg-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Inline rename (ui/inlineRename.ts; also output card titles). */
+.cps-layer-rename {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 1px 4px;
+  border: 1px solid var(--cps-accent);
+  border-radius: 4px;
+  outline: none;
+  background: var(--cps-field-bg);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  user-select: text;
+}
+
+/* ── Row buttons ───────────────────────────────────────────────────────── */
+
+.cps-icon-button.cps-layer-button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--cps-fg-muted);
+}
+
+.cps-icon-button.cps-layer-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--cps-fg);
+}
+
+.cps-layer-button.cps-layer-eye {
+  width: 20px;
+}
+
+.cps-layer-button.cps-layer-eye.cps-solo-dimmed {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-layer-button.cps-layer-lock,
+.cps-layer-button.cps-layer-dup {
+  width: 22px;
+}
+
+.cps-layer-button.cps-layer-lock {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-layer-button.cps-layer-lock.cps-on {
+  color: var(--cps-fg);
+}
+
+.cps-layer-button.cps-layer-dup {
+  color: var(--cps-fg-value);
+}
+
+.cps-layer-button.cps-layer-dup:disabled {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-layer-button.cps-layer-invert {
+  color: var(--cps-fg-hint);
+}
+
+.cps-layer-button.cps-layer-invert.cps-active {
+  background: var(--cps-active-bg);
+  color: #fff;
+}
+
+.cps-layer-button.cps-layer-solo {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-layer-button.cps-layer-solo.cps-active {
+  background: transparent;
+  color: #fff;
+}
+
+/* Mask colour swatch in the sub-line (colour set inline). */
+.cps-icon-button.cps-layer-button.cps-layer-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.cps-icon-button.cps-layer-button.cps-layer-swatch:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--cps-fg);
+}
+

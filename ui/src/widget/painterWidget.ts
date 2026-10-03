@@ -53,6 +53,7 @@ export function createPainterSketchWidget(
   });
 
   widget.serializeValue = () => controller.serialize();
+  controller.setWidget(widget);
 
   return { widget };
 }

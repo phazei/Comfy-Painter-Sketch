@@ -5,7 +5,8 @@
  * row under the pointer shows a drop line above or below it; the list
  * auto-scrolls near its edges. Paint rows drop only onto paint rows and mask
  * rows only onto mask rows, so masks stay above paint layers and the
- * Background row never moves.
+ * Background row never moves. Rows are direct children of the list, between
+ * the section headers (`layerSections.ts`); headers are never drop targets.
  */
 
 import { isControl } from "./layerRow";
@@ -140,8 +141,8 @@ export type DropRow = Pick<HTMLElement, "dataset" | "getBoundingClientRect">;
 /**
  * Row of the dragged row's group under (or nearest to) the pointer, above/below
  * its middle. Only rows of that group are passed in (the list is queried by row
- * class), so section dividers and other groups' rows never shift the result: a
- * pointer over a divider at a group edge resolves to that edge row.
+ * class), so section headers and other groups' rows never shift the result: a
+ * pointer over a header at a group edge resolves to that edge row.
  * @param rows - The group's rows, top -> bottom.
  * @param clientY - Pointer y (client px).
  * @returns The drop target, or null with no rows.

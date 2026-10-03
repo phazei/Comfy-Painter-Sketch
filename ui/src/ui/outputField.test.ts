@@ -103,6 +103,23 @@ describe("output input sessions", () => {
     expect(s.history.undoDepth).toBe(0);
   });
 
+  it("dispose(false) commits a typed session as one step; a label-less field has no scrub handle", () => {
+    const { s, ops, field } = setup();
+    field.input.focus();
+    field.input.value = "21";
+    field.input.dispatchEvent(new Event("input"));
+    field.dispose(false);
+    expect(ops.options(null).cropPadding).toBe(21);
+    expect(s.history.undoDepth).toBe(1);
+    expect(ops.active).toBe(false);
+
+    const bare = outputField({ label: "", suffix: "px", ops, beforeEdit: () => {}, releaseFocus: () => {},
+      bounds: () => ({ min: 0, max: 100 }), read: () => 4, write: () => {} });
+    expect(Array.from(bare.element.children, (c) => c.className)).toEqual(["", "cps-output-suffix"]);
+    expect(bare.element.children[0]).toBe(bare.input);
+    expect(bare.element.children[1]!.textContent).toBe("px");
+  });
+
   it("pointer cancellation and row disposal roll back open edits", () => {
     const { s, ops, field } = setup();
     const label = field.element.children[0]!;

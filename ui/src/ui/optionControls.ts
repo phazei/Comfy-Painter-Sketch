@@ -1,12 +1,15 @@
 /**
  * Generic controls for option descriptors (`tools/options.ts`), used by the
- * options bar -- no per-tool UI code:
+ * options strip (and the layers panel's opacity) -- no per-tool UI code:
  *
- * - number: `label` + value button. Dragging the label horizontally scrubs
- *   the value (Photoshop scrubby slider, Shift = 10x); clicking the value
- *   opens a slider popover (in the shell's popover host) with a typed field.
- * - toggle: compact pill button (`aria-pressed`).
- * - select: label + `<select>`.
+ * - number: muted `label` + mono value button. Dragging the label
+ *   horizontally scrubs the value (Photoshop scrubby slider, Shift = 10x);
+ *   clicking the value opens a slider popover (in the shell's popover host)
+ *   with a typed field.
+ * - toggle: compact pill button (`aria-pressed`; accent tint while on).
+ * - select: label + dropdown chip (value + chevron) opening a menu
+ *   (`menu.ts`) with the current choice marked; a select with `icons` is a
+ *   row of icon toggles instead.
  * - button: command pill (`set(key, true)` performs it; dim while `get(key) === false`).
  * - text: suggestion menu + "Custom..." text field (`textOptionControl.ts`).
  * - label: static caption (no value).
@@ -25,6 +28,7 @@ import {
 } from "../tools/options";
 import type { ButtonOption, LabelOption, NumberOption, OptionDescriptor, SelectOption, ToggleOption, ToolOptions } from "../tools/options";
 import { setIcon } from "./icons";
+import { openMenu } from "./menu";
 import type { PopoverHandle, PopoverHost } from "./popover";
 import { scrubValue } from "./scrub";
 import { textControl } from "./textOptionControl";
@@ -93,7 +97,7 @@ function numberControl(desc: NumberOption, ctx: ControlContext): OptionControl {
   label.textContent = desc.label;
   const value = document.createElement("button");
   value.type = "button";
-  value.className = "cps-num-value";
+  value.className = "cps-num-value cps-mono";
   element.append(label, value);
 
   const display = (): number => {
@@ -228,7 +232,7 @@ function openSlider(
   return { handle, sync };
 }
 
-// ── Toggle / select ───────────────────────────────────────────────────────────
+// ── Toggle / button ───────────────────────────────────────────────────────────
 
 function toggleControl(desc: ToggleOption, ctx: ControlContext): OptionControl {
   const element = document.createElement("button");
@@ -278,27 +282,96 @@ function buttonControl(desc: ButtonOption, ctx: ControlContext): OptionControl {
   return { element, refresh };
 }
 
+// ── Select ────────────────────────────────────────────────────────────────────
+
+/** Dropdown chip: label + value chip with a chevron; a menu lists the choices. */
 function selectControl(desc: SelectOption, ctx: ControlContext): OptionControl {
-  const element = document.createElement("label");
+  if (desc.icons) return iconChoiceControl(desc, desc.icons, ctx);
+  const element = document.createElement("button");
+  element.type = "button";
   element.className = "cps-select";
+  element.setAttribute("aria-haspopup", "menu");
   if (desc.title) element.title = desc.title;
   const name = document.createElement("span");
-  name.className = "cps-num-label";
+  name.className = "cps-select-label";
   name.textContent = desc.label;
-  const select = document.createElement("select");
-  for (const choice of desc.choices) {
-    const option = document.createElement("option");
-    option.value = choice.value;
-    option.textContent = choice.label;
-    select.appendChild(option);
-  }
-  select.addEventListener("change", () => {
-    if (ctx.options.set(desc.key, select.value)) ctx.changed();
+  const chip = document.createElement("span");
+  chip.className = "cps-dd";
+  const value = document.createElement("span");
+  value.className = "cps-dd-value";
+  const chevron = document.createElement("span");
+  chevron.className = "cps-dd-chevron";
+  setIcon(chevron, "chevronDown", 15);
+  chip.append(value, chevron);
+  element.append(name, chip);
+
+  const current = (): string => {
+    const v = ctx.options.get(desc.key);
+    return typeof v === "string" ? v : "";
+  };
+  let menu: PopoverHandle | null = null;
+  element.addEventListener("click", () => {
+    if (menu) {
+      menu.close();
+      return;
+    }
+    const now = current();
+    element.classList.add("cps-menu-open");
+    menu = openMenu(ctx.popovers, {
+      anchor: element,
+      placement: "below",
+      className: "cps-pop-dd",
+      entries: desc.choices.map((choice) => ({
+        label: choice.label,
+        current: choice.value === now,
+        onPick: () => {
+          if (ctx.options.set(desc.key, choice.value)) ctx.changed();
+          refresh();
+        },
+      })),
+      onClose: () => {
+        menu = null;
+        element.classList.remove("cps-menu-open");
+      },
+    });
   });
-  element.append(name, select);
+  const refresh = (): void => {
+    const v = current();
+    value.textContent = desc.choices.find((c) => c.value === v)?.label ?? v;
+    element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
+  };
+  refresh();
+  return { element, refresh };
+}
+
+/** A select with icons: one icon toggle per choice (text alignment). */
+function iconChoiceControl(desc: SelectOption, icons: Readonly<Record<string, string>>, ctx: ControlContext): OptionControl {
+  const element = document.createElement("div");
+  element.className = "cps-icon-choices";
+  element.setAttribute("role", "radiogroup");
+  element.setAttribute("aria-label", desc.label);
+  if (desc.title) element.title = desc.title;
+  const buttons = desc.choices.map((choice) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cps-toggle cps-icon-command";
+    button.title = choice.label;
+    button.setAttribute("aria-label", choice.label);
+    button.setAttribute("role", "radio");
+    setIcon(button, icons[choice.value] ?? "", 16);
+    button.addEventListener("click", () => {
+      if (ctx.options.set(desc.key, choice.value)) ctx.changed();
+      refresh();
+    });
+    element.appendChild(button);
+    return { button, value: choice.value };
+  });
   const refresh = (): void => {
     const v = ctx.options.get(desc.key);
-    if (typeof v === "string") select.value = v;
+    for (const { button, value } of buttons) {
+      button.classList.toggle("cps-active", value === v);
+      button.setAttribute("aria-checked", String(value === v));
+    }
     element.classList.toggle("cps-dim", !isOptionEnabled(desc, (k) => ctx.options.get(k)));
   };
   refresh();

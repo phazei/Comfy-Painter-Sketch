@@ -1,47 +1,106 @@
 /*
- * PainterSketch editor styles. Every selector is scoped under .cps-* so we
- * never collide with the ComfyUI frontend. Injected once by styles/inject.ts.
- * Colours come from ComfyUI's palette variables where they exist (so the
- * editor follows the user's theme), with dark fallbacks.
+ * PainterSketch editor styles: theme tokens, root, stage and the floating
+ * slot layout (SPEC "Editor shell and focus"; design handoff "Design
+ * tokens"). Every selector is scoped under .cps-* so we never collide with
+ * the ComfyUI frontend. Injected once by styles/inject.ts. Colours come from
+ * ComfyUI's palette variables where they exist (the editor follows the user's
+ * theme); the fallbacks are the handoff's values.
  */
 
 .cps-root {
-  --cps-rail-width: 36px;
-  --cps-bar-height: 28px;
-  --cps-panel-width: 216px;
-  --cps-chrome-bg: var(--comfy-menu-secondary-bg, #292929);
-  --cps-surface: var(--comfy-menu-bg, #353535);
-  --cps-input-bg: var(--comfy-input-bg, #222);
-  --cps-fg: var(--input-text, #ddd);
-  --cps-fg-muted: var(--descrip-text, #999);
-  --cps-border: var(--border-color, #4e4e4e);
-  --cps-accent: var(--p-primary-color, #3b82f6);
-  --cps-hover: color-mix(in srgb, var(--cps-fg) 12%, transparent);
-  --cps-active-bg: color-mix(in srgb, var(--cps-accent) 30%, transparent);
+  /* ── Surfaces ── */
+  --cps-bar-bg: var(--comfy-menu-bg, #2f3033);
+  --cps-strip-bg: var(--comfy-menu-secondary-bg, #26272a);
+  --cps-panel-bg: var(--comfy-menu-bg, #2a2b2e);
+  --cps-card-bg: color-mix(in srgb, var(--cps-panel-bg) 94%, #fff);
+  --cps-field-bg: var(--comfy-input-bg, #1d1e20);
+  --cps-menu-bg: var(--comfy-menu-secondary-bg, #1f2022);
+  --cps-segment-bg: color-mix(in srgb, var(--cps-fg) 12%, var(--cps-field-bg));
+  --cps-chip-bg: color-mix(in srgb, var(--cps-fg) 22%, var(--cps-field-bg));
+  --cps-stage-bg: var(--comfy-input-bg, #1a1a1b);
+  /* Legacy aliases still used by a few controls. */
+  --cps-chrome-bg: var(--cps-bar-bg);
+  --cps-surface: var(--cps-menu-bg);
+  --cps-input-bg: var(--cps-field-bg);
+  /* ── Lines ── */
+  --cps-line-1: rgba(255, 255, 255, 0.08);
+  --cps-line-2: rgba(255, 255, 255, 0.12);
+  --cps-border: var(--cps-line-2);
+  /* ── Text ── */
+  --cps-fg: var(--input-text, #e6e6e6);
+  --cps-fg-icon: color-mix(in srgb, var(--cps-fg) 92%, #000);
+  --cps-fg-muted: var(--descrip-text, #9a9ca1);
+  --cps-fg-hint: color-mix(in srgb, var(--cps-fg-muted) 90%, #000);
+  --cps-fg-disabled: color-mix(in srgb, var(--cps-fg-muted) 70%, #000);
+  --cps-fg-value: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));
+  /* ── Accent and its alpha steps ── */
+  --cps-accent: var(--p-primary-color, oklch(0.68 0.14 250));
+  --cps-acc-09: color-mix(in srgb, var(--cps-accent) 9%, transparent);
+  --cps-acc-18: color-mix(in srgb, var(--cps-accent) 18%, transparent);
+  --cps-acc-20: color-mix(in srgb, var(--cps-accent) 20%, transparent);
+  --cps-acc-24: color-mix(in srgb, var(--cps-accent) 24%, transparent);
+  --cps-acc-28: color-mix(in srgb, var(--cps-accent) 28%, transparent);
+  --cps-acc-30: color-mix(in srgb, var(--cps-accent) 30%, transparent);
+  --cps-acc-35: color-mix(in srgb, var(--cps-accent) 35%, transparent);
+  --cps-acc-45: color-mix(in srgb, var(--cps-accent) 45%, transparent);
+  --cps-acc-80: color-mix(in srgb, var(--cps-accent) 80%, transparent);
+  --cps-hover: rgba(255, 255, 255, 0.08);
+  --cps-hover-strong: rgba(255, 255, 255, 0.12);
+  --cps-active-bg: var(--cps-acc-28);
+  /* ── Rings, states ── */
+  --cps-ring: #f2f2f2;
+  --cps-light-btn-bg: #e6e6e6;
+  --cps-light-btn-fg: #111;
   --cps-danger: var(--p-red-400, #f87171);
+  --cps-danger-strong: oklch(0.62 0.17 25);
+  --cps-warn-bg: oklch(0.33 0.06 75);
+  --cps-warn-bg-2: oklch(0.36 0.07 75);
+  --cps-warn-border: oklch(0.6 0.12 75 / 0.6);
+  --cps-warn-fg: #fbf1dc;
+  --cps-warn-icon: oklch(0.84 0.14 80);
+  --cps-align-bg: oklch(0.78 0.12 250);
+  --cps-align-fg: #0d1420;
+  /* ── Radii ── */
+  --cps-r-bar: 12px;
+  --cps-r-bottom: 10px;
+  --cps-r-btn: 8px;
+  --cps-r-menu: 10px;
+  --cps-r-card: 10px;
+  --cps-r-panel: 14px;
+  --cps-r-field: 6px;
+  --cps-r-seg: 7px;
+  /* ── Shadows ── */
+  --cps-shadow-bar: 0 6px 20px rgba(0, 0, 0, 0.45);
+  --cps-shadow-menu: 0 14px 40px rgba(0, 0, 0, 0.75);
+  --cps-shadow-panel: 0 16px 48px rgba(0, 0, 0, 0.7);
+  /* ── Type ── */
+  --cps-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --cps-mono: ui-monospace, Consolas, "SF Mono", Menlo, monospace;
+  /* ── Sizes ── */
+  --cps-edge: 12px;
+  --cps-bar-btn: 32px;
   /* Stage cursor colours (ui/cursorArt.ts reads them; cursors rebuild on change). */
   --cps-cursor-fg: #ffffff;
   --cps-cursor-halo: #111111;
   --cps-cursor-ban: #e5484d;
   --cps-cursor-accent: #b48cff;
-  /* Icon stroke width (24-unit grid; final value chosen in the UI refresh). */
-  --cps-icon-stroke: 2;
+  /* Icon stroke width (24-unit grid). */
+  --cps-icon-stroke: 1.75;
 
   position: relative;
   box-sizing: border-box;
-  display: flex;
-  flex-direction: row;
+  display: block;
   width: 100%;
   height: 100%;
   /* Nodes 2.0 ignores getMinHeight for DOM widgets; keep a usable floor. */
   min-height: 244px;
   min-width: 0;
-  overflow: hidden;
-  background: var(--cps-chrome-bg);
-  border: 1px solid var(--cps-border);
-  border-radius: 4px;
+  /* Bars and the side panel may extend past the node (design handoff). */
+  overflow: visible;
+  background: var(--cps-stage-bg);
+  border-radius: 8px;
   color: var(--cps-fg);
-  font: 11px/1.2 system-ui, sans-serif;
+  font: 12px/1.2 var(--cps-font);
   user-select: none;
 }
 
@@ -73,225 +132,14 @@
   flex: none;
 }
 
-/* ── Shared buttons ────────────────────────────────────────────────────── */
-
-.cps-rail-button,
-.cps-icon-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--cps-fg);
-  cursor: pointer;
-}
-
-.cps-rail-button {
-  width: 28px;
-  height: 28px;
-}
-
-.cps-icon-button {
-  width: 24px;
-  height: 22px;
-}
-
-.cps-rail-button:hover:not(:disabled),
-.cps-icon-button:hover:not(:disabled) {
-  background: var(--cps-hover);
-}
-
-.cps-rail-button.cps-active,
-.cps-icon-button.cps-active {
-  border-color: var(--cps-accent);
-  background: var(--cps-active-bg);
-}
-
-.cps-rail-button:disabled {
-  color: var(--cps-fg-muted);
-  opacity: 0.5;
-  cursor: default;
-}
-
-/* ── Tool rail ─────────────────────────────────────────────────────────── */
-
-.cps-rail {
-  flex: 0 0 var(--cps-rail-width);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  background: var(--cps-chrome-bg);
-  border-right: 1px solid var(--cps-border);
-}
-
-/* Focus indicator: the editor owns the keyboard (set by ui/keyboard.ts). */
-.cps-root.cps-has-keys .cps-rail {
-  box-shadow: inset 2px 0 0 #fff;
-}
-
-.cps-rail-tools {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-height: 0;
-  padding: 4px 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.cps-rail-tools::-webkit-scrollbar,
-.cps-bar-scroller::-webkit-scrollbar {
-  display: none;
-}
-
-.cps-rail-group {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding-bottom: 3px;
-  border-bottom: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
-}
-
-.cps-rail-group:last-child {
-  border-bottom: 0;
-}
-
-/* Copy / Cut / Paste: ruled above too (the spacer separates it from the tools). */
-.cps-rail-clipboard {
-  padding-top: 3px;
-  border-top: 1px solid color-mix(in srgb, var(--cps-border) 60%, transparent);
-}
-
-.cps-rail-spacer {
-  flex: 1 1 auto;
-}
-
-.cps-rail-swatches {
-  flex: none;
-  display: flex;
-  justify-content: center;
-  padding: 4px 0 6px;
-  border-top: 1px solid var(--cps-border);
-}
-
-/* ── FG/BG swatches (Photoshop layout) ─────────────────────────────────── */
-
-.cps-swatches {
-  position: relative;
-  width: 30px;
-  height: 30px;
-}
-
-.cps-swatch {
-  position: absolute;
-  width: 19px;
-  height: 19px;
-  padding: 0;
-  border: 1px solid #000;
-  border-radius: 2px;
-  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 45%, transparent);
-  cursor: pointer;
-}
-
-.cps-swatch-fg {
-  left: 0;
-  top: 0;
-  z-index: 1;
-}
-
-.cps-swatch-bg {
-  right: 0;
-  bottom: 0;
-}
-
-.cps-swatch-swap,
-.cps-swatch-reset {
-  position: absolute;
-  width: 11px;
-  height: 11px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--cps-fg-muted);
-  cursor: pointer;
-}
-
-.cps-swatch-swap {
-  right: 0;
-  top: 0;
-}
-
-.cps-swatch-reset {
-  left: 0;
-  bottom: 0;
-}
-
-.cps-swatch-swap:hover,
-.cps-swatch-reset:hover {
-  color: var(--cps-fg);
-}
-
-.cps-reset-bg,
-.cps-reset-fg {
-  position: absolute;
-  width: 6px;
-  height: 6px;
-  border: 1px solid var(--cps-fg-muted);
-}
-
-.cps-reset-fg {
-  left: 0;
-  top: 0;
-  background: #000;
-}
-
-.cps-reset-bg {
-  right: 0;
-  bottom: 0;
-  background: #fff;
-}
-
-/* Layer mask swatches: black / white only, no picker; default = white over black. */
-.cps-swatches.cps-mask-swatches .cps-swatch {
-  cursor: default;
-}
-
-.cps-swatches.cps-mask-swatches .cps-reset-fg {
-  background: #fff;
-}
-
-.cps-swatches.cps-mask-swatches .cps-reset-bg {
-  background: #000;
-}
-
-/* Colours do not apply while painting the mask. */
-.cps-root.cps-quickmask .cps-swatches {
-  filter: grayscale(1);
-  opacity: 0.6;
-}
-
-/* ── Body: stage + side panel ──────────────────────────────────────────── */
-
-.cps-body {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: row;
-  min-width: 0;
-  min-height: 0;
-}
+/* ── Stage ─────────────────────────────────────────────────────────────── */
 
 .cps-stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   overflow: hidden;
-  background: var(--cps-input-bg);
+  border-radius: inherit;
+  background: var(--cps-stage-bg);
   touch-action: none;
   outline: none;
   /* Tool cursor (ui/cursors.ts via StageView.syncCursor); pan/loading below win. */
@@ -333,7 +181,7 @@
   margin: 0;
   padding: 0;
   border: 0;
-  outline: 1px dashed rgba(128, 160, 255, 0.9);
+  outline: 1px dashed var(--cps-ring);
   background: transparent;
   color: transparent;
   resize: none;
@@ -353,48 +201,183 @@
   background: rgba(80, 140, 255, 0.35);
 }
 
+/* Stage note: light pill above the bottom bar (design handoff "toast"). */
 .cps-note {
   position: absolute;
   left: 50%;
-  bottom: 8px;
+  bottom: 58px;
   transform: translateX(-50%);
-  max-width: calc(100% - 16px);
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.75);
-  color: #fff;
+  max-width: calc(100% - 24px);
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: var(--cps-light-btn-bg);
+  color: var(--cps-light-btn-fg);
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.cps-side {
-  flex: 0 0 var(--cps-panel-width);
-  /* Fixed width: without these, the min-content width of a long nowrap
-     layer name (flex min-width: auto) would push the panel over the canvas. */
-  width: var(--cps-panel-width);
-  min-width: 0;
-  max-width: var(--cps-panel-width);
-  overflow: hidden;
+/* ── Floating slots ────────────────────────────────────────────────────── */
+
+/* Slots let pointer events through to the stage; only their content catches them. */
+.cps-slot,
+.cps-float-top,
+.cps-dock-column {
+  pointer-events: none;
+}
+
+.cps-slot > *,
+.cps-float-top > * > * {
+  pointer-events: auto;
+}
+
+.cps-float-top {
+  position: absolute;
+  left: var(--cps-edge);
+  right: var(--cps-edge);
+  top: var(--cps-edge);
+  height: 0;
+  z-index: 3;
+}
+
+.cps-slot-history {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.cps-slot-clip {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.cps-dock-column {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  background: var(--cps-chrome-bg);
-  border-left: 1px solid var(--cps-border);
+  align-items: center;
+  gap: 6px;
 }
 
-.cps-side-content {
+.cps-slot-dock,
+.cps-slot-strip {
+  display: flex;
+  justify-content: center;
+}
+
+.cps-slot-strip:empty {
+  display: none;
+}
+
+/* Narrow: history, dock (+ strip under it) and clipboard share one centred row. */
+.cps-root[data-layout="narrow"] .cps-float-top {
+  left: 50%;
+  right: auto;
+  width: max-content;
+  height: auto;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.cps-root[data-layout="narrow"] .cps-slot-history,
+.cps-root[data-layout="narrow"] .cps-slot-clip,
+.cps-root[data-layout="narrow"] .cps-dock-column {
+  position: relative;
+  left: auto;
+  right: auto;
+  transform: none;
+}
+
+.cps-root[data-layout="narrow"] .cps-dock-column {
+  display: block;
+}
+
+.cps-root[data-layout="narrow"] .cps-slot-strip {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 6px);
+  transform: translateX(-50%);
+  width: max-content;
+}
+
+/* Very narrow: a bar wider than the node anchors to the right edge so its
+   overflow sticks out to the left (never under the side panel). */
+.cps-root[data-layout="narrow"] .cps-float-top.cps-anchor-right {
+  left: auto;
+  right: var(--cps-edge);
+  transform: none;
+}
+
+.cps-root[data-layout="narrow"] .cps-slot-strip.cps-anchor-right {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.cps-slot-sliders {
+  position: absolute;
+  left: var(--cps-edge);
+  top: 120px;
+  z-index: 2;
+}
+
+.cps-slot-notice {
+  position: absolute;
+  right: var(--cps-edge);
+  bottom: 56px;
+  z-index: 2;
+}
+
+.cps-slot-bottom {
+  position: absolute;
+  left: var(--cps-edge);
+  right: var(--cps-edge);
+  bottom: var(--cps-edge);
+  z-index: 3;
+  display: flex;
+}
+
+.cps-slot-bottom > * {
   flex: 1 1 auto;
-  min-height: 0;
   min-width: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
 }
 
-.cps-side-placeholder {
-  padding: 6px 8px;
-  color: var(--cps-fg-muted);
-  font-weight: 600;
-  border-bottom: 1px solid var(--cps-border);
+.cps-root[data-layout="narrow"] .cps-slot-bottom {
+  left: 50%;
+  right: auto;
+  width: max-content;
+  max-width: none;
+  transform: translateX(-50%);
+}
+
+.cps-root[data-layout="narrow"] .cps-slot-bottom.cps-anchor-right {
+  left: auto;
+  right: var(--cps-edge);
+  transform: none;
+}
+
+.cps-overlay-slot {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.cps-overlay-slot > * {
+  pointer-events: auto;
+}
+
+.cps-overlay-slot:empty {
+  display: none;
 }

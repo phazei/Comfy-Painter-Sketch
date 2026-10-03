@@ -1,16 +1,20 @@
 /**
- * One row of the layers panel: thumbnail, name (double-click renames inline:
- * Enter commits, Escape cancels, blur commits), visibility eye and lock.
- * Mask rows add a second line with the colour swatch, an invert toggle and
- * the overlay opacity control; the Background row is locked and not
- * selectable but has an eye and a solo button like the others. Text layers get a "T" badge on the thumbnail. The current mask
- * has a thick left bar in its own colour; paint/text/mask rows have a small
- * solo button (view only). The Image Mask row (`imageMask` kind) is a
- * mask row without rename or lock (it is never edited) and is not dragged
- * (`layerDrag.ts` only moves paint / mask rows); as the Input Mask its
- * tooltips follow the name and a hint line can show under it. Paint rows
- * have the layer mask slot right of the thumbnail (`layerMaskThumb.ts`);
- * with a mask, the thumbnail being edited (pixels or mask) is framed. Rows are
+ * One row of the layers panel (design handoff "Layers tab"), left to right:
+ *
+ * - cmask: 3 px current bar (mask colour) | eye | 36 x 28 thumbnail | name
+ *   over a sub-line (10 px colour swatch + "Overlay N%" scrub/slider) |
+ *   invert | lock | solo.
+ * - paint / text: spacer | eye | checker thumbnail ("T" badge for text) |
+ *   lmask slot (`layerMaskThumb.ts`) | name (+ "Text") | lock | solo.
+ * - Image / Input Mask: like a cmask (bar, swatch, Overlay, invert) with a
+ *   lock badge on the thumbnail instead of a lock button, plus Duplicate
+ *   ("Duplicate to an editable mask"); no rename, never dragged.
+ * - Background: spacer | eye | thumbnail + lock badge | "Background" /
+ *   "Read-only" | solo. Not selectable: a click only ends the lmask view.
+ *
+ * Name: double-click renames inline (Enter / blur commit, Esc cancels).
+ * Selected rows get the accent background and a ring on the targeted
+ * thumbnail (pixels or lmask); hidden (or solo-hidden) rows dim. Rows are
  * reused across updates (keyed by layer id) so a double-click survives the
  * re-render the first click causes.
  */
@@ -35,9 +39,9 @@ export const IMAGE_MASK_TOOLTIP = "From the image's transparency. A connected ma
 export const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces the image's transparency; disconnect it to use that again).";
 
 /**
- * Class of every row's name: wraps to at most 2 lines, then an ellipsis,
- * vertically centred; lifted (`cps-renaming`) while the one-line rename
- * field is open (`styles/layers.css`).
+ * Class of every row's name: 2 lines then an ellipsis (1 line when the row
+ * has a sub-line); lifted (`cps-renaming`) while the one-line rename field is
+ * open (`styles/layerRows.css`).
  */
 export const LAYER_NAME_CLAMP_CLASS = "cps-layer-name-clamp";
 
@@ -58,18 +62,20 @@ export interface RowModel {
   color?: string;
   /** Mask invert. */
   invert?: boolean;
-  /** Current mask: thick left bar in the mask's colour, Quick Mask on or off. */
+  /** Current mask: left bar in the mask's colour, Quick Mask on or off. */
   current?: boolean;
-  /** Editable text layer ("T" badge on the thumbnail). */
+  /** Editable text layer ("T" badge, "Text" sub-line). */
   text?: boolean;
   /** Small note under the row (e.g. the Input Mask waiting for a run). */
   hint?: string;
+  /** Image / Input Mask row: Duplicate enabled. */
+  canDuplicate?: boolean;
   /**
    * Solo display (view only): `"on"` = this row is soloed, `"dimmed"` =
-   * another row of its group is soloed, `"off"` = its group has no solo.
+   * another row is soloed, `"off"` = no solo.
    */
   solo?: SoloMark;
-  /** Paint rows: layer mask slot; with a mask, the layer thumbnail frames the pixel target. */
+  /** Paint rows: layer mask slot; with a mask, the targeted thumbnail gets the ring. */
   maskSlot?: MaskSlotModel;
 }
 
@@ -91,6 +97,8 @@ export interface RowActions extends MaskSlotActions {
   rename(id: string, name: string): void;
   pickColor(id: string, anchor: HTMLElement): void;
   toggleInvert(id: string): void;
+  /** Duplicate button of a read-only row (Image / Input Mask). */
+  duplicate(id: string): void;
   /** Inline rename started/ended (the panel defers rebuilds; focus is handed back). */
   renaming(active: boolean): void;
 }
@@ -101,16 +109,18 @@ export interface RowActions extends MaskSlotActions {
 export class LayerRow {
   readonly element: HTMLDivElement;
   readonly thumb = new Thumbnail();
-  private readonly nameEl: HTMLSpanElement;
-  private readonly eye: HTMLButtonElement | null = null;
-  private readonly lock: HTMLButtonElement;
-  private readonly swatch: HTMLButtonElement | null = null;
-  private readonly invertButton: HTMLButtonElement | null = null;
-  private readonly textBadge: HTMLSpanElement | null = null;
-  private readonly soloButton: HTMLButtonElement | null = null;
-  private readonly hintEl: HTMLDivElement | null = null;
   /** Paint rows: add-mask icon / mask thumbnail. */
   readonly maskSlot: LayerMaskSlot | null = null;
+  private readonly nameEl: HTMLSpanElement;
+  private readonly sub: HTMLDivElement;
+  private readonly eye: HTMLButtonElement;
+  private readonly lock: HTMLButtonElement | null = null;
+  private readonly swatch: HTMLButtonElement | null = null;
+  private readonly invertButton: HTMLButtonElement | null = null;
+  private readonly dupButton: HTMLButtonElement | null = null;
+  private readonly textBadge: HTMLSpanElement | null = null;
+  private readonly soloButton: HTMLButtonElement;
+  private readonly hintEl: HTMLDivElement | null = null;
   private readonly thumbBox: HTMLSpanElement;
   private model: RowModel | null = null;
   private editor: HTMLInputElement | null = null;
@@ -120,7 +130,7 @@ export class LayerRow {
    * @param kind - Row kind.
    * @param id - Layer id (`"background"` for the background row).
    * @param actions - Callbacks.
-   * @param maskOpacity - Overlay opacity control (mask rows).
+   * @param maskOpacity - Overlay opacity control (mask rows; shown as "Overlay N%").
    */
   constructor(
     readonly kind: RowKind,
@@ -128,52 +138,82 @@ export class LayerRow {
     private readonly actions: RowActions,
     maskOpacity?: OptionControl,
   ) {
-    this.element = document.createElement("div");
-    this.element.className = `cps-layer-row cps-layer-${ROW_CLASS[kind]}`;
     const maskLike = kind === "mask" || kind === "imageMask";
+    const readOnly = kind === "imageMask" || kind === "background";
+    this.element = el("div", `cps-layer-row cps-layer-${ROW_CLASS[kind]}`);
     this.element.dataset["layerId"] = id;
-    const main = document.createElement("div");
-    main.className = "cps-layer-main";
-    const thumbBox = document.createElement("span");
-    thumbBox.className = "cps-layer-thumb-box";
-    thumbBox.appendChild(this.thumb.canvas);
-    this.thumbBox = thumbBox;
-    main.appendChild(thumbBox);
+
+    const bar = el("span", "cps-layer-bar");
+    this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
+    this.thumbBox = el("span", "cps-layer-thumb-box");
+    this.thumbBox.appendChild(this.thumb.canvas);
+    this.element.append(bar, this.eye, this.thumbBox);
+
     if (kind === "paint") {
-      this.textBadge = document.createElement("span");
-      this.textBadge.className = "cps-layer-text-badge";
+      this.textBadge = el("span", "cps-layer-badge cps-layer-text-badge");
       this.textBadge.title = "Text layer (click it with the Text tool to edit)";
+      this.textBadge.textContent = "T";
       this.textBadge.hidden = true;
-      setIcon(this.textBadge, "text", 12);
-      thumbBox.appendChild(this.textBadge);
+      this.thumbBox.appendChild(this.textBadge);
       // A plain click on a masked layer's thumbnail edits its pixels
       // (other clicks, e.g. Ctrl+click, reach the row as before).
-      thumbBox.addEventListener("click", (event) => {
+      this.thumbBox.addEventListener("click", (event) => {
         if (!this.model?.maskSlot?.mask || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
         event.stopPropagation();
         actions.targetLayer(id);
       });
       this.maskSlot = new LayerMaskSlot(id, actions);
-      main.appendChild(this.maskSlot.element);
+      this.element.appendChild(this.maskSlot.element);
     }
-    this.nameEl = document.createElement("span");
+    if (readOnly) {
+      const badge = el("span", "cps-layer-badge cps-layer-lock-badge");
+      badge.title = kind === "background" ? "Read-only: the background (input image) is locked" : "Read-only (duplicate it to edit)";
+      setIcon(badge, "lock", 9);
+      this.thumbBox.appendChild(badge);
+    }
+
+    const text = el("div", "cps-layer-text");
     // Up to 2 lines, then an ellipsis (CSS); the full name is in the tooltip.
-    this.nameEl.className = `cps-layer-name ${LAYER_NAME_CLAMP_CLASS}`;
-    main.appendChild(this.nameEl);
-
-    this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
-    setIcon(this.soloButton, "solo", 11);
-    this.eye = button("cps-layer-eye", () => actions.toggleVisible(id));
-    main.append(this.soloButton, this.eye);
-    this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
-    main.appendChild(this.lock);
-    this.element.appendChild(main);
-
-    if (kind === "background" || kind === "imageMask") {
-      this.lock.disabled = true;
-      this.lock.title = kind === "background" ? "The background (input image) is locked" : "The Image Mask can't be edited (duplicate it to edit)";
-      setIcon(this.lock, "lock", 14);
+    this.nameEl = el("span", `cps-layer-name ${LAYER_NAME_CLAMP_CLASS}`);
+    this.sub = el("div", "cps-layer-sub");
+    text.append(this.nameEl, this.sub);
+    if (maskLike) {
+      const swatch = button("cps-layer-swatch", () => actions.pickColor(id, swatch));
+      swatch.title = "Mask colour (display only)";
+      this.sub.appendChild(swatch);
+      if (maskOpacity) this.sub.appendChild(maskOpacity.element);
+      this.swatch = swatch;
+    } else if (kind === "background") {
+      this.sub.textContent = "Read-only";
+    } else {
+      this.sub.textContent = "Text";
     }
+    if (kind === "imageMask") {
+      this.hintEl = el("div", "cps-layer-hint");
+      this.hintEl.hidden = true;
+      text.appendChild(this.hintEl);
+    }
+    this.element.appendChild(text);
+
+    if (maskLike) {
+      this.invertButton = button("cps-layer-invert", () => actions.toggleInvert(id));
+      setIcon(this.invertButton, "invert", 16);
+      this.element.appendChild(this.invertButton);
+    }
+    if (!readOnly) {
+      this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
+      this.element.appendChild(this.lock);
+    }
+    if (kind === "imageMask") {
+      this.dupButton = button("cps-layer-dup", () => actions.duplicate(id));
+      this.dupButton.title = "Duplicate to an editable mask";
+      setIcon(this.dupButton, "duplicate", 15);
+      this.element.appendChild(this.dupButton);
+    }
+    this.soloButton = button("cps-layer-solo", () => actions.toggleSolo(id));
+    setIcon(this.soloButton, "solo", 16);
+    this.element.appendChild(this.soloButton);
+
     // The Background row isn't selectable, but any click on it still goes to `select` (it ends the lmask-only view).
     if (kind === "background") {
       this.element.addEventListener("click", (event) => {
@@ -191,26 +231,6 @@ export class LayerRow {
         if (!event.ctrlKey && !event.metaKey) this.startRename();
       });
     }
-
-    if (maskLike) {
-      const extra = document.createElement("div");
-      extra.className = "cps-layer-extra";
-      const swatch = button("cps-layer-swatch", () => actions.pickColor(id, swatch));
-      swatch.title = "Mask colour (display only)";
-      const invert = button("cps-layer-invert", () => actions.toggleInvert(id));
-      setIcon(invert, "invert", 14);
-      extra.append(swatch, invert);
-      if (maskOpacity) extra.appendChild(maskOpacity.element);
-      this.element.appendChild(extra);
-      this.swatch = swatch;
-      this.invertButton = invert;
-    }
-    if (kind === "imageMask") {
-      this.hintEl = document.createElement("div");
-      this.hintEl.className = "cps-layer-hint";
-      this.hintEl.hidden = true;
-      this.element.appendChild(this.hintEl);
-    }
   }
 
   /** Whether the name is being edited. */
@@ -225,61 +245,42 @@ export class LayerRow {
   update(model: RowModel): void {
     this.model = model;
     const el = this.element;
+    const solo = model.solo ?? "off";
     el.classList.toggle("cps-selected", model.selected);
-    el.classList.toggle("cps-standby", model.standby);
-    el.classList.toggle("cps-hidden-layer", !model.visible);
+    el.classList.toggle("cps-standby", model.standby && !model.selected);
+    el.classList.toggle("cps-hidden-layer", solo === "off" ? !model.visible : solo === "dimmed");
     if (this.textBadge) this.textBadge.hidden = model.text !== true;
     if (this.maskSlot) this.maskSlot.update(model.maskSlot ?? { canHave: false, mask: null });
-    const slotMask = model.maskSlot?.mask;
-    this.thumbBox.classList.toggle("cps-target", !!slotMask && !slotMask.targeted);
+    // The ring (selected rows) goes on the targeted thumbnail: the lmask when it is the target, else this one.
+    this.thumbBox.classList.toggle("cps-target", model.maskSlot?.mask?.targeted !== true);
+    const hasSub = this.kind !== "paint" || model.text === true;
+    this.sub.hidden = !hasSub;
+    el.classList.toggle("cps-has-sub", hasSub);
     const current = model.current === true;
     el.classList.toggle("cps-current-mask", current);
-    if (current && model.color) el.style.setProperty("--cps-mask-color", model.color);
+    if (model.color) el.style.setProperty("--cps-mask-color", model.color);
     else el.style.removeProperty("--cps-mask-color");
     el.title = current && this.kind === "mask" ? "Current mask (Quick Mask paints into it)" : "";
-    const solo = model.solo ?? "off";
-    if (this.soloButton) {
-      this.soloButton.classList.toggle("cps-active", solo === "on");
-      this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
-      this.soloButton.title =
-        solo === "on"
-          ? "End solo (view only)"
-          : this.kind === "background"
-            ? "Solo the background: hide all paint layers (view only)"
-            : "Solo: show only this layer in its group (view only)";
-    }
+    this.soloButton.classList.toggle("cps-active", solo === "on");
+    this.soloButton.setAttribute("aria-pressed", String(solo === "on"));
+    this.soloButton.title =
+      solo === "on"
+        ? "End solo (view only)"
+        : this.kind === "background"
+          ? "Solo the background: hide all paint layers (view only)"
+          : "Solo: show only this layer in its group (view only)";
     if (!this.editor) this.nameEl.textContent = model.name;
     this.nameEl.title =
       this.kind === "background" ? "Input image" : this.kind === "imageMask" ? imageMaskTooltip(model.name) : `${model.name} (double-click to rename)`;
-    if (this.kind === "imageMask") this.lock.title = `The ${model.name} can't be edited (duplicate it to edit)`;
     if (this.hintEl) {
       this.hintEl.textContent = model.hint ?? "";
       this.hintEl.hidden = !model.hint;
     }
-    if (this.eye) {
-      const icon = model.visible ? "eye" : "eyeOff";
-      if (icon !== this.icons.eye) setIcon(this.eye, icon, 14);
-      this.icons.eye = icon;
-      this.eye.classList.toggle("cps-off", !model.visible);
-      this.eye.classList.toggle("cps-solo-dimmed", solo === "dimmed");
-      this.eye.classList.toggle("cps-solo-on", solo === "on");
-      this.eye.setAttribute("aria-pressed", String(model.visible));
-      this.eye.title =
-        this.kind === "background"
-          ? model.visible
-            ? "Hide background (shows transparency; outputs use the background colour instead of the image)"
-            : "Show background (input image)"
-          : this.kind !== "paint"
-          ? model.visible
-            ? "Hide mask (also excludes it from the MASK output)"
-            : "Show mask (hidden masks are excluded from the MASK output)"
-          : model.visible
-            ? "Hide layer"
-            : "Show layer";
-    }
-    if (this.kind === "paint" || this.kind === "mask") {
+    if (this.dupButton) this.dupButton.disabled = model.canDuplicate !== true;
+    this.updateEye(model, solo);
+    if (this.lock) {
       const icon = model.locked ? "lock" : "unlock";
-      if (icon !== this.icons.lock) setIcon(this.lock, icon, 14);
+      if (icon !== this.icons.lock) setIcon(this.lock, icon, 15);
       this.icons.lock = icon;
       this.lock.classList.toggle("cps-on", model.locked);
       this.lock.setAttribute("aria-pressed", String(model.locked));
@@ -298,7 +299,7 @@ export class LayerRow {
   startRename(): void {
     if (this.editor || this.kind === "background" || this.kind === "imageMask") return;
     this.actions.renaming(true);
-    // The rename field stays one line: the 2-line clamp is lifted while it's open.
+    // The rename field stays one line: the clamp is lifted while it's open.
     this.nameEl.classList.add("cps-renaming");
     this.editor = startInlineRename(this.nameEl, this.model?.name ?? "", (value) => {
       this.editor = null;
@@ -308,6 +309,29 @@ export class LayerRow {
       this.actions.renaming(false);
     });
   }
+
+  private updateEye(model: RowModel, solo: SoloMark): void {
+    const eye = this.eye;
+    const icon = model.visible ? "eye" : "eyeOff";
+    if (icon !== this.icons.eye) setIcon(eye, icon, 17);
+    this.icons.eye = icon;
+    eye.classList.toggle("cps-off", !model.visible);
+    eye.classList.toggle("cps-solo-dimmed", solo === "dimmed");
+    eye.classList.toggle("cps-solo-on", solo === "on");
+    eye.setAttribute("aria-pressed", String(model.visible));
+    eye.title =
+      this.kind === "background"
+        ? model.visible
+          ? "Hide background (shows transparency; outputs use the background colour instead of the image)"
+          : "Show background (input image)"
+        : this.kind !== "paint"
+          ? model.visible
+            ? "Hide mask (also excludes it from the MASK output)"
+            : "Show mask (hidden masks are excluded from the MASK output)"
+          : model.visible
+            ? "Hide layer"
+            : "Show layer";
+  }
 }
 
 /** Name tooltip of the Image Mask / Input Mask row (by its name). */
@@ -315,10 +339,15 @@ function imageMaskTooltip(name: string): string {
   return name === INPUT_MASK_NAME ? INPUT_MASK_TOOLTIP : IMAGE_MASK_TOOLTIP;
 }
 
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {
+  const element = document.createElement(tag);
+  element.className = className;
+  return element;
+}
+
 function button(className: string, onClick: (event: MouseEvent) => void): HTMLButtonElement {
-  const b = document.createElement("button");
+  const b = el("button", `cps-icon-button cps-layer-button ${className}`);
   b.type = "button";
-  b.className = `cps-icon-button cps-layer-button ${className}`;
   b.addEventListener("click", (event) => {
     event.stopPropagation();
     event.preventDefault();

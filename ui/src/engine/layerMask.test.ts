@@ -150,7 +150,7 @@ describe("target", () => {
 describe("X / D keys and options bar", () => {
   const key = (k: string): KeyboardEvent =>
     ({ key: k, code: `Key${k.toUpperCase()}`, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, repeat: false }) as KeyboardEvent;
-  const effects = { optionsChanged: () => undefined, viewChanged: () => undefined, cancelDrag: () => undefined, fullscreen: () => undefined, closePopover: () => false, exitFullscreen: () => false };
+  const effects = { optionsChanged: () => undefined, viewChanged: () => undefined, cancelDrag: () => undefined, fullscreen: () => undefined, closePopover: () => false, exitFullscreen: () => false, closeHelp: () => false, toggleHelp: () => undefined };
 
   it("X / D act on the colours normally and on the mask swatches with a mask targeted", async () => {
     const { handleShortcut } = await import("../ui/shortcuts");
@@ -174,38 +174,16 @@ describe("X / D keys and options bar", () => {
     expect(ed.layerMask.foregroundHides).toBe(true);
   });
 
-  it("the bar gets a 'Layer Mask:' label, Invert and Delete while the mask is targeted", async () => {
-    const { layerMaskBarDecorator } = await import("../tools/layerMaskBar");
-    const { layoutOptions } = await import("../tools/options");
+  it("Invert and Delete (the bottom bar's lmask options) act on the targeted mask", () => {
     const { ed, id } = setup();
-    const decorate = layerMaskBarDecorator(ed);
-    const brush = { id: "brush" } as Parameters<typeof decorate>[1];
-    expect(decorate(null, brush)).toBeNull();
+    expect(ed.layerMask.targeted).toBeNull();
     ed.layerMask.add(id, "reveal");
-    const bar = decorate(null, brush);
-    expect(bar?.descriptors.map((d) => [d.kind, d.key])).toEqual([
-      ["label", "layerMaskLabel"],
-      ["toggle", "layerMaskInvert"],
-      ["button", "layerMaskApply"],
-      ["button", "layerMaskDelete"],
-    ]);
-    expect(bar?.descriptors[0]?.label).toBe("Layer Mask:");
-    expect(bar && layoutOptions(bar.descriptors).map((i) => i.kind)).toEqual(["control", "control", "control", "control"]);
-    expect(decorate(null, brush)).toBe(bar); // stable object
-    expect(bar?.get("layerMaskLabel")).toBeUndefined();
-    expect(bar?.set("layerMaskLabel", true)).toBe(false);
-    expect(bar?.set("layerMaskInvert", true)).toBe(true);
+    expect(ed.layerMask.targeted).toBe(id);
+    expect(ed.layerMask.setInvert(id, true)).toBe(true);
     expect(ed.layerMask.info(id)?.invert).toBe(true);
-    expect(bar?.get("layerMaskInvert")).toBe(true);
-    expect(decorate(null, { id: "eraser" } as Parameters<typeof decorate>[1])?.descriptors.map((d) => d.key)).toEqual([
-      "layerMaskLabel",
-      "layerMaskInvert",
-      "layerMaskApply",
-      "layerMaskDelete",
-    ]);
-    expect(bar?.set("layerMaskDelete", true)).toBe(true);
+    expect(ed.layerMask.remove(id)).toBe(true);
     expect(ed.layerMask.info(id)).toBeUndefined();
-    expect(decorate(null, brush)).toBeNull();
+    expect(ed.layerMask.targeted).toBeNull();
   });
 });
 

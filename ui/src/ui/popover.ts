@@ -181,22 +181,26 @@ export class PopoverHost {
     };
     const w = element.offsetWidth;
     const h = element.offsetHeight;
-    const rootW = this.root.clientWidth;
-    const rootH = this.root.clientHeight;
+    // Clamp to the root, widened to include an anchor that sits outside it
+    // (the floating side panel hangs past the node's right edge).
+    const minX = Math.min(0, box.left);
+    const maxX = Math.max(this.root.clientWidth, box.right);
+    const minY = Math.min(0, box.top);
+    const maxY = Math.max(this.root.clientHeight, box.bottom);
     let left: number;
     let top: number;
     if (placement === "right") {
       left = box.right + GAP;
       top = box.top;
-      if (left + w > rootW) left = box.left - GAP - w;
+      if (left + w > maxX) left = box.left - GAP - w;
     } else {
       left = box.left;
       top = placement === "above" ? box.top - GAP - h : box.bottom + GAP;
-      if (placement === "below" && top + h > rootH) top = box.top - GAP - h;
-      if (placement === "above" && top < 0) top = box.bottom + GAP;
+      if (placement === "below" && top + h > maxY) top = box.top - GAP - h;
+      if (placement === "above" && top < minY) top = box.bottom + GAP;
     }
-    element.style.left = `${Math.round(clamp(left, 0, rootW - w))}px`;
-    element.style.top = `${Math.round(clamp(top, 0, rootH - h))}px`;
+    element.style.left = `${Math.round(clamp(left, minX, maxX - w))}px`;
+    element.style.top = `${Math.round(clamp(top, minY, maxY - h))}px`;
   }
 }
 

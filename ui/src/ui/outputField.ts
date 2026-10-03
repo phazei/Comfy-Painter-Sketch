@@ -1,8 +1,12 @@
 /**
- * One labelled output-card input (X / Y / W / H, crop padding). A field
- * session -- focus to blur/Enter, or one label scrub -- is one region
- * transaction (one undo step); Escape reverts it. The input is refreshed in
- * place and never rebuilt, so live updates can't steal focus or text.
+ * One labelled output-card input (X / Y / W / H, the value of the crop
+ * padding and border width steppers). A field session -- focus to
+ * blur/Enter, or one label scrub -- is one region transaction (one undo
+ * step); Escape reverts it. The input is refreshed in place and never
+ * rebuilt, so live updates can't steal focus or text.
+ *
+ * DOM: `label.cps-output-field` > [`span` label (scrub handle; omitted when
+ * the label is empty)] `input` [`span.cps-output-suffix`].
  */
 
 import { clampNumber } from "../geometry/rect";
@@ -20,13 +24,20 @@ export interface OutputField {
   input: HTMLInputElement;
   /** Re-read the value (skipped while the user is typing) and bounds. */
   refresh(): void;
-  /** Revert an open session and detach listeners. */
-  dispose(): void;
+  /**
+   * End an open session and detach listeners.
+   * @param revert - `true` (default) reverts the session; `false` commits it
+   *   (blurring a focused input first, so focus is handed back).
+   */
+  dispose(revert?: boolean): void;
 }
 
 /** Field services. */
 export interface OutputFieldOptions {
+  /** Visible label (also the scrub handle); empty = no label element. */
   label: string;
+  /** Unit text after the input (e.g. `px`). */
+  suffix?: string;
   /** Tooltip / accessible name (defaults to `label`). */
   title?: string;
   ops: RegionOps;
@@ -61,7 +72,14 @@ export function outputField(options: OutputFieldOptions): OutputField {
   input.step = "1";
   input.spellcheck = false;
   input.setAttribute("aria-label", options.title ?? options.label);
-  element.append(label, input);
+  if (options.label) element.append(label);
+  element.append(input);
+  if (options.suffix) {
+    const suffix = document.createElement("span");
+    suffix.className = "cps-output-suffix";
+    suffix.textContent = options.suffix;
+    element.append(suffix);
+  }
 
   /** A session (typing or scrub) is open. */
   let editing = false;
@@ -118,7 +136,7 @@ export function outputField(options: OutputFieldOptions): OutputField {
     input.blur();
   });
 
-  if (options.bounds) {
+  if (options.bounds && options.label) {
     label.className = "cps-output-scrub";
     label.title = `${options.title ?? options.label}: drag to scrub (Shift = x10), Esc reverts`;
     label.addEventListener("pointerdown", (event) => {
@@ -163,6 +181,12 @@ export function outputField(options: OutputFieldOptions): OutputField {
     label.addEventListener("lostpointercapture", finish, { signal });
   }
 
+  const dispose = (revert = true): void => {
+    // Commit: a focused input blurs first (its blur listener commits and hands focus back).
+    if (!revert && editing && !scrub) input.blur();
+    end(revert);
+  };
+
   refresh();
-  return { element, input, refresh, dispose: () => end(true) };
+  return { element, input, refresh, dispose };
 }

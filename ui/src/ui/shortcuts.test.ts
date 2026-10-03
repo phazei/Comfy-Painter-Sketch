@@ -1,9 +1,83 @@
 import { describe, expect, it } from "vitest";
 
 import type { Editor } from "../engine/editor";
+import { REGION_TOOL_ID } from "../tools/region";
+import type { EditorSession } from "../widget/sessions";
 import { handleFloatShortcut, isTransformChord } from "./floatShortcuts";
 import { handleOutlineNudge } from "./selectionShortcuts";
-import { stepHardness, stepSize } from "./shortcuts";
+import { handleShortcut, stepHardness, stepSize } from "./shortcuts";
+import type { ShortcutEffects } from "./shortcuts";
+
+describe("Esc chain, ? and Q", () => {
+  const key = (k: string, mods: Partial<KeyboardEvent> = {}): KeyboardEvent =>
+    ({ key: k, code: "", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, repeat: false, ...mods }) as KeyboardEvent;
+
+  interface State {
+    help: boolean;
+    popover: boolean;
+    text: boolean;
+    float: boolean;
+    toolDrag: boolean;
+    selection: boolean;
+    fullscreen: boolean;
+    region: boolean;
+  }
+
+  /** A session + effects stub recording what each step did. */
+  function setup(initial: Partial<State>): { session: EditorSession; effects: ShortcutEffects; log: string[] } {
+    const s: State = { help: false, popover: false, text: false, float: false, toolDrag: false, selection: false, fullscreen: false, region: false, ...initial };
+    const log: string[] = [];
+    const take = (flag: keyof State, name: string) => (): boolean => {
+      if (!s[flag]) return false;
+      s[flag] = false;
+      log.push(name);
+      return true;
+    };
+    const editor = {
+      text: { get editing() { return s.text ? {} : null; }, commit: () => (s.text = false, log.push("text"), true) },
+      float: { get active() { return s.float; }, cancel: () => (s.float = false, log.push("float")), transform: { active: false } },
+      selection: { get active() { return s.selection; }, deselect: () => (s.selection = false, log.push("deselect")) },
+      togglePaintTarget: () => log.push("q"),
+    };
+    const tools = { active: { id: s.region ? REGION_TOOL_ID : "brush", options: null }, resolve: () => ({}) };
+    const effects: ShortcutEffects = {
+      optionsChanged: () => undefined,
+      viewChanged: () => undefined,
+      cancelDrag: () => undefined,
+      fullscreen: () => undefined,
+      closeHelp: take("help", "help"),
+      toggleHelp: () => log.push("toggleHelp"),
+      closePopover: take("popover", "popover"),
+      cancelToolDrag: take("toolDrag", "toolDrag"),
+      exitFullscreen: take("fullscreen", "fullscreen"),
+    };
+    return { session: { editor, tools } as unknown as EditorSession, effects, log };
+  }
+
+  it("runs help, popover, text commit, float, tool drag, deselect, fullscreen -- one per press", () => {
+    const all = { help: true, popover: true, text: true, float: true, toolDrag: true, selection: true, fullscreen: true };
+    const { session, effects, log } = setup(all);
+    for (let i = 0; i < 7; i++) expect(handleShortcut(key("Escape"), session, effects)).toBe(true);
+    expect(handleShortcut(key("Escape"), session, effects)).toBe(false);
+    expect(log).toEqual(["help", "popover", "text", "float", "toolDrag", "deselect", "fullscreen"]);
+  });
+
+  it("does not deselect in region mode", () => {
+    const { session, effects, log } = setup({ selection: true, region: true });
+    expect(handleShortcut(key("Escape"), session, effects)).toBe(false);
+    expect(log).toEqual([]);
+  });
+
+  it("? toggles help; Q is ignored in region mode", () => {
+    const normal = setup({});
+    expect(handleShortcut(key("?", { shiftKey: true }), normal.session, normal.effects)).toBe(true);
+    expect(handleShortcut(key("q"), normal.session, normal.effects)).toBe(true);
+    expect(normal.log).toEqual(["toggleHelp", "q"]);
+    const region = setup({ region: true });
+    expect(handleShortcut(key("q"), region.session, region.effects)).toBe(false);
+    expect(region.log).toEqual([]);
+  });
+});
 
 describe("bracket steps", () => {
   it("steps size finer for small brushes and clamps", () => {

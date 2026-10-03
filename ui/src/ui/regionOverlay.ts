@@ -1,10 +1,12 @@
 /**
- * Region outlines on the stage overlay canvas (SPEC "Outputs and regions (editor)"). In region mode: solid
- * outlines, number badges, the selected region highlighted with handles, and
- * the image border highlighted while Main is selected. Outside region mode:
- * subdued -- thin, dashed, translucent, small number, no handles and no
- * selection highlight. Image -> stage mapping uses `docRectToStage` (the
- * view transform is in image px).
+ * Region outlines on the stage overlay canvas (SPEC "Outputs and regions
+ * (editor)", design handoff "Region overlay on the canvas"). In region mode:
+ * solid boxes (1.5 px `#b8bbc0`; the selected one 2 px `#f2f2f2` with eight
+ * handles), each with a 1 px dark halo and a number badge at the top-left;
+ * the image border 2 px `#f2f2f2` while Main is selected. Outside region
+ * mode: subdued -- thin, dashed, translucent, small number, no handles and no
+ * selection highlight. Hidden regions are not drawn. Image -> stage mapping
+ * uses `docRectToStage` (the view transform is in image px).
  */
 
 import type { Editor } from "../engine/editor";
@@ -14,11 +16,26 @@ import type { ViewTransform } from "../engine/viewport";
 import { frameRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 
-/** Accent colour of the selected region / Main border. */
-const SELECTED_COLOR = "#62d5ff";
+/** Selected region / Main border (the selection ring colour). */
+const SELECTED_COLOR = "#f2f2f2";
+
+/** Idle region box in region mode. */
+const IDLE_COLOR = "#b8bbc0";
+
+/** Halo under boxes and handles. */
+const HALO_COLOR = "rgba(0, 0, 0, 0.5)";
+
+/** Badge text colour. */
+const BADGE_TEXT = "#111111";
+
+/** Monospace stack of the number badge. */
+const MONO_FONT = "ui-monospace, Consolas, Menlo, monospace";
+
+/** Approximate advance of one monospace digit, in em. */
+const MONO_ADVANCE_EM = 0.6;
 
 /** Handle square side, screen px. */
-const HANDLE_PX = 6;
+const HANDLE_PX = 7;
 
 // ── Style decision (pure) ─────────────────────────────────────────────────────
 
@@ -28,13 +45,15 @@ export interface RegionOutlineStyle {
   lineWidth: number;
   /** Dash pattern, screen px (empty = solid). */
   dash: number[];
-  /** Global alpha. */
+  /** Global alpha of the outline. */
   alpha: number;
+  /** Global alpha of the number. */
+  labelAlpha: number;
   /** Outline and badge colour. */
   color: string;
   /** Draw a dark halo under the outline. */
   halo: boolean;
-  /** Number badge font size, screen px. */
+  /** Number font size, screen px. */
   labelPx: number;
   /** Draw a filled badge behind the number. */
   badge: boolean;
@@ -50,15 +69,19 @@ export interface RegionOutlineStyle {
  */
 export function regionOutlineStyle(regionMode: boolean, selected: boolean): RegionOutlineStyle {
   if (!regionMode) {
-    return { lineWidth: 1, dash: [4, 4], alpha: 0.3, color: "#ffffff", halo: false, labelPx: 9, badge: false, handles: false };
+    return {
+      lineWidth: 1, dash: [4, 4], alpha: 0.3, labelAlpha: 0.45, color: "#ffffff",
+      halo: false, labelPx: 10, badge: false, handles: false,
+    };
   }
   return {
-    lineWidth: selected ? 2 : 1,
+    lineWidth: selected ? 2 : 1.5,
     dash: [],
     alpha: 1,
-    color: selected ? SELECTED_COLOR : "#ffffff",
+    labelAlpha: 1,
+    color: selected ? SELECTED_COLOR : IDLE_COLOR,
     halo: true,
-    labelPx: 12,
+    labelPx: 11,
     badge: true,
     handles: selected,
   };
@@ -120,7 +143,8 @@ function strokeOutline(ctx: CanvasRenderingContext2D, box: Rect, style: RegionOu
   ctx.globalAlpha = style.alpha;
   ctx.setLineDash(style.dash.map((d) => d * px));
   if (style.halo) {
-    ctx.strokeStyle = "#111111";
+    // 1 px on each side of the line.
+    ctx.strokeStyle = HALO_COLOR;
     ctx.lineWidth = (style.lineWidth + 2) * px;
     ctx.strokeRect(box.x, box.y, box.width, box.height);
   }
@@ -142,21 +166,26 @@ function strokeOutline(ctx: CanvasRenderingContext2D, box: Rect, style: RegionOu
 
 /** Slot number at the top-left corner (badge in region mode, plain text when subdued). */
 function drawLabel(ctx: CanvasRenderingContext2D, box: Rect, text: string, style: RegionOutlineStyle, px: number): void {
-  ctx.globalAlpha = style.alpha;
-  ctx.font = `bold ${style.labelPx * px}px sans-serif`;
+  ctx.globalAlpha = style.labelAlpha;
   ctx.textBaseline = "top";
-  const inset = 2 * px;
   if (style.badge) {
-    const side = (style.labelPx + 5) * px;
+    // Badge flush with the box's outer top-left corner: padding 1 x 6 px.
+    ctx.font = `500 ${style.labelPx * px}px ${MONO_FONT}`;
+    const outer = (style.lineWidth / 2) * px;
+    const x = box.x - outer;
+    const y = box.y - outer;
+    const width = (text.length * MONO_ADVANCE_EM * style.labelPx + 12) * px;
+    const height = (Math.ceil(style.labelPx * 1.2) + 2) * px;
     ctx.fillStyle = style.color;
-    ctx.fillRect(box.x + inset, box.y + inset, side, side);
-    ctx.fillStyle = "#111111";
-    ctx.fillText(text, box.x + inset + 4 * px, box.y + inset + 2 * px);
+    ctx.fillRect(x, y, width, height);
+    ctx.fillStyle = BADGE_TEXT;
+    ctx.fillText(text, x + 6 * px, y + 2 * px);
     return;
   }
   // Dark outline under the light text so the number reads on white too.
-  const x = box.x + inset + px;
-  const y = box.y + inset;
+  ctx.font = `${style.labelPx * px}px ${MONO_FONT}`;
+  const x = box.x + 3 * px;
+  const y = box.y + 2 * px;
   ctx.lineJoin = "round";
   ctx.lineWidth = 3 * px;
   ctx.strokeStyle = "#000000";
@@ -165,17 +194,19 @@ function drawLabel(ctx: CanvasRenderingContext2D, box: Rect, text: string, style
   ctx.fillText(text, x, y);
 }
 
-/** Eight screen-sized handles of the selected region. */
+/** Eight screen-sized handles of the selected region: light squares with a 1 px dark halo. */
 function drawHandles(ctx: CanvasRenderingContext2D, view: ViewTransform, rect: Rect, pixelRatio: number, px: number): void {
   ctx.globalAlpha = 1;
   ctx.lineWidth = px;
   const half = (HANDLE_PX / 2) * px;
+  // Halo stroke centred half a pixel outside the square.
+  const ring = half + px / 2;
   for (const handle of REGION_HANDLES) {
     const p = regionHandlePoint(rect, handle);
     const at = backingRect(view, { x: p.x, y: p.y, width: 0, height: 0 }, pixelRatio);
-    ctx.fillStyle = "#ffffff";
+    ctx.fillStyle = SELECTED_COLOR;
     ctx.fillRect(at.x - half, at.y - half, 2 * half, 2 * half);
-    ctx.strokeStyle = "#111111";
-    ctx.strokeRect(at.x - half, at.y - half, 2 * half, 2 * half);
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.strokeRect(at.x - ring, at.y - ring, 2 * ring, 2 * ring);
   }
 }

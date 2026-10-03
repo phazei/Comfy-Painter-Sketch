@@ -100,4 +100,60 @@ describe("layer row clicks", () => {
     click(pixels);
     expect(calls).toEqual([["toggleMaskView", "a"], ["targetMask", "a"], ["targetLayer", "a"]]);
   });
+
+  it("lmask slot: Shift+click toggles enabled, Ctrl+click loads a selection; the add icon adds (Alt = hide all)", async () => {
+    const { LayerRow } = await import("./layerRow");
+    const { actions, calls } = recorder();
+    const row = new LayerRow("paint", "a", actions);
+    row.update({ id: "a", name: "A", visible: true, locked: false, selected: true, standby: false, maskSlot: { canHave: true, mask: { enabled: true, targeted: false, viewing: false } } });
+    const root = row.element as unknown as FakeElement;
+    const mask = root.find("cps-layer-mask-thumb")[0];
+    const add = root.find("cps-layer-mask-add")[0];
+    if (!mask || !add) throw new Error("no slot parts");
+    click(mask, { shiftKey: true });
+    click(mask, { ctrlKey: true });
+    click(add, { altKey: true });
+    click(add);
+    expect(calls).toEqual([["toggleMaskEnabled", "a"], ["maskSelection", "a", "replace"], ["addLayerMask", "a", true], ["addLayerMask", "a", false]]);
+  });
+
+  it("row clicks select; Ctrl+click loads a selection; row buttons never select", async () => {
+    const { LayerRow } = await import("./layerRow");
+    const { actions, calls } = recorder();
+    const row = new LayerRow("mask", "m", actions);
+    row.update({ id: "m", name: "Mask 1", visible: true, locked: false, selected: false, standby: false, color: "#0000ff" });
+    const root = row.element as unknown as FakeElement;
+    click(root);
+    click(root, { ctrlKey: true });
+    for (const name of ["cps-layer-invert", "cps-layer-lock", "cps-layer-solo", "cps-layer-eye"]) {
+      const b = root.find(name)[0];
+      if (!b) throw new Error(`no ${name}`);
+      click(b);
+    }
+    expect(calls).toEqual([
+      ["select", "m"],
+      ["loadSelection", "m", "replace"],
+      ["toggleInvert", "m"],
+      ["toggleLocked", "m"],
+      ["toggleSolo", "m"],
+      ["toggleVisible", "m"],
+    ]);
+  });
+
+  it("Image Mask row: Duplicate button, lock badge, no lock button", async () => {
+    const { LayerRow } = await import("./layerRow");
+    const { actions, calls } = recorder();
+    const row = new LayerRow("imageMask", "im", actions);
+    row.update({ id: "im", name: "Image Mask", visible: true, locked: true, selected: false, standby: false, color: "#00ff00", canDuplicate: true });
+    const root = row.element as unknown as FakeElement;
+    expect(root.find("cps-layer-lock")).toHaveLength(0);
+    expect(root.find("cps-layer-lock-badge")).toHaveLength(1);
+    const dup = root.find("cps-layer-dup")[0];
+    if (!dup) throw new Error("no duplicate");
+    expect(dup.disabled).toBe(false);
+    click(dup);
+    expect(calls).toEqual([["duplicate", "im"]]);
+    row.update({ id: "im", name: "Image Mask", visible: true, locked: true, selected: false, standby: false, color: "#00ff00", canDuplicate: false });
+    expect(dup.disabled).toBe(true);
+  });
 });

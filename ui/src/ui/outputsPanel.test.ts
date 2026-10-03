@@ -1,6 +1,7 @@
-/** Outputs tab slot cards against a minimal fake DOM (no browser in the test environment). */
+/** Outputs tab (Main card, slot grid, selected region card) against a minimal fake DOM (no browser in the test environment). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEmptyDocument } from "../document/create";
+import { MAX_BORDER_SIZE } from "../document/outputOptions";
 import type { Editor } from "../engine/editor";
 import { EditorState } from "../engine/editorState";
 import { FrameOps } from "../engine/frameOps";
@@ -18,6 +19,7 @@ class FakeElement extends EventTarget {
   innerHTML = "";
   title = "";
   hidden = false;
+  disabled = false;
   value = "";
   type = "";
   step = "";
@@ -25,10 +27,12 @@ class FakeElement extends EventTarget {
   max = "";
   spellcheck = false;
   maxLength = 0;
+  readonly attributes = new Map<string, string>();
   readonly style = { backgroundColor: "", setProperty: () => {}, removeProperty: () => {} };
   readonly classes = new Set<string>();
   readonly classList = {
     add: (name: string) => this.classes.add(name),
+    remove: (name: string) => this.classes.delete(name),
     toggle: (name: string, on: boolean) => (on ? this.classes.add(name) : this.classes.delete(name)),
     contains: (name: string) => this.classes.has(name),
   };
@@ -37,7 +41,7 @@ class FakeElement extends EventTarget {
   }
   append(...items: FakeElement[]): void {
     for (const item of items) {
-      item.parent?.children.splice(item.parent.children.indexOf(item), 1);
+      item.remove();
       item.parent = this;
       this.children.push(item);
     }
@@ -53,6 +57,7 @@ class FakeElement extends EventTarget {
     parent.children.splice(parent.children.indexOf(this) + 1, 0, item);
   }
   prepend(item: FakeElement): void {
+    item.remove();
     item.parent = this;
     this.children.unshift(item);
   }
@@ -65,7 +70,9 @@ class FakeElement extends EventTarget {
     this.parent.children.splice(this.parent.children.indexOf(this), 1);
     this.parent = null;
   }
-  setAttribute(): void {}
+  setAttribute(name: string, value: string): void {
+    this.attributes.set(name, value);
+  }
   focus(): void {}
   blur(): void {}
   select(): void {}
@@ -76,10 +83,19 @@ class FakeElement extends EventTarget {
     const values: Record<string | symbol, unknown> = { canvas: this };
     return new Proxy(values, { get: (t, k) => (k in t ? t[k] : () => undefined) });
   }
+  /** Own classes (className string and classList). */
+  has(name: string): boolean {
+    return this.className.split(" ").includes(name) || this.classes.has(name);
+  }
   /** Depth-first search by class. */
   find(name: string): FakeElement[] {
-    const own = this.className.split(" ").includes(name) || this.classes.has(name) ? [this] : [];
+    const own = this.has(name) ? [this] : [];
     return [...own, ...this.children.flatMap((child) => child.find(name))];
+  }
+  /** Depth-first search by text. */
+  findText(text: string): FakeElement[] {
+    const own = this.textContent === text ? [this] : [];
+    return [...own, ...this.children.flatMap((child) => child.findText(text))];
   }
 }
 
@@ -115,123 +131,178 @@ function click(element: FakeElement): void {
   element.dispatchEvent(new Event("click"));
 }
 
+const classOf = (e: FakeElement) => e.className.split(" ")[0] ?? "";
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe("Outputs tab slot cards", () => {
-  it("always shows Main plus six slots; empty slots are `+ Region N` rows", async () => {
+describe("Outputs tab", () => {
+  it("shows Main, the six-slot grid and the hint; no region card while Main is selected", async () => {
+    const { OUTPUTS_HINT, emptySlotTitle } = await import("./outputsPanel");
     const { root } = await setup();
-    expect(root.find("cps-output-main")).toHaveLength(1);
-    const empty = root.find("cps-output-empty");
-    expect(empty).toHaveLength(6);
-    expect(empty.map((row) => row.children[1]?.textContent)).toEqual([1, 2, 3, 4, 5, 6].map((n) => `Region ${n}`));
-    expect(empty.every((row) => !row.hidden)).toBe(true);
+    expect(root.children.map(classOf)).toEqual(["cps-output-card", "cps-output-slots", "cps-outputs-hint"]);
+    expect(root.children[0]!.has("cps-output-main")).toBe(true);
+    expect(root.children[0]!.has("cps-selected")).toBe(true);
+    expect(root.children[2]!.textContent).toBe(OUTPUTS_HINT);
+    const slots = root.find("cps-output-slot");
+    expect(slots.map((s) => s.textContent)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(slots.every((s) => s.has("cps-empty") && !s.has("cps-filled"))).toBe(true);
+    expect(slots[2]!.title).toBe(emptySlotTitle(3));
+    expect(emptySlotTitle(3)).toBe("Add region 3 (centred) · or drag on the image");
+    expect(root.find("cps-output-region")).toHaveLength(0);
   });
 
-  it("clicking `+ Region N` fills that slot (undoable); delete collapses it again", async () => {
+  it("an empty slot creates the centred region (selected, card after the grid); trash empties it (undoable)", async () => {
     const { ops, paint, root } = await setup();
-    click(root.find("cps-output-empty")[2]!);
-    expect(ops.inSlot(3)).toBeDefined();
-    expect(root.find("cps-output-empty")[2]!.hidden).toBe(true);
-    const title = root.find("cps-output-title").map((t) => t.textContent);
-    expect(title).toEqual(["Main", "3 · Region 3"]);
+    click(root.find("cps-output-slot")[2]!);
+    const region = ops.inSlot(3)!;
+    expect(region.rect).toEqual({ x: 25, y: 20, width: 50, height: 40 });
+    expect(ops.selectedId).toBe(region.id);
+    const slot = root.find("cps-output-slot")[2]!;
+    expect([slot.has("cps-filled"), slot.has("cps-selected"), slot.title]).toEqual([true, true, "Region 3"]);
+    expect(root.children.map(classOf)).toEqual(["cps-output-card", "cps-output-slots", "cps-output-card", "cps-outputs-hint"]);
+    expect(root.children[0]!.has("cps-selected")).toBe(false);
+    expect(root.find("cps-output-title").map((t) => t.textContent)).toEqual(["Main", "3 · Region 3"]);
+
     click(root.find("cps-output-delete")[0]!);
     expect(ops.inSlot(3)).toBeUndefined();
-    expect(root.find("cps-output-empty")[2]!.hidden).toBe(false);
-    expect(root.find("cps-output-card")).toHaveLength(1);
+    expect(root.find("cps-output-region")).toHaveLength(0);
+    expect(root.find("cps-output-slot")[2]!.has("cps-empty")).toBe(true);
     paint.undo();
-    expect(root.find("cps-output-title")[1]!.textContent).toBe("3 · Region 3");
+    expect(ops.inSlot(3)).toBeDefined();
   });
 
-  it("selection marks the card without a document change; cards follow renames in place", async () => {
+  it("a filled slot selects its region without a document change; the card swaps only on a new id", async () => {
     const { s, ops, root } = await setup();
-    const id = ops.addDefault(1)!;
-    const card = root.find("cps-output-card")[1]!;
-    expect(card.classes.has("cps-selected")).toBe(true);
+    const a = ops.addDefault(1)!;
+    const b = ops.addDefault(4)!;
+    const cardB = root.find("cps-output-region")[0]!;
     const changes = vi.fn();
     s.events.on("change", changes);
-    ops.select(null);
-    expect(card.classes.has("cps-selected")).toBe(false);
-    expect(root.find("cps-output-main")[0]!.classes.has("cps-selected")).toBe(true);
+    click(root.find("cps-output-slot")[0]!);
+    expect(ops.selectedId).toBe(a);
     expect(changes).not.toHaveBeenCalled();
-    ops.rename(id, "  face  ");
-    expect(root.find("cps-output-card")[1]).toBe(card);
+    const cardA = root.find("cps-output-region")[0]!;
+    expect(cardA).not.toBe(cardB);
+    expect(root.find("cps-output-region")).toHaveLength(1);
+    expect(root.find("cps-output-slot")[0]!.has("cps-selected")).toBe(true);
+    expect(root.find("cps-output-slot")[3]!.has("cps-selected")).toBe(false);
+    // Edits refresh the same card in place.
+    ops.rename(a, "  face  ");
+    expect(root.find("cps-output-region")[0]).toBe(cardA);
     expect(root.find("cps-output-title")[1]!.textContent).toBe("1 · face");
+    expect(root.find("cps-output-slot")[0]!.title).toBe("face");
+    ops.select(null);
+    expect(root.find("cps-output-region")).toHaveLength(0);
+    expect(root.find("cps-output-main")[0]!.has("cps-selected")).toBe(true);
+    void b;
   });
 
-  it("options layout: Modify + Alpha on line 1, extras on line 2 only when the choice has any", async () => {
+  it("options: segmented mode + Alpha on line 1; line 2 only for Fill / Crop / Border", async () => {
     const { ops, root } = await setup();
     const options = root.find("cps-output-options")[0]!;
     const [line1, line2] = options.children;
-    const swatch = options.find("cps-output-swatch")[0]!;
-    const [pad, width] = options.find("cps-output-field");
-    const mask = options.find("cps-output-check").find((c) => !c.classes.has("cps-output-alpha"))!;
-    const classOf = (e: FakeElement) => e.className.split(" ")[0] ?? "";
-    expect(line1!.children.map(classOf)).toEqual(["cps-output-label", "cps-output-mode", "cps-output-check"]);
-    expect(line2!.className.split(" ")).toContain("cps-output-extras");
+    expect(line1!.children.map(classOf)).toEqual(["cps-segmented", "cps-output-pill"]);
+    const segments = line1!.children[0]!.children;
+    expect(segments.map((b) => b.textContent)).toEqual(["None", "Fill", "Crop", "Border"]);
+    expect(segments.map((b) => b.title)).toEqual(["None", "Fill mask", "Crop to mask", "Add border"]);
+    expect(segments[0]!.has("cps-active")).toBe(true);
     expect(line2!.hidden).toBe(true);
 
-    ops.setOptions(null, { applyMask: "crop" });
+    click(segments[2]!);
+    expect(ops.options(null).applyMask).toBe("crop");
+    expect(segments[2]!.has("cps-active") && !segments[0]!.has("cps-active")).toBe(true);
+    const shown = () => line2!.children.filter((c) => !c.hidden).map((c) => c.textContent || classOf(c));
     expect(line2!.hidden).toBe(false);
-    expect(pad!.hidden).toBe(false);
-    expect(width!.hidden).toBe(true);
-    expect(mask.hidden).toBe(true);
+    expect(shown()).toEqual(["Padding", "cps-stepper"]);
 
     ops.setOptions(null, { applyMask: "border" });
-    expect(line2!.children).toEqual([pad, width, swatch, mask]);
-    expect([pad!.hidden, width!.hidden, swatch.hidden, mask.hidden]).toEqual([true, false, false, false]);
+    expect(shown()).toEqual(["cps-stepper", "cps-output-swatch", "cps-output-spacer", "Mask border"]);
+    expect(line2!.find("cps-stepper").find((st) => !st.hidden)!.title).toBe("Border width");
 
-    // Fill: no line 2; the swatch sits on line 1 in the hidden Alpha's place.
     ops.setOptions(null, { applyMask: "fill" });
-    expect(line2!.hidden).toBe(true);
-    expect(swatch.parent).toBe(line1);
-    expect(line1!.children.at(-1)).toBe(swatch);
-    expect(swatch.hidden).toBe(false);
-
-    ops.setOptions(null, { applyMask: "border" });
-    expect(line2!.children).toEqual([pad, width, swatch, mask]);
+    expect(shown()).toEqual(["Color", "cps-output-swatch"]);
     ops.setOptions(null, { applyMask: "none" });
     expect(line2!.hidden).toBe(true);
-    expect(swatch.hidden).toBe(true);
   });
 
-  it("Alpha toggle: undoable per output, hidden but kept while Modify = Fill mask", async () => {
-    const { ALPHA_TITLE } = await import("./outputOptionsRow");
+  it("steppers: padding ±8 (min 0); border ±1 up to 8 then ±4, clamped; one undo step per click", async () => {
+    const { s, ops, paint, root } = await setup();
+    const [pad, border] = root.find("cps-stepper");
+    const buttons = (stepper: FakeElement) => stepper.find("cps-stepper-button");
+    ops.setOptions(null, { applyMask: "crop" });
+    const depth = s.history.undoDepth;
+    click(buttons(pad!)[1]!);
+    click(buttons(pad!)[1]!);
+    expect(ops.options(null).cropPadding).toBe(16);
+    click(buttons(pad!)[0]!);
+    expect(ops.options(null).cropPadding).toBe(8);
+    expect(s.history.undoDepth).toBe(depth + 3);
+    ops.setOptions(null, { cropPadding: 3 });
+    click(buttons(pad!)[0]!);
+    expect(ops.options(null).cropPadding).toBe(0);
+    expect(buttons(pad!)[0]!.disabled).toBe(true);
+    paint.undo();
+    expect(ops.options(null).cropPadding).toBe(3);
+
+    const { stepBorderSize, stepPadding } = await import("./outputOptionsRow");
+    expect([7, 8, 9, 12].map((v) => stepBorderSize(v, 1))).toEqual([8, 12, 13, 16]);
+    expect([12, 9, 8, 2, 1].map((v) => stepBorderSize(v, -1))).toEqual([8, 5, 7, 1, 1]);
+    expect(stepBorderSize(MAX_BORDER_SIZE, 1)).toBe(MAX_BORDER_SIZE);
+    expect(stepPadding(4, -1)).toBe(0);
+    ops.setOptions(null, { applyMask: "border", borderSize: 8 });
+    click(buttons(border!)[1]!);
+    expect(ops.options(null).borderSize).toBe(12);
+    // The value is a typeable field.
+    const input = border!.find("cps-stepper-field")[0]!.children[0]!;
+    expect(input.value).toBe("12");
+  });
+
+  it("Alpha pill: undoable per output, greyed and inert (value kept) while Fill", async () => {
+    const { ALPHA_TITLE, ALPHA_FILL_TITLE } = await import("./outputOptionsRow");
     const { ops, paint, root } = await setup();
     const id = ops.addDefault(1)!;
     const [mainAlpha, regionAlpha] = root.find("cps-output-alpha");
-    const box = (label: FakeElement) => label.children[0] as FakeElement & { checked?: boolean };
     expect(mainAlpha!.title).toBe(ALPHA_TITLE);
-    expect(mainAlpha!.children[1]!.textContent).toBe("Alpha");
-    // Sits right after the Modify dropdown.
-    const row = mainAlpha!.parent!;
-    expect(row.children.indexOf(mainAlpha!)).toBe(row.children.indexOf(row.find("cps-output-mode")[0]!) + 1);
-    expect(box(mainAlpha!).checked).toBe(false);
+    expect(mainAlpha!.textContent).toBe("Alpha");
+    expect(mainAlpha!.has("cps-active")).toBe(false);
 
-    box(regionAlpha!).checked = true;
-    box(regionAlpha!).dispatchEvent(new Event("change"));
+    click(regionAlpha!);
     expect(ops.options(id).alpha).toBe(true);
     expect(ops.options(null).alpha).toBeUndefined();
+    expect(regionAlpha!.has("cps-active")).toBe(true);
 
     ops.setOptions(id, { applyMask: "fill" });
-    expect(regionAlpha!.hidden).toBe(true);
-    expect(mainAlpha!.hidden).toBe(false);
-    expect(box(regionAlpha!).checked).toBe(true);
+    expect(regionAlpha!.has("cps-disabled")).toBe(true);
+    expect(regionAlpha!.has("cps-active")).toBe(false);
+    expect(regionAlpha!.title).toBe(ALPHA_FILL_TITLE);
+    click(regionAlpha!);
     expect(ops.options(id).alpha).toBe(true);
+    expect(mainAlpha!.has("cps-disabled")).toBe(false);
     ops.setOptions(id, { applyMask: "crop" });
-    expect(regionAlpha!.hidden).toBe(false);
-    expect(box(regionAlpha!).checked).toBe(true);
+    expect(regionAlpha!.has("cps-disabled")).toBe(false);
+    expect(regionAlpha!.has("cps-active")).toBe(true);
 
     paint.undo();
     paint.undo();
     expect(ops.options(id).alpha).toBe(true);
     paint.undo();
     expect(ops.options(id).alpha).toBeUndefined();
-    expect(box(regionAlpha!).checked).toBe(false);
+    expect(regionAlpha!.has("cps-active")).toBe(false);
     paint.redo();
-    expect(box(regionAlpha!).checked).toBe(true);
-    box(regionAlpha!).checked = false;
-    box(regionAlpha!).dispatchEvent(new Event("change"));
+    expect(regionAlpha!.has("cps-active")).toBe(true);
+    click(regionAlpha!);
     expect(ops.options(id)).not.toHaveProperty("alpha");
+  });
+
+  it("Mask border pill toggles; Main header shows W × H", async () => {
+    const { ops, root } = await setup();
+    ops.setOptions(null, { applyMask: "border" });
+    const pill = root.find("cps-output-mask-border")[0]!;
+    expect(pill.has("cps-active")).toBe(true);
+    click(pill);
+    expect(ops.options(null).borderMask).toBe(false);
+    expect(pill.has("cps-active")).toBe(false);
+    expect(root.find("cps-output-size")[0]!.textContent).toBe("100 × 80");
   });
 
   it("does not re-sync on render events", async () => {

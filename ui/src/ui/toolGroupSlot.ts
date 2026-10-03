@@ -1,18 +1,20 @@
 /**
- * One rail slot for a tool group (Photoshop tool groups): shows the group's
- * current tool icon with a small corner triangle. Click selects the current
- * tool; long-press or right-click opens a flyout (popover to the right)
- * listing the members. Generic over {@link ToolGroupSpec}: the shape group
- * (U) and the marquee group (M) both use it.
+ * One tool-dock slot for a tool group (Photoshop tool groups): shows the
+ * group's current tool icon with the shared corner caret
+ * (`longPress.ts`). Click selects the current tool; a long-press,
+ * right-click or a press on the caret opens a fly-out menu below the slot
+ * (`menu.ts`) listing the members with their keys. Generic over
+ * {@link ToolGroupSpec}: the dock's Shapes slot (U) and its synthetic Select
+ * slot (M / L / W) both use it.
  */
 
 import type { ToolGroupSpec } from "../tools/toolGroups";
 import type { Tool } from "../tools/types";
 import { setIcon } from "./icons";
+import { cornerCaret, installLongPress } from "./longPress";
+import type { LongPressHandle } from "./longPress";
+import { openMenu } from "./menu";
 import type { PopoverHandle, PopoverHost } from "./popover";
-
-/** Press duration that opens the flyout, ms. */
-const LONG_PRESS_MS = 400;
 
 /** What a slot needs. */
 export interface ToolGroupSlotOptions {
@@ -20,19 +22,42 @@ export interface ToolGroupSlotOptions {
   /** Member tools in group order. */
   tools: readonly Tool[];
   popovers: PopoverHost;
-  /** A member was chosen (click or flyout). */
+  /** A member was chosen (click or fly-out). */
   select(toolId: string): void;
+  /** Slot tooltip (default: `"{label} (keys) · hold or right-click for more"`). */
+  title?: string;
+  /** Fly-out key column overrides by tool id (e.g. `"⇧M"`); `""` hides the key. */
+  keys?: Readonly<Record<string, string>>;
 }
 
 /**
- * Rail button + flyout of one tool group.
+ * Key labels of the members: a tool's shortcut uppercased, shown on the
+ * first member using that key only (Shift+key cycles the rest), unless
+ * `overrides` names the tool.
+ * @param tools - Members in group order.
+ * @param overrides - Per-tool labels.
+ * @returns Label per tool id.
+ */
+export function memberKeyLabels(tools: readonly Tool[], overrides: Readonly<Record<string, string>> = {}): Map<string, string> {
+  const seen = new Set<string>();
+  const labels = new Map<string, string>();
+  for (const tool of tools) {
+    const key = tool.shortcut.toUpperCase();
+    const first = key !== "" && !seen.has(key);
+    seen.add(key);
+    labels.set(tool.id, overrides[tool.id] ?? (first ? key : ""));
+  }
+  return labels;
+}
+
+/**
+ * Dock button + fly-out of one tool group.
  */
 export class ToolGroupSlot {
   readonly element: HTMLButtonElement;
   private currentId: string;
-  private activeId = "";
-  private pressTimer: ReturnType<typeof setTimeout> | null = null;
-  private suppressClick = false;
+  private readonly press: LongPressHandle;
+  private readonly caret: HTMLSpanElement;
   private flyout: PopoverHandle | null = null;
 
   /**
@@ -42,24 +67,22 @@ export class ToolGroupSlot {
     this.currentId = options.tools[0]?.id ?? "";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "cps-rail-button cps-rail-grouped";
+    button.className = "cps-bar-button cps-dock-tool cps-dock-group";
     button.dataset["group"] = options.group.id;
-    const key = options.tools[0]?.shortcut.toUpperCase() ?? "";
-    const title = key ? `${options.group.label} (${key}, Shift+${key} cycles)` : options.group.label;
+    const title = options.title ?? defaultTitle(options.group, options.tools);
     button.title = title;
     button.setAttribute("aria-label", title);
     button.setAttribute("aria-haspopup", "menu");
-    button.addEventListener("click", () => this.handleClick());
-    button.addEventListener("pointerdown", (e) => this.startPress(e));
-    button.addEventListener("pointerup", () => this.endPress());
-    button.addEventListener("pointerleave", () => this.endPress());
-    button.addEventListener("pointercancel", () => this.endPress());
-    button.addEventListener("contextmenu", (e) => {
-      e.preventDefault();
-      this.endPress();
-      this.openFlyout();
-    });
+    button.setAttribute("aria-pressed", "false");
     this.element = button;
+    this.caret = cornerCaret(() => this.press.openNow());
+    this.press = installLongPress(button, {
+      tap: () => {
+        this.flyout?.close();
+        this.options.select(this.currentId);
+      },
+      hold: () => this.openFlyout(),
+    });
     this.render();
   }
 
@@ -83,16 +106,15 @@ export class ToolGroupSlot {
    * @param activeId - Active tool id.
    */
   setActive(activeId: string): void {
-    this.activeId = activeId;
     this.setCurrent(activeId);
     const on = this.options.tools.some((t) => t.id === activeId);
     this.element.classList.toggle("cps-active", on);
     this.element.setAttribute("aria-pressed", String(on));
   }
 
-  /** Close the flyout and stop timers. */
+  /** Close the fly-out and remove the press listeners. */
   dispose(): void {
-    this.endPress();
+    this.press.dispose();
     this.flyout?.close();
   }
 
@@ -100,67 +122,39 @@ export class ToolGroupSlot {
 
   private render(): void {
     const tool = this.options.tools.find((t) => t.id === this.currentId);
-    setIcon(this.element, tool?.icon ?? "");
-    const corner = document.createElement("span");
-    corner.className = "cps-rail-corner";
-    this.element.appendChild(corner);
-  }
-
-  private handleClick(): void {
-    if (this.suppressClick) {
-      this.suppressClick = false;
-      return;
-    }
-    this.flyout?.close();
-    this.options.select(this.currentId);
-  }
-
-  private startPress(event: PointerEvent): void {
-    this.suppressClick = false;
-    if (event.button !== 0) return;
-    this.endPress();
-    this.pressTimer = setTimeout(() => {
-      this.pressTimer = null;
-      this.suppressClick = true;
-      this.openFlyout();
-    }, LONG_PRESS_MS);
-  }
-
-  private endPress(): void {
-    if (this.pressTimer !== null) clearTimeout(this.pressTimer);
-    this.pressTimer = null;
+    setIcon(this.element, tool?.icon ?? "", 19);
+    this.element.appendChild(this.caret);
   }
 
   private openFlyout(): void {
     if (this.flyout) return;
-    const menu = document.createElement("div");
-    menu.className = "cps-tool-flyout";
-    menu.setAttribute("role", "menu");
-    for (const tool of this.options.tools) {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = "cps-tool-flyout-item";
-      item.setAttribute("role", "menuitem");
-      item.classList.toggle("cps-active", tool.id === this.activeId);
-      setIcon(item, tool.icon, 18);
-      const label = document.createElement("span");
-      label.textContent = tool.label;
-      const key = document.createElement("span");
-      key.className = "cps-tool-flyout-key";
-      key.textContent = tool.shortcut.toUpperCase();
-      item.append(label, key);
-      item.addEventListener("click", () => {
-        this.flyout?.close();
-        this.options.select(tool.id);
-      });
-      menu.appendChild(item);
-    }
-    this.flyout = this.options.popovers.open(menu, {
+    const keys = memberKeyLabels(this.options.tools, this.options.keys);
+    this.element.classList.add("cps-menu-open");
+    this.flyout = openMenu(this.options.popovers, {
       anchor: this.element,
-      placement: "right",
+      placement: "below",
+      className: "cps-pop-flyout",
+      entries: this.options.tools.map((tool) => {
+        const key = keys.get(tool.id) ?? "";
+        return {
+          label: tool.label,
+          icon: tool.icon,
+          current: tool.id === this.currentId,
+          ...(key ? { key } : {}),
+          onPick: () => this.options.select(tool.id),
+        };
+      }),
       onClose: () => {
         this.flyout = null;
+        this.element.classList.remove("cps-menu-open");
       },
     });
   }
+}
+
+/** `"{label} (M / L / W) · hold or right-click for more"`. */
+function defaultTitle(group: ToolGroupSpec, tools: readonly Tool[]): string {
+  const keys = [...new Set(tools.map((t) => t.shortcut.toUpperCase()).filter((k) => k !== ""))];
+  const label = keys.length > 0 ? `${group.label} (${keys.join(" / ")})` : group.label;
+  return `${label} \u00b7 hold or right-click for more`;
 }

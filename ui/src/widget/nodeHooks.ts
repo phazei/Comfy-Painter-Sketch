@@ -48,6 +48,19 @@ export function installNodeHooks(nodeType: LGraphNodeConstructor): void {
     getController(this)?.handleConnectionsChange(type, slot);
   };
 
+  // Side panel visibility follows the node's canvas selection (both renderers).
+  const onSelected = proto.onSelected;
+  proto.onSelected = function (this: LGraphNode): void {
+    onSelected?.call(this);
+    getController(this)?.handleSelected(true);
+  };
+
+  const onDeselected = proto.onDeselected;
+  proto.onDeselected = function (this: LGraphNode): void {
+    onDeselected?.call(this);
+    getController(this)?.handleSelected(false);
+  };
+
   const onRemoved = proto.onRemoved;
   proto.onRemoved = function (this: LGraphNode): void {
     onRemoved?.call(this);

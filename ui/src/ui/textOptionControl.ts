@@ -1,5 +1,5 @@
 /**
- * Options-bar control for `text` descriptors (`tools/options.ts`
+ * Options-strip control for `text` descriptors (`tools/options.ts`
  * {@link TextOption}; the text tool's font): a `<select>` of the
  * descriptor's suggestions (re-read on every refresh, so recent fonts stay
  * current; a value that is not listed is shown at the top) plus a
@@ -26,10 +26,10 @@ const CUSTOM = "\u0000custom";
  */
 export function textControl(desc: TextOption, ctx: ControlContext): OptionControl {
   const element = document.createElement("label");
-  element.className = "cps-select cps-text-option";
+  element.className = "cps-text-option";
   if (desc.title) element.title = desc.title;
   const name = document.createElement("span");
-  name.className = "cps-num-label";
+  name.className = "cps-select-label";
   name.textContent = desc.label;
   const select = document.createElement("select");
   const field = document.createElement("input");

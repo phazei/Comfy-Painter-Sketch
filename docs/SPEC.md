@@ -519,9 +519,9 @@ current image (not the frame): `stage = content * scale + offset`.
 - Drawing order: surround and cobweb outside the maximum paint area; checker
   under the image area; background (image / colour / transparency when its eye
   is off); layers; cmask tints; a veil over off-image paint; the image outline
-  (faint, stronger when paint extends past it); the paint-area border. A
-  `W x H` label sits under the image area. A plain quick click on the cobweb
-  regrows it (cosmetic).
+  (faint, stronger when paint extends past it); the paint-area border. The
+  image size is shown in the bottom bar (section 7), not on the stage. A plain
+  quick click on the cobweb regrows it (cosmetic).
 - Stage notes: one at a time at the bottom of the stage, 5 s.
 
 **Node sizing.** `getMinHeight` 256 (graph units) plus CSS `min-height: 244px`
@@ -533,20 +533,22 @@ current image (not the frame): `stage = content * scale + offset`.
 pointer/mouse/dblclick/contextmenu bubbling. While the pointer is over the root a
 `window` capture listener stops `wheel` (always) and pointer events of a
 middle-drag that started on the stage before the graph sees them;
-`data-capture-wheel="true"` is set too. Wheel over the options bar scrolls it sideways; elsewhere native
-scroll; Ctrl+wheel is prevented.
+`data-capture-wheel="true"` is set too. Wheel over the options strip scrolls it
+sideways when it overflows; elsewhere native scroll; Ctrl+wheel is prevented.
 Why: Nodes 2.0 forwards wheel and middle-button pointer events to the graph in
 the capture phase, before our element's listeners run.
 
-**Fullscreen** (`ui/fullscreen.ts`). Enter with F or the rail button. The editor
+**Fullscreen** (`ui/fullscreen.ts`). Enter with F or the bottom bar's
+Fullscreen button. The editor
 root moves into a fixed overlay on `document.body` (z-index 1790: above ComfyUI
 menus, below PrimeVue dialogs/toasts); the `.cps-widget` wrapper never moves and
 shows a placeholder ("Editing in fullscreen -- press Esc or click to return").
-On enter the side panel is forced open (restored on exit), the view re-fits
+On enter the side panel moves inside the editor and is always shown (its
+shrunk state is kept), the view re-fits
 (on exit it re-fits only if it was fitting before entering), drags are
 cancelled and popovers closed. Keys are read only from inside the overlay
 (a dialog over it is ignored). Exit with Esc (last in the Esc chain),
-F, the rail or overlay button, the placeholder, or automatically (250 ms poll)
+F, the bottom bar's or the overlay's Exit button, the placeholder, or automatically (250 ms poll)
 when the node leaves the DOM or the viewed graph. One fullscreen editor per page.
 The overlay stops pointer/wheel events and refuses drops (so a dropped file
 never loads a workflow into the hidden graph).
@@ -556,42 +558,179 @@ inner root may move, never the wrapper.
 | | In-node | Fullscreen |
 |---|---|---|
 | Canvas | drawn at graph zoom | no graph zoom |
-| Side panel | auto-collapses below 520 px | forced open |
+| Side panel | outside the node, right (16 px gap, top-aligned); shown while the node is selected or the keyboard scope is active | inside, top-right (12 px); always shown |
 | Keyboard | hover / click-engage | always owned |
 | Unhandled keys | pass to ComfyUI (except arrows while engaged) | swallowed except the pass-through list (section 24) |
 
 Files: `engine/view.ts`, `viewport.ts`, `compositor.ts`, `ui/stageView.ts`,
-`stageInput.ts`, `fullscreen.ts`, `fullscreenKeys.ts`, `resolutionLabel.ts`,
-`webClick.ts`, `widget/eventIsolation.ts`, `constants.ts`, `painterWidget.ts`,
+`stageInput.ts`, `fullscreen.ts`, `fullscreenKeys.ts`, `webClick.ts`, `widget/eventIsolation.ts`, `constants.ts`, `painterWidget.ts`,
 `nodeHooks.ts`.
 
 ## 7. Editor shell and focus
 
-**Regions** (`ui/shell.ts`). The root `.cps-root` holds the rail (36 px), the
-options bar (28 px) over the body (stage + side panel, 216 px), and the popover
-host.
+**Regions** (`ui/shell.ts`). The stage fills the root `.cps-root`; every bar
+floats over it in a slot (12 px from the edges):
 
-- **Rail**, top to bottom: tool slots (scrolling); Quick Mask; Copy, Cut,
-  Paste, Images (count badge); Undo, Redo, Fit, Clear, Fullscreen; the colour
-  swatches pinned at the bottom.
-- **Options bar**: leading area (selection actions "To mask" / "Invert" while a
-  selection exists; the Quick Mask "Mask" badge in the mask colour); the tool's
-  options (scroll horizontally, never wrap); trailing area (resolution notice,
-  Outputs button, side-panel toggle).
-- **Side panel** tabs Layers and Outputs. The tab survives collapse and
-  fullscreen. Below 520 px of editor width it auto-collapses; a user toggle wins
-  until the width crosses 520 again.
+- **History pill** (top-left): Undo ("Undo (Ctrl Z)"), Redo ("Redo (Ctrl
+  Y)"), a divider, Clear ("Clear all…", confirm, section 8).
+- **Tool dock** (top centre), the options strip under it (6 px gap).
+- **Images / clipboard pill** (top-right): Images (count badge) | Copy, Cut,
+  Paste (section 17); the Images tray opens under it (section 20).
+- **Sliders pill** (left, 120 px from the top).
+- **Bottom bar** (bottom, spanning the stage); the resolution notice floats
+  above its right end.
+- **Side panel** (floating, below), the help overlay (`overlaySlot`), and the
+  popover host.
+
+**Tool dock** (`toolDock.ts`, `toolGroupSlot.ts`): `Brush, Eraser, Fill |
+Select group, Move layer | Shapes group, Text | swatches`. Rail tools not named
+there are appended in registry order.
+
+- **Select group** = Rectangular marquee (M), Elliptical marquee (Shift+M),
+  Lasso (L), Magic wand (W); **Shapes group** = Line (U), Arrow, Rectangle,
+  Ellipse. A group slot shows its current (last-used) member with a corner
+  caret; click selects it; long-press, right-click or a press on the caret opens
+  a fly-out below it (icon, label, key; current member tinted). The keys keep
+  their registry groups (section 12); the Select slot remembers its own last
+  member.
+- The **eyedropper** has no dock button: hovering the swatches (mouse), or a
+  long-press on them (any pointer, until the next press elsewhere), reveals a
+  small pill with it above the dock (below it in fullscreen; hidden under
+  Quick Mask). It stays while the eyedropper is active and hides 250 ms after
+  the pointer leaves. Tooltip "Eyedropper (I · or hold Alt while painting)".
+- The **swatches** sit at the dock's right end (section 10).
+- Modal states (Free Transform, region mode, Align drawing) dim the dock: idle
+  icon colour, no active tint.
+
+**Options strip** (`optionsStrip.ts`): one row under the dock, never wraps
+(scrolls sideways when it overflows), removed while empty. Contents, first
+match wins:
+
+1. **Free Transform**: the session's options only (section 18): `X, Y | W
+   [link icon] H | Angle | Flip H, Flip V | Commit, Cancel`; Commit is a
+   light button, Cancel a text button, Link an icon toggle between W and H.
+2. **Region mode**: "Regions" label, hint "Drag to draw · click a box to
+   select", **Done** (back to Layers).
+3. **Align drawing**: "Align drawing" label, X, Y, Scale, Reset (section 19),
+   **Done** (toggles it off).
+4. **Otherwise**: the tool's options (Move layer always, and the selection
+   tools while a selection exists, append Transform, Flip H, Flip V), then
+   the trailing part:
+   - while a selection exists, "To mask" (swatch in the current cmask
+     colour; the selection-to-mask icon while an lmask is targeted) and
+     "Invert", after a separator when the tool has options. Invert changes
+     the selection itself, so it has no on-state;
+   - a selection tool with nothing selected shows a hint instead: "Drag on the
+     canvas · ⇧ add · Alt subtract" (wand: "Click to select · ⇧ add · Alt
+     subtract"), so the strip is never empty;
+   - while a text edit is open a **Done** commits it ("Commit text (Esc ·
+     Ctrl Enter) · Enter adds a new line").
+
+Options render generically from descriptors: numbers as label + value (label
+scrub, value opens a slider popover), toggles as pills, selects as a dropdown
+chip with a menu (a select with icons, e.g. text Align, as icon toggles),
+the pen pressure group as one stylus button opening a 190 px popover (tinted
+while either pressure toggle is on).
+
+**Sliders pill** (`slidersPill.ts`): vertical Size and Hardness sliders for the
+brush and eraser, Width (no Hardness) for the shapes; those keys leave the strip
+(the text tool's Size stays there). Drag anywhere on a track (pointer capture;
+the descriptor's slider curve); the value shows below in mono. Tooltips "Size
+[ ]" / "Width [ ]", "Hardness ⇧[ ⇧]". Hidden for other tools and in modal
+states.
+
+**Bottom bar** (`bottomBar.ts`, `editChip.ts`, `quickMaskButton.ts`):
+`[status pill] [edit chip] [Quick Mask] [| Invert Apply Delete]` on the left,
+`Align | W x H | Fit Fullscreen Help` on the right.
+
+- **Status pill**: "LMask ×" while the lmask-only view is on (wins), else
+  "Solo ×" while any solo is set. A click ends the lmask view, or clears both
+  solo slots. Esc never does.
+- **Edit chip**: swatch, name, part (muted), chevron; a click opens a menu above
+  it (244 px). First match wins:
+
+  | State | Chip | Swatch | Menu |
+  |---|---|---|---|
+  | Region mode | Main / region name · Outputs | white | "Outputs": Main + each region (current marked), "Back to {layer}" (leaves region mode) |
+  | Image/Input Mask current | {row} · Read-only | mask colour | "{row} · Read-only": Duplicate to an editable mask, Back to {layer} |
+  | Quick Mask | {cmask} · ComfyUI mask | mask colour | "{cmask}": Invert mask (✓), View this mask alone (✓, the cmask solo), Lock / Unlock, Back to {layer} (Q) |
+  | Paint layer, lmask targeted | {layer} · Mask | half white / half black, ring | "Edit on {layer}": Pixels, Layer mask (current), View layer mask only (Alt-click, ✓), Enable / Disable layer mask (⇧-click) |
+  | Paint layer | {layer} · Pixels | checker | same; without an lmask: Pixels, Add layer mask (reveal all, or show only the selection) |
+  | Text layer | {layer} · Pixels | checker | Pixels, Rasterize text (commits an open edit, then the rasterize confirm) |
+
+  Region mode wins, so a cmask or lmask target never shows in Outputs. The
+  Background row is not selectable, so it never shows in the chip.
+- **Quick Mask button**: icon + "Quick Mask" + corner caret. Tap toggles (like
+  Q); long-press, right-click or the caret opens "Quick Mask paints" (the
+  cmasks, top-most first, current marked; a pick makes it current and turns
+  Quick Mask on). While on it is tinted with the current cmask's colour. The
+  Image/Input Mask row being current doesn't count as on; a tap then switches
+  to the top-most cmask. Hidden in region mode.
+- **lmask options** (while an lmask is targeted; not in region mode or Free
+  Transform): Invert (tinted while inverted), Apply, Delete mask (section 9).
+- **Align** ("Align" + icon; "Align drawing -- reposition/scale all layers
+  against the image"): toggles Align drawing (section 19); active colours while
+  it runs. While the resolution notice condition holds (and Align drawing is
+  off) it turns amber with a warning icon, also while the notice pill is hidden.
+- **Resolution**: the image size `W x H`, read-only, mono.
+- **Fit** ("Fit to view (Ctrl 0)"), **Fullscreen** ("Fullscreen (F)" / "Exit
+  fullscreen (F / Esc)"), **Help** ("Shortcuts (?)", the help overlay).
+
+**Resolution notice** (`resolutionNotice.ts`): an amber pill above the bottom
+bar's right end: warning icon, the notice text (section 8), a light "Match
+image resolution" button and × ("Hide (Align drawing stays amber)"). × hides
+the pill until the notice text changes.
+
+**Help overlay** (`helpOverlay.ts`, `shortcutList.ts`): `?` or the Help button
+toggles it; Esc, a backdrop click or × closes it. A dim backdrop over the
+editor with a centred card "Shortcuts" and a two-column grid of section cards
+(General, Tools, Brush and options, Selection, Layers and masks, Move and
+transform, Clipboard, Regions), generated from `ui/shortcutList.ts` -- a
+condensed copy of section 24; change both together. Buttons and text only, so
+focus stays on the key sink.
+
+**Side panel** (`sidePanel.ts`): 300 px wide, floating.
+
+- In-node it sits **outside the node**, 16 px to its right, top-aligned with the
+  editor; in fullscreen inside the editor, top-right (12 px).
+- Shown while the node is selected on the graph (`onSelected` / `onDeselected`,
+  plus a per-tick check) or the keyboard scope is active (hover or engaged);
+  always in fullscreen. A hide waits 250 ms (so the pointer can cross the gap)
+  and waits while the pointer is over the panel.
+- Header: segmented tabs `Layers | Outputs` ("Outputs (O)") + an icon-only
+  shrink segment ("Shrink panel" / "Expand panel"; shrunk = header only).
+  Clicking a tab, or O, expands it. On Layers the header's right side shows
+  the opacity chip (section 8). The tab survives shrink and fullscreen.
+- Height cap: in-node `max(580, node height - panel top)` (graph units; panel
+  top = the widget's y + its 6 px margin), in fullscreen the editor height - 24.
+  Below the cap it fits its content. Only the tab's list scrolls; tabs, header
+  and footer stay fixed.
+
+**Narrow layouts** (`shell.ts`, `data-layout`): when the centred dock would
+overlap a side group, the top row becomes one centred row (history, dock with
+the strip floating under it, clipboard) and the bottom bar shrinks to its
+content, centred. A bar wider than the node minus the margins (the top row,
+the strip, the bottom bar) anchors to the node's **right** edge, so its
+overflow sticks out to the left into graph space, never under the side panel.
 
 **Popovers** (`ui/popover.ts`) live inside the root (they follow it into
 fullscreen). One at a time, except nesting. They close on a press outside the
 popover and its anchor, Esc inside, the Esc chain, the anchor leaving the DOM,
 or the parent closing. Placed below / above / right of the anchor, flipped and
-clamped inside the root.
+clamped inside the root widened to include the anchor (the floating side panel
+hangs outside the node).
 
-**Long-press fly-outs.** Tool-group slots and the Paste button open their menu
-after a 400 ms press (two separate `LONG_PRESS_MS` constants:
-`toolGroupSlot.ts`, `pasteButton.ts`) or immediately on right-click. Release or
-leave cancels; the click after a long-press is suppressed.
+**Menus** (`ui/menu.ts`): popovers with an optional caps title, rows (swatch
+or icon, label, check mark or key hint) and dividers, an optional footer
+("Your pick becomes the button's default" on Copy / Paste). Rows never take
+focus. Used by the edit chip, Quick Mask, Copy, Paste, tool fly-outs and the
+strip's dropdowns.
+
+**Long-press** (`ui/longPress.ts`, one `LONG_PRESS_MS` = **380 ms**): tool-group
+slots, Copy, Paste, Quick Mask and the swatches (eyedropper reveal). A held
+press opens the menu; right-click or the corner caret opens it at once.
+Release, leave or cancel ends the timer; the click after a long-press is
+suppressed.
 
 **Focus policy** (`ui/focusPolicy.ts`, `keyboard.ts`). Editor shortcuts work only
 while the editor owns the keyboard: a hidden read-only `<input
@@ -610,7 +749,9 @@ class="cps-focus-sink">` or a text field inside the root has focus.
   control, so letter shortcuts are dead until then.
 - Fullscreen always owns the keyboard; a backdrop click reclaims the sink and
   overlay buttons never keep focus.
-- The rail's 2 px white left edge shows real focus, never hover guesses.
+- No visible focus indicator. The root carries `cps-has-keys` from the real
+  focus state (never hover guesses) for styling; the side panel follows the
+  scope's active state (above).
 - While active, `keydown`/`keyup` capture listeners sit on `window`; handled keys
   get `preventDefault` + `stopPropagation`. Keys from text fields pass through
   untouched except Ctrl+S (in fullscreen, keys the pass-through policy would
@@ -630,13 +771,24 @@ class="cps-focus-sink">` or a text field inside the root has focus.
   is what makes Ctrl+Z undo a stroke instead of a graph edit.
 - The scope going inactive triggers an upload flush.
 
-**Esc chain** (first consumer wins): Images panel -> float or transform session
-(cancel) -> tool drag or pending interaction (cancel) -> open popover (close, keeping any colour change) -> fullscreen (exit).
+**Esc chain** (first consumer wins; `editorHost.ts` + `shortcuts.ts`
+`handleEscape`): help overlay (close) -> Images tray, then any open menu,
+fly-out or popover (close, keeping any colour change) -> open text edit
+(commit) -> float or Free Transform session (cancel) -> tool drag or pending
+interaction (cancel) -> selection (deselect; not in region mode) -> fullscreen
+(exit). Confirms are native dialogs and take Esc themselves. Esc never ends
+Solo, the lmask-only view or region mode (their pill, tab, chip and section 8 /
+9 / 21 paths do). Esc in a text field (rename, geometry fields) is the field's.
 
-Files: `ui/shell.ts`, `editorHost.ts`, `hostSync.ts`, `sidePanel.ts`,
-`sidePanelState.ts`, `popover.ts`, `toolRail.ts`, `toolGroupSlot.ts`,
-`pasteButton.ts`, `optionsBar.ts`, `focusPolicy.ts`, `keyboard.ts`,
-`modifierScope.ts`, `shortcuts.ts`.
+Files: `ui/shell.ts`, `editorHost.ts`, `hostSync.ts`, `historyPill.ts`,
+`toolDock.ts`, `toolGroupSlot.ts`, `swatches.ts`, `optionsStrip.ts`,
+`optionControls.ts`, `optionGroup.ts`, `slidersPill.ts`, `clipGroup.ts`,
+`imagesPanel.ts`, `bottomBar.ts`, `editChip.ts`, `quickMaskButton.ts`,
+`resolutionNotice.ts`, `helpOverlay.ts`, `shortcutList.ts`, `sidePanel.ts`,
+`popover.ts`, `menu.ts`, `longPress.ts`, `focusPolicy.ts`, `keyboard.ts`,
+`modifierScope.ts`, `shortcuts.ts`, `widget/nodeHooks.ts`, `controller.ts`,
+`styles/` (`editor.css`, `bars.css`, `dock.css`, `controls.css`,
+`bottomBar.css`, `panel.css`).
 
 ## 8. Layers
 
@@ -681,25 +833,45 @@ style; later ones take the first colour not used by a cmask from blue
 
 ### Layers panel
 
-- **Header**: "Layers" and one opacity control for the selected row ("Opacity"
-  for a paint target, "Overlay" for the current cmask under Quick Mask). Each
-  press starts a new undo gesture; a scrub or a slider-popover session is one
-  step.
-- **List**, top to bottom: cmask rows; paint/text rows; the Image/Input Mask row
-  (if any); Background. A 2 px accent divider separates non-empty groups
-  (dividers are not rows or drop targets); rows have 2 px separators.
-- **Row**: thumbnail (36 px, checkerboard behind transparency, refreshed at most
-  every 150 ms), name (wraps to 2 lines, then ellipsis), solo, eye, lock. cmask
-  and Image/Input Mask rows add a second line: colour swatch (picker, one undo
-  step per session), invert toggle, Overlay opacity. Paint rows have the lmask
-  slot right of the thumbnail (section 9). Paint thumbnails show the image
-  footprint including placement; cmask thumbnails white on black with invert
-  applied.
+The Layers tab of the side panel (section 7).
+
+- **Header**: the segmented tabs, and on the right one opacity chip for the
+  selected row ("Opacity" for a paint target, "Overlay" for the current cmask
+  under Quick Mask; dimmed with no target). Each press starts a new undo
+  gesture; a scrub or a slider-popover session is one step.
+- **Sections** (`layerSections.ts`, `layerSectionHeader.ts`), top to bottom,
+  each with an 11 px caps header:
+  - **COMFYUI MASKS**: cmask rows. Chevron collapses it; collapsed, the header
+    shows a 3 px left bar in the current cmask's colour plus its swatch and
+    name. "+" = New mask (disabled at 7).
+  - **LAYERS**: paint and text rows. Collapsible; collapsed title
+    "LAYER: {NAME}" (the active layer). "+" = New layer.
+  - **SOURCE**: the Image/Input Mask row (if any) and Background. Not
+    collapsible.
+  Headers are not rows (no selection, hover or drop target). Collapse is
+  session UI state, not saved. Rows have a 1 px gap.
+- **Rows** (`layerRow.ts`), left to right; thumbnails 36 x 28 (checkerboard
+  behind transparency, refreshed at most every 150 ms); names wrap to 2 lines
+  (1 with a sub-line), then ellipsis:
+  - **cmask**: 3 px bar (the current cmask's colour, else empty), eye,
+    thumbnail (white on black, invert applied), name over a sub-line (colour
+    swatch -- picker, one undo step per session -- and "Overlay N%"), invert,
+    lock, solo.
+  - **Paint / text**: spacer, eye, thumbnail (image footprint incl. placement;
+    "T" badge on text), the lmask slot (section 9; the add-lmask icon, not on
+    text), name (text layers: "Text" sub-line), lock, solo.
+  - **Image/Input Mask**: like a cmask (bar, swatch, Overlay, invert), a lock
+    badge on the thumbnail instead of a lock button, plus **Duplicate**
+    ("Duplicate to an editable mask"; below) before solo. A hint line "Run the
+    workflow to load this mask" while the Input Mask waits.
+  - **Background**: spacer, eye, thumbnail with a lock badge, "Background" over
+    "Read-only", solo. No Duplicate.
 - **States**: `selected` = the paint target (active paint layer, or the current
-  cmask under Quick Mask); `standby` = fainter mark on the active paint layer
-  while Quick Mask is on; the current cmask always has a 4 px left bar in its
-  colour; hidden rows dimmed; with an lmask, a frame marks the targeted
-  thumbnail.
+  cmask under Quick Mask): accent background and a light 2 px ring on the
+  targeted thumbnail (pixels or lmask). `standby` = the active paint layer while
+  Quick Mask is on: faint accent background, thin muted ring. The current cmask
+  always has its colour bar. Hidden rows (eye off, or hidden by a solo) dim
+  their thumbnail and name.
 - **Clicks**: a paint row selects it and turns Quick Mask off (keeping that
   layer's pixels/lmask target); a cmask or Image Mask row makes it the current
   cmask and turns Quick Mask on; Ctrl(+Shift/Alt)+click loads a selection
@@ -710,8 +882,8 @@ style; later ones take the first colour not used by a cmask from blue
   control). Paint drops onto paint rows, cmask onto cmask rows; past the group
   end snaps to its edge row; the list auto-scrolls near its edges. One undo
   step; the selection is unchanged.
-- **Footer**: `[Align drawing] | [New layer] [New mask] [Duplicate] [Merge Down]
-  [Delete]`.
+- **Footer** (`layersFooter.ts`): `[New layer] [New mask] [Duplicate] [Merge
+  Down] ... [Delete]`. Align drawing is in the bottom bar (section 7).
   - New layer: above the active paint layer, active, Quick Mask off.
   - New mask: above the current cmask, becomes current (Quick Mask on).
   - Duplicate: the active paint/text layer (copies visible, locked, opacity and
@@ -720,12 +892,10 @@ style; later ones take the first colour not used by a cmask from blue
   - Merge Down: disabled whenever Ctrl+E would be refused.
   - Delete: the selected target (the current cmask under Quick Mask, otherwise
     the active layer; with an lmask targeted it deletes the layer -- the lmask is
-    deleted only from the options bar). The layer below becomes active, else the
+    deleted only from the bottom bar's lmask options). The layer below becomes active, else the
     nearest above; deleting the current cmask likewise makes the cmask below it
     current, else the nearest above (`maskAfterRemoval`).
     Undo restores pixels and lmask.
-  - Align drawing: toggles the hidden Align drawing tool (section 19); its icon
-    turns red while the resolution notice shows.
 - New layers, duplicates and new cmasks take over their group's solo when a solo
   is on.
 
@@ -736,11 +906,11 @@ style; later ones take the first colour not used by a cmask from blue
   to top above the paint, the Image Mask lowest.
 - **Current mask** (session only): the last selected cmask row; falls back to the
   top-most cmask. A new mask becomes current.
-- **Quick Mask** (Q, the rail button, or clicking a cmask row) toggles the paint
-  target between the active paint layer and the current cmask. The rail button
-  is tinted with the mask colour, the swatches grey out, the options bar shows a
-  "Mask" badge ("Quick Mask: strokes paint the mask (Q to exit)"). Text tool,
-  paste, Images panel inserts and New layer switch it off.
+- **Quick Mask** (Q, the bottom bar's Quick Mask button, or clicking a cmask
+  row) toggles the paint target between the active paint layer and the current
+  cmask. The button is tinted with the mask colour, the swatches grey out, the
+  edit chip shows "{cmask} · ComfyUI mask" (section 7). Text tool, paste, Images
+  panel inserts and New layer switch it off. Not available in region mode.
 - Painting a cmask: brush, eraser, bucket, shapes, selection fill and Delete act
   on coverage. Strokes are forced white (FG/BG ignored); opacity and flow apply.
 - Ctrl+click a cmask row selects its effective coverage (invert applied), hard.
@@ -777,11 +947,14 @@ style; later ones take the first colour not used by a cmask from blue
   checkerboard; outputs use the `background` colour instead of the image and
   gain transparency (section 3); copy merged and "All layers" sampling exclude
   the image; "Background" sampling still reads it.
-- **Mismatch notice** (options bar, any tool): when Match would resample by more
+- **Mismatch notice** (the amber pill above the bottom bar's right end, any
+  tool; section 7): when Match would resample by more
   than 1.5x: "Drawing grid G px -- image I px (N.Nx)"; when the image area
   doesn't fit the maximum paint area: "The image's shape doesn't fit the drawing
   -- parts can't be painted." (resolution wins if both). Never for an empty
   document or while loading. One warn toast per document per page session.
+  While the condition holds the bottom bar's Align button turns amber, also
+  after × hid the pill (hidden until the notice text changes).
 - **Match image resolution** (button in the notice, confirm): resamples every
   paint, cmask and lmask once so the frame matches what the image would give
   (never lowers resolution, up to 16384); placement is folded in and reset; text
@@ -825,7 +998,7 @@ ones. New pixel-editing paths must call this gate.
   row is hidden, solo-hidden or locked, or there is nothing below ("Nothing to
   merge down into."); never into Background or the Image Mask row. An enabled
   upper lmask is applied first ("Layer mask applied."); the lower lmask stays.
-- **Clear** (rail, confirm "Clear all paint, regions and output options? This
+- **Clear** (history pill, confirm "Clear all paint, regions and output options? This
   can be undone."): empties every layer, removes lmasks, converts text to paint,
   resets the frame to the minimum frame of the current image, resets placement,
   regions and Main options, ends solos and drops the selection (the frame can
@@ -834,12 +1007,14 @@ ones. New pixel-editing paths must call this gate.
   opacity, the current cmask and the Image Mask row stay. One undo step.
 
 Files: `ui/layersPanel.ts`, `layerRow.ts`, `layersPanelParts.ts`,
-`layerSections.ts`, `layerDrag.ts`, `layerControls.ts`, `thumbnails.ts`,
+`layerSections.ts`, `layerSectionHeader.ts`, `layersFooter.ts`,
+`layerThumbs.ts`, `layerDrag.ts`, `layerControls.ts`, `thumbnails.ts`,
 `inlineRename.ts`, `imageMaskRow.ts`, `resolutionNotice.ts`,
 `engine/layerOps.ts`, `editorMaskOps.ts`, `imageMaskOps.ts`, `solo.ts`,
 `layerDisplay.ts`, `rasterize.ts`, `mergeDown.ts`, `frameOps.ts`,
 `drawingResolution.ts`, `resolutionOps.ts`, `bounds.ts`, `document/layerList.ts`,
-`masks.ts`, `imageMask.ts`, `defaults/maskDefaults.ts`.
+`masks.ts`, `imageMask.ts`, `defaults/maskDefaults.ts`, `styles/panel.css`,
+`layerRows.css`.
 
 ## 9. Layer masks (lmask)
 
@@ -872,16 +1047,18 @@ is clicked; on the Background row; when the layer/lmask is deleted; on Alt+click
 again. While it is on, the viewed lmask is editable even on a hidden layer;
 bucket and wand sample only that lmask; paste and drop go into it.
 
-**Options bar** while an lmask is targeted (any tool, hidden during Free
-Transform): "Layer Mask:" | Invert mask (a setting, undoable) | Apply | Delete
-mask (undoable).
+**lmask options** in the bottom bar while an lmask is targeted (any tool;
+hidden during Free Transform and in region mode): | Invert (a setting,
+undoable; tinted while inverted) | Apply | Delete mask (trash icon, undoable).
+The edit chip shows "{layer} · Mask" and switches Pixels / Layer mask, the view
+and enable (section 7).
 
 **Apply** bakes the lmask as it acts (invert and `outside` applied) into the
 layer's alpha and removes it; one undo step. Also bakes a disabled lmask
 (clicking Apply means apply). Gate kind "whole": a hidden or locked layer is
 refused, even in the lmask-only view.
 
-**Swatches.** While an lmask is targeted, the rail swatches become black/white
+**Swatches.** While an lmask is targeted, the dock swatches become black/white
 mask swatches (default white foreground). X swaps, D resets to white over black;
 clicking a swatch does nothing. The real FG/BG are untouched.
 
@@ -914,7 +1091,7 @@ undoable; enable, target, view and swatches are not. PNG upload like a cmask.
 Clear removes lmasks (undo restores them). Duplicate copies them.
 
 Files: `engine/layerMask.ts`, `layerMaskOps.ts`, `layerMaskCarry.ts`,
-`tools/layerMaskBar.ts`, `ui/layerMaskThumb.ts`, `ui/swatches.ts`,
+`ui/layerMaskThumb.ts`, `ui/bottomBar.ts`, `ui/editChip.ts`, `ui/swatches.ts`,
 `document/layerMask.ts`, `nodes/layer_masks.py`.
 
 ## 10. Colour
@@ -922,9 +1099,12 @@ Files: `engine/layerMask.ts`, `layerMaskOps.ts`, `layerMaskCarry.ts`,
 - **FG/BG** (`engine/colors.ts`): default black / white, lowercase `#rrggbb`,
   per editor session (survives tab switches and graph undo; reset on reload;
   never saved).
-- **Swatches** (rail bottom): FG top-left, BG bottom-right, swap arrow (X),
-  reset icon (D). Click a square to open the picker. Greyed under Quick Mask;
-  replaced by mask swatches while an lmask is targeted.
+- **Swatches** (`ui/swatches.ts`, the tool dock's right end): two circles, FG
+  top-left over BG offset bottom-right, and a small column with the swap (X)
+  and reset (D) icons. Click a circle to open the picker. Dimmed and grey under
+  Quick Mask; black/white mask swatches while an lmask is targeted (section 9;
+  no picker). Hovering them (or a long-press) reveals the eyedropper button
+  (section 7).
 - **Uses**: brush, bucket and line use FG. Rectangle/ellipse: stroke FG, fill
   FG; "Both" fills with BG. Text uses FG (changing FG recolours an open edit;
   re-editing a text layer loads its colour into FG). Alt+Backspace fills FG,
@@ -961,40 +1141,40 @@ Files: `engine/colors.ts`, `ui/swatches.ts`, `colorPicker.ts`, `hsvControls.ts`,
   placement, view, Match image resolution (clears history), Image/Input Mask
   source changes. Frame adoption on an empty document drops history (after a
   Clear: truncates to it).
-- Buttons: rail Undo ("Undo (Ctrl+Z)") / Redo ("Redo (Ctrl+Shift+Z / Ctrl+Y)"); disabled
+- Buttons: the history pill's Undo ("Undo (Ctrl Z)") / Redo ("Redo (Ctrl Y)"); disabled
   during a stroke; Undo also enabled while a float or transform is active.
 - Special cases: with a float or transform active, Undo cancels it and Redo is
   ignored; Undo during a Move or region drag cancels the gesture; Undo with an
   open text edit commits it first, then undoes it.
 
 Files: `engine/history.ts`, `editorTypes.ts`, `layerHistory.ts`, `paintOps.ts`,
-`editor.ts`, `ui/toolRail.ts`, `shortcuts.ts`.
+`editor.ts`, `ui/historyPill.ts`, `shortcuts.ts`.
 
 ## 12. Tools
 
 ### Common mechanics
 
-**Rail order and keys** (`tools/registry.ts`):
+**Dock order and keys** (`ui/toolDock.ts`; tools and keys in
+`tools/registry.ts`). Dock: `Brush, Eraser, Fill | Select group, Move layer |
+Shapes group, Text | swatches` (section 7).
 
 | Slot | Tool ids | Key |
 |---|---|---|
 | Brush | `brush` | B |
 | Eraser | `eraser` | E |
-| Paint bucket | `bucket` | G |
-| Eyedropper | `eyedropper` | I |
+| Fill (paint bucket) | `bucket` | G |
+| Select (dock group) | `marquee-rect`, `marquee-ellipse`, `lasso`, `wand` | M, Shift+M cycles the marquees; L; W |
+| Move layer | `move-layer` | V |
 | Shapes (group) | `line`, `arrow`, `rectangle`, `ellipse` | U, Shift+U cycles |
 | Text | `text` | T |
-| Move layer | `move-layer` | V |
-| Marquee (group) | `marquee-rect`, `marquee-ellipse` | M, Shift+M cycles |
-| Lasso | `lasso` | L |
-| Magic wand | `wand` | W |
+| Eyedropper (no dock button) | `eyedropper` | I; hover reveal above the swatches; Alt |
 
-Hidden tools (no rail button, no key): `move` (Align drawing, layers footer),
-`region` (Outputs tab / O), `transform` (a Free Transform session), and
-`selection-outline` (substituted at pointer-down).
+Hidden tools (no dock button, no key): `move` (Align drawing, the bottom bar's
+Align button), `region` (Outputs tab / O), `transform` (a Free Transform
+session), and `selection-outline` (substituted at pointer-down).
 
-**Tool groups** (`toolGroups.ts`, `toolGroupSlot.ts`): one rail slot showing the
-last-used member. Click selects it; long-press (400 ms) or right-click opens a
+**Tool groups** (`toolGroups.ts`, `toolGroupSlot.ts`): one dock slot showing the
+last-used member. Click selects it; long-press (380 ms) or right-click opens a
 fly-out (icon, label, key). The key selects the last-used member; Shift+key
 advances to the next (wraps).
 
@@ -1017,14 +1197,15 @@ Ctrl beats Alt. Modifier tracking is observe-only (cursors). Pan (middle-drag,
 Space+drag) is handled before any tool.
 
 **Options** are declarative descriptors (number, toggle, select, button, text,
-label) rendered by the options bar; no per-tool UI code. Each tool instance
+label) rendered by the options strip; no per-tool UI code. Each tool instance
 keeps its values for the session (Brush and Eraser separately, each shape
 separately). Setting-backed defaults are read once when a session's tools are
 created. Number labels scrub (Shift x10); clicking a value opens a slider
-popover with a typed field. Bar extras: the lmask bar (section 9), Transform /
-Flip H / Flip V (Move layer always; selection tools while a selection exists),
-"To mask" / "Invert" while a selection exists, the Quick Mask badge. A Free
-Transform session replaces the whole bar (the hidden rail tool's `[` `]` and
+popover with a typed field. Strip extras: Transform / Flip H / Flip V (Move
+layer always; selection tools while a selection exists), trailing "To mask" /
+"Invert" while a selection exists (the empty-selection hint otherwise); the
+lmask controls and the Quick Mask button live on the bottom bar (section 7). A
+Free Transform session replaces the whole strip (the hidden tool's `[` `]` and
 digit keys still change its width/size and opacity).
 
 **Paint target**: the active paint/text layer; the current cmask under Quick
@@ -1210,7 +1391,8 @@ Files: `tools/` (`registry.ts`, `toolGroups.ts`, `brush.ts`, `eraser.ts`,
 `shapeTool.ts`, `shapeTools.ts`, `text.ts`, `types.ts`, `options.ts`),
 `engine/paintOps.ts`, `pixelOps.ts`, `shapes.ts`, `shapeRender.ts`,
 `textOps.ts`, `textLayer.ts`, `textRender.ts`, `document/textData.ts`,
-`ui/textOverlay.ts`, `ui/loupe.ts`, `ui/optionsBar.ts`, `ui/optionControls.ts`.
+`ui/textOverlay.ts`, `ui/loupe.ts`, `ui/toolDock.ts`, `ui/optionsStrip.ts`,
+`ui/optionControls.ts`.
 
 ## 13. Brush engine
 
@@ -1347,7 +1529,7 @@ show the mode (section 24 / cursors).
   image px. Alt held with the button down = straight segments (rubber band);
   releasing Alt with the button down resumes freehand. Releasing the button with
   Alt held keeps the path open (`pending`): each press adds a vertex; it closes on
-  releasing Alt, a double-click (<= 400 ms, within slop), or a click near the
+  releasing Alt, a double-click (<= 400 ms apart, within slop), or a click near the
   start (> 2 points). Releasing the button without Alt closes it. Esc or a tool
   switch cancels. A bare click deselects (replace mode). Ctrl->Move is suppressed
   while a polygon is pending.
@@ -1357,7 +1539,7 @@ show the mode (section 24 / cursors).
 
 - Select all (Ctrl+A): the current image area in document coordinates (includes
   placement); bounds grow to cover it.
-- Deselect (Ctrl+D). Invert (Ctrl+Shift+I, Shift+F7, or the bar button); no
+- Deselect (Ctrl+D). Invert (Ctrl+Shift+I, Shift+F7, or the strip button); no
   selection stays none.
 - Not implemented: Reselect, feather, grow/shrink, refine edge.
 - Delete / Backspace: clear the selected part of the target (paint: alpha x
@@ -1366,7 +1548,7 @@ show the mode (section 24 / cursors).
 - Alt+Backspace / Ctrl+Backspace: fill with FG / BG (cmask: white coverage, both
   identical; lmask: the foreground / background mask swatch). Without a
   selection: "Nothing is selected."
-- **To mask** (bar button): adds the selection coverage (soft kept) to the
+- **To mask** (strip button): adds the selection coverage (soft kept) to the
   current cmask, creating one if none exists; does not change the target. With
   an lmask targeted it hides the selection on that lmask instead (white, soft
   kept, through the edit gate). One undo step.
@@ -1405,7 +1587,7 @@ carries the selection in the same undo step.
 Files: `engine/selection.ts`, `selectionOps.ts`, `selectionState.ts`,
 `selectionRaster.ts`, `selectionOutline.ts`, `selectionFollow.ts`,
 `tools/marquee.ts`, `lasso.ts`, `magicWand.ts`, `outlineDrag.ts`,
-`selectionModifiers.ts`, `ui/selectionShortcuts.ts`, `selectionActions.ts`,
+`selectionModifiers.ts`, `ui/selectionShortcuts.ts`, `optionsStrip.ts`,
 `marchingAnts.ts`, `layerSelectHover.ts`.
 
 ## 16. Floating selections
@@ -1471,13 +1653,19 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`, `floatMath.ts`,
   reveals).
 - Hidden / solo-hidden layers refuse ("Nothing to copy." if empty); locked layers
   can be copied. Every command settles a float first.
+- **Buttons** (`ui/clipGroup.ts`, the top-right pill): Copy, Cut ("Cut (Ctrl
+  X)"), Paste. Copy and Paste have a corner caret; a tap runs the button's
+  current mode, a long-press, right-click or the caret opens its menu, and the
+  pick runs and becomes the button's mode and icon (sticky per editor session).
+  Copy's menu "Copy": Copy (Ctrl C) / Copy merged (Ctrl ⇧ C; icon with a
+  three-line badge).
 - The copy goes to a module-level internal clipboard (shared by all PainterSketch
   nodes on the page: pixels, doc rect, image scale, a 16x16 fingerprint, the
   source editor) and as a PNG to the system clipboard (failure is console-only).
 
 **Paste**
 
-- Ctrl+V and the Paste button ("System"): a system-clipboard image (unless it is
+- Ctrl+V and the Paste button ("System clipboard"): a system-clipboard image (unless it is
   our own PNG by fingerprint -> the internal copy) -> internal copy -> ComfyUI
   clipspace -> note. "Our own" = an internal copy exists, same pixel size, and
   the mean absolute difference over the 16x16 RGBA thumbnails is <= 4. The
@@ -1487,8 +1675,8 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`, `floatMath.ts`,
   clamped, also from another PainterSketch node (intended: same spot across
   nodes); without one, like Ctrl+V (Chrome fires no `paste` for Ctrl+Shift+V,
   so the async clipboard is read instead).
-- Paste button long-press / right-click: System clipboard / Clipspace (the choice
-  sticks per button).
+- Paste button menu "Paste from": System clipboard / Clipspace (the pick sticks;
+  the icon swaps). Paste in place has no button (Ctrl+Shift+V only).
 - A paste is a new paint layer "Pasted" / "Pasted N" above the active paint layer
   (above the top paint layer under Quick Mask); one undo step; Quick Mask
   off; the selection is dropped in the same step; takes over solo. Foreign images
@@ -1518,7 +1706,7 @@ CORS-blocked web image gives a toast; a non-image a note.
 
 Files: `engine/clipboardOps.ts`, `clipboardMath.ts`, `pastePlacement.ts`,
 `ui/clipboardActions.ts`, `clipboardShortcuts.ts`, `pasteChoice.ts`,
-`pasteSources.ts`, `pasteButton.ts`, `dropImport.ts`.
+`pasteSources.ts`, `clipGroup.ts`, `dropImport.ts`.
 
 ## 18. Free Transform and flips
 
@@ -1540,8 +1728,9 @@ an edge handle then scales both axes, as in Photoshop); **Shift inverts** that;
 while rotating** snaps to 15 degrees. Arrows nudge 1 image px, Shift 10. The
 session tool takes all other stage input (no Ctrl substitution).
 
-**Options bar** (replaces the tool's): X, Y (box centre, image px), W, H (1..10000
-%), Link, Angle (-180..180), Flip H, Flip V, Commit (Enter), Cancel (Esc).
+**Options strip** (replaces the tool's): X, Y (box centre, image px) | W, Link
+(icon toggle between them), H (1..10000 %) | Angle (-180..180) | Flip H, Flip V
+| Commit (light button, Enter), Cancel (Esc).
 
 **Commit / cancel**
 
@@ -1563,8 +1752,8 @@ rasterize, Match or undo touching it drops it). Repeated transforms resample fro
 it once (5 x 10 degrees = one 50 degree resample). 128 MB per editor, oldest
 first; never saved.
 
-**Flips** (H/V buttons in the session bar, the Move layer bar, and the selection
-tool bars while a selection exists): in a session, part of it. With a selection
+**Flips** (H/V buttons in the session strip, the Move layer strip, and the
+selection tools' strips while a selection exists): in a session, part of it. With a selection
 or float outside a session: lift and mirror, stays floating. With neither: mirror
 the whole layer about its content centre, exact, one undo step, lmask mirrored
 too. Text: rasterize confirm. Empty layer: "The layer is empty."
@@ -1601,9 +1790,9 @@ Files: `engine/transformOps.ts`, `transformMath.ts`, `transformHit.ts`,
   one step; swallowed mid-drag. Esc / pointer-cancel aborts a drag.
 - Refusals: the edit gate notes; "This layer can't be moved."; "No pixels are
   selected." Loading or an active stroke: silent.
-- Bar: Auto-select, Transform, Flip H, Flip V.
+- Strip: Auto-select, Transform, Flip H, Flip V (always shown).
 
-**Align drawing** (hidden tool; layers-footer toggle, no shortcut; toggling again
+**Align drawing** (hidden tool; the bottom bar's Align button, no shortcut; toggling again
 returns to the last rail tool)
 
 - Edits `doc.placement`: the whole drawing (all layers, cmasks, lmasks) relative
@@ -1612,7 +1801,7 @@ returns to the last rail tool)
   cursor (x1.05 per notch, trackpads proportional); the wheel without a drag
   still zooms the view. Arrows nudge 1 / 10 image px. Esc during a drag restores
   the start placement.
-- Bar: X, Y (image px, +-16384), Scale (5..1000 %), Reset position.
+- Strip: X, Y (image px, +-16384), Scale (5..1000 %), Reset position, Done.
 - Clamped so the paint area covers the image area plus 50 image px per side
   (Reset and cancel aren't clamped).
 - **Not undoable**: never in the paint history (Ctrl+Z always undoes paint, also
@@ -1633,15 +1822,18 @@ Files: `tools/moveLayer.ts`, `tools/move.ts`, `engine/moveOps.ts`,
   (no provenance check). Deduped by the `/view` query for upstream previews and
   by Python's `source_id` for executed ones. Named after the upstream file stem
   for LoadImage-style / `type=input` previews.
-- **Images button** after Paste, with a count badge; disabled while empty.
-- **Panel**: a sticky thumbnail column over the left of the stage (in the popover
-  layer, so it follows fullscreen), newest first. A thumbnail click inserts and
-  the panel **stays open**. It closes on Esc (before any other Esc handler), a
-  press on the stage, a rail tool press, or the button again; clicks elsewhere
-  leave it open. A new source auto-opens it, except the first one seen after
-  load (a seed) or a repeat; re-linking the input re-arms, so the next first
-  source auto-opens. The list follows the history live and the panel closes if
-  it empties.
+- **Images button** first in the top-right pill ("Images (layer_source)"), with
+  a count badge; disabled while empty.
+- **Tray**: a sticky, narrow thumbnail column right-aligned under the top-right
+  pill (in the popover layer, so it follows fullscreen; at most down to the
+  bottom bar, scrolling), newest first. A thumbnail click inserts and the tray
+  **stays open**. It closes on Esc (right after the help overlay, before any
+  other Esc handler), a press on the stage, a press on a dock tool button, or
+  the button again; clicks elsewhere leave it open. A new source auto-opens it
+  and marks its thumbnail (accent ring + "NEW") until the tray closes, except
+  the first one seen after load (a seed) or a repeat; re-linking the input
+  re-arms, so the next first source auto-opens. The list follows the history
+  live and the tray closes if it empties.
 - **Insert**: load and decode (over 8192 px per side is downscaled once: "Image
   reduced to W x H px (max 8192 px per side)."); add an empty paint layer named
   after the file stem or "Image N" above the active paint layer (Quick Mask off,
@@ -1659,11 +1851,13 @@ Files: `widget/sourceHistory.ts`, `layerSourceWatch.ts`, `imageSource.ts`,
 
 **Region mode = the Outputs tab.** The hidden `region` tool (no options, no
 Ctrl/Alt substitutes, crosshair) is active exactly while the Outputs tab shows.
-Opening the tab activates it; choosing any other tool shows the Layers tab;
-clicking Layers restores the last rail tool. The Outputs button (options bar,
-trailing, "Output regions (O)") and **O** toggle: with the panel open in region
-mode they return to Layers; otherwise they open the panel on Outputs. Collapsing
-the panel doesn't leave region mode. Esc doesn't leave it. Delete / Backspace
+Opening the tab (or **O**) activates it and expands a shrunk panel. It ends on
+the Layers tab, O again, the strip's **Done** ("Regions … Done", section 7),
+the edit chip's "Back to {layer}", or choosing any other tool; leaving by tab,
+O, Done or chip restores the last rail tool. Shrinking the panel doesn't leave
+region mode; Esc doesn't either. While in it the edit chip shows the output
+("Main" / region name · Outputs), the Quick Mask button and the lmask options
+are hidden, and Q does nothing. Delete / Backspace
 removes the selected region (one undo step; with Main selected it does nothing).
 The image selection is hidden in region mode (no marching ants) and out of reach:
 Delete, Ctrl+C/X/A/D and Alt/Ctrl+Backspace never touch it (they are swallowed).
@@ -1683,36 +1877,51 @@ Delete, Ctrl+C/X/A/D and Alt/Ctrl+Backspace never touch it (they are swallowed).
 
 **Geometry**: integer image px from the top-left, never rescaled; the region area
 is one image size beyond each edge (`x` in `[-W, 2W]`, `y` in `[-H, 2H]`); edges
-`floor(v + 0.5)`; min 1x1. "+ Region N" creates a centred half-size region.
+`floor(v + 0.5)`; min 1x1. A click on an empty slot creates a centred
+half-size region.
 
-**Outputs tab**: Main card, then six slot cards in order (an empty slot is a
-one-line "+ Region N" button). Hint: "Drag on the image to add a region;
-Shift-drag starts a new one inside another." Cards update in place (a field being
-edited is never rebuilt).
+**Outputs tab** (`outputsPanel.ts`), top to bottom:
 
-- Region card row 1: eye (overlay only; outputs always produced), title
-  `N · name` (double-click renames the name: Enter / blur commit, Esc
-  cancels), trash (empties the slot; no renumbering). Row 2: X / Y / W / H
-  fields (typed live, rounded, clamped; label scrub 2 px per step, Shift x10;
-  one session = one undo step; Enter commits, Esc reverts).
-- Main card: title, read-only `W x H`, options row; selected when no region is.
-- Clicking a card selects it.
+1. **Main card**: "Main" + read-only `W x H` (mono), options row. Selected
+   (inset light ring) when no region is; clicking it selects Main.
+2. **Slot grid**: six fixed slots `1..6` in one row (mono). Filled = grey,
+   selected = light with dark text, empty = dashed outline. A filled slot
+   selects its region (tooltip: its name); an empty slot creates the centred
+   half-size region in that slot ("Add region N (centred) · or drag on the
+   image"). Slot N always feeds helper output pair N.
+3. **Region card**, only while a region is selected (inset light ring): row 1
+   eye (overlay only; outputs always produced), title `N · name`
+   (double-click renames the name: Enter / blur commit, Esc cancels), trash
+   (empties the slot; no renumbering). Row 2: X / Y / W / H fields (typed live,
+   rounded, clamped; label scrub 2 px per step, Shift x10; one session = one
+   undo step; Enter commits, Esc reverts). Then the options row.
+4. Hint: "Drag on the image to add a region; Shift-drag starts a new one inside
+   another."
 
-**Output options row** (`outputOptionsRow.ts`): `Modify` select + `Alpha`
-checkbox; a second line only when needed.
+Cards update in place (a field being edited is never rebuilt); the region card
+is swapped only when the selected id changes (its open field sessions commit).
 
-| Modify | Extras | Defaults |
+**Output options row** (`outputOptionsRow.ts`): a segmented control
+`None | Fill | Crop | Border` (tooltips "None", "Fill mask", "Crop to mask",
+"Add border") and an **Alpha** pill. Under Fill the Alpha pill is greyed and
+inert ("Not available with Fill"), its value kept. A second line only when
+needed:
+
+| Mode | Extras | Defaults |
 |---|---|---|
 | None | - | - |
-| Fill mask | fill swatch (in Alpha's place; Alpha hidden, value kept) | `#000000` |
-| Crop to mask | Pad | 0 |
-| Add border | W (1..4096), colour swatch, Mask border | 64, `#ffffff`, on |
+| Fill | "Color" + swatch | `#000000` |
+| Crop | "Padding" + `− N px +` stepper (±8, min 0) | 0 |
+| Border | width stepper (±1 up to 8, then ±4; 1..4096; "Border width"), colour swatch, "Mask border" pill | 64, `#ffffff`, on |
 
-Options apply only at execution (nothing changes on the stage).
+Stepper values are typeable fields; each click is one undo step. Swatches open
+the colour picker (one session = one step). Options apply only at execution
+(nothing changes on the stage).
 
-**Overlay** (`regionOverlay.ts`): in region mode, solid outlines with a halo and a
-number badge; the selected region 2 px `#62d5ff` with 8 handles; the image border
-highlighted while Main is selected. Outside region mode: subdued dashed outlines
+**Overlay** (`regionOverlay.ts`): in region mode, solid boxes with a 1 px dark
+halo and a number badge (box colour, dark mono text): idle 1.5 px `#b8bbc0`, the
+selected region 2 px `#f2f2f2` with 8 handles (7 px); the image border 2 px
+`#f2f2f2` while Main is selected. Outside region mode: subdued dashed outlines
 (alpha 0.3) with a small number. Only visible regions are drawn or hit.
 
 **Undo**: add, remove, rect, rename, eye and option edits are `outputs` entries
@@ -1846,7 +2055,12 @@ cause shows the raw error text as the reason.
 | All 6 region slots are used. Delete a region to draw another. | Drawing a 7th region. |
 
 Other fixed text: "Run the workflow to load this mask" (Input Mask hint); the
-resolution notice; the fullscreen placeholder; the Outputs hint; the cleanup
+resolution notice; the fullscreen placeholder; the Outputs hint; the strip's
+region hint "Drag to draw · click a box to select"; the strip's empty-selection
+hints "Drag on the canvas · ⇧ add · Alt subtract" (marquees, lasso) and "Click
+to select · ⇧ add · Alt subtract" (wand); the help overlay ("Shortcuts",
+sections and rows from `ui/shortcutList.ts`); the menu footer "Your pick
+becomes the button's default"; the cleanup
 stats line "Files: {A} ({size}) · Older than 24 h: {B} ({size})" with
 "Loading file counts…" before it loads and "Could not load file counts:
 {reason}." on failure.
@@ -1863,10 +2077,11 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | Ctrl+Z | Undo (cancels a float / transform / region or Move drag without undoing anything else; commits an open text edit first) |
 | Ctrl+Shift+Z, Ctrl+Y | Redo (ignored while floating / transforming) |
 | Ctrl+S | Commit a float, flush uploads, then save the workflow (Ctrl+Shift+S is not intercepted) |
-| Esc | Images panel > float / transform > tool drag or pending interaction > popover > fullscreen |
-| Q | Toggle Quick Mask |
+| Esc | Help overlay > Images tray / menu / fly-out / popover > commit an open text edit > cancel a float / transform > cancel a tool drag or pending interaction > deselect (not in region mode) > exit fullscreen. Never ends Solo, the lmask-only view or region mode |
+| ? | Toggle the help overlay (also the bottom bar's Help button) |
+| Q | Toggle Quick Mask (does nothing in region mode) |
 | F | Toggle fullscreen |
-| O | Toggle the Outputs tab (region mode; with the panel collapsed, opens it on Outputs) |
+| O | Toggle the Outputs tab (region mode; a shrunk panel expands) |
 | Delete / Backspace (Shift optional) | Clear the selection on the target; without a selection, or on key repeat, swallowed (never deletes graph nodes). Ctrl+Delete / Alt+Delete are not bound. In region mode it removes the selected region instead |
 | F5 / Ctrl+R / Cmd+R / Ctrl+Shift+R | Page-wide, only while uploads are pending: flush (3 s), confirm if that failed, then reload |
 
@@ -1890,7 +2105,8 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | M / Shift+M | Marquee group / cycle Rectangular, Elliptical |
 | Ctrl (hold, at press) | Temporary Move layer with auto-select (rail tools except Text, Move layer; auto-select is off while a selection exists and picks cmasks under Quick Mask; ignored during a transform session) |
 | Alt (hold, at press) | Temporary eyedropper (Brush, Bucket, Line, Arrow, Rectangle, Ellipse; not the Eraser; also outside a transform session's box) |
-| Long-press / right-click a group slot | Tool fly-out |
+| Long-press (380 ms) / right-click / corner caret on a dock group slot (Select, Shapes) | Tool fly-out |
+| Hover / long-press the swatches | Reveal the Eyedropper button |
 
 ### Brush and options
 
@@ -1965,7 +2181,8 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | Ctrl+X | Cut |
 | Ctrl+V | Paste as a new layer (into the lmask in lmask-only view) |
 | Ctrl+Shift+V | Paste our copy in place |
-| Long-press / right-click Paste | Choose System clipboard / Clipspace |
+| Long-press / right-click / caret on Copy | Choose Copy / Copy merged (sticks as the button's mode) |
+| Long-press / right-click / caret on Paste | Choose System clipboard / Clipspace (sticks as the button's mode) |
 
 ### Text (while editing)
 
@@ -2002,18 +2219,19 @@ browser zoom).
 Right-click on the stage opens the browser's context menu (left alone until we
 have our own).
 
-**Free keys** (useful for new bindings, e.g. the planned help overlay): letters
-A C H J K N P R S Y Z; `?` (Shift+/), F1, Tab, Home/End, PageUp/PageDown, Caps
-Lock; Shift+letters other than M and U; Shift+digits. ComfyUI's keybinding
+**Free keys** (useful for new bindings): letters
+A C H J K N P R S Y Z; F1, Tab, Home/End, PageUp/PageDown, Caps
+Lock; Shift+letters other than M and U; Shift+digits (except a layout's `?`).
+`?` is taken by the help overlay (bound on `event.key` before the
+Shift+group-cycle lookup in `shortcuts.ts`). ComfyUI's keybinding
 service ignores plain and Shift-only keys while an `<input>` (our focus sink)
 has focus (`keyCombo.ts isReservedByTextInput`), and also its reserved set
 (Ctrl+A/C/V/X/Z/Y/P, Enter, Home/End, PageUp/PageDown, arrows,
 Ctrl+Backspace/Delete); other Ctrl / Alt chords still reach ComfyUI (Ctrl+B/G/M/O
-and Alt+C/M are graph commands; Ctrl+L/N/R/T/W/H are browser keys). Notes for
-the help overlay: `?` arrives as Shift + a character, so bind it on `event.key`
-before the Shift+group-cycle lookup in `shortcuts.ts`; F1 must be handled by
-the editor's own handler, which runs before the fullscreen pass-through
-(outside fullscreen the browser's F1 help opens otherwise).
+and Alt+C/M are graph commands; Ctrl+L/N/R/T/W/H are browser keys). F1, if
+ever bound, must be handled by the editor's own handler, which runs before the
+fullscreen pass-through (outside fullscreen the browser's F1 help opens
+otherwise).
 
 ### Cursors
 
@@ -2132,13 +2350,21 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
    - **Modifier indicators**: lmask thumbnail Alt = `scan-eye`, Shift = red `x`,
      Ctrl = the selection pointer; add-mask button with Alt = inverted mask
      glyph. Drag-only constraints (Shift square, Alt from centre) get none.
-3. [ ] **UI refresh** (discuss first). Procreate-like styling and spacing, not
+3. [x] **UI refresh**. Procreate-like styling and spacing, not
    minimalism; keep following ComfyUI theme colours; floating menus and fly-outs
-   allowed; a shorter long-press for fly-outs (both `LONG_PRESS_MS` constants);
+   allowed; a shorter long-press for fly-outs;
    more room while keeping every feature reachable in-node. Includes the **help
    overlay**: `?` key and a `?` button, sections of useful shortcuts; a single
    source file for the shortcut list if a sensible display for all of them
    exists.
+   **Done 2026-10-02** (design handoff: floating bars over the stage): history
+   pill, tool dock (Select / Shapes groups, eyedropper reveal, swatches),
+   options strip, sliders pill, images / clipboard pill (sticky Copy / Copy
+   merged), bottom bar (edit chip, Quick Mask, lmask options, Align, resolution),
+   amber resolution notice, floating Layers / Outputs panel (sections, slot
+   grid, segmented output modes), white region overlay, one 380 ms long-press,
+   help overlay from `ui/shortcutList.ts`, new Esc chain (section 7). Confirms
+   stay `window.confirm`. Pending: the manual check in both renderers.
 4. [ ] **Simple mode** (after the refresh). A per-node toggle saved in the
    document + a setting for the default; no shortcut. A `SIMPLE` / `ADVANCED`
    button in the node header area (a DOM element in the empty title strip, or a
@@ -2165,5 +2391,6 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
 - Pasting pixels onto an existing layer as a float; pasting into a cmask.
 - Curve smoothing of pointer samples.
 - Measure flow < 100 % and pressure -> opacity against Photoshop.
-- Text align as icon toggles (`text-align-start/center/end`) instead of the
-  select (UI refresh).
+- In-editor confirm dialogs for every confirm (Clear, Rasterize, Match
+  resolution, …) instead of `window.confirm`; they would join the Esc chain
+  between menus and text commit.

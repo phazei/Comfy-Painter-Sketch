@@ -319,14 +319,11 @@ describe("Apply", () => {
     }
   });
 
-  it("a hide-all mask keeps only its revealed part; the bar button applies", async () => {
-    const { layerMaskBarDecorator } = await import("../tools/layerMaskBar");
+  it("a hide-all mask keeps only its revealed part when applied", () => {
     const { ed, id } = setup("hide");
     setMask(ed, id, 4, 4, 0);
     ed.layerMask.setTarget(id, "mask");
-    const bar = layerMaskBarDecorator(ed)(null, { id: "brush" } as Parameters<ReturnType<typeof layerMaskBarDecorator>>[1]);
-    expect(bar?.get("layerMaskApply")).toBe(true);
-    expect(bar?.set("layerMaskApply", true)).toBe(true);
+    expect(ed.layerMask.apply(id)).toBe(true);
     expect([layerA(ed, id, 4, 4), layerA(ed, id, 5, 4), layerA(ed, id, 7, 5)]).toEqual([255, 0, 0]);
   });
 });

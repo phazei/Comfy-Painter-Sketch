@@ -25,7 +25,6 @@ import { moveCursorCss, moveCursorKind } from "./moveCursors";
 import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
-import { drawResolutionLabel } from "./resolutionLabel";
 import { drawRingCursor } from "./ringCursor";
 import { drawTransformOverlay } from "./transformOverlay";
 import { WebClick } from "./webClick";
@@ -358,7 +357,6 @@ export class StageView {
     if (session && !regionMode) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, regionMode);
     if (session) drawTransformOverlay(ctx, session.editor, pr);
-    if (session) drawResolutionLabel(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {

@@ -201,8 +201,9 @@ const SESSION_DESCRIPTORS: readonly OptionDescriptor[] = [
   { kind: "number", key: "x", label: "X", title: "Box centre, image px (arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 0.1, unit: "px", group: "pos" },
   { kind: "number", key: "y", label: "Y", title: "Box centre, image px (arrows nudge)", min: -OFFSET_LIMIT, max: OFFSET_LIMIT, step: 0.1, unit: "px", group: "pos" },
   { kind: "number", key: "w", label: "W", title: "Width scale", min: 1, max: 10000, step: 0.1, unit: "%", scale: 100, curve: "pow", group: "size" },
-  { kind: "number", key: "h", label: "H", title: "Height scale", min: 1, max: 10000, step: 0.1, unit: "%", scale: 100, curve: "pow", group: "size" },
+  // The link sits between W and H (it ties them together).
   { kind: "toggle", key: "lock", label: "Link", title: "Keep proportions (Shift while dragging a handle inverts)", group: "size" },
+  { kind: "number", key: "h", label: "H", title: "Height scale", min: 1, max: 10000, step: 0.1, unit: "%", scale: 100, curve: "pow", group: "size" },
   { kind: "number", key: "angle", label: "Angle", title: "Rotation, degrees (Shift while rotating = 15 deg steps)", min: -180, max: 180, step: 0.1, unit: "\u00b0", group: "angle" },
   { kind: "button", key: "flipH", label: "Flip horizontal", icon: "flipH", group: "flip" },
   { kind: "button", key: "flipV", label: "Flip vertical", icon: "flipV", group: "flip" },

@@ -1,14 +1,16 @@
 /**
- * FG/BG swatch widget (Photoshop style): two overlapping squares -- the
- * foreground on top-left, background bottom-right -- with a small swap
- * arrow (X) and a reset icon (D, black/white). Clicking a square asks the
- * shell for a colour picker (`pick-color`) via `actions.pick`.
+ * FG/BG swatch widget at the tool dock's right end (Photoshop style, design
+ * handoff "Swatches"): the foreground circle top-left, the background circle
+ * offset bottom-right, and a small column with swap (X) and reset (D)
+ * icons. Clicking a circle asks the shell for a colour picker (`pick-color`)
+ * via `actions.pick`.
  *
- * Mask mode (while a layer mask is the edit target): the same squares
- * show the black / white MASK swatches instead of the colours (the host
- * passes them to {@link SwatchWidget.setColors}); only the titles, the reset
- * icon (white over black) and the cursor change -- the host ignores square
- * clicks then (no colour picker for a black / white pair).
+ * Mask mode (while a layer mask is the edit target): the same circles show
+ * the black / white MASK swatches instead of the colours (the host passes
+ * them to {@link SwatchWidget.setColors}); only the titles and the cursor
+ * change -- the host ignores circle clicks then (no colour picker for a
+ * black / white pair). Under Quick Mask the CSS dims the whole widget
+ * (`.cps-root.cps-quickmask`).
  */
 
 import type { ColorPair, ColorSlot } from "../engine/colors";
@@ -16,9 +18,9 @@ import { setIcon } from "./icons";
 
 /** Callbacks from the widget. */
 export interface SwatchActions {
-  /** A square was clicked. */
+  /** A circle was clicked. */
   pick(slot: ColorSlot, anchor: HTMLElement): void;
-  /** Swap arrow clicked. */
+  /** Swap icon clicked. */
   swap(): void;
   /** Reset icon clicked. */
   reset(): void;
@@ -34,6 +36,9 @@ const TITLES = {
     "Default mask swatches: white / black (D)",
   ],
 } as const;
+
+/** Size of the swap / reset icons, CSS px. */
+const SMALL_ICON = 14;
 
 /**
  * The swatch widget.
@@ -52,13 +57,19 @@ export class SwatchWidget {
   constructor(actions: SwatchActions) {
     this.element = document.createElement("div");
     this.element.className = "cps-swatches";
-    this.bg = swatch("cps-swatch cps-swatch-bg", () => actions.pick("bg", this.bg));
-    this.fg = swatch("cps-swatch cps-swatch-fg", () => actions.pick("fg", this.fg));
-    this.swap = swatch("cps-swatch-swap", () => actions.swap());
-    setIcon(this.swap, "swap", 11);
-    this.reset = swatch("cps-swatch-reset", () => actions.reset());
-    this.reset.innerHTML = '<span class="cps-reset-bg"></span><span class="cps-reset-fg"></span>';
-    this.element.append(this.bg, this.fg, this.swap, this.reset);
+    const pair = document.createElement("div");
+    pair.className = "cps-swatch-pair";
+    this.bg = button("cps-swatch cps-swatch-bg", () => actions.pick("bg", this.bg));
+    this.fg = button("cps-swatch cps-swatch-fg", () => actions.pick("fg", this.fg));
+    pair.append(this.bg, this.fg);
+    const icons = document.createElement("div");
+    icons.className = "cps-swatch-icons";
+    this.swap = button("cps-swatch-icon", () => actions.swap());
+    setIcon(this.swap, "swap", SMALL_ICON);
+    this.reset = button("cps-swatch-icon", () => actions.reset());
+    setIcon(this.reset, "resetColors", SMALL_ICON);
+    icons.append(this.swap, this.reset);
+    this.element.append(pair, icons);
     this.applyTitles();
   }
 
@@ -75,7 +86,7 @@ export class SwatchWidget {
 
   /**
    * Switch between the colour swatches and the layer mask swatches (titles,
-   * reset icon, cursor; the colours come from {@link setColors}).
+   * cursor; the colours come from {@link setColors}).
    * @param on - A layer mask is the edit target.
    */
   setMaskMode(on: boolean): void {
@@ -88,7 +99,7 @@ export class SwatchWidget {
   /**
    * Anchor element of a swatch (for pickers opened programmatically).
    * @param slot - Which swatch.
-   * @returns The square's element.
+   * @returns The circle's element.
    */
   anchor(slot: ColorSlot): HTMLElement {
     return slot === "fg" ? this.fg : this.bg;
@@ -96,18 +107,18 @@ export class SwatchWidget {
 
   private applyTitles(): void {
     const titles = TITLES[this.maskMode ? "mask" : "color"];
-    [this.fg, this.bg, this.swap, this.reset].forEach((button, i) => {
+    [this.fg, this.bg, this.swap, this.reset].forEach((el, i) => {
       const title = titles[i] ?? "";
-      button.title = title;
-      button.setAttribute("aria-label", title);
+      el.title = title;
+      el.setAttribute("aria-label", title);
     });
   }
 }
 
-function swatch(className: string, onClick: () => void): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = className;
-  button.addEventListener("click", onClick);
-  return button;
+function button(className: string, onClick: () => void): HTMLButtonElement {
+  const el = document.createElement("button");
+  el.type = "button";
+  el.className = className;
+  el.addEventListener("click", onClick);
+  return el;
 }

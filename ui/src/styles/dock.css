@@ -1,0 +1,359 @@
+/*
+ * Top bars and the left sliders pill (design handoff sections 1-5): the
+ * history pill (ui/historyPill.ts), the tool dock with its swatches and the
+ * eyedropper reveal (ui/toolDock.ts, ui/swatches.ts), tool fly-outs
+ * (ui/toolGroupSlot.ts), the images / clipboard pill and the Images tray
+ * (ui/clipGroup.ts, ui/imagesPanel.ts), the sliders pill (ui/slidersPill.ts).
+ * Builds on bars.css; tokens on .cps-root (editor.css).
+ */
+
+/* ── Dock ──────────────────────────────────────────────────────────────── */
+
+.cps-dock {
+  border-color: rgba(255, 255, 255, 0.09);
+}
+
+.cps-dock-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cps-dock .cps-vdiv {
+  margin: 0 4px;
+}
+
+/* A press-and-hold menu is open on this button. */
+.cps-bar-button.cps-menu-open {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+/* Modal states: the dock's active tint goes too. */
+.cps-dimmed .cps-bar-button,
+.cps-dimmed .cps-bar-button.cps-active {
+  background: transparent;
+  color: var(--cps-fg-disabled);
+}
+
+/* ── Tool fly-out (group slot menu) ────────────────────────────────────── */
+
+.cps-popover.cps-pop-menu.cps-pop-flyout {
+  border-radius: var(--cps-r-menu);
+}
+
+.cps-pop-flyout .cps-menu {
+  gap: 2px;
+  font-size: 13px;
+}
+
+.cps-pop-flyout .cps-menu-item {
+  gap: 10px;
+}
+
+.cps-pop-flyout .cps-menu-icon {
+  width: 20px;
+  justify-content: center;
+}
+
+/* Fly-outs mark the current member by the tint and ring only. */
+.cps-pop-flyout .cps-menu-check {
+  display: none;
+}
+
+/* ── Swatches ──────────────────────────────────────────────────────────── */
+
+.cps-dock-swatches {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cps-swatches {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cps-swatch-pair {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+.cps-swatch {
+  position: absolute;
+  padding: 0;
+  border: 2px solid var(--cps-bar-bg);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.cps-swatch-fg {
+  left: 3px;
+  top: 3px;
+  width: 21px;
+  height: 21px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.38);
+  z-index: 1;
+}
+
+.cps-swatch-bg {
+  left: 13px;
+  top: 12px;
+  width: 19px;
+  height: 19px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.cps-swatch-icons {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.cps-swatch-icon {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-swatch-icon:hover {
+  color: #fff;
+}
+
+/* Layer mask swatches: black / white only, no picker. */
+.cps-mask-swatches .cps-swatch {
+  cursor: default;
+}
+
+/* Quick Mask: masks only take coverage -- the swatches step back. */
+.cps-root.cps-quickmask .cps-swatches {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+/* ── Eyedropper reveal (above the dock; below it in fullscreen) ────────── */
+
+.cps-dropper-pill {
+  position: absolute;
+  left: -4px;
+  bottom: calc(100% + 14px);
+  z-index: 6;
+  padding: 4px;
+  border-color: rgba(255, 255, 255, 0.09);
+  border-radius: 11px;
+}
+
+.cps-root.cps-is-fullscreen .cps-dropper-pill {
+  top: calc(100% + 14px);
+  bottom: auto;
+}
+
+.cps-root.cps-quickmask .cps-dropper-pill {
+  display: none;
+}
+
+/* ── History / clipboard pills ─────────────────────────────────────────── */
+
+.cps-history .cps-bar-button,
+.cps-clip .cps-bar-button {
+  color: var(--cps-fg-icon);
+}
+
+.cps-history .cps-bar-button:disabled {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-clip .cps-corner-mark {
+  border-bottom-color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
+}
+
+/* Images button count badge. */
+.cps-images-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--cps-accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.cps-images-button.cps-active {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--cps-fg-icon);
+}
+
+/* ── Images tray (popover layer, right-aligned under the clip pill) ────── */
+
+.cps-images-tray {
+  position: absolute;
+  width: 118px;
+  padding: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--cps-line-2);
+  border-radius: var(--cps-r-bar);
+  background: color-mix(in srgb, var(--cps-strip-bg) 95%, transparent);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+
+.cps-images-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cps-images-item {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 66px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-field-bg);
+  cursor: pointer;
+}
+
+.cps-images-item:hover {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+.cps-images-item.cps-new {
+  box-shadow: inset 0 0 0 2px var(--cps-accent);
+}
+
+.cps-images-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.cps-images-new {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--cps-accent);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* ── Sliders pill ──────────────────────────────────────────────────────── */
+
+.cps-sliders {
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 10px;
+  border: 1px solid var(--cps-line-1);
+  border-radius: var(--cps-r-panel);
+  background: var(--cps-bar-bg);
+  box-shadow: var(--cps-shadow-bar);
+}
+
+.cps-vslider {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.cps-vslider-icon {
+  display: flex;
+  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
+}
+
+.cps-vslider-hit {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  width: 24px;
+  height: 96px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.cps-vslider-hardness .cps-vslider-hit {
+  height: 72px;
+}
+
+.cps-root.cps-is-fullscreen .cps-vslider-size .cps-vslider-hit {
+  height: 140px;
+}
+
+.cps-root.cps-is-fullscreen .cps-vslider-hardness .cps-vslider-hit {
+  height: 110px;
+}
+
+.cps-vslider-track {
+  position: relative;
+  width: 8px;
+  height: 100%;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cps-field-bg) 90%, #000);
+  pointer-events: none;
+}
+
+.cps-vslider-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: #8a8d93;
+}
+
+.cps-vslider-thumb {
+  position: absolute;
+  left: -8px;
+  width: 24px;
+  height: 12px;
+  margin-bottom: -6px;
+  border-radius: 6px;
+  background: #eaeaea;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.cps-vslider-hit:hover .cps-vslider-thumb,
+.cps-vslider-hit.cps-dragging .cps-vslider-thumb {
+  background: #fff;
+}
+
+.cps-vslider-value {
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));
+}
+
+.cps-sliders-div {
+  width: 22px;
+  height: 1px;
+  background: var(--cps-line-2);
+}

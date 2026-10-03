@@ -10,22 +10,26 @@
 import type { FrameBackground } from "../engine/compositor";
 import type { Rect, Size } from "../geometry/rect";
 
-/** Thumbnail box, CSS px (the longer side). */
-export const THUMB_BOX = 36;
+/** Thumbnail box width, CSS px (design handoff: 36 x 28). */
+export const THUMB_WIDTH = 36;
+
+/** Thumbnail box height, CSS px. */
+export const THUMB_HEIGHT = 28;
 
 /** Minimum time between thumbnail refresh passes. */
 export const THUMB_MIN_INTERVAL_MS = 150;
 
 /**
- * CSS size of a thumbnail fitting `size` into a square box.
+ * CSS size of a thumbnail fitting `size` into a box (aspect preserved).
  * @param size - Content size (any units).
- * @param box - Box side, CSS px.
+ * @param boxWidth - Box width, CSS px.
+ * @param boxHeight - Box height, CSS px.
  * @returns Integer CSS size, at least 4 px per side.
  */
-export function thumbSize(size: Size, box: number = THUMB_BOX): Size {
+export function thumbSize(size: Size, boxWidth: number = THUMB_WIDTH, boxHeight: number = THUMB_HEIGHT): Size {
   const w = Math.max(1, size.width);
   const h = Math.max(1, size.height);
-  const s = box / Math.max(w, h);
+  const s = Math.min(boxWidth / w, boxHeight / h);
   return { width: Math.max(4, Math.round(w * s)), height: Math.max(4, Math.round(h * s)) };
 }
 
@@ -55,10 +59,10 @@ export class Thumbnail {
     this.canvas.className = "cps-layer-thumb";
     // Constrain immediately so a newly inserted canvas never renders at its
     // default 300×150 intrinsic size before the first update() call.
-    this.canvas.width = THUMB_BOX;
-    this.canvas.height = THUMB_BOX;
-    this.canvas.style.width = `${THUMB_BOX}px`;
-    this.canvas.style.height = `${THUMB_BOX}px`;
+    this.canvas.width = THUMB_WIDTH;
+    this.canvas.height = THUMB_HEIGHT;
+    this.canvas.style.width = `${THUMB_WIDTH}px`;
+    this.canvas.style.height = `${THUMB_HEIGHT}px`;
   }
 
   /**

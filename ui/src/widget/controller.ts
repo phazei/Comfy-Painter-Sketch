@@ -29,11 +29,11 @@ import { createEmptyDocument } from "../document/create";
 import { hasDocumentContent } from "../document/content";
 import { parseDocument } from "../document/parse";
 import { stringifyDocument } from "../document/serialize";
-import type { LGraphNode, NodeExecutionOutput } from "../types/comfy";
+import type { IBaseWidget, LGraphNode, NodeExecutionOutput } from "../types/comfy";
 import { EditorHost } from "../ui/editorHost";
 import { chooseForEmpty } from "./attachDecision";
 import { BackgroundLoader, SourceWatcher } from "./backgroundLoader";
-import { INPUT_NAMES, LINK_INPUT } from "./constants";
+import { INPUT_NAMES, LINK_INPUT, PANEL_MIN_CAP, WIDGET_MARGIN } from "./constants";
 import { isolateEvents } from "./eventIsolation";
 import type { EventIsolation } from "./eventIsolation";
 import { FrameSync } from "./frameSync";
@@ -101,6 +101,8 @@ export class PainterSketchController {
   /** The `mask` input's Input Mask row. */
   private readonly inputMask: InputMaskWatch;
   private readonly saver = new WorkflowSaver();
+  /** Our DOM widget (its `y` places the editor inside the node), once created. */
+  private widget: IBaseWidget | null = null;
   private disposed = false;
 
   /**
@@ -223,6 +225,24 @@ export class PainterSketchController {
     const handoff = key ? takeHandoff(key) : undefined;
     if (handoff) this.adoptHandoff(handoff);
     this.watcher.start();
+  }
+
+  /**
+   * The DOM widget was created (`painterWidget.ts`): the side panel's
+   * height cap needs its position inside the node.
+   * @param widget - Our editor widget.
+   */
+  setWidget(widget: IBaseWidget): void {
+    this.widget = widget;
+    this.syncPanelCap();
+  }
+
+  /**
+   * The node was selected / deselected on the canvas.
+   * @param selected - Node selected.
+   */
+  handleSelected(selected: boolean): void {
+    if (!this.disposed) this.host.setNodeSelected(selected);
   }
 
   /**
@@ -361,9 +381,22 @@ export class PainterSketchController {
   }
 
   private tick(): void {
+    // Safety net for missed select hooks (node re-created while selected).
+    this.host.setNodeSelected(this.node.selected === true);
     if (!this.host.isVisible()) return;
     this.host.refreshScale();
+    this.syncPanelCap();
     this.refresh();
+  }
+
+  /**
+   * In-node side panel cap: the node's height below the editor top, at
+   * least {@link PANEL_MIN_CAP} (graph units = editor CSS px). The host
+   * ignores it while fullscreen (CSS caps the panel there).
+   */
+  private syncPanelCap(): void {
+    const top = (this.widget?.y ?? 0) + WIDGET_MARGIN;
+    this.host.setPanelHeightCap(Math.max(PANEL_MIN_CAP, this.node.size[1] - top));
   }
 
   /** Push background + frame (and the Image Mask / Input Mask source) to the editor when anything relevant changed. */

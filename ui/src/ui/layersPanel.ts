@@ -1,38 +1,41 @@
 /**
- * Layers panel (SPEC "Layers" > "Layers panel"), mounted into the shell's side
- * panel. Top -> bottom: mask rows (colour swatch, invert, overlay opacity),
- * paint layers, the Image Mask row while the image has transparency
- * (the Input Mask while the `mask` input is connected; `imageMaskRow.ts`), and the static Background row, with a
- * divider bar between the groups (`layerSections.ts`). Header: the opacity of the
- * selected row's layer; footer: Align drawing | New layer / New mask /
- * Duplicate / Merge Down / Delete.
+ * Layers tab of the side panel (SPEC "Layers" > "Layers panel"; design
+ * handoff "Layers tab"). Collapsible sections (`layerSections.ts`,
+ * `layerSectionHeader.ts`): COMFYUI MASKS (cmask rows), LAYERS (paint and
+ * text rows), SOURCE (the Image / Input Mask row, `imageMaskRow.ts`, and the
+ * Background). The opacity of the selected row's layer is
+ * {@link LayersPanel.headerControl}, shown in the side panel header; the
+ * footer is `layersFooter.ts`.
  *
  * Selection follows the paint target: clicking a paint row makes it the
  * active layer and turns Quick Mask off; clicking a mask row makes it the
- * current mask and turns Quick Mask on (so `Q`, the rail button and the panel
- * stay in sync). The current mask always has a left bar in its colour; solo
- * buttons (view only) dim the eyes of the other rows in a soloed group. Paint
- * rows carry the layer mask slot (add icon / mask thumbnail; its clicks
- * select the row first). All edits go through the editor; the panel
- * re-renders from editor events only.
+ * current mask and turns Quick Mask on (so `Q`, the Quick Mask button and
+ * the panel stay in sync). The current mask always has a left bar in its
+ * colour; solo buttons (view only) dim the other rows. Paint rows carry the
+ * layer mask slot (add icon / mask thumbnail; its clicks select the row
+ * first). All edits go through the editor; the panel re-renders from editor
+ * events only. Section collapse is session UI state (not saved).
  */
 
 import type { Editor } from "../engine/editor";
-import { imageRectToDoc } from "../engine/frameMap";
 import { BACKGROUND_SOLO_ID } from "../engine/solo";
-import { findAnyLayer } from "../document/imageMask";
+import { findAnyLayer, IMAGE_MASK_ID } from "../document/imageMask";
 import { maskDisplayColor } from "../document/masks";
-import { canDuplicateRow, deleteTitle, duplicateRow, imageMaskHint, refreshImageMaskThumb } from "./imageMaskRow";
-import { isPaintLike, MAX_MASKS } from "../document/layerList";
+import { duplicateRow, imageMaskHint } from "./imageMaskRow";
+import { isPaintLike } from "../document/layerList";
 import type { Layer } from "../document/types";
 import { LayerDrag } from "./layerDrag";
 import { layerOpacityControl, MaskColorPicker } from "./layerControls";
 import type { ColorPickFn, LayerTarget } from "./layerControls";
 import { LayerRow } from "./layerRow";
-import { SectionDividers } from "./layerSections";
-import { LayerSelectHover } from "./layerSelectHover";
 import type { RowActions, RowKind } from "./layerRow";
-import { el, footerButton, moveDrawingBtn, rowModel, soloMark } from "./layersPanelParts";
+import { arrangeSections } from "./layerSections";
+import type { SectionId } from "./layerSections";
+import { SectionHeader } from "./layerSectionHeader";
+import { LayerSelectHover } from "./layerSelectHover";
+import { ImageKeys, refreshLayerThumbs } from "./layerThumbs";
+import { LayersFooter, newMaskTitle } from "./layersFooter";
+import { el, rowModel, soloMark } from "./layersPanelParts";
 import type { OptionControl } from "./optionControls";
 import type { PopoverHost } from "./popover";
 import type { SidePanel } from "./sidePanel";
@@ -43,7 +46,7 @@ const BACKGROUND_ID = BACKGROUND_SOLO_ID;
 
 /** What the panel needs from its host. */
 export interface LayersPanelContext {
-  /** Side panel it lives in (collapse state). */
+  /** Side panel it lives in (thumbnails refresh when it becomes visible / expands / shows this tab). */
   sidePanel: SidePanel;
   /** Popover host (opacity slider popovers). */
   popovers: PopoverHost;
@@ -53,69 +56,70 @@ export interface LayersPanelContext {
   beforeEdit(): void;
   /** A text field of the panel lost focus: hand keyboard focus back. */
   releaseFocus(): void;
-  /** Toggle the "Align drawing" mode (activates / deactivates the Move tool). */
-  toggleMoveDrawing(): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * The layers panel of one editor host (bound to one editor at a time).
+ * The layers tab of one editor host (bound to one editor at a time).
  */
 export class LayersPanel {
+  /** Tab body: the scrolling list and the footer. */
   readonly element: HTMLDivElement;
+  /** "Opacity" / "Overlay" + value chip for the side panel header (`SidePanelTab.headerExtra`). */
+  readonly headerControl: HTMLDivElement;
   private readonly list: HTMLDivElement;
   private readonly opacity: OptionControl;
-  private readonly addButton: HTMLButtonElement;
-  private readonly addMaskButton: HTMLButtonElement;
-  private readonly duplicateButton: HTMLButtonElement;
-  private readonly mergeButton: HTMLButtonElement;
-  private readonly deleteButton: HTMLButtonElement;
-  private readonly moveDrawingButton: HTMLButtonElement;
+  private readonly footer: LayersFooter;
+  private readonly headers: Readonly<Record<SectionId, SectionHeader>>;
+  private readonly collapsed: Record<SectionId, boolean> = { masks: false, layers: false, source: false };
   private readonly rows = new Map<string, LayerRow>();
   private readonly maskControls = new Map<string, OptionControl>();
   private readonly drag: LayerDrag;
-  private readonly dividers = new SectionDividers();
   private readonly thumbs = new RefreshThrottle(() => this.refreshThumbs());
+  private readonly imageKeys = new ImageKeys();
   private readonly maskColor: MaskColorPicker;
   private readonly actions: RowActions;
   private editor: Editor | null = null;
   private unbind: Array<() => void> = [];
   private editorUnbind: Array<() => void> = [];
   private renaming = false;
-  private backgroundKeys = new WeakMap<object, number>();
-  private backgroundCounter = 0;
 
   /**
    * @param ctx - Host services.
    */
   constructor(private readonly ctx: LayersPanelContext) {
     this.element = el("div", "cps-layers");
-    const header = el("div", "cps-layers-header");
-    const title = el("span", "cps-layers-title");
-    title.textContent = "Layers";
+    this.headerControl = el("div", "cps-layers-headop");
     this.opacity = layerOpacityControl("Opacity", "Opacity of the selected layer (drag the label to scrub)", () => this.selectedTarget(), ctx.popovers);
-    header.append(title, this.opacity.element);
+    this.headerControl.append(this.opacity.element);
 
     this.list = el("div", "cps-layers-list");
-    const footer = el("div", "cps-layers-footer");
-    this.addButton = footerButton("layerAdd", "New layer (above the active layer)", () => this.addLayer());
-    this.addMaskButton = footerButton("maskAdd", "New mask", () => this.addMask());
-    this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => this.withEditor((e) => duplicateRow(e, this.selectedTarget()?.layerId ?? null)));
-    this.mergeButton = footerButton("mergeDown", "Merge Down (Ctrl+E)", () => this.withEditor((e) => e.mergeDown()));
-    this.deleteButton = footerButton("trash", "Delete layer", () => this.deleteSelected());
-    this.moveDrawingButton = moveDrawingBtn(() => this.ctx.toggleMoveDrawing());
-    const footerDivider = document.createElement("div");
-    footerDivider.className = "cps-layers-footer-divider";
-    footer.append(this.moveDrawingButton, footerDivider, this.addButton, this.addMaskButton, this.duplicateButton, this.mergeButton, this.deleteButton);
-    this.element.append(header, this.list, footer);
+    this.headers = {
+      masks: new SectionHeader("masks", () => this.toggleSection("masks"), { title: "New mask", onClick: () => this.addMask() }),
+      layers: new SectionHeader("layers", () => this.toggleSection("layers"), { title: "New layer", onClick: () => this.addLayer() }),
+      source: new SectionHeader("source", () => undefined),
+    };
+    this.footer = new LayersFooter({
+      addLayer: () => this.addLayer(),
+      addMask: () => this.addMask(),
+      duplicate: () => this.withEditor((e) => duplicateRow(e, this.selectedTarget()?.layerId ?? null)),
+      mergeDown: () => this.withEditor((e) => e.mergeDown()),
+      remove: () => this.deleteSelected(),
+    });
+    this.element.append(this.list, this.footer.element);
 
     this.maskColor = new MaskColorPicker(ctx.pickColor);
     this.actions = this.rowActions();
     this.drag = new LayerDrag(this.list, (id, drop) =>
       this.withEditor((e) => e.layerOps.move(id, drop.targetId, drop.above)),
     );
-    this.unbind.push(ctx.sidePanel.events.on("collapse", (collapsed) => !collapsed && this.thumbs.request()));
+    const side = ctx.sidePanel;
+    this.unbind.push(
+      side.events.on("visible", (shown) => shown && this.thumbs.request()),
+      side.events.on("shrink", (shrunk) => !shrunk && this.thumbs.request()),
+      side.events.on("tab", () => this.thumbs.request()),
+    );
     const hover = new LayerSelectHover(this.list);
     this.unbind.push(() => hover.dispose());
   }
@@ -150,23 +154,6 @@ export class LayersPanel {
     this.sync();
   }
 
-  /**
-   * Sync the "Align drawing" toggle button highlight to the current mode.
-   * @param active - The Align drawing tool is currently active.
-   */
-  setMoveDrawing(active: boolean): void {
-    this.moveDrawingButton.classList.toggle("cps-active", active);
-    this.moveDrawingButton.setAttribute("aria-pressed", String(active));
-  }
-
-  /**
-   * Red Align drawing icon while the image is much finer than the drawing grid.
-   * @param on - Mismatch notice showing.
-   */
-  setMoveDrawingWarning(on: boolean): void {
-    this.moveDrawingButton.classList.toggle("cps-resolution-warn", on);
-  }
-
   /** Remove listeners and DOM. */
   dispose(): void {
     this.setEditor(null);
@@ -175,6 +162,7 @@ export class LayersPanel {
     this.thumbs.dispose();
     this.drag.dispose();
     this.element.remove();
+    this.headerControl.remove();
   }
 
   // ── Rendering ───────────────────────────────────────────────────────────
@@ -182,6 +170,11 @@ export class LayersPanel {
   private unbindEditor(): void {
     for (const off of this.editorUnbind) off();
     this.editorUnbind = [];
+  }
+
+  private toggleSection(id: SectionId): void {
+    this.collapsed[id] = !this.collapsed[id];
+    this.sync();
   }
 
   /** Rebuild row state from the editor (rows are reused by id). */
@@ -193,7 +186,7 @@ export class LayersPanel {
       const doc = editor.doc;
       const targeting = editor.paintTarget === "mask";
       const maskId = editor.maskLayer?.id;
-      const add = (kind: RowKind, layer: Readonly<Layer>, hint?: string): void => {
+      const add = (kind: RowKind, layer: Readonly<Layer>, extra?: { hint?: string; canDuplicate?: boolean }): void => {
         const row = this.rowFor(kind, layer.id);
         const active = layer.id === doc.activeLayerId;
         const isCurrentMask = kind !== "paint" && layer.id === maskId;
@@ -202,7 +195,10 @@ export class LayersPanel {
         const maskTarget = editor.layerMask.target(layer.id) === "mask";
         const maskViewing = editor.layerMask.viewing === layer.id;
         const flags = { selected, standby: targeting && active, current: isCurrentMask, solo, maskTarget, maskViewing };
-        row.update({ ...rowModel(layer, flags), ...(hint ? { hint } : {}) });
+        const model = rowModel(layer, flags);
+        if (extra?.hint) model.hint = extra.hint;
+        if (extra?.canDuplicate !== undefined) model.canDuplicate = extra.canDuplicate;
+        row.update(model);
         wanted.push(row);
       };
       for (let i = doc.layers.length - 1; i >= 0; i--) {
@@ -210,7 +206,10 @@ export class LayersPanel {
         if (layer) add(isPaintLike(layer) ? "paint" : "mask", layer);
       }
       // The Image Mask (the Input Mask while `mask` is connected) row sits directly above the Background.
-      if (doc.imageMask) add("imageMask", doc.imageMask, imageMaskHint(editor));
+      if (doc.imageMask) {
+        const hint = imageMaskHint(editor);
+        add("imageMask", doc.imageMask, { canDuplicate: editor.imageMask.canDuplicate(), ...(hint ? { hint } : {}) });
+      }
       const bg = this.rowFor("background", BACKGROUND_ID);
       const bgSolo = editor.solo.paint === BACKGROUND_ID ? "on" : "off";
       bg.update({ id: BACKGROUND_ID, name: "Background", visible: doc.backgroundVisible !== false, locked: true, selected: false, standby: false, solo: bgSolo });
@@ -223,31 +222,39 @@ export class LayersPanel {
       this.rows.delete(id);
       this.maskControls.delete(id);
     }
+    this.syncHeaders();
+    const children = arrangeSections<LayerRow, HTMLElement>(
+      wanted,
+      (r) => r.kind,
+      (id) => this.headers[id].element,
+      (id) => this.collapsed[id],
+    ).map((item) => (item instanceof LayerRow ? item.element : item));
     const current = [...this.list.children];
-    const children = this.dividers.arrange(wanted);
     if (current.length !== children.length || children.some((c, i) => current[i] !== c)) this.list.replaceChildren(...children);
     for (const control of this.maskControls.values()) control.refresh();
     this.syncFooter();
     this.thumbs.request();
   }
 
+  private syncHeaders(): void {
+    const editor = this.editor;
+    const current = editor?.maskLayer ?? null;
+    this.headers.masks.update({
+      collapsed: this.collapsed.masks,
+      currentMask: current ? { name: current.name, color: maskDisplayColor(current) } : null,
+      addDisabled: editor && !editor.layerOps.canAddMask() ? { title: newMaskTitle(editor) } : null,
+    });
+    const active = editor ? findAnyLayer(editor.doc, editor.doc.activeLayerId) : undefined;
+    this.headers.layers.update({ collapsed: this.collapsed.layers, ...(active ? { activeName: active.name } : {}) });
+    this.headers.source.update({ collapsed: false });
+  }
+
   private syncFooter(): void {
     const editor = this.editor;
     const target = this.selectedTarget();
-    const targeting = editor?.paintTarget === "mask";
-    const paintId = editor && target && !targeting ? target.layerId : null;
-    this.addButton.disabled = !editor;
-    const canAddMask = !!editor && editor.layerOps.canAddMask();
-    this.addMaskButton.disabled = !canAddMask;
-    this.addMaskButton.title = !editor || canAddMask ? "New mask (above the current mask)" : `At most ${MAX_MASKS} masks`;
-    const rowId = targeting ? (target?.layerId ?? null) : paintId;
-    this.duplicateButton.disabled = !(editor && canDuplicateRow(editor, rowId));
-    this.mergeButton.disabled = !editor?.canMergeDown();
-    const deletable = !!(editor && target && editor.layerOps.canDelete(target.layerId));
-    this.deleteButton.disabled = !deletable;
-    this.deleteButton.title = deleteTitle(target?.layerId ?? null, targeting, deletable, editor?.imageMask.info?.name);
+    this.footer.sync(editor, target?.layerId ?? null);
     this.opacity.refresh();
-    this.opacity.element.classList.toggle("cps-dim", !target);
+    this.headerControl.classList.toggle("cps-dim", !target);
     const label = this.opacity.element.querySelector(".cps-num-label");
     if (label) label.textContent = editor?.paintTarget === "mask" ? "Overlay" : "Opacity";
   }
@@ -266,56 +273,12 @@ export class LayersPanel {
     return row;
   }
 
-  /** Redraw thumbnails whose pixels/geometry changed (throttled caller). */
+  /** Redraw thumbnails whose pixels/geometry changed (throttled caller); skipped while not on screen. */
   private refreshThumbs(): void {
     const editor = this.editor;
-    if (!editor || this.ctx.sidePanel.collapsed || !this.element.isConnected) return;
-    const doc = editor.doc;
-    const bounds = editor.bounds;
-    const imageSize = editor.imageSize;
-    // Use the full document->image map (frame fit + Move-tool placement) so
-    // thumbnails show each layer as it sits over the current image, matching
-    // the Background thumbnail framing. imageRectToDoc maps the image footprint
-    // back to document coords; subtracting bounds gives canvas-pixel coords.
-    const fmap = editor.frameMap;
-    const imgInDoc = imageRectToDoc(fmap, { x: 0, y: 0, width: imageSize.width, height: imageSize.height });
-    const region = { x: imgInDoc.x - bounds.x, y: imgInDoc.y - bounds.y, width: imgInDoc.width, height: imgInDoc.height };
-    // Placement encoded in fmap; include it in the cache key so a placement
-    // change (x/y/scale) invalidates without waiting for a pixel revision bump.
-    const placement = doc.placement;
-    const placementKey = placement ? `${placement.x},${placement.y},${placement.scale}` : "0,0,1";
-    const geometry = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}|${imageSize.width}x${imageSize.height}|${placementKey}`;
-    for (const layer of doc.layers) {
-      const row = this.rows.get(layer.id);
-      if (!row) continue;
-      const mask = layer.kind === "mask";
-      const invert = mask && layer.invert === true;
-      const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
-      row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
-      // The layer mask thumbnail (grayscale, invert applied), same framing and throttle.
-      const lm = layer.layerMask;
-      const maskCanvas = lm ? editor.layerMask.canvas(layer.id) : null;
-      if (lm && maskCanvas && row.maskSlot) {
-        const maskKey = `${editor.layerMask.revision(layer.id)}|${geometry}|${lm.invert}`;
-        row.maskSlot.thumb.update(maskKey, imageSize, { kind: "layer", canvas: maskCanvas, region, mask: true, invert: lm.invert });
-      }
-    }
-    if (doc.imageMask) refreshImageMaskThumb(editor, this.rows.get(doc.imageMask.id));
-    const bg = this.rows.get(BACKGROUND_ID);
-    if (bg) {
-      const background = editor.background;
-      const id = background.kind === "fill" ? background.color : this.backgroundId(background.image);
-      bg.thumb.update(`${id}|${imageSize.width}x${imageSize.height}`, imageSize, { kind: "background", background, size: imageSize });
-    }
-  }
-
-  private backgroundId(image: object): string {
-    let id = this.backgroundKeys.get(image);
-    if (id === undefined) {
-      id = ++this.backgroundCounter;
-      this.backgroundKeys.set(image, id);
-    }
-    return `img${id}`;
+    const side = this.ctx.sidePanel;
+    if (!editor || !side.visible || side.shrunk || this.element.hidden || !this.element.isConnected) return;
+    refreshLayerThumbs(editor, this.rows, BACKGROUND_ID, this.imageKeys);
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────
@@ -329,8 +292,7 @@ export class LayersPanel {
         if (id === BACKGROUND_ID) return this.editor?.layerMask.endView();
         this.withEditor((e) => {
           if (e.selectMask(id)) return;
-          e.layerOps.setActiveLayer(id);
-          e.setPaintTarget("paint");
+          selectPaint(e, id);
         });
       },
       // Selection only: the current layer, Quick Mask and solo stay as they are.
@@ -356,6 +318,8 @@ export class LayersPanel {
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
       toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
+      // Read-only rows: only the Image / Input Mask has a duplicate path (an editable cmask).
+      duplicate: (id) => this.withEditor((e) => id === IMAGE_MASK_ID && duplicateRow(e, id)),
       pickColor: (id, anchor) => {
         const editor = this.editor;
         const layer = editor && findLayer(editor, id);

@@ -59,6 +59,8 @@ export interface IBaseWidget {
   callback?: (value: unknown, ...rest: unknown[]) => void;
   serializeValue?: (node: LGraphNode, index: number) => Promise<unknown> | unknown;
   onRemove?: () => void;
+  /** Top of the widget inside its node, graph units (set by layout; absent before the first one). */
+  y?: number;
 }
 
 /** Options accepted by `node.addDOMWidget` (see frontend `src/scripts/domWidget.ts`). */
@@ -143,6 +145,8 @@ export interface LGraphNode {
   imgs?: HTMLImageElement[];
   /** Nodes 2.0: skip rendering execution output images under the node. */
   hideOutputImages?: boolean;
+  /** Selected on the canvas (LiteGraph `Positionable.selected`). */
+  selected?: boolean;
   constructor: { comfyClass?: string; nodeData?: { name?: string } };
 
   setSize(size: [number, number]): void;
@@ -163,6 +167,10 @@ export interface LGraphNode {
   onConnectionsChange?(this: LGraphNode, ...args: Parameters<ConnectionsChangeCallback>): void;
   onRemoved?(this: LGraphNode): void;
   onAdded?(this: LGraphNode, graph: LGraph): void;
+  /** The node became selected on the canvas (both renderers go through `LGraphCanvas.select`). */
+  onSelected?(this: LGraphNode): void;
+  /** The node was deselected. */
+  onDeselected?(this: LGraphNode): void;
   onDrawBackground?(this: LGraphNode, ctx: CanvasRenderingContext2D, ...rest: unknown[]): void;
 }
 

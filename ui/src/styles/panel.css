@@ -1,0 +1,282 @@
+/*
+ * PainterSketch side panel (design handoff "Side panel (Layers / Outputs)"):
+ * the floating panel shell (ui/sidePanel.ts), its header (segmented tabs,
+ * shrink, the Layers tab's opacity chip), and the Layers tab's list,
+ * sections (ui/layerSectionHeader.ts) and footer (ui/layersFooter.ts). Rows
+ * are in layerRows.css. Theme tokens come from .cps-root
+ * (editor.css); primitives (.cps-icon-button, .cps-num) from bars.css and
+ * controls.css. Injected by styles/inject.ts.
+ */
+
+/* ── Panel ─────────────────────────────────────────────────────────────── */
+
+/* In-node: outside the node, to its right (16 px gap), top-aligned. */
+.cps-side {
+  position: absolute;
+  left: calc(100% + 16px);
+  top: 0;
+  z-index: 4;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--cps-line-2);
+  border-radius: var(--cps-r-panel);
+  background: var(--cps-panel-bg);
+  box-shadow: var(--cps-shadow-panel);
+  color: var(--cps-fg);
+  font-size: 12px;
+  overflow: hidden;
+  pointer-events: auto;
+}
+
+/* Fullscreen: inside the editor, top right; capped to the editor height
+   (the host clears the in-node inline cap). */
+.cps-root.cps-is-fullscreen .cps-side {
+  left: auto;
+  right: var(--cps-edge);
+  top: var(--cps-edge);
+  max-height: calc(100% - 2 * var(--cps-edge));
+}
+
+.cps-side-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+}
+
+/* Segmented tabs: Layers | Outputs | [shrink]. */
+.cps-side-seg {
+  flex: none;
+  display: flex;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--cps-field-bg);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.cps-side-tab {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: var(--cps-r-seg);
+  background: transparent;
+  color: var(--cps-fg-muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cps-side-tab:hover {
+  color: var(--cps-fg);
+}
+
+.cps-side-tab.cps-active {
+  background: var(--cps-segment-bg);
+  color: #fff;
+}
+
+.cps-side-shrink {
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cps-r-seg);
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-side-shrink:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+}
+
+.cps-side-shrink .cps-icon {
+  transition: transform 0.15s;
+}
+
+.cps-side.cps-shrunk .cps-side-shrink .cps-icon {
+  transform: rotate(180deg);
+}
+
+.cps-side-extra {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Body: fits its content below the panel's max-height; the tab's own list scrolls. */
+.cps-side-body {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cps-side-body > * {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.cps-side-placeholder {
+  padding: 0 12px 12px;
+  color: var(--cps-fg-muted);
+}
+
+/* Header opacity ("Opacity" / "Overlay" + value chip). */
+.cps-layers-headop .cps-num {
+  gap: 6px;
+  font-size: 12px;
+}
+
+.cps-layers-headop .cps-num-value {
+  height: auto;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-field-bg);
+  color: var(--cps-fg);
+  font-family: var(--cps-mono);
+  font-size: 11.5px;
+}
+
+.cps-layers-headop .cps-num-value:hover {
+  background: var(--cps-hover-strong);
+}
+
+/* ── Layers tab ────────────────────────────────────────────────────────── */
+
+.cps-layers {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.cps-layers-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 6px 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Section headers (COMFYUI MASKS / LAYERS / SOURCE). */
+.cps-layers-section {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px 8px 4px;
+  color: var(--cps-fg-muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* Collapsed masks section: a 3 px bar in the current mask's colour. */
+.cps-layers-section-masks {
+  padding: 6px 8px 4px 5px;
+  border-left: 3px solid var(--cps-section-bar, transparent);
+  border-radius: 2px;
+}
+
+.cps-layers-section.cps-collapsible {
+  cursor: pointer;
+}
+
+.cps-layers-section.cps-collapsible:hover {
+  color: var(--cps-fg);
+}
+
+.cps-layers-section-chevron {
+  display: flex;
+  flex: none;
+  transition: transform 0.15s;
+}
+
+.cps-layers-section.cps-collapsed .cps-layers-section-chevron {
+  transform: rotate(-90deg);
+}
+
+.cps-layers-section-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cps-layers-section-info {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--cps-fg-value);
+  font-size: 12px;
+  letter-spacing: 0;
+}
+
+.cps-layers-section-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.cps-layers-section-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cps-layers-section-spacer {
+  flex: 1 1 auto;
+}
+
+.cps-icon-button.cps-layers-section-add {
+  width: 21px;
+  height: 21px;
+  border-radius: 5px;
+  color: inherit;
+}
+
+.cps-icon-button.cps-layers-section-add:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+
+.cps-layers-footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--cps-line-1);
+  color: var(--cps-fg-value);
+}
+
+.cps-icon-button.cps-layers-action {
+  width: 30px;
+  height: 28px;
+  border-radius: var(--cps-r-seg);
+}
+
+.cps-layers-footer-spacer {
+  flex: 1 1 auto;
+}

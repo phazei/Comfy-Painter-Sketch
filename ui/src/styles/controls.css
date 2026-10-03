@@ -1,98 +1,107 @@
 /*
- * PainterSketch options bar, option controls and popovers (split from
- * editor.css to keep files small; theme variables are defined on .cps-root
- * there). Injected together by styles/inject.ts.
+ * PainterSketch options strip, generic option controls and popovers
+ * (ui/optionsStrip.ts, ui/optionControls.ts, ui/optionGroup.ts,
+ * ui/textOptionControl.ts; design handoff "Options strip"). Tokens live on
+ * .cps-root (editor.css); shared primitives in bars.css.
  */
 
-/* ── Main column: options bar + body ───────────────────────────────────── */
+/* ── Strip ─────────────────────────────────────────────────────────────── */
 
-.cps-main {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
-.cps-bar {
-  flex: 0 0 var(--cps-bar-height);
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  background: var(--cps-chrome-bg);
-  border-bottom: 1px solid var(--cps-border);
-}
-
-.cps-bar-leading,
-.cps-bar-trailing {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 4px;
-}
-
-.cps-bar-leading:empty {
-  display: none;
-}
-
-.cps-bar-trailing {
-  border-left: 1px solid var(--cps-border);
-}
-
-/* Outputs button, then a rule and some space before the side-panel toggle.
-   The rule is a pseudo-element so the button keeps its normal shape. */
-.cps-bar-trailing > .cps-outputs-button {
-  position: relative;
-  margin-right: 9px;
-}
-
-.cps-bar-trailing > .cps-outputs-button::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  bottom: 3px;
-  right: -7px;
-  border-right: 1px solid var(--cps-border);
-  pointer-events: none;
-}
-
-.cps-bar-scroller {
-  flex: 1 1 auto;
+.cps-strip {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
-  height: 100%;
-  padding: 0 6px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
+  gap: 2px;
+  padding: 3px 4px;
+  border: 1px solid var(--cps-line-1);
+  border-radius: var(--cps-r-bottom);
+  background: var(--cps-strip-bg);
+  box-shadow: var(--cps-shadow-bar);
+  color: var(--cps-fg);
+  font-size: 12px;
   white-space: nowrap;
+}
+
+.cps-strip-part {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.cps-strip-part:empty {
+  display: none;
 }
 
 .cps-bar-sep {
   flex: none;
   width: 1px;
   height: 16px;
-  background: var(--cps-border);
+  margin: 0 3px;
+  background: var(--cps-line-2);
 }
 
-/* Static caption option (e.g. "Layer Mask:"). */
+/* Static caption option. */
 .cps-bar-label {
   flex: none;
+  padding: 4px 6px;
   color: var(--cps-fg-muted);
-  user-select: none;
 }
 
-/* Number option: scrubby label + value button. */
-.cps-num,
-.cps-select {
+/* State label ("Regions", "Align drawing") and hint. */
+.cps-strip-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  color: #fff;
+}
+
+.cps-strip-hint {
+  padding: 4px 8px;
+  color: var(--cps-fg-hint);
+}
+
+.cps-strip-icon {
+  display: flex;
+  flex: none;
+}
+
+/* "To mask": current cmask colour swatch (or the selection-to-mask icon). */
+.cps-strip-swatch {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
+.cps-strip-swatch.cps-strip-swatch-icon {
+  display: flex;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.cps-strip .cps-light-button,
+.cps-strip .cps-text-button {
+  padding: 4px 8px;
+}
+
+/* ── Number (opt): muted label (scrubs) + mono value (slider popover) ───── */
+
+.cps-num {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
+  padding: 0 0 0 8px;
+  border-radius: var(--cps-r-field);
+}
+
+.cps-num:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .cps-num-label {
@@ -106,100 +115,258 @@
   color: var(--cps-fg);
 }
 
-.cps-num-value,
-.cps-select select,
-.cps-num-input {
-  height: 20px;
-  padding: 0 4px;
-  border: 1px solid var(--cps-border);
-  border-radius: 3px;
-  background: var(--cps-input-bg);
-  color: var(--cps-fg);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Text option (font): menu, or a field while typing a custom value. */
-.cps-text-option select {
-  max-width: 11em;
-}
-
-.cps-text-field {
-  width: 10em;
-}
-
-.cps-text-field[hidden],
-.cps-text-option select[hidden] {
-  display: none;
-}
-
 .cps-num-value {
-  min-width: 3.4em;
-  text-align: right;
+  min-width: 2.6em;
+  padding: 4px 8px 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg);
+  font-family: var(--cps-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
   cursor: pointer;
 }
 
-.cps-num-value:hover,
-.cps-select select:hover {
-  border-color: var(--cps-fg-muted);
-}
+/* ── Toggle / command button ───────────────────────────────────────────── */
 
 .cps-toggle {
   flex: none;
-  height: 20px;
-  padding: 0 6px;
-  border: 1px solid var(--cps-border);
-  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--cps-r-field);
   background: transparent;
   color: var(--cps-fg-muted);
   font: inherit;
   cursor: pointer;
-}
-
-.cps-toggle:hover {
-  background: var(--cps-hover);
-}
-
-.cps-toggle.cps-active {
-  border-color: var(--cps-accent);
-  background: var(--cps-active-bg);
-  color: var(--cps-fg);
-}
-
-/* Icon command buttons (Free Transform, flips, commit / cancel). */
-.cps-toggle.cps-icon-command {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  padding: 0;
-}
-
-.cps-dim {
-  opacity: 0.45;
-}
-
-/* Quick Mask indicator. */
-.cps-mask-badge {
-  padding: 2px 6px;
-  border-radius: 3px;
-  color: #fff;
-  font-weight: 600;
-  text-shadow: 0 0 2px rgba(0, 0, 0, 0.8);
   white-space: nowrap;
 }
 
-/* Selection actions (shown while a selection exists). */
-.cps-selection-actions:not([hidden]) {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.cps-toggle:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--cps-fg);
 }
 
-.cps-selection-actions .cps-toggle {
+.cps-toggle.cps-active {
+  background: var(--cps-acc-28);
+  color: #fff;
+}
+
+/* Command buttons (btn): a faint fill. */
+.cps-toggle.cps-command {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--cps-fg);
+}
+
+.cps-toggle.cps-command:hover {
+  background: var(--cps-line-2);
+}
+
+/* Icon toggles / commands (B, I, align, flips, Transform, link). */
+.cps-toggle.cps-icon-command {
+  justify-content: center;
+  min-width: 26px;
+  padding: 4px 5px;
+}
+
+.cps-link-toggle {
+  padding: 4px 1px;
+}
+
+.cps-link-toggle .cps-icon {
+  transform: rotate(-45deg);
+}
+
+.cps-icon-choices {
+  display: flex;
+  gap: 2px;
+}
+
+/* ── Select (dropdown chip) ────────────────────────────────────────────── */
+
+.cps-select {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px 3px 8px;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: transparent;
+  color: var(--cps-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cps-select:hover,
+.cps-select.cps-menu-open {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.cps-select-label {
+  color: var(--cps-fg-muted);
+}
+
+.cps-dd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 5px;
+  background: var(--cps-field-bg);
+  box-shadow: inset 0 0 0 1px var(--cps-line-2);
+  color: var(--cps-fg);
+}
+
+.cps-dd-chevron {
+  display: flex;
+  color: var(--cps-fg-muted);
+}
+
+/* Dropdown menu (strip): tighter than the bar menus. */
+.cps-popover.cps-pop-menu.cps-pop-dd {
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.cps-pop-dd .cps-menu {
+  min-width: 110px;
+}
+
+.cps-pop-dd .cps-menu-item {
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.cps-pop-dd .cps-menu-item.cps-current {
+  background: var(--cps-acc-35);
+  box-shadow: none;
+  color: #fff;
+}
+
+.cps-pop-dd .cps-menu-check {
+  display: none;
+}
+
+/* ── Text option (font): native menu styled as a chip ──────────────────── */
+
+.cps-text-option {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 5px;
+  padding: 0 4px 0 8px;
+}
+
+.cps-text-option select,
+.cps-text-field {
+  height: 22px;
+  max-width: 11em;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--cps-field-bg);
+  box-shadow: inset 0 0 0 1px var(--cps-line-2);
+  color: var(--cps-fg);
+  font: inherit;
+  outline: none;
+}
+
+.cps-text-option select:hover {
+  box-shadow: inset 0 0 0 1px var(--cps-fg-muted);
+}
+
+.cps-text-field {
+  width: 10em;
+  user-select: text;
+}
+
+.cps-text-field:focus {
+  box-shadow: inset 0 0 0 1px var(--cps-accent);
+}
+
+/* ── Collapsed option group (pen pressure) ─────────────────────────────── */
+
+.cps-option-group {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-option-group:hover {
+  background: var(--cps-hover);
+}
+
+.cps-option-group.cps-on {
+  background: var(--cps-acc-18);
+  color: color-mix(in srgb, var(--cps-accent) 35%, #fff);
+}
+
+.cps-option-group.cps-menu-open {
+  background: var(--cps-line-2);
+}
+
+.cps-popover.cps-pop-group {
+  width: 190px;
+  padding: 12px;
+}
+
+.cps-group-pop {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.cps-group-title {
+  color: var(--cps-fg);
+  font-weight: 600;
+}
+
+.cps-group-pills {
+  display: flex;
+  gap: 6px;
+}
+
+.cps-group-pills .cps-toggle {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--cps-panel-bg);
+}
+
+.cps-group-pills .cps-toggle.cps-active {
+  background: var(--cps-acc-30);
+  box-shadow: inset 0 0 0 1px var(--cps-acc-80);
+  color: #fff;
+}
+
+.cps-group-row.cps-num {
+  justify-content: space-between;
+  padding: 0;
+}
+
+.cps-group-row.cps-num:hover {
+  background: transparent;
+}
+
+.cps-group-row .cps-num-value {
+  min-width: 0;
+  padding: 3px 8px;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-panel-bg);
+  text-align: right;
 }
 
 /* ── Popovers ──────────────────────────────────────────────────────────── */
@@ -208,7 +375,7 @@
   position: absolute;
   inset: 0;
   z-index: 10;
-  overflow: hidden;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -217,13 +384,15 @@
   left: 0;
   top: 0;
   pointer-events: auto;
-  padding: 6px;
-  background: var(--cps-surface);
-  border: 1px solid var(--cps-border);
-  border-radius: 4px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  padding: 8px;
+  border: 1px solid var(--cps-line-2);
+  border-radius: var(--cps-r-menu);
+  background: var(--cps-menu-bg);
+  box-shadow: var(--cps-shadow-menu);
+  color: var(--cps-fg);
 }
 
+/* Slider popover (number value click). */
 .cps-slider-pop {
   display: flex;
   align-items: center;
@@ -237,59 +406,27 @@
 }
 
 .cps-num-input {
-  width: 48px;
+  width: 52px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--cps-field-bg);
+  box-shadow: inset 0 0 0 1px var(--cps-line-2);
+  color: var(--cps-fg);
+  font-family: var(--cps-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   text-align: right;
   user-select: text;
   outline: none;
 }
 
 .cps-num-input:focus {
-  border-color: var(--cps-accent);
+  box-shadow: inset 0 0 0 1px var(--cps-accent);
 }
 
 .cps-num-unit {
   min-width: 1.2em;
   color: var(--cps-fg-muted);
-}
-
-/* Collapsed option group (pen pressure): icon button + popover. */
-.cps-option-group {
-  flex: none;
-  color: var(--cps-fg-muted);
-}
-
-.cps-option-group.cps-on {
-  color: var(--cps-accent);
-}
-
-.cps-group-pop {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 120px;
-}
-
-.cps-group-title {
-  color: var(--cps-fg-muted);
-  font-weight: 600;
-}
-
-/* ── Drawing resolution notice (options bar, every tool) ──────────────── */
-
-.cps-resolution-notice {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 6px;
-  white-space: nowrap;
-}
-
-.cps-resolution-notice[hidden] {
-  display: none;
-}
-
-.cps-resolution-label {
-  color: var(--cps-danger);
-  font-size: 11px;
 }

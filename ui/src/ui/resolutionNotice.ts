@@ -1,17 +1,21 @@
 /**
- * Drawing-resolution mismatch notice (SPEC "Layers" > "Background row and drawing resolution"): when the
- * current image is more than 1.5x finer than the drawing grid, the options bar
- * shows "Drawing grid W px -- image W px (N.Nx)" and a **Match image
- * resolution** button (every tool), the Align drawing footer icon turns red
- * (via `setWarning`) and a one-time toast per document per session points to
- * the button. Second case (same button / icon, own toast): the image area
- * doesn't fit the maximum paint area. If both apply, the resolution message
- * wins (Match fixes both). Never for an empty document (it adopts the size).
- * The math lives in `engine/drawingResolution.ts`.
+ * Drawing-resolution mismatch notice (SPEC "Layers" > "Background row and
+ * drawing resolution"; design handoff section 6 "Resolution notice"): an
+ * amber floating pill above the bottom bar's right end (`shell.noticeSlot`)
+ * with a warning icon, "Drawing grid G px -- image I px (N.Nx)", a light
+ * **Match image resolution** button and a × that hides the pill until the
+ * notice text changes. While the condition holds, `setWarning(true)` turns
+ * the bottom bar's Align button amber -- also while the pill is hidden. A
+ * one-time toast per document per session points to the button. Second case
+ * (same button, own toast): the image area doesn't fit the maximum paint
+ * area. If both apply, the resolution message wins (Match fixes both).
+ * Never for an empty document (it adopts the size) or while loading. The
+ * math lives in `engine/drawingResolution.ts`.
  */
 
 import type { Editor } from "../engine/editor";
 import { notify } from "../widget/toast";
+import { setIcon } from "./icons";
 
 /** Notices already toasted this session (`kind:docId`). */
 const toldDocs = new Set<string>();
@@ -35,19 +39,20 @@ export function formatRatio(ratio: number): string {
 }
 
 /**
- * The notice element in the options bar plus its side effects.
+ * The notice pill plus its side effects.
  */
 export class ResolutionNotice {
-  /** Root element (goes into the bar's trailing area). */
+  /** Root element (mount in `shell.noticeSlot`). */
   readonly element: HTMLDivElement;
   private readonly label: HTMLSpanElement;
-  private readonly button: HTMLButtonElement;
   private editor: Editor | null = null;
-  /** Last shown label (`""` = hidden); skips DOM writes on unchanged syncs. */
-  private shown: string | null = null;
+  /** Current notice text (`""` = no notice); `null` = not synced yet. */
+  private text: string | null = null;
+  /** Text the user hid with ×; the pill stays hidden until the text changes. */
+  private dismissed: string | null = null;
 
   /**
-   * @param setWarning - Turns the Align drawing icon red / back.
+   * @param setWarning - Turns the Align drawing button amber / back.
    * @param beforeMatch - Cancel drags / pending tool interactions first.
    */
   constructor(
@@ -55,17 +60,27 @@ export class ResolutionNotice {
     private readonly beforeMatch: () => void,
   ) {
     this.element = document.createElement("div");
-    this.element.className = "cps-resolution-notice";
+    this.element.className = "cps-notice-pill";
     this.element.hidden = true;
+    const icon = document.createElement("span");
+    icon.className = "cps-notice-icon";
+    setIcon(icon, "warning", 16);
     this.label = document.createElement("span");
-    this.label.className = "cps-resolution-label";
-    this.button = document.createElement("button");
-    this.button.type = "button";
-    this.button.className = "cps-toggle cps-resolution-match";
-    this.button.textContent = "Match image resolution";
-    this.button.title = "Resample all layers to the current image resolution (clears undo history)";
-    this.button.addEventListener("click", () => this.confirmMatch());
-    this.element.append(this.label, this.button);
+    this.label.className = "cps-notice-label";
+    const match = document.createElement("button");
+    match.type = "button";
+    match.className = "cps-light-button cps-notice-match";
+    match.textContent = "Match image resolution";
+    match.title = "Resample all layers to the current image resolution (clears undo history)";
+    match.addEventListener("click", () => this.confirmMatch());
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.className = "cps-icon-button cps-notice-hide";
+    hide.title = "Hide (Align drawing stays amber)";
+    hide.setAttribute("aria-label", "Hide");
+    setIcon(hide, "close", 16);
+    hide.addEventListener("click", () => this.dismiss());
+    this.element.append(icon, this.label, match, hide);
   }
 
   /**
@@ -74,7 +89,8 @@ export class ResolutionNotice {
    */
   setEditor(editor: Editor | null): void {
     this.editor = editor;
-    this.shown = null;
+    this.text = null;
+    this.dismissed = null;
     this.sync();
   }
 
@@ -86,10 +102,12 @@ export class ResolutionNotice {
     const text = !notice ? ""
       : notice.kind === "resolution" ? `Drawing grid ${notice.info.gridPx} px \u2014 image ${notice.info.imagePx} px (${ratio})`
       : FIT_LABEL;
-    if (text === this.shown) return;
-    this.shown = text;
+    if (text === this.text) return;
+    this.text = text;
+    // A different notice (or none) ends the user's hide.
+    if (text !== this.dismissed) this.dismissed = null;
     const show = notice !== null;
-    this.element.hidden = !show;
+    this.element.hidden = !show || this.dismissed !== null;
     this.setWarning(show);
     this.label.textContent = text;
     if (!notice || !editor) return;
@@ -103,6 +121,13 @@ export class ResolutionNotice {
     } else {
       notify("warn", `${FIT_LABEL} Use Match image resolution to fix it.`, { key: `resolution-fit:${editor.doc.docId}` });
     }
+  }
+
+  /** ×: hide the pill until the notice text changes (the Align button stays amber). */
+  private dismiss(): void {
+    if (!this.text) return;
+    this.dismissed = this.text;
+    this.element.hidden = true;
   }
 
   /** Button: confirm, then resample. */

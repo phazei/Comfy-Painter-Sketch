@@ -9,11 +9,12 @@
  * | Ctrl+0 / Ctrl+1 / Ctrl+= / Ctrl+- | fit / 100% / zoom in / out |
  * | `[` `]` (Shift: hardness) | size (tools with a `size` / `hardness` option); shape tools: width (1..500) |
  * | `1`..`9`, `0` | opacity 10%..90%, 100% |
- * | Q | Quick Mask |
+ * | Q | Quick Mask (nothing in region mode) |
+ * | ? | help overlay (toggle) |
  * | X / D | swap / reset FG-BG colours (with a layer mask targeted: the black / white mask swatches) |
  * | F | toggle fullscreen (shell `fullscreen` event) |
  * | O | Outputs tab / region mode (toggle) |
- * | Esc | cancel a tool drag, else close an open popover, else leave fullscreen |
+ * | Esc | the Esc chain ({@link handleEscape}): help, popover, text commit, float / transform, tool drag, deselect, fullscreen |
  * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
  * | Shift+group key | cycle the group (Shift+U shapes) |
  * | active tool's `onKey` | e.g. Move: arrows nudge 1 px, Shift+arrows 10 px |
@@ -51,6 +52,10 @@ export interface ShortcutEffects {
   toggleOutputs?(): void;
   /** Close an open popover. @returns `true` if one was open. */
   closePopover(): boolean;
+  /** Close the help overlay. @returns `true` if it was open. */
+  closeHelp(): boolean;
+  /** `?`: open / close the help overlay. */
+  toggleHelp(): void;
   /** Leave fullscreen. @returns `true` if the editor was fullscreen. */
   exitFullscreen(): boolean;
   /** Clipboard commands (Ctrl+C / X / V); absent = clipboard keys unhandled. */
@@ -70,14 +75,12 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   const ctrl = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
 
-  // Floating selection (Enter / Esc) and Merge Down (Ctrl+E).
-  if (handleFloatShortcut(event, editor, { cancelDrag: () => effects.cancelDrag() })) return true;
-  if (key === "escape" && !ctrl && !event.altKey) {
-    return (effects.cancelToolDrag?.() ?? false) || effects.closePopover() || effects.exitFullscreen();
-  }
   // Outputs tab (region tool): the image selection is hidden and out of reach --
   // no copy/cut/select/clear on it; Delete goes to the region tool (removes the region).
   const regionMode = tools.active.id === REGION_TOOL_ID;
+  if (key === "escape" && !ctrl && !event.altKey) return handleEscape(event, session, effects, regionMode);
+  // Floating selection (Enter), Free Transform chord and Merge Down (Ctrl+E).
+  if (handleFloatShortcut(event, editor, { cancelDrag: () => effects.cancelDrag() })) return true;
   // Their chords are still swallowed (so Ctrl+C doesn't copy graph nodes, Ctrl+D doesn't bookmark).
   if (regionMode && ((ctrl && !event.altKey && "cxad".includes(key) && key.length === 1) || ((ctrl || event.altKey) && key === "backspace"))) return true;
   // Clipboard: Ctrl+C / Ctrl+Shift+C / Ctrl+X; Ctrl+V only stopped (the `paste` event does the work).
@@ -121,6 +124,11 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     return true;
   }
 
+  // Help overlay: `?` (Shift+/ on most layouts) before the Shift+group lookup.
+  if (event.key === "?") {
+    effects.toggleHelp();
+    return true;
+  }
   if (event.shiftKey && key.length === 1) {
     // Shift+group key cycles the group's tools (Shift+U shapes).
     const next = tools.cycleShortcut(key);
@@ -132,7 +140,8 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
   if (key.length !== 1) return false;
   switch (key) {
     case "q":
-      // Quick Mask: toggle the paint target.
+      // Quick Mask: toggle the paint target (its button is hidden in region mode; Q does nothing there).
+      if (regionMode) return false;
       effects.cancelDrag();
       editor.togglePaintTarget();
       return true;
@@ -158,6 +167,39 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     tools.setActive(tool.id);
   }
   return true;
+}
+
+/**
+ * The Esc chain (design handoff "Interactions and behaviour"; first consumer
+ * wins): help overlay, popover / menu, (confirms are native dialogs), open
+ * text edit -> commit, float / Free Transform -> cancel, tool drag / pending
+ * interaction -> cancel, selection -> deselect (not in region mode, where
+ * the selection is out of reach), fullscreen -> exit. Esc never ends Solo,
+ * the lmask view or region mode. The Images tray is closed by the host
+ * before this runs (`ImagesPanel.handleKey`).
+ * @param event - The Esc key event.
+ * @param session - Current session.
+ * @param effects - UI callbacks.
+ * @param regionMode - The region tool is active.
+ * @returns `true` if a step consumed the key.
+ */
+function handleEscape(event: KeyboardEvent, session: EditorSession, effects: ShortcutEffects, regionMode: boolean): boolean {
+  const { editor } = session;
+  if (effects.closeHelp()) return true;
+  if (effects.closePopover()) return true;
+  if (editor.text.editing) {
+    effects.cancelDrag();
+    editor.text.commit();
+    return true;
+  }
+  if (handleFloatShortcut(event, editor, { cancelDrag: () => effects.cancelDrag() })) return true;
+  if (effects.cancelToolDrag?.()) return true;
+  if (!regionMode && editor.selection.active) {
+    effects.cancelDrag();
+    editor.selection.deselect();
+    return true;
+  }
+  return effects.exitFullscreen();
 }
 
 function run(action: () => void): true {

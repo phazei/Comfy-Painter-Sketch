@@ -18,9 +18,11 @@
  * set by `layerSelectHover.ts`): on the thumbnail Alt = an eye in corner
  * brackets, Shift = a red X; on the add icon Alt = the inverted mask glyph.
  *
- * The slot never widens the row beyond the thumbnail box; the name wraps
- * to 2 lines and ellipsizes instead (CSS). All clicks stop at the slot (the row's own click
- * would re-select / load the layer's pixels).
+ * The slot is a fixed 36 x 28 box (same as the layer thumbnail) or the
+ * narrow add icon; the name ellipsizes instead of the row widening (CSS).
+ * When it is the edit target, a selected row rings this thumbnail
+ * (`cps-target`). All clicks stop at the slot (the row's own click would
+ * re-select / load the layer's pixels).
  */
 
 import type { SelectionMode } from "../engine/selection";
@@ -76,7 +78,7 @@ export class LayerMaskSlot {
     this.addButton.title = "Add layer mask (reveals all, or shows only the selection; Alt+click hides all)";
     // Alt (hide all) shows the inverted glyph (`layerSelectHover.ts` sets `data-mod`).
     this.addButton.innerHTML =
-      `<span class="cps-mod-plain">${iconSvg("layerMaskAdd", 12)}</span><span class="cps-mod-alt">${iconSvg("maskInverted", 12)}</span>`;
+      `<span class="cps-mod-plain">${iconSvg("layerMaskAdd", 15)}</span><span class="cps-mod-alt">${iconSvg("maskInverted", 15)}</span>`;
     this.addButton.addEventListener("click", (event) => {
       stop(event);
       actions.addLayerMask(id, event.altKey);
@@ -88,7 +90,7 @@ export class LayerMaskSlot {
     this.off = document.createElement("span");
     this.off.className = "cps-layer-mask-off";
     this.off.hidden = true;
-    setIcon(this.off, "close", 30);
+    setIcon(this.off, "close", 24);
     // Modifier indicators: what a click does now (Alt = view alone, Shift = off / on).
     const mods = document.createElement("span");
     mods.className = "cps-layer-mask-mods";

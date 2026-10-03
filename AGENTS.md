@@ -156,8 +156,8 @@ ui/src/
   tools/                  -- one file per tool implementing a common Tool interface
     brush.ts eraser.ts fill.ts line.ts shape.ts eyedropper.ts text.ts
     marquee.ts lasso.ts magicWand.ts ...
-  ui/                     -- toolbar rail, options bar, layers panel,
-                             color picker, fullscreen host
+  ui/                     -- floating bars (tool dock, options strip, bottom
+                             bar, ...), side panel, color picker, fullscreen host
   geometry/               -- shared rect/size helpers (pure)
   styles/                 -- CSS (injected by main.ts)
 ```
@@ -207,10 +207,12 @@ ui/src/
   so it's unit-testable (the test environment has no canvas).
 - Tool options are **declarative** (descriptors: slider/number/toggle/select),
   rendered generically by the options bar. No per-tool UI code.
-- `ui/shell.ts` owns the regions (rail, options bar, stage, side panel) and the
-  popover host, which lives **inside** the editor root so popovers follow it into
-  fullscreen. Wheel isolation covers the whole root: the stage zooms, the options
-  bar scrolls sideways, other regions scroll natively, nothing reaches the graph.
+- `ui/shell.ts` owns the stage (filling the root) and the floating slots over it
+  (history, dock + options strip, clipboard, sliders, notice, bottom bar,
+  overlay), the side panel and the popover host, which lives **inside** the
+  editor root so popovers follow it into fullscreen. Wheel isolation covers the
+  whole root: the stage zooms, the options strip scrolls sideways, other regions
+  scroll natively, nothing reaches the graph.
 - The element passed to `addDOMWidget` is a stable wrapper (`.cps-widget`) that
   never moves; only the editor root inside it moves (fullscreen). Both renderers
   only check that the wrapper is their child.
@@ -342,8 +344,9 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
     next click / focus move outside the editor. Text fields, `<select>` and range
     sliders inside the editor keep native focus/drag behaviour.
   - Fullscreen always owns the keyboard.
-  - The rail's white left edge shows real focus state (focusin/focusout), never
-    hover guesses.
+  - No visible focus indicator: the root still gets `cps-has-keys` from the real
+    focus state (focusin/focusout, never hover guesses) for styling, and the
+    side panel's visibility follows the scope's active state.
   - Never `preventDefault()` `pointerdown` on `<input type=range>`: it kills
     native slider dragging.
 - While active, handle the key, then `preventDefault()` + `stopPropagation()` so

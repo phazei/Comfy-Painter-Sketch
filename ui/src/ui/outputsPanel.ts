@@ -1,17 +1,24 @@
 /**
- * Outputs tab (SPEC "Outputs and regions (editor)"): the Main card plus six fixed slot cards. A filled slot
- * shows a {@link RegionCard}; an empty slot is a one-line `+ Region N` row
- * that creates the default centred region in that slot. Card N always feeds
- * helper output pair N.
+ * Outputs tab content (SPEC "Outputs and regions (editor)", design handoff
+ * "Outputs tab"), top to bottom:
+ * 1. the Main card;
+ * 2. the slot grid: six fixed slots. A filled slot selects its region; an
+ *    empty slot creates the centred half-size region in that slot. Slot N
+ *    always feeds helper output pair N;
+ * 3. the selected region's card (only while a region is selected);
+ * 4. the hint.
  *
  * Updates only on the editor's `outputs` event (edits, selection, undo/redo,
- * Clear, image size) -- never on `render` -- and refreshes cards in place, so
- * a field being edited is never rebuilt.
+ * Clear, image size) -- never on `render` -- and refreshes in place: a field
+ * being edited is never rebuilt, and the region card is swapped only when the
+ * selected id changes (open sessions of the old card commit).
+ *
+ * The element itself is the scroll container when the side panel caps its
+ * height.
  */
 
-import { MAX_REGIONS, defaultRegionName } from "../document/regions";
+import { MAX_REGIONS, regionName } from "../document/regions";
 import type { Editor } from "../engine/editor";
-import { setIcon } from "./icons";
 import { MainCard, RegionCard } from "./outputCard";
 import type { OutputCardContext } from "./outputOptionsRow";
 import type { PopoverHost } from "./popover";
@@ -25,12 +32,16 @@ export interface OutputsPanelContext {
   releaseFocus(): void;
 }
 
-/** One fixed slot: its wrapper, the empty row and the card while filled. */
-interface SlotView {
-  slot: number;
-  element: HTMLDivElement;
-  empty: HTMLButtonElement;
-  card: RegionCard | null;
+/** Hint under the cards. */
+export const OUTPUTS_HINT = "Drag on the image to add a region; Shift-drag starts a new one inside another.";
+
+/**
+ * Tooltip of an empty slot.
+ * @param slot - Slot 1..6.
+ * @returns Tooltip text.
+ */
+export function emptySlotTitle(slot: number): string {
+  return `Add region ${slot} (centred) \u00b7 or drag on the image`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -38,13 +49,15 @@ interface SlotView {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Session-bound list of outputs.
+ * Session-bound Outputs tab.
  */
 export class OutputsPanel {
   readonly element = document.createElement("div");
-  private readonly list = document.createElement("div");
-  private readonly slots: SlotView[] = [];
+  private readonly slotGrid = document.createElement("div");
+  private readonly slotButtons: HTMLButtonElement[] = [];
+  private readonly hint = document.createElement("div");
   private main: MainCard | null = null;
+  private regionCard: RegionCard | null = null;
   private editor: Editor | null = null;
   private unbind: Array<() => void> = [];
 
@@ -53,13 +66,12 @@ export class OutputsPanel {
    */
   constructor(private readonly ctx: OutputsPanelContext) {
     this.element.className = "cps-outputs";
-    this.list.className = "cps-outputs-list";
-    const hint = document.createElement("div");
-    hint.className = "cps-outputs-hint";
-    hint.textContent = "Drag on the image to add a region; Shift-drag starts a new one inside another.";
-    for (let slot = 1; slot <= MAX_REGIONS; slot++) this.slots.push(this.slotView(slot));
-    this.list.append(...this.slots.map((view) => view.element));
-    this.element.append(this.list, hint);
+    this.slotGrid.className = "cps-output-slots cps-mono";
+    for (let slot = 1; slot <= MAX_REGIONS; slot++) this.slotButtons.push(this.slotButton(slot));
+    this.slotGrid.append(...this.slotButtons);
+    this.hint.className = "cps-outputs-hint";
+    this.hint.textContent = OUTPUTS_HINT;
+    this.element.append(this.slotGrid, this.hint);
   }
 
   /**
@@ -71,12 +83,13 @@ export class OutputsPanel {
     this.unbind = [];
     this.main?.dispose();
     this.main = null;
-    for (const view of this.slots) this.setCard(view, null);
+    this.regionCard?.dispose();
+    this.regionCard = null;
     this.editor = editor;
+    this.syncSlots();
     if (!editor) return;
-    const ctx: OutputCardContext = { ...this.ctx, editor };
-    this.main = new MainCard(ctx);
-    this.list.prepend(this.main.element);
+    this.main = new MainCard(this.cardContext(editor));
+    this.element.prepend(this.main.element);
     this.unbind.push(editor.events.on("outputs", () => this.sync()));
     this.sync();
   }
@@ -89,49 +102,75 @@ export class OutputsPanel {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  /** Bring every card up to date; a slot's card is replaced only when its region changes. */
+  private cardContext(editor: Editor): OutputCardContext {
+    return { ...this.ctx, editor };
+  }
+
+  /** Bring every part up to date. */
   private sync(): void {
+    if (!this.editor) return;
+    this.main?.refresh();
+    this.syncSlots();
+    this.syncRegionCard();
+  }
+
+  /**
+   * Show the selected region's card; swap it only when the selected id
+   * changes. Disposing the old card commits its open sessions, which may
+   * re-enter {@link sync}; the recursion re-reads the selection.
+   */
+  private syncRegionCard(): void {
     const editor = this.editor;
     if (!editor) return;
-    this.main?.refresh();
-    for (const view of this.slots) {
-      const region = editor.regionOps.inSlot(view.slot);
-      if (!region) {
-        this.setCard(view, null);
-        continue;
-      }
-      if (view.card?.id !== region.id) this.setCard(view, new RegionCard(region.id, { ...this.ctx, editor }));
-      view.card?.refresh();
+    const id = editor.regionOps.selectedId;
+    const card = this.regionCard;
+    if (card && card.id !== id) {
+      this.regionCard = null;
+      card.dispose(false);
+      this.syncRegionCard();
+      return;
     }
+    if (id !== null && !card) {
+      const next = new RegionCard(id, this.cardContext(editor));
+      this.regionCard = next;
+      this.slotGrid.after(next.element);
+    }
+    this.regionCard?.refresh();
   }
 
-  /** Swap a slot between its empty row and a card. */
-  private setCard(view: SlotView, card: RegionCard | null): void {
-    if (view.card === card) return;
-    view.card?.dispose();
-    view.card = card;
-    view.empty.hidden = card !== null;
-    if (card) view.element.append(card.element);
-  }
-
-  /** Wrapper + `+ Region N` row of one slot. */
-  private slotView(slot: number): SlotView {
-    const element = document.createElement("div");
-    element.className = "cps-output-slot";
-    const empty = document.createElement("button");
-    empty.type = "button";
-    empty.className = "cps-output-empty";
-    empty.title = `Add a centred region in slot ${slot}`;
-    const icon = document.createElement("span");
-    setIcon(icon, "plus", 12);
-    const text = document.createElement("span");
-    text.textContent = defaultRegionName(slot);
-    empty.append(icon, text);
-    empty.addEventListener("click", () => {
-      this.ctx.beforeEdit();
-      this.editor?.regionOps.addDefault(slot);
+  /** Slot buttons: filled / selected / empty state, label and tooltip. */
+  private syncSlots(): void {
+    const ops = this.editor?.regionOps;
+    const selected = ops?.selectedId ?? null;
+    this.slotButtons.forEach((button, index) => {
+      const slot = index + 1;
+      const region = ops?.inSlot(slot);
+      button.classList.toggle("cps-filled", region !== undefined);
+      button.classList.toggle("cps-empty", region === undefined);
+      button.classList.toggle("cps-selected", region !== undefined && region.id === selected);
+      button.setAttribute("aria-pressed", String(region !== undefined && region.id === selected));
+      button.title = region ? regionName(region) : emptySlotTitle(slot);
+      button.setAttribute("aria-label", button.title);
     });
-    element.append(empty);
-    return { slot, element, empty, card: null };
+  }
+
+  /** One slot button: select a filled slot, fill an empty one. */
+  private slotButton(slot: number): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cps-output-slot cps-empty";
+    button.textContent = String(slot);
+    button.addEventListener("click", () => {
+      const ops = this.editor?.regionOps;
+      if (!ops) return;
+      const region = ops.inSlot(slot);
+      if (region) {
+        ops.select(region.id);
+        return;
+      }
+      this.ctx.beforeEdit();
+      ops.addDefault(slot);
+    });
+    return button;
   }
 }

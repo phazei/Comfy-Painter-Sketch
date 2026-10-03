@@ -106,4 +106,13 @@ export const LUCIDE: Readonly<Record<string, string>> = {
   "undo-2": "<path d='M9 14 4 9l5-5'/><path d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11'/>",
   "vector-square": "<path d='M17.055 4.533a24 24 0 00-10.11 0'/><path d='M19.467 17.055a24 24 0 000-10.11'/><path d='M4.533 6.945a24 24 0 000 10.11'/><path d='M6.945 19.467a24 24 0 0010.11 0'/><circle cx='19' cy='19' r='2'/><circle cx='19' cy='5' r='2'/><circle cx='5' cy='19' r='2'/><circle cx='5' cy='5' r='2'/>",
   "x": "<path d='M18 6 6 18'/><path d='m6 6 12 12'/>",
+  // UI refresh additions.
+  "circle-help": "<circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/>",
+  "triangle-alert": "<path d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/><path d='M12 9v4'/><path d='M12 17h.01'/>",
+  "chevron-down": "<path d='m6 9 6 6 6-6'/>",
+  "arrow-left": "<path d='m12 19-7-7 7-7'/><path d='M19 12H5'/>",
+  "link": "<path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/><path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>",
+  "text-align-start": "<path d='M21 5H3'/><path d='M15 12H3'/><path d='M17 19H3'/>",
+  "text-align-center": "<path d='M21 5H3'/><path d='M17 12H7'/><path d='M19 19H5'/>",
+  "text-align-end": "<path d='M21 5H3'/><path d='M21 12H9'/><path d='M21 19H7'/>",
 };

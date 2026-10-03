@@ -18,7 +18,6 @@ import { MARQUEE_GROUP, createMarqueeTools } from "./marquee";
 import { createMoveTool } from "./move";
 import { createMoveLayerTool } from "./moveLayer";
 import { SHAPE_GROUP, createShapeTools } from "./shapeTools";
-import { layerMaskBarDecorator } from "./layerMaskBar";
 import { createTextTool } from "./text";
 import { createRegionTool } from "./region";
 import { OutlineDragTool } from "./outlineDrag";
@@ -157,19 +156,7 @@ export class ToolRegistry {
    * @returns Options, or `null`.
    */
   barOptions(): ToolOptions | null {
-    const options = this.session ? this.session.options(this.active) : this.active.options;
-    return this.barDecorator ? this.barDecorator(options, this.active) : options;
-  }
-
-  /** Adds context controls to the bar (layer mask controls), or `null`. */
-  private barDecorator: ((options: ToolOptions | null, active: Tool) => ToolOptions | null) | null = null;
-
-  /**
-   * Install a bar decorator ({@link barOptions} passes its result through it).
-   * @param decorator - Returns the options to show (stable objects), or `null` to remove.
-   */
-  setBarDecorator(decorator: ((options: ToolOptions | null, active: Tool) => ToolOptions | null) | null): void {
-    this.barDecorator = decorator;
+    return this.session ? this.session.options(this.active) : this.active.options;
   }
 
   // ── Alt = temporary eyedropper ──────────────────────────────────────────
@@ -281,6 +268,5 @@ export function createDefaultTools(
   registry.setCtrlTool(moveLayer);
   registry.setBeforeSwitch(() => editor.settle());
   registry.setSession(createTransformSession(editor));
-  registry.setBarDecorator(layerMaskBarDecorator(editor));
   return registry;
 }

@@ -43,6 +43,9 @@ export const WIDGET_MIN_HEIGHT = 256;
 /** DOM widget margin (graph units) on each side inside the node. */
 export const WIDGET_MARGIN = 6;
 
+/** Smallest in-node height cap of the side panel, graph units (design handoff section 7). */
+export const PANEL_MIN_CAP = 580;
+
 /** Size given to freshly created nodes (saved workflows keep their size). */
 export const DEFAULT_NODE_SIZE: readonly [number, number] = [512, 640];
 

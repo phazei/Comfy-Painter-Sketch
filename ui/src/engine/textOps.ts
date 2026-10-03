@@ -27,6 +27,7 @@ import type { EditorState } from "./editorState";
 import { emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
 import type { LayerOps } from "./layerOps";
 import { hitTestText, recordTextChange, renderTextLayer, textStateOf } from "./textLayer";
+import { rasterizeText } from "./textTransform";
 import { isFontAvailable, textLayout } from "./textRender";
 
 /**
@@ -82,6 +83,27 @@ export class TextOps {
     const e = this.session;
     const layer = e ? this.find(e.layerId) : undefined;
     return e && layer?.kind === "text" && layer.textData ? { layerId: e.layerId, textData: layer.textData } : null;
+  }
+
+  /**
+   * Rasterize a text layer into a paint layer as its own undo step, without
+   * the prompt (the caller -- the edit chip's "Rasterize text" -- already
+   * confirmed). An open edit on it is committed first; a hidden, solo-hidden
+   * or locked layer is refused with the usual note.
+   * @param layerId - Text layer id.
+   * @returns `true` if the layer was rasterized.
+   */
+  rasterize(layerId: string): boolean {
+    if (this.session?.layerId === layerId) this.commit();
+    const layer = this.find(layerId);
+    if (layer?.kind !== "text") return false;
+    const note = editBlockNote(this.s, layer, "whole");
+    if (note) {
+      this.s.events.emit("note", note);
+      return false;
+    }
+    rasterizeText(this.s, layerId);
+    return true;
   }
 
   /**

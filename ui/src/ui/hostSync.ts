@@ -1,10 +1,21 @@
 /**
- * Rail/options-bar sync layer for {@link EditorHost}.
+ * Chrome sync layer for {@link EditorHost}.
  *
- * {@link HostSync} owns the components that form the toolbar chrome (tool
- * rail, FG/BG swatches, options bar, selection actions, layers and outputs
- * panels) and every private sync method that keeps them up to date when the
- * session, tool, mask state or history changes.
+ * {@link HostSync} owns the components that float over the stage (design
+ * handoff "Screens / views") and every sync method that keeps them up to
+ * date when the session, tool, mask state or history changes:
+ *
+ * | Component | Shell slot |
+ * |---|---|
+ * | {@link HistoryPill} (Undo / Redo / Clear) | `top.history` |
+ * | {@link ToolDock} (tools + FG/BG swatches) | `top.dock` |
+ * | {@link OptionsStrip} (tool options, state parts) | `top.strip` |
+ * | {@link ClipGroup} + {@link ImagesPanel} (Images, Copy, Cut, Paste) | `top.clip` |
+ * | {@link SlidersPill} (Size / Hardness) | `slidersSlot` |
+ * | {@link BottomBar} (chip, Quick Mask, lmask options, Align, Fit, ...) | `bottomSlot` |
+ * | {@link ResolutionNotice} | `noticeSlot` |
+ * | {@link HelpOverlay} | `overlaySlot` |
+ * | {@link LayersPanel} + {@link OutputsPanel} | `sidePanel` tabs |
  *
  * Construction: built once by `EditorHost`.
  * Sync calls: the host calls the methods below whenever editor events fire.
@@ -12,138 +23,206 @@
  *
  * Region mode (SPEC "Outputs and regions (editor)", `regionMode.ts`): the Outputs tab and the region tool
  * follow each other -- opening the tab activates the tool, any other tool
- * shows the Layers tab. The Outputs button / `O` toggles it.
+ * shows the Layers tab. The Outputs tab / `O` toggles it.
+ *
+ * Modal states (Free Transform, region mode, Align drawing) dim the dock and
+ * hide the sliders pill.
  */
 
-import { readFirstMaskStyle } from "../defaults/readDefaults";
-import { maskDisplayColor } from "../document/masks";
 import type { Editor } from "../engine/editor";
+import { REGION_TOOL_ID } from "../tools/region";
 import type { ToolRegistry } from "../tools/registry";
 import type { EditorSession } from "../widget/sessions";
+import type { SourceEntry, SourceHistory } from "../widget/sourceHistory";
+import { BottomBar } from "./bottomBar";
+import { ClipGroup } from "./clipGroup";
 import type { ClipboardActions } from "./clipboardActions";
 import { openColorPicker } from "./colorPicker";
+import { HelpOverlay } from "./helpOverlay";
+import { HistoryPill } from "./historyPill";
+import { ImagesPanel } from "./imagesPanel";
 import { LayersPanel } from "./layersPanel";
-import { OptionsBar } from "./optionsBar";
-import { SelectionActions } from "./selectionActions";
-import type { EditorShell } from "./shell";
-import { SwatchWidget } from "./swatches";
-import { ToolRail } from "./toolRail";
+import { OptionsStrip } from "./optionsStrip";
 import { OutputsPanel } from "./outputsPanel";
-import { ResolutionNotice } from "./resolutionNotice";
 import { LAYERS_TAB, OUTPUTS_TAB, tabForTool, toolForTab } from "./regionMode";
-import { REGION_TOOL_ID } from "../tools/region";
+import { ResolutionNotice } from "./resolutionNotice";
+import type { EditorShell } from "./shell";
+import { SlidersPill } from "./slidersPill";
+import { RefreshThrottle } from "./thumbnails";
+import { ToolDock } from "./toolDock";
+
+/** Id of the hidden Align drawing tool (`tools/move.ts`). */
+const ALIGN_TOOL_ID = "move";
+
+/** What {@link HostSync} needs from the host. */
+export interface HostSyncContext {
+  /** Editor shell (slots, side panel, popover host, events). */
+  shell: EditorShell;
+  /** Returns the currently shown session (or null). */
+  getSession(): EditorSession | null;
+  /** Called after the user edits a tool option (strip, sliders). */
+  optionsChanged(): void;
+  /** Cancel drags / pending tool interactions before mode switches and edits. */
+  cancelDrag(): void;
+  /** Hand keyboard focus back after a panel text field blurs. */
+  releaseFocus(): void;
+  /** Copy / cut / paste commands (clipboard pill). */
+  clipboard: ClipboardActions;
+  /** The node's `layer_source` history (Images tray), or `null`. */
+  sources: SourceHistory | null;
+  /** An Images tray thumbnail was clicked. */
+  pickSource(entry: SourceEntry): void;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HostSync
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * Toolbar chrome components and their sync helpers.
+ * Editor chrome components and their sync helpers.
  */
 export class HostSync {
-  /** Left tool rail (tool buttons, Quick Mask, Undo/Redo, …). */
-  readonly rail: ToolRail;
-  /** FG/BG colour swatches. */
-  readonly swatches: SwatchWidget;
-  /** Top options bar (bound to the active tool). */
-  readonly optionsBar: OptionsBar;
-  /** "To mask / Invert" actions shown while a selection exists. */
-  readonly selectionActions: SelectionActions;
-  /** Layers panel (owned here; side panel content set by EditorHost). */
-  readonly layers: LayersPanel;
-  /** Output metadata panel, bound alongside Layers. */
-  readonly outputs: OutputsPanel;
-  /** Drawing-resolution mismatch notice + Match image resolution (options bar). */
+  /** Undo / Redo / Clear pill. */
+  readonly history: HistoryPill;
+  /** Tool dock (tools + FG/BG swatches). */
+  readonly dock: ToolDock;
+  /** Images button + tray (button lives in the clipboard pill). */
+  readonly images: ImagesPanel;
+  /** Images / Copy / Cut / Paste pill. */
+  readonly clip: ClipGroup;
+  /** Options strip under the dock (bound to the active tool). */
+  readonly strip: OptionsStrip;
+  /** Size / Hardness sliders pill. */
+  readonly sliders: SlidersPill;
+  /** Bottom bar. */
+  readonly bottomBar: BottomBar;
+  /** Shortcuts help overlay. */
+  readonly help: HelpOverlay;
+  /** Drawing-resolution mismatch notice (amber pill + Align warning). */
   readonly resolution: ResolutionNotice;
+  /** Layers tab. */
+  readonly layers: LayersPanel;
+  /** Outputs tab. */
+  readonly outputs: OutputsPanel;
 
   /**
    * Last active rail tool per registry (restored when "Align drawing" is
-   * toggled off). Keyed by registry so a host showing another session (tab
-   * switch, hand-off, fork) never restores a stale id; the toggle's
-   * highlight itself is always derived from `tools.active` ({@link syncMoveMode}).
+   * toggled off or region mode ends). Keyed by registry so a host showing
+   * another session (tab switch, hand-off, fork) never restores a stale id;
+   * the Align highlight itself is always derived from `tools.active`.
    */
   private readonly lastRailTool = new WeakMap<ToolRegistry, string>();
+  /** Render-driven bottom bar syncs, coalesced. */
+  private readonly bottomThrottle: RefreshThrottle;
+  private readonly shell: EditorShell;
+  private readonly getSession: () => EditorSession | null;
+  private readonly cancelDrag: () => void;
 
   /**
-   * @param getSession - Returns the currently active session (or null).
-   * @param onOptionsChanged - Called after the user edits a tool option.
-   * @param onCancelDrag - Called before mode switches that need a clean state.
-   * @param releaseFocus - Hand keyboard focus back after a panel text field blurs.
-   * @param shell - Editor shell (regions + popover host).
-   * @param clipboard - Copy / cut / paste commands (rail buttons).
+   * @param ctx - Host services.
    */
-  constructor(
-    private readonly getSession: () => EditorSession | null,
-    private readonly onOptionsChanged: () => void,
-    private readonly onCancelDrag: () => void,
-    releaseFocus: () => void,
-    private readonly shell: EditorShell,
-    clipboard: ClipboardActions,
-  ) {
-    this.rail = new ToolRail(
-      shell.rail.tools,
+  constructor(ctx: HostSyncContext) {
+    const { shell, clipboard } = ctx;
+    const popovers = shell.popoverHost;
+    this.shell = shell;
+    this.getSession = () => ctx.getSession();
+    this.cancelDrag = () => ctx.cancelDrag();
+    const changed = (): void => ctx.optionsChanged();
+
+    // ── Top row ───────────────────────────────────────────────────────────
+    this.history = new HistoryPill(shell.top.history, {
+      undo: () => this.getSession()?.editor.undo(),
+      redo: () => this.getSession()?.editor.redo(),
+      clear: () => this.confirmClear(),
+    });
+    this.dock = new ToolDock(
+      shell.top.dock,
       {
         selectTool: (id) => {
-          this.onCancelDrag();
+          this.cancelDrag();
           this.getSession()?.tools.setActive(id);
         },
-        toggleQuickMask: () => {
-          this.onCancelDrag();
-          this.getSession()?.editor.togglePaintTarget();
+        // While a layer mask is targeted the swatches are the black / white mask swatches (no picker).
+        swatches: {
+          pick: (slot, anchor) => {
+            const editor = this.getSession()?.editor;
+            if (!editor || editor.layerMask.targeted) return;
+            shell.requestColorPick(slot, anchor);
+          },
+          swap: () => {
+            const editor = this.getSession()?.editor;
+            if (editor && !editor.layerMask.swapSwatches()) editor.colors.swap();
+          },
+          reset: () => {
+            const editor = this.getSession()?.editor;
+            if (editor && !editor.layerMask.resetSwatches()) editor.colors.reset();
+          },
         },
-        undo: () => this.getSession()?.editor.undo(),
-        redo: () => this.getSession()?.editor.redo(),
-        // `view.fit()` emits `render` itself (engine/view.ts `onChange`).
-        fit: () => this.getSession()?.editor.view.fit(),
-        clear: () => this.confirmClear(),
-        fullscreen: () => this.shell.events.emit("fullscreen", undefined),
-        copy: () => (this.onCancelDrag(), clipboard.copy(false)),
-        cut: () => (this.onCancelDrag(), clipboard.cut()),
-        paste: (request) => (this.onCancelDrag(), void clipboard.pasteFromButton(request)),
       },
-      shell.popoverHost,
+      popovers,
     );
-
-    // While a layer mask is targeted the swatches are the black / white mask swatches (no picker).
-    this.swatches = new SwatchWidget({
-      pick: (slot, anchor) => {
-        const editor = this.getSession()?.editor;
-        if (!editor || editor.layerMask.targeted) return;
-        this.shell.requestColorPick(slot, anchor);
-      },
-      swap: () => {
-        const editor = this.getSession()?.editor;
-        if (editor && !editor.layerMask.swapSwatches()) editor.colors.swap();
-      },
-      reset: () => {
-        const editor = this.getSession()?.editor;
-        if (editor && !editor.layerMask.resetSwatches()) editor.colors.reset();
-      },
+    this.images = new ImagesPanel({
+      history: ctx.sources,
+      popovers,
+      root: shell.root,
+      stage: shell.stage,
+      toolBox: this.dock.toolBox,
+      anchor: shell.top.clip,
+      beforeOpen: () => this.cancelDrag(),
+      pick: (entry) => ctx.pickSource(entry),
     });
-    shell.rail.swatchSlot.appendChild(this.swatches.element);
-
-    this.optionsBar = new OptionsBar(shell.bar, shell.popoverHost, () => this.onOptionsChanged());
-    this.selectionActions = new SelectionActions();
-    shell.bar.leading.append(this.selectionActions.element);
-
-    this.layers = new LayersPanel({
-      sidePanel: shell.sidePanel,
-      popovers: shell.popoverHost,
-      pickColor: (anchor, options) => openColorPicker(shell.popoverHost, anchor, options),
-      beforeEdit: () => this.onCancelDrag(),
-      releaseFocus,
+    this.clip = new ClipGroup(
+      shell.top.clip,
+      {
+        copy: (merged) => (this.cancelDrag(), clipboard.copy(merged)),
+        cut: () => (this.cancelDrag(), clipboard.cut()),
+        paste: (request) => (this.cancelDrag(), void clipboard.pasteFromButton(request)),
+      },
+      popovers,
+      { imagesButton: this.images.button },
+    );
+    this.strip = new OptionsStrip(shell.top.strip, {
+      popovers,
+      getSession: () => this.getSession(),
+      changed,
+      leaveRegionMode: () => this.leaveRegionMode(),
       toggleMoveDrawing: () => this.toggleMoveDrawing(),
     });
-    this.outputs = new OutputsPanel({
-      popovers: shell.popoverHost,
-      beforeEdit: () => this.onCancelDrag(),
-      releaseFocus,
+    this.sliders = new SlidersPill(shell.slidersSlot, changed);
+
+    // ── Bottom ────────────────────────────────────────────────────────────
+    this.bottomBar = new BottomBar(shell.bottomSlot, {
+      popovers,
+      getSession: () => this.getSession(),
+      beforeEdit: () => this.cancelDrag(),
+      leaveRegionMode: () => this.leaveRegionMode(),
+      rasterizeText: (id) => void this.getSession()?.editor.text.rasterize(id),
+      toggleMoveDrawing: () => this.toggleMoveDrawing(),
+      fullscreen: () => shell.events.emit("fullscreen", undefined),
+      toggleHelp: () => shell.events.emit("help", undefined),
+      requestLayout: () => shell.requestLayout(),
     });
-    this.resolution = new ResolutionNotice((on) => this.layers.setMoveDrawingWarning(on), () => this.onCancelDrag());
-    shell.bar.trailing.prepend(this.resolution.element);
+    this.bottomThrottle = new RefreshThrottle(() => this.bottomBar.sync());
+    this.resolution = new ResolutionNotice((on) => this.bottomBar.setResolutionWarning(on), () => this.cancelDrag());
+    shell.noticeSlot.appendChild(this.resolution.element);
+    this.help = new HelpOverlay(shell.overlaySlot);
+
+    // ── Side panel ────────────────────────────────────────────────────────
+    this.layers = new LayersPanel({
+      sidePanel: shell.sidePanel,
+      popovers,
+      pickColor: (anchor, options) => openColorPicker(popovers, anchor, options),
+      beforeEdit: () => this.cancelDrag(),
+      releaseFocus: () => ctx.releaseFocus(),
+    });
+    this.outputs = new OutputsPanel({
+      popovers,
+      beforeEdit: () => this.cancelDrag(),
+      releaseFocus: () => ctx.releaseFocus(),
+    });
     shell.sidePanel.setTabs([
-      { id: LAYERS_TAB, label: "Layers", panel: this.layers.element },
-      { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element },
+      { id: LAYERS_TAB, label: "Layers", panel: this.layers.element, headerExtra: this.layers.headerControl },
+      { id: OUTPUTS_TAB, label: "Outputs", panel: this.outputs.element, title: "Outputs (O)" },
     ]);
     shell.sidePanel.events.on("tab", (tab) => this.tabChanged(tab));
     shell.events.on("outputs", () => this.toggleOutputs());
@@ -152,41 +231,46 @@ export class HostSync {
   // ── Sync called by EditorHost ─────────────────────────────────────────────
 
   /**
-   * Bind the layers panel and selection actions to a new editor (or null).
+   * Bind the panels and the resolution notice to a new editor (or null).
    * Called by `EditorHost.setSession`.
    * @param editor - The incoming session's editor, or `null`.
    */
   bindEditor(editor: Editor | null): void {
     this.layers.setEditor(editor);
     this.outputs.setEditor(editor);
-    this.selectionActions.setEditor(editor);
     this.resolution.setEditor(editor);
+    this.syncBottomBar();
   }
 
-  /** Sync rail, options bar and cursor when the active tool changes. */
+  /** Sync dock, strip, sliders, panel tab and bottom bar when the active tool changes. */
   syncTools(): void {
     const session = this.getSession();
     if (!session) return;
-
-    const active = session.tools.active;
-    if (active.rail !== false) this.lastRailTool.set(session.tools, active.id);
-    const regionMode = active.id === REGION_TOOL_ID;
+    const { tools } = session;
+    const active = tools.active;
+    if (active.rail !== false) this.lastRailTool.set(tools, active.id);
     this.shell.sidePanel.showTab(tabForTool(active.id));
-    this.shell.outputsButton.classList.toggle("cps-active", regionMode);
-    this.shell.outputsButton.setAttribute("aria-pressed", String(regionMode));
-    this.rail.setTools(session.tools.railTools(), session.tools.active.id, session.tools.groups);
-    this.optionsBar.bind(session.tools.barOptions());
-    this.syncMoveMode();
+    this.dock.setTools(tools.railTools(), active.id, tools.groups);
+    this.syncOptions();
   }
 
   /**
-   * Re-bind the options bar (Free Transform session start / end, selection
-   * appearing for the selection tools' Transform buttons); a refresh when
-   * the options object is unchanged (live transform fields).
+   * Re-bind the strip and sliders (Free Transform session start / end, a
+   * selection appearing for the selection tools' Transform buttons); a
+   * refresh when the options object is unchanged (live transform fields).
+   * Also re-evaluates the modal dimming and the bottom bar.
    */
   syncOptions(): void {
-    const tools = this.getSession()?.tools;
-    if (tools) this.optionsBar.bind(tools.barOptions());
+    const session = this.getSession();
+    if (!session) return;
+    const options = session.tools.barOptions();
+    this.strip.bind(options);
+    this.sliders.bind(options);
+    const id = session.tools.active.id;
+    const modal = session.editor.float.transform.active || id === REGION_TOOL_ID || id === ALIGN_TOOL_ID;
+    this.dock.setModal(modal);
+    this.sliders.setModal(modal);
+    this.syncBottomBar();
   }
 
   /**
@@ -200,47 +284,40 @@ export class HostSync {
     const session = this.getSession();
     if (!session) return;
     const { tools } = session;
-    this.onCancelDrag();
-    if (tools.active.id === "move") {
+    this.cancelDrag();
+    if (tools.active.id === ALIGN_TOOL_ID) {
       const lastId = this.lastRailTool.get(tools);
       const prev = (lastId !== undefined ? tools.get(lastId) : undefined) ?? tools.railTools()[0];
       if (prev) tools.setActive(prev.id);
     } else {
-      tools.setActive("move");
+      tools.setActive(ALIGN_TOOL_ID);
     }
     this.syncTools();
   }
 
   /**
-   * Outputs button / `O`: open the side panel on the Outputs tab (region
-   * mode); when region mode is already showing, go back to Layers.
+   * Outputs tab / `O`: in region mode go back to Layers; otherwise expand
+   * the side panel on the Outputs tab and activate the region tool.
    */
   toggleOutputs(): void {
     const session = this.getSession();
     if (!session) return;
     const panel = this.shell.sidePanel;
-    this.onCancelDrag();
-    if (session.tools.active.id === REGION_TOOL_ID && !panel.collapsed) {
+    this.cancelDrag();
+    if (session.tools.active.id === REGION_TOOL_ID) {
       panel.showTab(LAYERS_TAB);
       return;
     }
-    panel.setCollapsed(false);
+    panel.setShrunk(false);
     panel.showTab(OUTPUTS_TAB);
     session.tools.setActive(REGION_TOOL_ID);
   }
 
-  /** Sync the Quick Mask rail button + badge + root class. */
+  /** Sync the Quick Mask root class, the strip's mask swatch, the swatches and the bottom bar. */
   syncMask(): void {
     const editor = this.getSession()?.editor;
     if (!editor) return;
-    const mask = editor.maskLayer;
-    // No mask yet (old document): show the colour the lazily added one will get.
-    const color = mask ? maskDisplayColor(mask) : readFirstMaskStyle().color;
-    const targeting = editor.paintTarget === "mask";
-    this.rail.setQuickMask(targeting, color);
-    this.shell.root.classList.toggle("cps-quickmask", targeting);
-    this.optionsBar.setMask({ targeting, color });
-    // The layer mask controls and swatches come and go with the edit target (`tools/layerMaskBar.ts`).
+    this.shell.root.classList.toggle("cps-quickmask", editor.paintTarget === "mask");
     this.syncOptions();
     this.syncSwatches();
   }
@@ -253,33 +330,63 @@ export class HostSync {
     const editor = this.getSession()?.editor;
     if (!editor) return;
     const onMask = editor.layerMask.targeted !== null;
-    this.swatches.setMaskMode(onMask);
-    this.swatches.setColors(onMask ? editor.layerMask.swatches : editor.colors.current);
+    this.dock.swatches.setMaskMode(onMask);
+    this.dock.swatches.setColors(onMask ? editor.layerMask.swatches : editor.colors.current);
   }
 
-  /** Sync undo/redo button enable state. */
+  /** Sync the Undo / Redo enable state and the bottom bar. */
   syncHistory(): void {
     const editor = this.getSession()?.editor;
-    this.rail.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
+    this.history.setHistory(editor?.canUndo ?? false, editor?.canRedo ?? false);
+    this.syncBottomBar();
+  }
+
+  /** Re-read the strip's state parts (selection, text edit, mask) and the bottom bar. */
+  syncState(): void {
+    this.strip.sync();
+    this.syncBottomBar();
+  }
+
+  /** Re-read the bottom bar now. */
+  syncBottomBar(): void {
+    this.bottomBar.sync();
+  }
+
+  /** Re-read the bottom bar on a coalesced frame (render-driven: called often). */
+  requestBottomBarSync(): void {
+    this.bottomThrottle.request();
   }
 
   /**
-   * Notify the options bar and the tool's own options listener that an
-   * option changed (e.g. via shortcut).
+   * An option changed (via the strip, sliders or a shortcut): refresh both
+   * and notify the tool's own options listener.
    */
   optionsChanged(): void {
-    this.optionsBar.refresh();
+    this.strip.refresh();
+    this.sliders.refresh();
     this.getSession()?.tools.notifyOptions();
   }
 
   /** Dispose components that need it. */
   dispose(): void {
-    this.rail.dispose();
+    this.bottomThrottle.dispose();
+    this.images.dispose();
+    this.clip.dispose();
+    this.dock.dispose();
+    this.strip.dispose();
+    this.bottomBar.dispose();
+    this.help.dispose();
     this.layers.dispose();
     this.outputs.dispose();
+    this.shell.sidePanel.dispose();
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
+
+  /** Region mode Done / chip "Back to …": show the Layers tab (`tabChanged` restores the last rail tool). */
+  private leaveRegionMode(): void {
+    this.shell.sidePanel.showTab(LAYERS_TAB);
+  }
 
   /** The visible side-panel tab changed: enter or leave region mode. */
   private tabChanged(tab: string): void {
@@ -288,14 +395,8 @@ export class HostSync {
     const fallback = this.lastRailTool.get(tools) ?? tools.railTools()[0]?.id ?? "";
     const next = toolForTab(tab, tools.active.id, fallback);
     if (next === null) return;
-    this.onCancelDrag();
+    this.cancelDrag();
     tools.setActive(next);
-  }
-
-  /** Sync the "Align drawing" button on the layers panel. */
-  private syncMoveMode(): void {
-    const active = this.getSession()?.tools.active;
-    this.layers.setMoveDrawing(active?.id === "move");
   }
 
   /** Clear button: confirm, then one undoable Clear. */
@@ -303,7 +404,7 @@ export class HostSync {
     const editor = this.getSession()?.editor;
     if (!editor || editor.loading) return;
     if (!window.confirm("Clear all paint, regions and output options? This can be undone.")) return;
-    this.onCancelDrag();
+    this.cancelDrag();
     editor.clear();
   }
 }

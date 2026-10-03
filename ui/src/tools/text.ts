@@ -161,12 +161,13 @@ export class TextTool implements Tool {
         key: "align",
         label: "Align",
         title: "Alignment to the click point",
-        group: "style",
+        group: "align",
         choices: [
-          { value: "left", label: "Left" },
-          { value: "center", label: "Center" },
-          { value: "right", label: "Right" },
+          { value: "left", label: "Align left" },
+          { value: "center", label: "Align center" },
+          { value: "right", label: "Align right" },
         ],
+        icons: { left: "alignLeft", center: "alignCenter", right: "alignRight" },
       },
       {
         kind: "number",

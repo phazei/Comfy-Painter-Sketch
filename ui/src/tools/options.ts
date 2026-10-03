@@ -59,6 +59,11 @@ export interface ToggleOption extends BaseOption {
 export interface SelectOption extends BaseOption {
   kind: "select";
   choices: ReadonlyArray<{ value: string; label: string }>;
+  /**
+   * Icon per value (`ui/icons.ts`): the strip renders the choice as a row
+   * of icon toggles instead of a dropdown (text alignment).
+   */
+  icons?: Readonly<Record<string, string>>;
 }
 
 /**

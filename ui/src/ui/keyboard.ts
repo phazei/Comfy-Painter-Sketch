@@ -16,7 +16,8 @@
  * sink; a text field blurring to nothing reclaims it.
  *
  * Ctrl/Cmd+S in the editor is reported via {@link KeyboardHandlers.onSave}.
- * Scope going inactive is reported via {@link KeyboardHandlers.onDeactivate}.
+ * Scope going inactive is reported via {@link KeyboardHandlers.onDeactivate};
+ * every active/inactive transition via {@link KeyboardHandlers.onActiveChange}.
  *
  * Fullscreen ({@link KeyboardScope.setCaptureScope}): active without hover;
  * unhandled keys filtered by {@link fullscreenKeyPolicy}.
@@ -71,6 +72,12 @@ export interface KeyboardHandlers {
    * attention. Not called while fullscreen (the scope stays active).
    */
   onDeactivate?(): void;
+  /**
+   * The scope became active (`true`) or inactive (`false`); called on every
+   * transition, after {@link KeyboardHandlers.onDeactivate}. Drives the side
+   * panel's visibility.
+   */
+  onActiveChange?(active: boolean): void;
 }
 
 /**
@@ -305,6 +312,7 @@ export class KeyboardScope {
       this.returnFocus();
       this.handlers.onDeactivate?.();
     }
+    this.handlers.onActiveChange?.(shouldBeActive);
     this.syncIndicator();
   }
 

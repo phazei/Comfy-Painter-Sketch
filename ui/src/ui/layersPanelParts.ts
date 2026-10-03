@@ -82,7 +82,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: str
 }
 
 /**
- * Footer icon button.
+ * Footer icon button (30 x 28, icon 18).
  * @param icon - Icon name.
  * @param title - Tooltip.
  * @param onClick - Click handler.
@@ -92,23 +92,7 @@ export function footerButton(icon: string, title: string, onClick: () => void): 
   const button = el("button", "cps-icon-button cps-layers-action");
   button.type = "button";
   button.title = title;
-  setIcon(button, icon, 16);
-  button.addEventListener("click", onClick);
-  return button;
-}
-
-/**
- * Build the "Align drawing" toggle button for the footer left side.
- * @param onClick - Called when the button is clicked.
- * @returns The button.
- */
-export function moveDrawingBtn(onClick: () => void): HTMLButtonElement {
-  const button = el("button", "cps-icon-button cps-layers-action cps-layers-move-drawing");
-  button.type = "button";
-  button.title = "Align drawing \u2014 reposition/scale all layers against the image";
-  button.setAttribute("aria-label", "Align drawing \u2014 reposition/scale all layers against the image");
-  button.setAttribute("aria-pressed", "false");
-  setIcon(button, "alignDrawing", 16);
+  setIcon(button, icon, 18);
   button.addEventListener("click", onClick);
   return button;
 }

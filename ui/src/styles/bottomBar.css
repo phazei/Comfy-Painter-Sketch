@@ -1,0 +1,368 @@
+/*
+ * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button
+ * (quickMaskButton.ts), lmask options, status pill, the resolution notice
+ * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design
+ * handoff sections 6 and 9. Builds on bars.css primitives; tokens on
+ * .cps-root (editor.css).
+ */
+
+/* ── Bar ───────────────────────────────────────────────────────────────── */
+
+.cps-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px;
+  border: 1px solid var(--cps-line-1);
+  border-radius: var(--cps-r-bottom);
+  background: var(--cps-bar-bg);
+  box-shadow: var(--cps-shadow-bar);
+  color: var(--cps-fg-icon);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cps-bb-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cps-bb-lmask {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 30 x 26 icon button. */
+.cps-bb-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.cps-bb-button:hover:not(:disabled) {
+  background: var(--cps-hover);
+}
+
+.cps-bb-button.cps-bb-muted {
+  color: var(--cps-fg-muted);
+}
+
+.cps-bb-button.cps-bb-muted:hover {
+  color: var(--cps-fg);
+}
+
+.cps-bottom-bar .cps-text-button {
+  color: inherit;
+}
+
+.cps-bb-text-icon,
+.cps-bb-align-icon {
+  display: flex;
+}
+
+.cps-bottom-bar .cps-text-button.cps-active {
+  background: var(--cps-active-bg);
+  color: #fff;
+}
+
+/* ── Status pill ───────────────────────────────────────────────────────── */
+
+.cps-bb-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-right: 2px;
+  padding: 4px 6px 4px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--cps-acc-30);
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cps-bb-pill:hover {
+  background: var(--cps-acc-45);
+}
+
+.cps-bb-pill-close {
+  display: flex;
+}
+
+/* ── Edit chip ─────────────────────────────────────────────────────────── */
+
+.cps-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 4px 6px 4px 5px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--cps-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cps-chip:hover:not(:disabled) {
+  background: var(--cps-hover-strong);
+}
+
+.cps-chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cps-chip-swatch {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.cps-chip-swatch.cps-ring2 {
+  box-shadow: 0 0 0 2px var(--cps-ring);
+}
+
+.cps-chip-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cps-chip-part {
+  flex: none;
+  color: var(--cps-fg-muted);
+}
+
+.cps-chip-part:empty {
+  display: none;
+}
+
+.cps-chip-chevron {
+  display: flex;
+  flex: none;
+  color: var(--cps-fg-muted);
+}
+
+/* ── Quick Mask button ─────────────────────────────────────────────────── */
+
+.cps-qm-button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 5px 14px 5px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.cps-qm-button:hover {
+  background: var(--cps-hover-strong);
+}
+
+.cps-qm-icon {
+  display: flex;
+}
+
+.cps-qm-button.cps-on {
+  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);
+  color: #fff;
+}
+
+.cps-qm-button.cps-on:hover {
+  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);
+}
+
+.cps-qm-button.cps-on .cps-qm-icon {
+  color: var(--cps-qm-color, #ff4d4d);
+}
+
+/* ── Align / resolution ────────────────────────────────────────────────── */
+
+.cps-bottom-bar .cps-bb-align {
+  padding: 5px 9px;
+}
+
+.cps-bottom-bar .cps-bb-align:hover {
+  filter: brightness(1.2);
+}
+
+.cps-bottom-bar .cps-bb-align.cps-warn {
+  background: var(--cps-warn-bg-2);
+  color: var(--cps-warn-fg);
+}
+
+.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {
+  color: var(--cps-warn-icon);
+}
+
+/* Active wins over the amber warning. */
+.cps-bottom-bar .cps-bb-align.cps-active {
+  background: var(--cps-align-bg);
+  color: var(--cps-align-fg);
+}
+
+.cps-bb-resolution {
+  padding: 5px 9px;
+  font-size: 11.5px;
+  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
+}
+
+.cps-bb-resolution:empty {
+  display: none;
+}
+
+/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */
+
+.cps-notice-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--cps-warn-border);
+  border-radius: var(--cps-r-bottom);
+  background: var(--cps-warn-bg);
+  box-shadow: var(--cps-shadow-bar);
+  color: var(--cps-warn-fg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.cps-notice-icon {
+  display: flex;
+  color: var(--cps-warn-icon);
+}
+
+.cps-notice-pill .cps-notice-match {
+  background: var(--cps-warn-fg);
+  color: #2a2010;
+}
+
+.cps-notice-pill .cps-notice-match:hover {
+  background: #fff;
+}
+
+.cps-notice-pill .cps-notice-hide {
+  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);
+}
+
+.cps-notice-pill .cps-notice-hide:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--cps-warn-fg);
+}
+
+/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */
+
+.cps-help-backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.cps-help-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 86%;
+  max-width: 520px;
+  max-height: 80%;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--cps-line-2);
+  border-radius: 12px;
+  background: var(--cps-panel-bg);
+  box-shadow: var(--cps-shadow-menu);
+  color: var(--cps-fg);
+  cursor: default;
+}
+
+.cps-help-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cps-help-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cps-help-close {
+  color: var(--cps-fg-muted);
+}
+
+.cps-help-close:hover {
+  color: var(--cps-fg);
+}
+
+.cps-help-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  align-items: start;
+}
+
+.cps-help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--cps-card-bg);
+}
+
+.cps-help-section-title {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cps-fg-muted);
+}
+
+.cps-help-rows {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.cps-help-keys {
+  font-family: var(--cps-mono);
+  font-size: 11px;
+  color: var(--cps-fg-muted);
+  white-space: nowrap;
+}
+
+.cps-help-action {
+  min-width: 0;
+}

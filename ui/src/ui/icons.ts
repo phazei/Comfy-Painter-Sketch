@@ -70,6 +70,21 @@ const CUSTOM: Readonly<Record<string, string>> = {
   // Eyedropper badge: the pick goes to the background slot (the user's drawing).
   bgSlot:
     "<path d='M14 20a2 2 0 002 2h4a2 2 0 002-2v-4a2 2 0 00-2-2v6z'/><path d='M14 20a6 6 0 006-6'/><rect x='8' y='8' width='8' height='8' rx='2'/>",
+  // ── UI refresh glyphs (the maintainer's, from the design handoff icon module) ──
+  // Sliders pill: brush size (two dots), hardness (soft ring + hard core), line width (three rules).
+  brushSize: "<circle cx='7' cy='17' r='2.5'/><circle cx='15.5' cy='8.5' r='5.5'/>",
+  hardness: "<circle cx='12' cy='12' r='9' stroke-dasharray='1.5 2.6'/><circle cx='12' cy='12' r='4.5' fill='currentColor'/>",
+  lineWidth: "<path d='M4 5h16' style='stroke-width:1'/><path d='M4 11h16' style='stroke-width:2'/><path d='M4 18h16' style='stroke-width:3.5'/>",
+  // Copy merged: the copy glyph with a three-line badge.
+  copyMerged: `${LUCIDE["copy"]}<path d='M13.5 13.5h5M13.5 16.5h5M13.5 19.5h5' style='stroke-width:1.5'/>`,
+  // Text angle.
+  angle: "<path d='M4 20h16'/><path d='M4 20 15 6'/><path d='M10.5 20A6.5 6.5 0 0 0 8 14.9'/>",
+  // Side panel shrink / expand (rotates 180° when shrunk).
+  panelCollapse: "<path d='m17 11-5-5-5 5'/><path d='m17 18-5-5-5 5'/>",
+  // Rasterize text (a pixel grid).
+  rasterize: "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M3 9h18M3 15h18M9 3v18M15 3v18'/>",
+  // Default colours (D): a filled square over an outlined one.
+  resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>",
 };
 
 /** Our icon names that are plain Lucide icons (name -> Lucide name). */
@@ -121,6 +136,15 @@ const ALIASES: Readonly<Record<string, string>> = {
   unlock: "lock-open",
   solo: "circle-dot",
   maskView: "scan-eye",
+  // UI refresh: bottom bar, menus, strip.
+  help: "circle-help",
+  warning: "triangle-alert",
+  chevronDown: "chevron-down",
+  back: "arrow-left",
+  link: "link",
+  alignLeft: "text-align-start",
+  alignCenter: "text-align-center",
+  alignRight: "text-align-end",
   // Cursor glyphs and badges.
   textCursor: "text-cursor",
   ban: "ban",
