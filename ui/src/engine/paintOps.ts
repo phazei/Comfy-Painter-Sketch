@@ -129,7 +129,7 @@ export class PaintOps {
     }
     this.growFor(need);
     s.stroke.addDabs(dabs);
-    s.events.emit("render", undefined);
+    s.events.emit("render", "stroke");
   }
 
   /**
@@ -147,7 +147,7 @@ export class PaintOps {
     const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
     const rect = intersectRect(roundOutRect(need), s.store.bounds);
     s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
-    s.events.emit("render", undefined);
+    s.events.emit("render", "stroke");
   }
 
   /**

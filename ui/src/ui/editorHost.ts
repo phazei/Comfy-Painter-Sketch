@@ -247,7 +247,7 @@ export class EditorHost {
     if (session) {
       const { editor, tools } = session;
       this.unbind.push(
-        editor.events.on("render", () => this.view.requestRender()),
+        editor.events.on("render", (hint) => this.view.requestRender(hint)),
         editor.events.on("history", () => this.sync.syncHistory()),
         editor.events.on("note", (text) => this.view.showNote(text)),
         editor.events.on("mask", () => this.sync.syncMask()),

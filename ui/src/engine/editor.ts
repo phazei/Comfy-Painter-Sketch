@@ -290,6 +290,15 @@ export class Editor extends EditorBase {
   }
 
   /**
+   * Document rect the live stroke preview refreshed during the last
+   * {@link compositeLayers} / {@link maskOverlays} call (may be empty), or
+   * `null` without a stroke. The stage redraws just this for `"stroke"` renders.
+   */
+  get strokeRefreshed(): Rect | null {
+    return this.s.stroke.active ? this.s.stroke.lastRefreshed : null;
+  }
+
+  /**
    * Visible layers to composite (live stroke preview for the painted layer).
    * @returns Bottom -> top layers.
    */

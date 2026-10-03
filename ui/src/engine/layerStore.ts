@@ -12,6 +12,12 @@ import { intersectRect, isEmptyRect, rectEquals } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 import { createSurface, fillOutside, rebaseSurface, releaseSurface } from "./surface";
 import type { Surface } from "./surface";
+import type { PixelData } from "./editorTypes";
+
+/** Canvas copy rather than `ImageData`. */
+function isCanvas(data: PixelData): data is HTMLCanvasElement {
+  return "getContext" in data;
+}
 
 /** Fill of hiding layer-mask surfaces beyond their old pixels. */
 const HIDE_FILL = "#ffffff";
@@ -167,11 +173,36 @@ export class LayerStore {
    * @param layerId - Layer id.
    * @param x - Document x of the data's top-left.
    * @param y - Document y of the data's top-left.
-   * @param data - Pixels.
+   * @param data - Pixels (`ImageData` or a canvas copy from {@link copy}).
    */
-  write(layerId: string, x: number, y: number, data: ImageData): void {
+  write(layerId: string, x: number, y: number, data: PixelData): void {
     const { ctx } = this.ensure(layerId);
-    ctx.putImageData(data, x - this.currentBounds.x, y - this.currentBounds.y);
+    const dx = x - this.currentBounds.x;
+    const dy = y - this.currentBounds.y;
+    if (!isCanvas(data)) {
+      ctx.putImageData(data, dx, dy);
+      return;
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(dx, dy, data.width, data.height);
+    ctx.drawImage(data, dx, dy);
+    ctx.restore();
+  }
+
+  /**
+   * Whole-layer copy on a new canvas (canvas to canvas: no GPU readback,
+   * unlike {@link snapshot}). For history records that only restore it.
+   * @param layerId - Layer id.
+   * @returns Canvas covering `bounds`.
+   */
+  copy(layerId: string): HTMLCanvasElement {
+    const { canvas } = this.ensure(layerId);
+    const next = createSurface(canvas.width, canvas.height);
+    next.ctx.drawImage(canvas, 0, 0);
+    return next.canvas;
   }
 
   /**

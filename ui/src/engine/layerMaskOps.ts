@@ -21,6 +21,7 @@ import { intersectRect, isEmptyRect } from "../geometry/rect";
 import type { ColorPair } from "./colors";
 import type { EditorState } from "./editorState";
 import { groupEntries } from "./editorTypes";
+import { pixelBytes } from "./editorTypes";
 import type { HistoryEntry, LayerMaskEntry, LayerMaskSide, LayerPixels } from "./editorTypes";
 import { dropMaskSurface, installMaskSurface, MASK_WHITE, targetedMaskLayer } from "./layerMask";
 import { applyMaskAlpha } from "./layerMaskCarry";
@@ -231,7 +232,7 @@ export class LayerMaskOps {
     const pixels: LayerPixels = { x: b.x, y: b.y, data: s.store.snapshot(key) };
     delete layer.layerMask;
     dropMaskSurface(s, layerId);
-    const removal: HistoryEntry = { kind: "layerMask", layerId, before: { mask: { ...mask }, pixels }, after: { mask: null, pixels: null }, bytes: ENTRY_BASE_BYTES + pixels.data.data.byteLength };
+    const removal: HistoryEntry = { kind: "layerMask", layerId, before: { mask: { ...mask }, pixels }, after: { mask: null, pixels: null }, bytes: ENTRY_BASE_BYTES + pixelBytes(pixels.data) };
     s.history.push(entries[0] ? groupEntries(entries[0], removal) : removal);
     this.changed(true);
     return true;
@@ -467,7 +468,7 @@ export class LayerMaskOps {
   }
 
   private record(layerId: string, before: LayerMaskSide, after: LayerMaskSide): void {
-    const bytes = ENTRY_BASE_BYTES + (before.pixels?.data.data.byteLength ?? 0) + (after.pixels?.data.data.byteLength ?? 0);
+    const bytes = ENTRY_BASE_BYTES + (before.pixels ? pixelBytes(before.pixels.data) : 0) + (after.pixels ? pixelBytes(after.pixels.data) : 0);
     this.s.history.push({ kind: "layerMask", layerId, before, after, bytes });
     this.changed(true);
   }

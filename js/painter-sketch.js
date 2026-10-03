@@ -4275,6 +4275,22 @@ function readDocRegion(input, rect, scratch2) {
   if (!scratch2) canvas.width = canvas.height = 0;
   return data;
 }
+function pixelBytes(data) {
+  return data.width * data.height * 4;
+}
+function groupEntries(older, newer) {
+  const entries = older.kind === "group" ? [...older.entries, newer] : [older, newer];
+  return { kind: "group", entries, bytes: older.bytes + newer.bytes };
+}
+const LOCKED_LAYER_NOTE = "Layer is locked.";
+const MASK_STROKE_COLOR = "#ffffff";
+const HIDDEN_LAYER_NOTE = "The layer is hidden.";
+const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
+function imageMaskNote(name) {
+  return `${name} can't be edited — duplicate it to edit.`;
+}
+const BACKGROUND_NOTE = imageMaskNote("Background");
+const HIDDEN_MASK_NOTE = "The mask is hidden.";
 const GENERIC_FAMILIES = /* @__PURE__ */ new Set([
   "serif",
   "sans-serif",
@@ -4525,7 +4541,7 @@ function changesBytes(changes) {
   let bytes = LAYERS_ENTRY_BASE_BYTES;
   for (const change of changes) {
     if ((change.op === "insert" || change.op === "remove") && change.pixels) {
-      bytes += change.pixels.data.data.byteLength + (change.pixels.mask?.data.byteLength ?? 0);
+      bytes += pixelBytes(change.pixels.data) + (change.pixels.mask ? pixelBytes(change.pixels.mask) : 0);
     }
   }
   return bytes;
@@ -4534,8 +4550,8 @@ function captureLayerPixels(s, layerId) {
   const masked = s.doc.layers.find((l) => l.id === layerId)?.layerMask !== void 0;
   if (!s.runtime.get(layerId)?.hasContent && !masked) return null;
   const bounds = s.store.bounds;
-  const pixels = { x: bounds.x, y: bounds.y, data: s.store.snapshot(layerId) };
-  if (masked) pixels.mask = s.store.snapshot(layerMaskKey(layerId));
+  const pixels = { x: bounds.x, y: bounds.y, data: s.store.copy(layerId) };
+  if (masked) pixels.mask = s.store.copy(layerMaskKey(layerId));
   return pixels;
 }
 function installLayerPixels(s, layerId, pixels) {
@@ -5001,19 +5017,6 @@ function bottomPaintIndex(doc) {
   const first = doc.layers.findIndex((l) => isPaintLike(l));
   return first >= 0 ? first : paintInsertIndex(doc);
 }
-function groupEntries(older, newer) {
-  const entries = older.kind === "group" ? [...older.entries, newer] : [older, newer];
-  return { kind: "group", entries, bytes: older.bytes + newer.bytes };
-}
-const LOCKED_LAYER_NOTE = "Layer is locked.";
-const MASK_STROKE_COLOR = "#ffffff";
-const HIDDEN_LAYER_NOTE = "The layer is hidden.";
-const SOLO_HIDDEN_NOTE = "The layer is hidden by solo.";
-function imageMaskNote(name) {
-  return `${name} can't be edited — duplicate it to edit.`;
-}
-const BACKGROUND_NOTE = imageMaskNote("Background");
-const HIDDEN_MASK_NOTE = "The mask is hidden.";
 const RASTERIZE_PROMPT = "Rasterize text layer? It will no longer be editable as text.";
 function rasterizeDecision(layer, confirm) {
   if (layer.kind !== "text") return "edit";
@@ -12916,8 +12919,29 @@ const STAGE_STYLE = {
 };
 const checkerPatterns = /* @__PURE__ */ new WeakMap();
 function composite(input) {
-  const { ctx, pixelRatio: pr, view, imageSize: imageSize2, map, bounds } = input;
+  const { ctx, clip } = input;
+  ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (clip) {
+    ctx.beginPath();
+    ctx.rect(clip.x, clip.y, clip.width, clip.height);
+    ctx.clip();
+  }
+  drawScene(input);
+  ctx.restore();
+}
+function stageDirtyRect(docRect, view, map, pixelRatio, canvas) {
+  if (docRect.width <= 0 || docRect.height <= 0) return null;
+  const r = scaleRect(docRectToStage(view, docRectToImage(map, docRect)), pixelRatio);
+  const pad = Math.ceil(view.scale * pixelRatio * map.scale) + 2;
+  const x0 = Math.max(0, Math.floor(r.x) - pad);
+  const y0 = Math.max(0, Math.floor(r.y) - pad);
+  const x1 = Math.min(canvas.width, Math.ceil(r.x + r.width) + pad);
+  const y1 = Math.min(canvas.height, Math.ceil(r.y + r.height) + pad);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+function drawScene(input) {
+  const { ctx, pixelRatio: pr, view, imageSize: imageSize2, map, bounds } = input;
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = STAGE_STYLE.surround;
@@ -13747,6 +13771,10 @@ class StageView {
   overlayCtx;
   note;
   frameRequest = 0;
+  /** A render without the `"stroke"` hint is pending: the next frame redraws everything. */
+  fullPending = true;
+  /** View / size / bounds of the last frame: a stroke frame redraws only its rect while it is unchanged. */
+  sceneKey = "";
   overlayRequest = 0;
   pixelRatio = 1;
   noteTimer = null;
@@ -13782,8 +13810,13 @@ class StageView {
   isVisible() {
     return this.stage.isConnected && this.stage.clientWidth > 0 && this.stage.clientHeight > 0;
   }
-  /** Schedule a redraw on the next animation frame (coalesced). */
-  requestRender() {
+  /**
+   * Schedule a redraw on the next animation frame (coalesced).
+   * @param hint - `"stroke"`: only the live stroke changed, so the frame may
+   *   redraw just the area it refreshed; anything else redraws everything.
+   */
+  requestRender(hint2) {
+    if (hint2 !== "stroke") this.fullPending = true;
     if (this.disposed || this.frameRequest) return;
     this.frameRequest = requestAnimationFrame(() => {
       this.frameRequest = 0;
@@ -13795,6 +13828,7 @@ class StageView {
     if (this.disposed) return;
     if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
     this.frameRequest = 0;
+    this.fullPending = true;
     this.render();
   }
   /** Schedule an overlay-only redraw (cheap). */
@@ -13965,29 +13999,68 @@ class StageView {
   render() {
     const session = this.session();
     if (!this.ctx || !session || !this.isVisible()) return;
+    const full = this.fullPending;
+    this.fullPending = false;
     this.syncBackingStore();
     const { editor } = session;
+    const view = editor.view.current;
     const paintArea = boundsCap(editor.doc.frame);
-    this.capCss = docRectToStage(editor.view.current, layerPlacement(editor.frameMap, paintArea));
-    composite({
-      ctx: this.ctx,
-      cssSize: this.stageSize(),
-      pixelRatio: this.pixelRatio,
-      view: editor.view.current,
-      imageSize: editor.imageSize,
-      map: editor.frameMap,
-      bounds: editor.bounds,
-      background: editor.background,
-      backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
-      layers: editor.compositeLayers(),
-      masks: editor.maskOverlays(),
-      paintArea,
-      cobweb: this.cobweb
-    });
+    this.capCss = docRectToStage(view, layerPlacement(editor.frameMap, paintArea));
+    const layers2 = editor.compositeLayers();
+    const masks = editor.maskOverlays();
+    const key = this.frameKey(session);
+    const changed = !full && key === this.sceneKey ? editor.strokeRefreshed : null;
+    const clip = changed ? stageDirtyRect(changed, view, editor.frameMap, this.pixelRatio, this.canvas) : null;
+    this.sceneKey = key;
+    if (!changed || clip) {
+      composite({
+        ctx: this.ctx,
+        cssSize: this.stageSize(),
+        pixelRatio: this.pixelRatio,
+        view,
+        imageSize: editor.imageSize,
+        map: editor.frameMap,
+        bounds: editor.bounds,
+        background: editor.background,
+        backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
+        layers: layers2,
+        masks,
+        paintArea,
+        cobweb: this.cobweb,
+        ...clip ? { clip } : {}
+      });
+    }
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.syncPalette();
+    if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
+    this.overlayRequest = 0;
     this.drawOverlay();
     this.onRendered?.();
+  }
+  /** What a partial frame relies on being unchanged since the last frame. */
+  frameKey(session) {
+    const { editor } = session;
+    const v = editor.view.current;
+    const b = editor.bounds;
+    const m = editor.frameMap;
+    const i = editor.imageSize;
+    return [
+      this.canvas.width,
+      this.canvas.height,
+      this.pixelRatio,
+      v.scale,
+      v.offsetX,
+      v.offsetY,
+      b.x,
+      b.y,
+      b.width,
+      b.height,
+      m.scale,
+      m.offsetX,
+      m.offsetY,
+      i.width,
+      i.height
+    ].join(",");
   }
   /**
    * Tool overlay (loupe) or brush-size ring at the hover position (separate
@@ -14323,7 +14396,7 @@ class EditorHost {
     if (session) {
       const { editor, tools } = session;
       this.unbind.push(
-        editor.events.on("render", () => this.view.requestRender()),
+        editor.events.on("render", (hint2) => this.view.requestRender(hint2)),
         editor.events.on("history", () => this.sync.syncHistory()),
         editor.events.on("note", (text) => this.view.showNote(text)),
         editor.events.on("mask", () => this.sync.syncMask()),
@@ -17419,6 +17492,9 @@ class LayerRuntimeTable {
     for (const [id, rt] of other.entries) this.entries.set(id, { ...rt });
   }
 }
+function isCanvas(data) {
+  return "getContext" in data;
+}
 const HIDE_FILL = "#ffffff";
 class LayerStore {
   surfaces = /* @__PURE__ */ new Map();
@@ -17556,11 +17632,35 @@ class LayerStore {
    * @param layerId - Layer id.
    * @param x - Document x of the data's top-left.
    * @param y - Document y of the data's top-left.
-   * @param data - Pixels.
+   * @param data - Pixels (`ImageData` or a canvas copy from {@link copy}).
    */
   write(layerId, x, y, data) {
     const { ctx } = this.ensure(layerId);
-    ctx.putImageData(data, x - this.currentBounds.x, y - this.currentBounds.y);
+    const dx = x - this.currentBounds.x;
+    const dy = y - this.currentBounds.y;
+    if (!isCanvas(data)) {
+      ctx.putImageData(data, dx, dy);
+      return;
+    }
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(dx, dy, data.width, data.height);
+    ctx.drawImage(data, dx, dy);
+    ctx.restore();
+  }
+  /**
+   * Whole-layer copy on a new canvas (canvas to canvas: no GPU readback,
+   * unlike {@link snapshot}). For history records that only restore it.
+   * @param layerId - Layer id.
+   * @returns Canvas covering `bounds`.
+   */
+  copy(layerId) {
+    const { canvas } = this.ensure(layerId);
+    const next = createSurface(canvas.width, canvas.height);
+    next.ctx.drawImage(canvas, 0, 0);
+    return next.canvas;
   }
   /**
    * Whole-layer snapshot.
@@ -19119,6 +19219,73 @@ function imageMaskArea(s, mask) {
   const limit = unionRect(boundsCap(s.doc.frame), s.store.bounds);
   return { rect: intersectRect(roundOutRect(imageRectToDoc(map, frameRect(size))), limit), map };
 }
+const sourceIds = /* @__PURE__ */ new WeakMap();
+let nextSourceId = 1;
+function sourceId(source) {
+  let id = sourceIds.get(source);
+  if (id === void 0) {
+    id = nextSourceId++;
+    sourceIds.set(source, id);
+  }
+  return id;
+}
+class LayerStackCache {
+  groups = [];
+  /**
+   * Replace runs of cacheable layers with their flattened copies.
+   * @param items - Display list, bottom -> top, each sized to `size`.
+   * @param size - Layer (bounds) size.
+   * @returns Layers to composite, bottom -> top.
+   */
+  flatten(items, size) {
+    const out = [];
+    let group = 0;
+    let i = 0;
+    while (i < items.length) {
+      let end = i;
+      while (end < items.length && items[end]?.key !== null) end++;
+      if (end - i >= 2) {
+        out.push({ source: this.drawGroup(group++, items.slice(i, end), size), opacity: 1 });
+        i = end;
+        continue;
+      }
+      const item = items[i];
+      if (item) out.push(item.layer);
+      i++;
+    }
+    for (const unused of this.groups.splice(group)) releaseSurface(unused.surface);
+    return out;
+  }
+  /** Release every flattened copy. */
+  dispose() {
+    for (const g of this.groups) releaseSurface(g.surface);
+    this.groups = [];
+  }
+  /** The canvas of run `index`, redrawn when its members changed. */
+  drawGroup(index, run2, size) {
+    const key = `${size.width}x${size.height}|${run2.map((item) => item.key).join("/")}`;
+    let g = this.groups[index];
+    if (g && g.key === key) return g.surface.canvas;
+    if (!g || g.surface.canvas.width !== size.width || g.surface.canvas.height !== size.height) {
+      if (g) releaseSurface(g.surface);
+      g = { key: "", surface: createSurface(size.width, size.height) };
+      this.groups[index] = g;
+    }
+    const { ctx, canvas } = g.surface;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.globalAlpha = 1;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const { layer } of run2) {
+      if (layer.opacity <= 0) continue;
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(layer.source, 0, 0, canvas.width, canvas.height);
+    }
+    ctx.globalAlpha = 1;
+    g.key = key;
+    return canvas;
+  }
+}
 class MaskTint {
   surface = null;
   key = null;
@@ -19192,6 +19359,7 @@ class LayerDisplay {
   }
   s;
   tints = /* @__PURE__ */ new Map();
+  stack = new LayerStackCache();
   /**
    * Visible paint layers to composite.
    * @returns Bottom -> top layers.
@@ -19200,16 +19368,26 @@ class LayerDisplay {
     const s = this.s;
     const view = maskViewSource(s);
     if (view) return [{ source: view, opacity: 1 }];
-    const out = [];
+    const items = [];
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
       const raw = s.floatPreview(layer.id) ?? (s.strokeLayerId === layer.id && s.stroke.active ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       const source = layer.layerMask ? maskedSource(s, layer, raw, true) : raw;
       const offset = this.moveOffset(layer.id);
-      out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
+      const live = offset !== void 0 || raw !== surface.canvas || this.maskLive(layer.id);
+      const mask = layer.layerMask;
+      const maskPart = mask ? `${mask.enabled}${mask.invert}${s.runtime.revision(layerMaskKey(layer.id))}` : "";
+      const key = live ? null : `${sourceId(source)}:${s.runtime.revision(layer.id)}:${maskPart}:${layer.opacity}`;
+      items.push({ layer: offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity }, key });
     }
-    return out;
+    return this.stack.flatten(items, s.store.bounds);
+  }
+  /** The layer's mask is being painted or floated (changes every frame). */
+  maskLive(layerId) {
+    const s = this.s;
+    const key = layerMaskKey(layerId);
+    return s.stroke.active && s.strokeLayerId === key || s.floatPreview(key) !== null;
   }
   /** Move-tool drag offset of a layer (document px), or `undefined`. */
   moveOffset(layerId) {
@@ -19265,6 +19443,7 @@ class LayerDisplay {
   dispose() {
     for (const tint of this.tints.values()) tint.dispose();
     this.tints.clear();
+    this.stack.dispose();
   }
 }
 function renderShape(ctx, shape, origin, colorOverride) {
@@ -19490,7 +19669,7 @@ class LayerMaskOps {
     const pixels = { x: b.x, y: b.y, data: s.store.snapshot(key) };
     delete layer.layerMask;
     dropMaskSurface(s, layerId);
-    const removal = { kind: "layerMask", layerId, before: { mask: { ...mask }, pixels }, after: { mask: null, pixels: null }, bytes: ENTRY_BASE_BYTES + pixels.data.data.byteLength };
+    const removal = { kind: "layerMask", layerId, before: { mask: { ...mask }, pixels }, after: { mask: null, pixels: null }, bytes: ENTRY_BASE_BYTES + pixelBytes(pixels.data) };
     s.history.push(entries[0] ? groupEntries(entries[0], removal) : removal);
     this.changed(true);
     return true;
@@ -19706,7 +19885,7 @@ class LayerMaskOps {
     s.events.emit("render", void 0);
   }
   record(layerId, before, after) {
-    const bytes = ENTRY_BASE_BYTES + (before.pixels?.data.data.byteLength ?? 0) + (after.pixels?.data.data.byteLength ?? 0);
+    const bytes = ENTRY_BASE_BYTES + (before.pixels ? pixelBytes(before.pixels.data) : 0) + (after.pixels ? pixelBytes(after.pixels.data) : 0);
     this.s.history.push({ kind: "layerMask", layerId, before, after, bytes });
     this.changed(true);
   }
@@ -19859,7 +20038,7 @@ class PaintOps {
     }
     this.growFor(need);
     s.stroke.addDabs(dabs);
-    s.events.emit("render", void 0);
+    s.events.emit("render", "stroke");
   }
   /**
    * Replace the current stroke's content with one shape (live preview;
@@ -19876,7 +20055,7 @@ class PaintOps {
     const isMask = s.doc.layers.find((l) => l.id === layerId)?.kind === "mask";
     const rect = intersectRect(roundOutRect(need), s.store.bounds);
     s.stroke.replaceContent(rect, (ctx, origin) => renderShape(ctx, shape, origin, isMask ? MASK_STROKE_COLOR : null));
-    s.events.emit("render", void 0);
+    s.events.emit("render", "stroke");
   }
   /**
    * Commit the stroke to its layer as one undo step.
@@ -23194,6 +23373,14 @@ class Editor extends EditorBase {
   }
   set lastStrokeEnd(point) {
     this.s.lastStrokeEnd = point ? { ...point } : null;
+  }
+  /**
+   * Document rect the live stroke preview refreshed during the last
+   * {@link compositeLayers} / {@link maskOverlays} call (may be empty), or
+   * `null` without a stroke. The stage redraws just this for `"stroke"` renders.
+   */
+  get strokeRefreshed() {
+    return this.s.stroke.active ? this.s.stroke.lastRefreshed : null;
   }
   /**
    * Visible layers to composite (live stroke preview for the painted layer).

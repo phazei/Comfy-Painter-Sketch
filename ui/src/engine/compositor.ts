@@ -79,6 +79,11 @@ export interface CompositeInput {
   paintArea?: Rect;
   /** Web grown around `paintArea` (one per stage). */
   cobweb?: CobwebBackdrop;
+  /**
+   * Redraw only this device-px rect (live stroke, {@link stageDirtyRect});
+   * the rest of the canvas keeps the previous frame. Omitted = everything.
+   */
+  clip?: Rect;
 }
 
 /** Visual constants. */
@@ -99,12 +104,47 @@ export const STAGE_STYLE = {
 const checkerPatterns = new WeakMap<CanvasRenderingContext2D, CanvasPattern>();
 
 /**
- * Render one frame.
+ * Render one frame (or, with `clip`, the part of it inside that rect).
  * @param input - Scene description.
  */
 export function composite(input: CompositeInput): void {
-  const { ctx, pixelRatio: pr, view, imageSize, map, bounds } = input;
+  const { ctx, clip } = input;
+  ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (clip) {
+    ctx.beginPath();
+    ctx.rect(clip.x, clip.y, clip.width, clip.height);
+    ctx.clip();
+  }
+  drawScene(input);
+  ctx.restore();
+}
+
+/**
+ * Device-px stage rect covering a document rect, padded for smoothing and
+ * placement rounding, cut to the canvas: what a live stroke frame redraws.
+ * @param docRect - Changed document rect.
+ * @param view - Image -> stage transform.
+ * @param map - Document -> image transform.
+ * @param pixelRatio - Backing px per CSS px.
+ * @param canvas - Backing-store size.
+ * @returns Integer rect, or `null` when nothing on the canvas changed.
+ */
+export function stageDirtyRect(docRect: Rect, view: ViewTransform, map: FrameMap, pixelRatio: number, canvas: Size): Rect | null {
+  if (docRect.width <= 0 || docRect.height <= 0) return null;
+  const r = scaleRect(docRectToStage(view, docRectToImage(map, docRect)), pixelRatio);
+  // A smoothed doc pixel spreads up to one scaled pixel; +2 for rounding.
+  const pad = Math.ceil(view.scale * pixelRatio * map.scale) + 2;
+  const x0 = Math.max(0, Math.floor(r.x) - pad);
+  const y0 = Math.max(0, Math.floor(r.y) - pad);
+  const x1 = Math.min(canvas.width, Math.ceil(r.x + r.width) + pad);
+  const y1 = Math.min(canvas.height, Math.ceil(r.y + r.height) + pad);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+
+/** The whole scene; the caller has set up the clip. */
+function drawScene(input: CompositeInput): void {
+  const { ctx, pixelRatio: pr, view, imageSize, map, bounds } = input;
   ctx.globalAlpha = 1;
   ctx.globalCompositeOperation = "source-over";
   ctx.fillStyle = STAGE_STYLE.surround;

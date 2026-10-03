@@ -9,15 +9,19 @@
  * is the bottom overlay, drawn over the image rect (`imageMaskOps.ts`).
  * A paint layer with an enabled layer mask is drawn through its cached
  * masked composite; the Alt+click mask view replaces the whole list with the
- * mask alone (`layerMask.ts`).
+ * mask alone (`layerMask.ts`). Runs of paint layers that are not changing
+ * this frame are drawn from flattened copies (`layerStackCache.ts`).
  */
 
+import { layerMaskKey } from "../document/layerMask";
 import { maskDisplayColor } from "../document/masks";
 import type { Point } from "../geometry/rect";
 import type { CompositeLayer, MaskOverlay } from "./compositor";
 import type { EditorState } from "./editorState";
 import { imageMaskApplies } from "./imageMaskOps";
 import { maskedSource, maskViewSource } from "./layerMask";
+import { LayerStackCache, sourceId } from "./layerStackCache";
+import type { StackItem } from "./layerStackCache";
 import { MaskTint } from "./maskTint";
 import { shownOnStage } from "./solo";
 
@@ -26,6 +30,7 @@ import { shownOnStage } from "./solo";
  */
 export class LayerDisplay {
   private readonly tints = new Map<string, MaskTint>();
+  private readonly stack = new LayerStackCache();
 
   /**
    * @param s - Shared editor state.
@@ -41,7 +46,7 @@ export class LayerDisplay {
     // Alt+click view: the mask alone, grayscale (display only).
     const view = maskViewSource(s);
     if (view) return [{ source: view, opacity: 1 }];
-    const out: CompositeLayer[] = [];
+    const items: StackItem[] = [];
     for (const layer of s.doc.layers) {
       if (layer.kind === "mask" || !shownOnStage(layer, s.solo.current)) continue;
       const surface = s.store.ensure(layer.id);
@@ -49,9 +54,20 @@ export class LayerDisplay {
       // An enabled layer mask shows the layer through its cached masked composite (`layerMask.ts`).
       const source = layer.layerMask ? maskedSource(s, layer, raw, true) : raw;
       const offset = this.moveOffset(layer.id);
-      out.push(offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity });
+      const live = offset !== undefined || raw !== surface.canvas || this.maskLive(layer.id);
+      const mask = layer.layerMask;
+      const maskPart = mask ? `${mask.enabled}${mask.invert}${s.runtime.revision(layerMaskKey(layer.id))}` : "";
+      const key = live ? null : `${sourceId(source)}:${s.runtime.revision(layer.id)}:${maskPart}:${layer.opacity}`;
+      items.push({ layer: offset ? { source, opacity: layer.opacity, offset } : { source, opacity: layer.opacity }, key });
     }
-    return out;
+    return this.stack.flatten(items, s.store.bounds);
+  }
+
+  /** The layer's mask is being painted or floated (changes every frame). */
+  private maskLive(layerId: string): boolean {
+    const s = this.s;
+    const key = layerMaskKey(layerId);
+    return (s.stroke.active && s.strokeLayerId === key) || s.floatPreview(key) !== null;
   }
 
   /** Move-tool drag offset of a layer (document px), or `undefined`. */
@@ -112,5 +128,6 @@ export class LayerDisplay {
   dispose(): void {
     for (const tint of this.tints.values()) tint.dispose();
     this.tints.clear();
+    this.stack.dispose();
   }
 }

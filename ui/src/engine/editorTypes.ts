@@ -42,14 +42,30 @@ export interface DocSnapshot {
   selection?: Selection | null;
 }
 
+/**
+ * Stored pixels: `ImageData`, or a private canvas copy (whole-layer captures
+ * copy canvas to canvas: no GPU readback, `LayerStore.copy`). Never drawn
+ * into after capture.
+ */
+export type PixelData = ImageData | HTMLCanvasElement;
+
+/**
+ * History cost of stored pixels.
+ * @param data - Pixels.
+ * @returns Bytes (4 per pixel).
+ */
+export function pixelBytes(data: PixelData): number {
+  return data.width * data.height * 4;
+}
+
 /** Whole-layer pixels kept by a structural entry (document coords). */
 export interface LayerPixels {
   /** Document position of `data`'s top-left (the bounds origin when captured). */
   x: number;
   y: number;
-  data: ImageData;
+  data: PixelData;
   /** The layer's mask pixels, same origin and size as `data`. */
-  mask?: ImageData;
+  mask?: PixelData;
 }
 
 /** One side of a layer-mask entry: the record and its pixels. */
@@ -167,11 +183,18 @@ export function groupEntries(older: HistoryEntry, newer: HistoryEntry): GroupEnt
   return { kind: "group", entries, bytes: older.bytes + newer.bytes };
 }
 
+/**
+ * Hint with a `render` event: `"stroke"` = only the live stroke preview
+ * changed, so the stage may redraw just the area it refreshed
+ * (`Editor.strokeRefreshed`). No hint = redraw everything.
+ */
+export type RenderHint = "stroke";
+
 /** Editor events. */
 export interface EditorEvents {
   [key: string]: unknown;
-  /** Pixels, background or view changed: redraw the stage. */
-  render: undefined;
+  /** Pixels, background or view changed: redraw the stage (see {@link RenderHint}). */
+  render: RenderHint | undefined;
   /** Document content/metadata changed: re-emit widget value, schedule upload. */
   change: undefined;
   /** Undo/redo availability changed. */

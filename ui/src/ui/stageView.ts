@@ -9,7 +9,8 @@
 
 import { boundsCap } from "../engine/bounds";
 import { CobwebBackdrop } from "../engine/cobweb/cobwebBackdrop";
-import { composite } from "../engine/compositor";
+import { composite, stageDirtyRect } from "../engine/compositor";
+import type { RenderHint } from "../engine/editorTypes";
 import { imageToDoc, layerPlacement } from "../engine/frameMap";
 import { backgroundShown } from "../engine/solo";
 import { backingStoreSize, docRectToStage, stageToDoc } from "../engine/viewport";
@@ -42,6 +43,10 @@ export class StageView {
   private readonly overlayCtx: CanvasRenderingContext2D | null;
   private readonly note: HTMLDivElement;
   private frameRequest = 0;
+  /** A render without the `"stroke"` hint is pending: the next frame redraws everything. */
+  private fullPending = true;
+  /** View / size / bounds of the last frame: a stroke frame redraws only its rect while it is unchanged. */
+  private sceneKey = "";
   private overlayRequest = 0;
   private pixelRatio = 1;
   private noteTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,8 +111,13 @@ export class StageView {
     return this.stage.isConnected && this.stage.clientWidth > 0 && this.stage.clientHeight > 0;
   }
 
-  /** Schedule a redraw on the next animation frame (coalesced). */
-  requestRender(): void {
+  /**
+   * Schedule a redraw on the next animation frame (coalesced).
+   * @param hint - `"stroke"`: only the live stroke changed, so the frame may
+   *   redraw just the area it refreshed; anything else redraws everything.
+   */
+  requestRender(hint?: RenderHint): void {
+    if (hint !== "stroke") this.fullPending = true;
     if (this.disposed || this.frameRequest) return;
     this.frameRequest = requestAnimationFrame(() => {
       this.frameRequest = 0;
@@ -120,6 +130,7 @@ export class StageView {
     if (this.disposed) return;
     if (this.frameRequest) cancelAnimationFrame(this.frameRequest);
     this.frameRequest = 0;
+    this.fullPending = true;
     this.render();
   }
 
@@ -314,29 +325,58 @@ export class StageView {
   private render(): void {
     const session = this.session();
     if (!this.ctx || !session || !this.isVisible()) return;
+    const full = this.fullPending;
+    this.fullPending = false;
     this.syncBackingStore();
     const { editor } = session;
+    const view = editor.view.current;
     const paintArea = boundsCap(editor.doc.frame);
-    this.capCss = docRectToStage(editor.view.current, layerPlacement(editor.frameMap, paintArea));
-    composite({
-      ctx: this.ctx,
-      cssSize: this.stageSize(),
-      pixelRatio: this.pixelRatio,
-      view: editor.view.current,
-      imageSize: editor.imageSize,
-      map: editor.frameMap,
-      bounds: editor.bounds,
-      background: editor.background,
-      backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
-      layers: editor.compositeLayers(),
-      masks: editor.maskOverlays(),
-      paintArea,
-      cobweb: this.cobweb,
-    });
+    this.capCss = docRectToStage(view, layerPlacement(editor.frameMap, paintArea));
+    // Building the lists refreshes the live stroke preview (`strokeRefreshed`).
+    const layers = editor.compositeLayers();
+    const masks = editor.maskOverlays();
+    // Live stroke frame on an unchanged scene: redraw only what the stroke
+    // refreshed, so the cost follows the brush, not the stage size.
+    const key = this.frameKey(session);
+    const changed = !full && key === this.sceneKey ? editor.strokeRefreshed : null;
+    const clip = changed ? stageDirtyRect(changed, view, editor.frameMap, this.pixelRatio, this.canvas) : null;
+    this.sceneKey = key;
+    if (!changed || clip) {
+      composite({
+        ctx: this.ctx,
+        cssSize: this.stageSize(),
+        pixelRatio: this.pixelRatio,
+        view,
+        imageSize: editor.imageSize,
+        map: editor.frameMap,
+        bounds: editor.bounds,
+        background: editor.background,
+        backgroundHidden: !backgroundShown(editor.doc.backgroundVisible !== false, editor.solo),
+        layers,
+        masks,
+        paintArea,
+        cobweb: this.cobweb,
+        ...(clip ? { clip } : {}),
+      });
+    }
     this.stage.classList.toggle("cps-loading", editor.loading);
     this.syncPalette();
+    // Drawn here: a pending overlay-only frame would repeat it.
+    if (this.overlayRequest) cancelAnimationFrame(this.overlayRequest);
+    this.overlayRequest = 0;
     this.drawOverlay();
     this.onRendered?.();
+  }
+
+  /** What a partial frame relies on being unchanged since the last frame. */
+  private frameKey(session: EditorSession): string {
+    const { editor } = session;
+    const v = editor.view.current;
+    const b = editor.bounds;
+    const m = editor.frameMap;
+    const i = editor.imageSize;
+    return [this.canvas.width, this.canvas.height, this.pixelRatio, v.scale, v.offsetX, v.offsetY,
+      b.x, b.y, b.width, b.height, m.scale, m.offsetX, m.offsetY, i.width, i.height].join(",");
   }
 
   /**

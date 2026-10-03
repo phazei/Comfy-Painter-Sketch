@@ -516,6 +516,22 @@ current image (not the frame): `stage = content * scale + offset`.
 - Backing store = stage CSS size x devicePixelRatio x graph zoom, long side
   capped at 4096. Pointer positions go through `getBoundingClientRect()` on
   every event (never cache a scale).
+- Redraws are one per animation frame. While a stroke or shape is live
+  (`render` event with the `"stroke"` hint) and the view, backing size, bounds
+  and frame map are unchanged, the frame redraws only the stroke's refreshed
+  rect (`stageDirtyRect`, padded for smoothing) through the same compositor,
+  clipped; anything else redraws the whole stage. Cost follows the brush, not
+  the stage size.
+- Layer runs: consecutive paint layers that are not changing this frame (two
+  or more) are drawn from one flattened, bounds-sized copy each
+  (`layerStackCache.ts`), rebuilt only when a member's pixels (revision /
+  canvas), opacity, layer mask or visibility change. Live layers (stroke on
+  the layer or its lmask, float, Move drag) are drawn directly in place, so
+  painting layer 2 of 3 is [1] [live 2 through its lmask] [3]: the same
+  picture, stacking and occlusion (Normal blending; up to 8-bit rounding).
+  Zoom, pan and full redraws cost about the same with many layers as with one.
+- Whole-layer pixels kept by layer history (delete, duplicate, merge) are
+  canvas copies, not `ImageData`: no GPU readback (`LayerStore.copy`).
 - Drawing order: surround and cobweb outside the maximum paint area; checker
   under the image area; background (image / colour / transparency when its eye
   is off); layers; cmask tints; a veil over off-image paint; the image outline
