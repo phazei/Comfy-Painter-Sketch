@@ -2260,6 +2260,20 @@ function hexToHsv(hex) {
 function hsvToHex(hsv) {
   return rgbToHex$1(hsvToRgb(hsv));
 }
+function hsvToHsl(hsv) {
+  const s = clamp01(hsv.s);
+  const v = clamp01(hsv.v);
+  const l = v * (1 - s / 2);
+  const sl = l === 0 || l === 1 ? 0 : (v - l) / Math.min(l, 1 - l);
+  return { h: hsv.h, s: sl, l };
+}
+function hslToHsv(hsl) {
+  const s = clamp01(hsl.s);
+  const l = clamp01(hsl.l);
+  const v = l + s * Math.min(l, 1 - l);
+  const sv = v === 0 ? 0 : 2 * (1 - l / v);
+  return { h: hsl.h, s: sv, v };
+}
 function clamp01(v) {
   return Math.max(0, Math.min(1, v));
 }
@@ -2268,86 +2282,6 @@ function clampByte(v) {
 }
 function byteHex(byte) {
   return byte.toString(16).padStart(2, "0");
-}
-function bindCaptureDrag(target, update) {
-  target.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    target.setPointerCapture(event.pointerId);
-    update(event);
-  });
-  target.addEventListener("pointermove", (event) => {
-    if (!target.hasPointerCapture(event.pointerId)) return;
-    update(event);
-  });
-  target.addEventListener("wheel", (e) => e.stopPropagation());
-}
-function createSvSquare(getHsv, onChange) {
-  const element = document.createElement("div");
-  element.className = "cps-picker-sv";
-  const canvas = document.createElement("canvas");
-  canvas.className = "cps-picker-sv-canvas";
-  const thumb = document.createElement("div");
-  thumb.className = "cps-picker-sv-thumb";
-  element.append(canvas, thumb);
-  bindCaptureDrag(element, (event) => {
-    const rect = canvas.getBoundingClientRect();
-    const s = clamp01((event.clientX - rect.left) / rect.width);
-    const v = clamp01(1 - (event.clientY - rect.top) / rect.height);
-    onChange({ h: getHsv().h, s, v });
-  });
-  return {
-    element,
-    draw: () => {
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-      const w = canvas.width;
-      const h = canvas.height;
-      const satGrad = ctx.createLinearGradient(0, 0, w, 0);
-      satGrad.addColorStop(0, "#ffffff");
-      satGrad.addColorStop(1, hsvToHex({ h: getHsv().h, s: 1, v: 1 }));
-      ctx.fillStyle = satGrad;
-      ctx.fillRect(0, 0, w, h);
-      const valGrad = ctx.createLinearGradient(0, 0, 0, h);
-      valGrad.addColorStop(0, "rgba(0,0,0,0)");
-      valGrad.addColorStop(1, "#000000");
-      ctx.fillStyle = valGrad;
-      ctx.fillRect(0, 0, w, h);
-    },
-    position: () => {
-      const hsv = getHsv();
-      thumb.style.left = `${clamp01(hsv.s) * 100}%`;
-      thumb.style.top = `${(1 - clamp01(hsv.v)) * 100}%`;
-    },
-    resize: () => {
-      const rect = canvas.getBoundingClientRect();
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-      }
-    }
-  };
-}
-function createHueSlider(getHsv, onChange) {
-  const element = document.createElement("div");
-  element.className = "cps-picker-hue";
-  const thumb = document.createElement("div");
-  thumb.className = "cps-picker-hue-thumb";
-  element.appendChild(thumb);
-  bindCaptureDrag(element, (event) => {
-    const rect = element.getBoundingClientRect();
-    const h = clamp01((event.clientX - rect.left) / rect.width) * 360;
-    const hsv = getHsv();
-    onChange({ h, s: hsv.s, v: hsv.v });
-  });
-  return {
-    element,
-    position: () => {
-      thumb.style.left = `${getHsv().h / 360 * 100}%`;
-    }
-  };
 }
 class Emitter {
   listeners = /* @__PURE__ */ new Map();
@@ -2391,6 +2325,12 @@ function normalizeHex(value) {
 }
 class ColorState {
   events = new Emitter();
+  /**
+   * Where the eyedropper writes regardless of Alt, or `null` for its own
+   * rule (FG; Alt with the Eyedropper tool: BG). The host sets `"bg"` while
+   * the background colour picker is open. Transient UI state.
+   */
+  sampleSlot = null;
   pair;
   /**
    * @param initial - Starting colours (defaults to black/white).
@@ -2437,6 +2377,728 @@ class ColorState {
     this.events.emit("change", { ...this.pair });
   }
 }
+const COLOR_FORMATS = ["hex", "rgb", "hsv", "hsl"];
+const FORMAT_KEY = "PainterSketch.colorFormat";
+const CHANNELS = {
+  rgb: [{ label: "R", max: 255 }, { label: "G", max: 255 }, { label: "B", max: 255 }],
+  hsv: [{ label: "H", max: 360 }, { label: "S", max: 100 }, { label: "V", max: 100 }],
+  hsl: [{ label: "H", max: 360 }, { label: "S", max: 100 }, { label: "L", max: 100 }]
+};
+function formatColor(hsv, format) {
+  switch (format) {
+    case "hex":
+      return [hsvToHex(hsv).slice(1).toUpperCase()];
+    case "rgb": {
+      const { r, g, b } = hsvToRgb(hsv);
+      return [r, g, b].map(String);
+    }
+    case "hsv":
+      return [Math.round(hsv.h) % 360, Math.round(hsv.s * 100), Math.round(hsv.v * 100)].map(String);
+    case "hsl": {
+      const hsl = hsvToHsl(hsv);
+      return [Math.round(hsl.h) % 360, Math.round(hsl.s * 100), Math.round(hsl.l * 100)].map(String);
+    }
+  }
+}
+function parseColor(values, format, current) {
+  if (format === "hex") {
+    const hex = normalizeHex(values[0] ?? "");
+    const hsv = hex ? hexToHsv(hex) : null;
+    return hsv ? keepHue(hsv, current) : null;
+  }
+  const channels = CHANNELS[format];
+  const nums = [];
+  for (let i = 0; i < channels.length; i++) {
+    const text = (values[i] ?? "").trim();
+    const value = Number(text);
+    const max = channels[i]?.max ?? 0;
+    if (text === "" || !Number.isFinite(value) || value < 0 || value > max) return null;
+    nums.push(value);
+  }
+  const [a = 0, b = 0, c = 0] = nums;
+  if (format === "rgb") return keepHue(rgbToHsv({ r: a, g: b, b: c }), current);
+  if (format === "hsv") return { h: a % 360, s: b / 100, v: c / 100 };
+  return hslToHsv({ h: a % 360, s: b / 100, l: c / 100 });
+}
+function parseFormat(raw) {
+  return COLOR_FORMATS.find((f) => f === raw) ?? "hex";
+}
+function keepHue(hsv, current) {
+  return hsv.s === 0 || hsv.v === 0 ? { ...hsv, h: current.h } : hsv;
+}
+function createColorFields(getHsv, onChange) {
+  const element = document.createElement("div");
+  element.className = "cps-picker-fields";
+  const inputsEl = document.createElement("div");
+  inputsEl.className = "cps-picker-inputs";
+  const formatButton = document.createElement("button");
+  formatButton.type = "button";
+  formatButton.className = "cps-picker-format";
+  element.append(inputsEl, formatButton);
+  let format = loadFormat();
+  let inputs = [];
+  const apply2 = () => {
+    const next = parseColor(
+      inputs.map((input) => input.value),
+      format,
+      getHsv()
+    );
+    for (const input of inputs) input.classList.toggle("cps-invalid", next === null);
+    if (next) onChange(next);
+  };
+  const sync = () => {
+    const texts = formatColor(getHsv(), format);
+    inputs.forEach((input, i) => {
+      input.value = texts[i] ?? "";
+      input.classList.remove("cps-invalid");
+    });
+  };
+  const build = () => {
+    inputsEl.textContent = "";
+    inputsEl.dataset["format"] = format;
+    const cells = format === "hex" ? [{ label: "#", max: 0 }] : CHANNELS[format];
+    inputs = cells.map((cell) => {
+      const label = document.createElement("label");
+      label.className = "cps-picker-field";
+      const tag = document.createElement("span");
+      tag.className = "cps-picker-field-label";
+      tag.textContent = cell.label;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "cps-picker-input";
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      if (format === "hex") input.maxLength = 7;
+      else input.inputMode = "numeric";
+      input.addEventListener("input", apply2);
+      input.addEventListener("keydown", (event) => keydown(event, input, cell.max));
+      label.append(tag, input);
+      inputsEl.appendChild(label);
+      return input;
+    });
+    const next = COLOR_FORMATS[(COLOR_FORMATS.indexOf(format) + 1) % COLOR_FORMATS.length] ?? "hex";
+    formatButton.textContent = format.toUpperCase();
+    formatButton.title = `Show as ${next.toUpperCase()}`;
+    sync();
+  };
+  const keydown = (event, input, max) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      apply2();
+      input.blur();
+    } else if (event.key === "Escape") {
+      apply2();
+    } else if ((event.key === "ArrowUp" || event.key === "ArrowDown") && format !== "hex") {
+      event.preventDefault();
+      const step = (event.shiftKey ? 10 : 1) * (event.key === "ArrowUp" ? 1 : -1);
+      const value = Math.round(Number(input.value) || 0) + step;
+      input.value = String(Math.max(0, Math.min(max, value)));
+      apply2();
+    }
+  };
+  element.addEventListener("focusout", (event) => {
+    if (!(event.relatedTarget instanceof Node && element.contains(event.relatedTarget))) sync();
+  });
+  formatButton.addEventListener("click", () => {
+    format = COLOR_FORMATS[(COLOR_FORMATS.indexOf(format) + 1) % COLOR_FORMATS.length] ?? "hex";
+    saveFormat(format);
+    build();
+  });
+  build();
+  return { element, sync };
+}
+function loadFormat() {
+  try {
+    return parseFormat(window.localStorage.getItem(FORMAT_KEY));
+  } catch {
+    return "hex";
+  }
+}
+function saveFormat(format) {
+  try {
+    window.localStorage.setItem(FORMAT_KEY, format);
+  } catch {
+  }
+}
+function nextMode(modes, mode) {
+  return modes[(modes.indexOf(mode) + 1) % modes.length] ?? modes[0] ?? mode;
+}
+function parseMode(modes, raw) {
+  return modes.find((m) => m === raw) ?? modes[0] ?? "";
+}
+const HARMONY = {
+  analogous: { label: "Analogous", offsets: [-30, 30] },
+  triadic: { label: "Triadic", offsets: [-120, 120] },
+  split: { label: "Split-complementary", offsets: [150, 210] }
+};
+function harmonyColors(base, mode) {
+  const [a, b] = (HARMONY[mode] ?? HARMONY["analogous"])?.offsets ?? [-30, 30];
+  const turn = (offset) => ({ h: wrapHue(base.h + offset), s: base.s, v: base.v });
+  return [turn(a), { ...base }, turn(b)];
+}
+const HARMONY_SET = {
+  modes: ["analogous", "triadic", "split"],
+  storageKey: "PainterSketch.colorHarmony",
+  title: "Harmony",
+  icon: "colorWheel",
+  label: (mode) => HARMONY[mode]?.label ?? mode,
+  partnerLabels: (mode) => {
+    const label = HARMONY[mode]?.label ?? mode;
+    return [label, label];
+  },
+  colors: harmonyColors
+};
+const TONE_MIX = 0.3;
+const TEMPERATURE_MIX = 0.2;
+const WARM = { r: 255, g: 122, b: 26 };
+const COOL = { r: 26, g: 108, b: 255 };
+const SATURATION_STEP = 0.25;
+const VARIATION = {
+  tone: { label: "Lighter / darker", partners: ["Lighter", "Darker"] },
+  temperature: { label: "Warmer / cooler", partners: ["Warmer", "Cooler"] },
+  saturation: { label: "More / less saturated", partners: ["More saturated", "Less saturated"] }
+};
+function variationColors(base, mode) {
+  const { h, s, v } = base;
+  if (mode === "temperature") {
+    return [mixToward(base, WARM, TEMPERATURE_MIX), { ...base }, mixToward(base, COOL, TEMPERATURE_MIX)];
+  }
+  if (mode === "saturation") {
+    return [{ h, s: clamp01(s + SATURATION_STEP), v }, { ...base }, { h, s: clamp01(s - SATURATION_STEP), v }];
+  }
+  const lightV = v + (1 - v) * TONE_MIX;
+  const lighter = { h, s: lightV > 0 ? s * v * (1 - TONE_MIX) / lightV : 0, v: lightV };
+  return [lighter, { ...base }, { h, s, v: v * (1 - TONE_MIX) }];
+}
+const VARIATION_SET = {
+  modes: ["tone", "temperature", "saturation"],
+  storageKey: "PainterSketch.colorVariation",
+  title: "Variations",
+  icon: "colorVariations",
+  label: (mode) => VARIATION[mode]?.label ?? mode,
+  partnerLabels: (mode) => VARIATION[mode]?.partners ?? ["", ""],
+  colors: variationColors
+};
+function mixToward(base, target, amount) {
+  const rgb = hsvToRgb(base);
+  const mix = (a, b) => a + (b - a) * amount;
+  const out = rgbToHsv({ r: mix(rgb.r, target.r), g: mix(rgb.g, target.g), b: mix(rgb.b, target.b) });
+  return out.s === 0 ? { ...out, h: base.h } : out;
+}
+function wrapHue(hue) {
+  return (hue % 360 + 360) % 360;
+}
+const WHEEL_SIZE = 224;
+const RING_WIDTH = 16;
+const RING_OUTER = WHEEL_SIZE / 2;
+const RING_INNER = RING_OUTER - RING_WIDTH;
+const TRIANGLE_RADIUS = RING_INNER - 6;
+const HUE_ZERO_ANGLE = -150;
+const TRIANGLE = {
+  hue: { x: TRIANGLE_RADIUS, y: 0 },
+  white: { x: -TRIANGLE_RADIUS / 2, y: -TRIANGLE_RADIUS * Math.sqrt(3) / 2 },
+  black: { x: -TRIANGLE_RADIUS / 2, y: TRIANGLE_RADIUS * Math.sqrt(3) / 2 }
+};
+const TRIANGLE_HEIGHT = 1.5 * TRIANGLE_RADIUS;
+function hueToAngle(hue) {
+  return (hue + HUE_ZERO_ANGLE) * Math.PI / 180;
+}
+function pointToHue(p) {
+  const deg = Math.atan2(p.y, p.x) * 180 / Math.PI - HUE_ZERO_ANGLE;
+  return (deg % 360 + 360) % 360;
+}
+function isRingHit(p) {
+  return Math.hypot(p.x, p.y) >= RING_INNER - 4;
+}
+function isTriangleHit(p) {
+  const w = triangleWeights(p);
+  return Math.min(w.hue, w.white, w.black) * TRIANGLE_HEIGHT >= -3;
+}
+function ringThumb(hue) {
+  const angle = hueToAngle(hue);
+  const r = RING_OUTER - RING_WIDTH / 2;
+  return { x: r * Math.cos(angle), y: r * Math.sin(angle) };
+}
+function triangleWeights(p) {
+  const { hue: a, white: b, black: c } = TRIANGLE;
+  const det = (b.y - c.y) * (a.x - c.x) + (c.x - b.x) * (a.y - c.y);
+  const wa = ((b.y - c.y) * (p.x - c.x) + (c.x - b.x) * (p.y - c.y)) / det;
+  const wb = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / det;
+  return { hue: wa, white: wb, black: 1 - wa - wb };
+}
+function clampToTriangle(p) {
+  const w = triangleWeights(p);
+  if (w.hue >= 0 && w.white >= 0 && w.black >= 0) return p;
+  const { hue, white, black } = TRIANGLE;
+  let best = hue;
+  let bestDist = Infinity;
+  for (const [a, b] of [[hue, white], [white, black], [black, hue]]) {
+    const q = nearestOnSegment(p, a, b);
+    const d = Math.hypot(p.x - q.x, p.y - q.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = q;
+    }
+  }
+  return best;
+}
+function pointToSv(p) {
+  const w = triangleWeights(clampToTriangle(p));
+  const hue = Math.max(0, w.hue);
+  const v = clamp01(hue + Math.max(0, w.white));
+  return { s: v > 0 ? clamp01(hue / v) : 0, v };
+}
+function svToPoint(s, v) {
+  const hue = clamp01(s) * clamp01(v);
+  const white = clamp01(v) - hue;
+  const black = 1 - hue - white;
+  const { hue: a, white: b, black: c } = TRIANGLE;
+  return {
+    x: hue * a.x + white * b.x + black * c.x,
+    y: hue * a.y + white * b.y + black * c.y
+  };
+}
+function nearestOnSegment(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const t = clamp01(((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy));
+  return { x: a.x + t * dx, y: a.y + t * dy };
+}
+function circleGroup(dir) {
+  return {
+    circles: [polarCircle(68, dir - 19, 11), polarCircle(71, dir, 15), polarCircle(68, dir + 19, 11)],
+    button: polarCircle(RING_OUTER + 2 + 13, dir, 13)
+  };
+}
+const HARMONY_GROUP = circleGroup(-60);
+const VARIATION_GROUP = circleGroup(60);
+const SWATCH_BOX = { left: -88, top: -36, width: 38, height: 72 };
+function polarCircle(r, deg, radius) {
+  const a = deg * Math.PI / 180;
+  return { x: r * Math.cos(a), y: r * Math.sin(a), r: radius };
+}
+const LUCIDE = {
+  "ban": "<circle cx='12' cy='12' r='10'/><path d='M4.929 4.929 19.07 19.071'/>",
+  "bold": "<path d='M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8'/>",
+  "brush": "<path d='m11 10 3 3'/><path d='M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z'/><path d='M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031'/>",
+  "brush-cleaning": "<path d='m16 22-1-4'/><path d='M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1'/><path d='M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z'/><path d='m8 22 1-4'/>",
+  "check": "<path d='M20 6 9 17l-5-5'/>",
+  "circle-dashed": "<path d='M10.1 2.182a10 10 0 0 1 3.8 0'/><path d='M13.9 21.818a10 10 0 0 1-3.8 0'/><path d='M17.609 3.721a10 10 0 0 1 2.69 2.7'/><path d='M2.182 13.9a10 10 0 0 1 0-3.8'/><path d='M20.279 17.609a10 10 0 0 1-2.7 2.69'/><path d='M21.818 10.1a10 10 0 0 1 0 3.8'/><path d='M3.721 6.391a10 10 0 0 1 2.7-2.69'/><path d='M6.391 20.279a10 10 0 0 1-2.69-2.7'/>",
+  "circle-dot": "<circle cx='12' cy='12' r='1'/><circle cx='12' cy='12' r='10'/>",
+  "clipboard": "<rect width='8' height='4' x='8' y='2' rx='1' ry='1'/><path d='M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'/>",
+  "contrast": "<circle cx='12' cy='12' r='10'/><path d='M12 18a6 6 0 0 0 0-12v12z'/>",
+  "copy": "<rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/>",
+  "copy-plus": "<line x1='15' x2='15' y1='12' y2='18'/><line x1='12' x2='18' y1='15' y2='15'/><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/>",
+  "ellipse": "<ellipse cx='12' cy='12' rx='10' ry='6'/>",
+  "eraser": "<path d='M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21'/><path d='m5.082 11.09 8.828 8.828'/>",
+  "eye": "<path d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'/><circle cx='12' cy='12' r='3'/>",
+  "eye-off": "<path d='M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49'/><path d='M14.084 14.158a3 3 0 0 1-4.242-4.242'/><path d='M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143'/><path d='m2 2 20 20'/>",
+  "fullscreen": "<path d='M3 7V5a2 2 0 0 1 2-2h2'/><path d='M17 3h2a2 2 0 0 1 2 2v2'/><path d='M21 17v2a2 2 0 0 1-2 2h-2'/><path d='M7 21H5a2 2 0 0 1-2-2v-2'/><rect width='10' height='8' x='7' y='8' rx='1'/>",
+  "hand": "<path d='M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2'/><path d='M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2'/><path d='M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8'/><path d='M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15'/>",
+  "hand-grab": "<path d='M18 11.5V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v1.4'/><path d='M14 10V8a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2'/><path d='M10 9.9V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v5'/><path d='M6 14a2 2 0 0 0-2-2a2 2 0 0 0-2 2'/><path d='M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-4a8 8 0 0 1-8-8 2 2 0 1 1 4 0'/>",
+  "hourglass": "<path d='M5 22h14'/><path d='M5 2h14'/><path d='M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22'/><path d='M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2'/>",
+  "images": "<path d='m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16'/><path d='M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2'/><circle cx='13' cy='7' r='1' fill='currentColor'/><rect x='8' y='2' width='14' height='14' rx='2'/>",
+  "italic": "<line x1='19' x2='10' y1='4' y2='4'/><line x1='14' x2='5' y1='20' y2='20'/><line x1='15' x2='9' y1='4' y2='20'/>",
+  "lasso": "<path d='M3.704 14.467a10 8 0 1 1 3.115 2.375'/><path d='M7 22a5 5 0 0 1-2-3.994'/><circle cx='5' cy='16' r='2'/>",
+  "layers-arrow-down": "<path d='M12 7v15'/><path d='M2 12a1 1 0 00.58.91l5.093 2.316'/><path d='M22 12a1 1 0 01-.59.92l-5.077 2.308'/><path d='M8 10.37 2.6 7.91a1 1 0 010-1.831l8.57-3.9a2 2 0 011.66.001l8.59 3.91a1 1 0 010 1.831l-5.392 2.45'/><path d='m9 19 3 3 3-3'/>",
+  "lock": "<rect width='18' height='11' x='3' y='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/>",
+  "lock-open": "<rect width='18' height='11' x='3' y='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 9.9-1'/>",
+  "maximize-2": "<path d='M15 3h6v6'/><path d='m21 3-7 7'/><path d='m3 21 7-7'/><path d='M9 21H3v-6'/>",
+  "minimize-2": "<path d='m14 10 7-7'/><path d='M20 10h-6V4'/><path d='m3 21 7-7'/><path d='M4 14h6v6'/>",
+  "mouse-pointer-2": "<path d='M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z'/>",
+  "move": "<path d='M12 2v20'/><path d='m15 19-3 3-3-3'/><path d='m19 9 3 3-3 3'/><path d='M2 12h20'/><path d='m5 9-3 3 3 3'/><path d='m9 5 3-3 3 3'/>",
+  "move-diagonal": "<path d='M11 19H5v-6'/><path d='M13 5h6v6'/><path d='M19 5 5 19'/>",
+  "move-diagonal-2": "<path d='M19 13v6h-6'/><path d='M5 11V5h6'/><path d='m5 5 14 14'/>",
+  "move-horizontal": "<path d='m18 8 4 4-4 4'/><path d='M2 12h20'/><path d='m6 8-4 4 4 4'/>",
+  "move-up-right": "<path d='M13 5H19V11'/><path d='M19 5L5 19'/>",
+  "move-vertical": "<path d='M12 2v20'/><path d='m8 18 4 4 4-4'/><path d='m8 6 4-4 4 4'/>",
+  "paint-bucket": "<path d='M11 7 6 2'/><path d='M18.992 12H2.041'/><path d='M21.145 18.38A3.34 3.34 0 0 1 20 16.5a3.3 3.3 0 0 1-1.145 1.88c-.575.46-.855 1.02-.855 1.595A2 2 0 0 0 20 22a2 2 0 0 0 2-2.025c0-.58-.285-1.13-.855-1.595'/><path d='m8.5 4.5 2.148-2.148a1.205 1.205 0 0 1 1.704 0l7.296 7.296a1.205 1.205 0 0 1 0 1.704l-7.592 7.592a3.615 3.615 0 0 1-5.112 0l-3.888-3.888a3.615 3.615 0 0 1 0-5.112L5.67 7.33'/>",
+  "panel-right": "<rect width='18' height='18' x='3' y='3' rx='2'/><path d='M15 3v18'/>",
+  "pen": "<path d='M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z'/>",
+  "pipette": "<path d='m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12'/><path d='m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z'/><path d='m2 22 .414-.414'/>",
+  "plus": "<path d='M5 12h14'/><path d='M12 5v14'/>",
+  "rectangle-horizontal": "<rect width='20' height='12' x='2' y='6' rx='2'/>",
+  "redo-2": "<path d='m15 14 5-5-5-5'/><path d='M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13'/>",
+  "refresh-cw": "<path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8'/><path d='M21 3v5h-5'/><path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16'/><path d='M8 16H3v5'/>",
+  "scaling": "<path d='M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'/><path d='M14 15H9v-5'/><path d='M16 3h5v5'/><path d='M21 3 9 15'/>",
+  "scan-eye": "<path d='M3 7V5a2 2 0 0 1 2-2h2'/><path d='M17 3h2a2 2 0 0 1 2 2v2'/><path d='M21 17v2a2 2 0 0 1-2 2h-2'/><path d='M7 21H5a2 2 0 0 1-2-2v-2'/><circle cx='12' cy='12' r='1'/><path d='M18.944 12.33a1 1 0 0 0 0-.66 7.5 7.5 0 0 0-13.888 0 1 1 0 0 0 0 .66 7.5 7.5 0 0 0 13.888 0'/>",
+  "scissors": "<circle cx='6' cy='6' r='3'/><path d='M8.12 8.12 12 12'/><path d='M20 4 8.12 15.88'/><circle cx='6' cy='18' r='3'/><path d='M14.8 14.8 20 20'/>",
+  "slash": "<path d='M22 2 2 22'/>",
+  "square-dashed": "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/>",
+  "square-dashed-plus": "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/><path d='M8 12h8'/><path d='M12 8v8'/>",
+  "square-dashed-x": "<path d='M14 21h1'/><path d='M14 3h1'/><path d='M19 3a2 2 0 012 2'/><path d='M21 14v1'/><path d='M21 19a2 2 0 01-2 2'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M3 9v1'/><path d='M5 21a2 2 0 01-2-2'/><path d='M5 3a2 2 0 00-2 2'/><path d='m9 15 6-6'/><path d='M9 21h1'/><path d='M9 3h1'/><path d='m9 9 6 6'/>",
+  "text-cursor": "<path d='M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1'/><path d='M7 22h1a4 4 0 0 0 4-4'/><path d='M7 2h1a4 4 0 0 1 4 4'/>",
+  "trash": "<path d='M10 11v6'/><path d='M14 11v6'/><path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/><path d='M3 6h18'/><path d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/>",
+  "triangles-centerline-dashed-horizontal": "<path d='M10 12H8'/><path d='M16 12h-2'/><path d='M22 12h-2'/><path d='M4 12H2'/><path d='M7.298 20.288A1 1 0 008 22h8a1 1 0 00.703-1.712l-3.991-3.99a1 1 0 00-1.424-.001z'/><path d='M7.298 3.712A1 1 0 018 2h8a1 1 0 01.703 1.712l-3.991 3.99a1 1 0 01-1.424.001z'/>",
+  "triangles-centerline-dashed-vertical": "<path d='M12 14v2'/><path d='M12 20v2'/><path d='M12 2v2'/><path d='M12 8v2'/><path d='M20.288 16.703A1 1 0 0022 16V8a1 1 0 00-1.712-.703l-3.99 3.991a1 1 0 00-.001 1.424z'/><path d='M3.712 16.703A1 1 0 012 16V8a1 1 0 011.712-.703l3.99 3.991a1 1 0 01.001 1.424z'/>",
+  "type": "<path d='M12 4v16'/><path d='M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2'/><path d='M9 20h6'/>",
+  "undo-2": "<path d='M9 14 4 9l5-5'/><path d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11'/>",
+  "vector-square": "<path d='M17.055 4.533a24 24 0 00-10.11 0'/><path d='M19.467 17.055a24 24 0 000-10.11'/><path d='M4.533 6.945a24 24 0 000 10.11'/><path d='M6.945 19.467a24 24 0 0010.11 0'/><circle cx='19' cy='19' r='2'/><circle cx='19' cy='5' r='2'/><circle cx='5' cy='19' r='2'/><circle cx='5' cy='5' r='2'/>",
+  "x": "<path d='M18 6 6 18'/><path d='m6 6 12 12'/>",
+  // UI refresh additions.
+  "circle-help": "<circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/>",
+  "triangle-alert": "<path d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/><path d='M12 9v4'/><path d='M12 17h.01'/>",
+  "chevron-down": "<path d='m6 9 6 6 6-6'/>",
+  "arrow-left": "<path d='m12 19-7-7 7-7'/><path d='M19 12H5'/>",
+  "link": "<path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/><path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>",
+  "text-align-start": "<path d='M21 5H3'/><path d='M15 12H3'/><path d='M17 19H3'/>",
+  "text-align-center": "<path d='M21 5H3'/><path d='M17 12H7'/><path d='M19 19H5'/>",
+  "text-align-end": "<path d='M21 5H3'/><path d='M21 12H9'/><path d='M21 19H7'/>"
+};
+const SQUARE_DASHED = "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/>";
+const NEW_SHEET = "<path d='M11.35 22H5a2 2 0 01-2-2V4a2 2 0 012-2h14a2 2 0 012 2v9.35'/><path d='M14 19h8'/><path d='M18 15v8'/>";
+const CUSTOM$1 = {
+  // Align drawing: the bottom sheet of a layer pile with a large isometric
+  // four-way arrow in the sheet's plane (the user's drawing).
+  // The arrow is drawn 0.5 thinner than the icon stroke (follows `--cps-icon-stroke`).
+  alignDrawing: "<path d='M4 11.5 1.5 13 12 19l10.5-6-2.5-1.5'/><path style='stroke-width:calc(var(--cps-icon-stroke, 2) - 0.5)' d='M7 6.2l10 6.4M7 12.6l10-6.4M10.5 6 7 6.2v2.1M13.5 6l3.5.2v2.1M10.5 12.8 7 12.6v-2.1M13.5 12.8l3.5-.2v-2.1'/>",
+  // Photoshop's Quick Mask: a rectangle with a circle in it.
+  quickMask: "<rect x='3' y='4' width='18' height='16' rx='2'/><circle cx='12' cy='12' r='4.5'/>",
+  // Paste from the system clipboard: a clipboard with two scribbled lines (the user's drawing).
+  paste: "<path d='m10 16 6 .5'/><path d='M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2'/><path d='m8 11.5 7-1'/><rect x='8' y='2' width='8' height='4' rx='1'/>",
+  // Paste from the ComfyUI clipspace: Lucide `clipboard` with a filled, slanted "C" (the user's drawing).
+  pasteClipspace: `${LUCIDE["clipboard"]}<path fill='currentColor' stroke='none' d='M9.47 19.44Q8.55 19.44 8.82 18.54L9.2 17.24H8.05Q7.14 17.24 7.4 16.34L8.47 12.65Q8.73 11.75 9.64 11.75H10.82L11.19 10.46Q11.45 9.56 12.36 9.56H15.95Q16.86 9.56 16.6 10.46L16.17 11.96Q15.91 12.85 15 12.85H11.76L10.8 16.14H14.03Q14.94 16.14 14.68 17.04L14.24 18.54Q13.98 19.44 13.07 19.44Z'/>`,
+  // Mask glyph (Photoshop's add-mask symbol).
+  mask: "<rect x='3' y='3' width='18' height='18' rx='2'/><circle cx='12' cy='12' r='4' fill='currentColor'/>",
+  // Inverted mask glyph (Alt on the add-mask button: hide all).
+  maskInverted: "<path fill='currentColor' fill-rule='evenodd' d='M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z'/>",
+  // New layer: a sheet with its bottom-right corner open for a plus (the user's drawing).
+  layerAdd: NEW_SHEET,
+  // New mask / add layer mask: the new-layer sheet with the mask's filled circle.
+  maskAdd: `${NEW_SHEET}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
+  // Magic wand (the user's drawing): sparkles, a stick ending in a star point.
+  magicWand: "<path d='M13 1v2m1-1h-2m1 6 3 3m5 1v4m2-2h-4M6 4v4m2-2H4'/><path d='M20.68 2.68A3.9 3.9 0 0 1 16.6 4.4L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L19.6 7.4a3.9 3.9 0 0 1 1.72-4.08z'/>",
+  // Pointer tip of the Photoshop-style cursors: Lucide `mouse-pointer-2`
+  // rotated about its apex (3.59, 3.59) so the left edge is vertical.
+  pointer: `<g transform='rotate(22.109 3.592 3.592)'>${LUCIDE["mouse-pointer-2"]}</g>`,
+  // Selection to mask: dashed square with the mask's filled circle.
+  selectionToMask: `${SQUARE_DASHED}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
+  // Selection subtract badge, pairing Lucide `square-dashed-plus` / `-x`.
+  squareDashedMinus: `${SQUARE_DASHED}<path d='M8 12h8'/>`,
+  // FG/BG swap (Photoshop's curved double arrow; kept from the old set).
+  swap: "<path d='M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3'/>",
+  // Polygonal lasso: the lasso loop drawn as straight segments.
+  polygonLasso: "<path d='M3.7 14.5 3 8l5-5 8 .5L21 8l-2 6-7 3.5-5-.6'/><path d='M7 22l-2-4'/><circle cx='5' cy='16' r='2'/>",
+  // Precise cross (the user's): outer ticks and inward wedges, centre open.
+  preciseCross: "<path d='M12 2v3M12 22v-3M2 12h3M22 12h-3'/><path fill='currentColor' stroke='none' d='M11 5H13L12 10.5ZM11 19H13L12 13.5ZM5 11V13L10.5 12ZM19 11V13L13.5 12Z'/>",
+  // Ring tools' cursor dot (drawn filled, 8 px).
+  dot: "<circle cx='12' cy='12' r='3'/>",
+  // Eyedropper badge: the pick goes to the background slot (the user's drawing).
+  bgSlot: "<path d='M14 20a2 2 0 002 2h4a2 2 0 002-2v-4a2 2 0 00-2-2v6z'/><path d='M14 20a6 6 0 006-6'/><rect x='8' y='8' width='8' height='8' rx='2'/>",
+  // ── UI refresh glyphs (the maintainer's, from the design handoff icon module) ──
+  // Sliders pill: brush size (two dots), hardness (soft ring + hard core), line width (three rules).
+  brushSize: "<circle cx='7' cy='17' r='2.5'/><circle cx='15.5' cy='8.5' r='5.5'/>",
+  hardness: "<circle cx='12' cy='12' r='9' stroke-dasharray='1.5 2.6'/><circle cx='12' cy='12' r='4.5' fill='currentColor'/>",
+  lineWidth: "<path d='M4 5h16' style='stroke-width:1'/><path d='M4 11h16' style='stroke-width:2'/><path d='M4 18h16' style='stroke-width:3.5'/>",
+  // Copy merged: the copy glyph with a three-line badge.
+  copyMerged: `${LUCIDE["copy"]}<path d='M13.5 13.5h5M13.5 16.5h5M13.5 19.5h5' style='stroke-width:1.5'/>`,
+  // Text angle.
+  angle: "<path d='M4 20h16'/><path d='M4 20 15 6'/><path d='M10.5 20A6.5 6.5 0 0 0 8 14.9'/>",
+  // Side panel shrink / expand (rotates 180° when shrunk).
+  panelCollapse: "<path d='m17 11-5-5-5 5'/><path d='m17 18-5-5-5 5'/>",
+  // Rasterize text (a pixel grid).
+  rasterize: "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M3 9h18M3 15h18M9 3v18M15 3v18'/>",
+  // Colour harmony (picker): a wheel cut in thirds with a filled hub.
+  colorWheel: "<circle cx='12' cy='12' r='9'/><path d='M12 3v6M14.6 13.5l5.2 3M9.4 13.5l-5.2 3'/><circle cx='12' cy='12' r='3' fill='currentColor'/>",
+  // Colour variations (picker): a light and a dark circle side by side.
+  colorVariations: "<circle cx='8' cy='12' r='5'/><circle cx='16' cy='12' r='5' fill='currentColor'/>",
+  // Default colours (D): a filled square over an outlined one.
+  resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>"
+};
+const ALIASES = {
+  // Tools.
+  brush: "brush",
+  eraser: "eraser",
+  bucket: "paint-bucket",
+  eyedropper: "pipette",
+  line: "slash",
+  arrow: "move-up-right",
+  rectangle: "rectangle-horizontal",
+  ellipse: "ellipse",
+  text: "type",
+  move: "move",
+  marqueeRect: "square-dashed",
+  marqueeEllipse: "circle-dashed",
+  lasso: "lasso",
+  region: "vector-square",
+  transform: "scaling",
+  // Rail actions.
+  copy: "copy",
+  cut: "scissors",
+  undo: "undo-2",
+  redo: "redo-2",
+  fit: "fullscreen",
+  clear: "brush-cleaning",
+  fullscreen: "maximize-2",
+  exitFullscreen: "minimize-2",
+  images: "images",
+  // Options bar.
+  panel: "panel-right",
+  stylus: "pen",
+  flipH: "triangles-centerline-dashed-vertical",
+  flipV: "triangles-centerline-dashed-horizontal",
+  check: "check",
+  close: "x",
+  trash: "trash",
+  invert: "contrast",
+  bold: "bold",
+  italic: "italic",
+  // Layers panel.
+  plus: "plus",
+  duplicate: "copy",
+  mergeDown: "layers-arrow-down",
+  eye: "eye",
+  eyeOff: "eye-off",
+  lock: "lock",
+  unlock: "lock-open",
+  solo: "circle-dot",
+  maskView: "scan-eye",
+  // UI refresh: bottom bar, menus, strip.
+  help: "circle-help",
+  warning: "triangle-alert",
+  chevronDown: "chevron-down",
+  back: "arrow-left",
+  link: "link",
+  alignLeft: "text-align-start",
+  alignCenter: "text-align-center",
+  alignRight: "text-align-end",
+  // Cursor glyphs and badges.
+  textCursor: "text-cursor",
+  ban: "ban",
+  copyPlus: "copy-plus",
+  squareDashedPlus: "square-dashed-plus",
+  squareDashedX: "square-dashed-x",
+  resizeEW: "move-horizontal",
+  resizeNS: "move-vertical",
+  resizeNESW: "move-diagonal",
+  resizeNWSE: "move-diagonal-2",
+  rotate: "refresh-cw",
+  hand: "hand",
+  handGrab: "hand-grab",
+  hourglass: "hourglass"
+};
+const SHARED = { layerMaskAdd: "maskAdd" };
+const FALLBACK = "<rect x='5' y='5' width='14' height='14'/>";
+function iconMarkup(name) {
+  const key = SHARED[name] ?? name;
+  const custom = CUSTOM$1[key];
+  if (custom !== void 0) return custom;
+  const lucide = ALIASES[key];
+  return (lucide !== void 0 ? LUCIDE[lucide] : void 0) ?? FALLBACK;
+}
+function iconSvg(name, size = 20) {
+  return `<svg class="cps-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconMarkup(name)}</svg>`;
+}
+function setIcon(element, name, size = 20) {
+  element.innerHTML = iconSvg(name, size);
+}
+function createColorWheel(opts) {
+  const element = div$3("cps-picker-wheel");
+  const canvas = document.createElement("canvas");
+  canvas.className = "cps-picker-wheel-canvas";
+  const ringThumbEl = div$3("cps-picker-thumb cps-picker-thumb-ring");
+  const svThumbEl = div$3("cps-picker-thumb cps-picker-thumb-sv");
+  const swatch = div$3("cps-picker-swatch");
+  place(swatch, SWATCH_BOX.left, SWATCH_BOX.top, SWATCH_BOX.width, SWATCH_BOX.height);
+  const swatchNew = div$3("cps-picker-swatch-new");
+  swatchNew.title = "New colour";
+  const swatchOld = document.createElement("button");
+  swatchOld.type = "button";
+  swatchOld.className = "cps-picker-swatch-old";
+  swatchOld.title = "Original colour (click to revert)";
+  swatchOld.setAttribute("aria-label", "Revert to the original colour");
+  swatchOld.style.backgroundColor = opts.original;
+  swatchOld.addEventListener("click", () => opts.onRevert());
+  swatch.append(swatchNew, swatchOld);
+  const groups = [
+    createCircleGroup(HARMONY_GROUP, HARMONY_SET, opts),
+    createCircleGroup(VARIATION_GROUP, VARIATION_SET, opts)
+  ];
+  element.append(canvas, swatch, ...groups.flatMap((group) => group.elements), ringThumbEl, svThumbEl);
+  let zone = "triangle";
+  const local = (event) => {
+    const rect = element.getBoundingClientRect();
+    const scale = WHEEL_SIZE / (rect.width || WHEEL_SIZE);
+    return {
+      x: (event.clientX - rect.left) * scale - WHEEL_SIZE / 2,
+      y: (event.clientY - rect.top) * scale - WHEEL_SIZE / 2
+    };
+  };
+  const drag = (event) => {
+    const p = local(event);
+    const hsv = opts.getHsv();
+    if (zone === "ring") opts.onChange({ h: pointToHue(p), s: hsv.s, v: hsv.v });
+    else opts.onChange({ h: hsv.h, ...pointToSv(p) });
+  };
+  const zoneAt = (event) => {
+    if (event.target instanceof Element && event.target.closest("button, .cps-picker-swatch")) return null;
+    const p = local(event);
+    if (isRingHit(p)) return "ring";
+    return isTriangleHit(p) ? "triangle" : null;
+  };
+  element.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const hit = zoneAt(event);
+    if (!hit) return;
+    event.preventDefault();
+    element.setPointerCapture(event.pointerId);
+    zone = hit;
+    drag(event);
+  });
+  element.addEventListener("pointermove", (event) => {
+    if (element.hasPointerCapture(event.pointerId)) drag(event);
+    else element.style.cursor = zoneAt(event) ? "crosshair" : "default";
+  });
+  element.addEventListener("wheel", (event) => event.stopPropagation());
+  let drawnHue = null;
+  let pixelScale = 1;
+  const draw = () => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const hsv = opts.getHsv();
+    drawnHue = hsv.h;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawTriangle(ctx, hsv.h, pixelScale);
+    drawRing(ctx, pixelScale);
+  };
+  const update = () => {
+    const hsv = opts.getHsv();
+    if (drawnHue !== hsv.h) draw();
+    const ring = ringThumb(hsv.h);
+    moveThumb(ringThumbEl, ring);
+    ringThumbEl.style.backgroundColor = hsvToHex({ h: hsv.h, s: 1, v: 1 });
+    moveThumb(svThumbEl, svToPoint(hsv.s, hsv.v));
+    svThumbEl.style.backgroundColor = hsvToHex(hsv);
+    swatchNew.style.backgroundColor = hsvToHex(hsv);
+    for (const group of groups) group.sync();
+  };
+  return {
+    element,
+    layout: () => {
+      const rect = element.getBoundingClientRect();
+      const side = Math.max(1, Math.round((rect.width || WHEEL_SIZE) * (window.devicePixelRatio || 1)));
+      if (canvas.width !== side) {
+        canvas.width = side;
+        canvas.height = side;
+      }
+      pixelScale = side / WHEEL_SIZE;
+      draw();
+      update();
+    },
+    update
+  };
+}
+function drawRing(ctx, k) {
+  const c = WHEEL_SIZE / 2 * k;
+  const gradient = ctx.createConicGradient(hueToAngle(0), c, c);
+  for (let hue = 0; hue <= 360; hue += 30) gradient.addColorStop(hue / 360, hsvToHex({ h: hue % 360, s: 1, v: 1 }));
+  ctx.strokeStyle = gradient;
+  ctx.lineWidth = RING_WIDTH * k;
+  ctx.beginPath();
+  ctx.arc(c, c, (RING_OUTER - RING_WIDTH / 2) * k, 0, Math.PI * 2);
+  ctx.stroke();
+}
+function drawTriangle(ctx, hue, k) {
+  const pure = hsvToRgb({ h: hue, s: 1, v: 1 });
+  const half = WHEEL_SIZE / 2;
+  const x0 = Math.floor((half + TRIANGLE.white.x - 1) * k);
+  const x1 = Math.ceil((half + TRIANGLE.hue.x + 1) * k);
+  const y0 = Math.floor((half + TRIANGLE.white.y - 1) * k);
+  const y1 = Math.ceil((half + TRIANGLE.black.y + 1) * k);
+  const width = x1 - x0;
+  const height = y1 - y0;
+  const image = ctx.createImageData(width, height);
+  const data = image.data;
+  const edge = TRIANGLE_HEIGHT * k;
+  for (let py = 0; py < height; py++) {
+    for (let px = 0; px < width; px++) {
+      const p = { x: (x0 + px + 0.5) / k - half, y: (y0 + py + 0.5) / k - half };
+      const w = triangleWeights(p);
+      const alpha = Math.min(1, Math.min(w.hue, w.white, w.black) * edge + 0.5);
+      if (alpha <= 0) continue;
+      const a = Math.max(0, w.hue);
+      const b = Math.max(0, w.white);
+      const sum = a + b + Math.max(0, w.black) || 1;
+      const white = b / sum * 255;
+      const i = (py * width + px) * 4;
+      data[i] = white + a / sum * pure.r;
+      data[i + 1] = white + a / sum * pure.g;
+      data[i + 2] = white + a / sum * pure.b;
+      data[i + 3] = alpha * 255;
+    }
+  }
+  ctx.putImageData(image, x0, y0);
+}
+function div$3(className) {
+  const element = document.createElement("div");
+  element.className = className;
+  return element;
+}
+function place(element, left, top, width, height) {
+  const pct = (v) => `${v / WHEEL_SIZE * 100}%`;
+  element.style.left = pct(left + WHEEL_SIZE / 2);
+  element.style.top = pct(top + WHEEL_SIZE / 2);
+  element.style.width = pct(width);
+  element.style.height = pct(height);
+}
+function moveThumb(thumb, p) {
+  thumb.style.left = `${(p.x + WHEEL_SIZE / 2) / WHEEL_SIZE * 100}%`;
+  thumb.style.top = `${(p.y + WHEEL_SIZE / 2) / WHEEL_SIZE * 100}%`;
+}
+function placeCircle(element, circle) {
+  place(element, circle.x - circle.r, circle.y - circle.r, circle.r * 2, circle.r * 2);
+}
+function createCircleGroup(geometry, scheme, opts) {
+  let mode = loadMode(scheme);
+  const circles = geometry.circles.map((circle, index) => {
+    const button2 = document.createElement("button");
+    button2.type = "button";
+    button2.className = index === 1 ? "cps-picker-dot cps-picker-dot-base" : "cps-picker-dot";
+    placeCircle(button2, circle);
+    if (index !== 1) {
+      button2.addEventListener("click", () => opts.onChange(scheme.colors(opts.getHsv(), mode)[index] ?? opts.getHsv()));
+    }
+    return button2;
+  });
+  const cycle = document.createElement("button");
+  cycle.type = "button";
+  cycle.className = "cps-picker-cycle";
+  placeCircle(cycle, geometry.button);
+  setIcon(cycle, scheme.icon, 18);
+  const sync = () => {
+    const colors = scheme.colors(opts.getHsv(), mode);
+    const [first, second] = scheme.partnerLabels(mode);
+    circles.forEach((button2, index) => {
+      const hex = hsvToHex(colors[index] ?? opts.getHsv()).toUpperCase();
+      button2.style.backgroundColor = hex;
+      const name = index === 0 ? first : index === 2 ? second : "Current colour";
+      button2.title = `${name} ${hex}`;
+    });
+    cycle.title = `${scheme.title}: ${scheme.label(mode)} (click for ${scheme.label(nextMode(scheme.modes, mode))})`;
+    cycle.setAttribute("aria-label", cycle.title);
+  };
+  cycle.addEventListener("click", () => {
+    mode = nextMode(scheme.modes, mode);
+    saveMode(scheme, mode);
+    sync();
+  });
+  return { elements: [...circles, cycle], sync };
+}
+function loadMode(scheme) {
+  try {
+    return parseMode(scheme.modes, window.localStorage.getItem(scheme.storageKey));
+  } catch {
+    return parseMode(scheme.modes, null);
+  }
+}
+function saveMode(scheme, mode) {
+  try {
+    window.localStorage.setItem(scheme.storageKey, mode);
+  } catch {
+  }
+}
 const RECENT_KEY = "PainterSketch.recentColors";
 const MAX_RECENTS = 10;
 function getRecentColors() {
@@ -2475,116 +3137,84 @@ function renderRecentColors(container, onPick) {
   }
   container.hidden = recents.length === 0;
 }
+const GREY_HUE = 260;
+const LAST_HUE_KEY = "PainterSketch.colorLastHue";
+function lastHue() {
+  try {
+    const value = Number(window.localStorage.getItem(LAST_HUE_KEY) ?? Number.NaN);
+    return Number.isFinite(value) && value >= 0 && value < 360 ? value : GREY_HUE;
+  } catch {
+    return GREY_HUE;
+  }
+}
+function saveLastHue(hue) {
+  try {
+    window.localStorage.setItem(LAST_HUE_KEY, String(Math.round(hue * 100) / 100));
+  } catch {
+  }
+}
 function openColorPicker(host, anchor, opts) {
+  if (host.closeAnchoredAt(anchor)) return null;
   const initial = normalizeHex(opts.initial) ?? "#000000";
-  let hsv = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
+  const opened = hexToHsv(initial) ?? { h: 0, s: 0, v: 0 };
+  let hsv = opened.s === 0 ? { ...opened, h: lastHue() } : opened;
   let current = initial;
+  const setHsv = (next, fromFields = false) => {
+    hsv = next;
+    current = hsvToHex(hsv);
+    wheel.update();
+    if (!fromFields) fields.sync();
+    opts.onInput(current);
+  };
+  const setHex = (hex) => {
+    const next = hexToHsv(hex);
+    if (!next) return;
+    setHsv(next.s === 0 || next.v === 0 ? { ...next, h: hsv.h } : next);
+  };
   const root = document.createElement("div");
   root.className = "cps-picker";
+  root.style.width = `${WHEEL_SIZE}px`;
   if (opts.title) {
     const title = document.createElement("div");
     title.className = "cps-picker-title";
     title.textContent = opts.title;
     root.appendChild(title);
   }
-  const sv = createSvSquare(() => hsv, (next) => applyHsv(next));
-  const hue = createHueSlider(() => hsv, (next) => applyHsv(next));
-  const hexRow = document.createElement("div");
-  hexRow.className = "cps-picker-hex-row";
-  const hexLabel = document.createElement("span");
-  hexLabel.className = "cps-picker-hex-label";
-  hexLabel.textContent = "Hex";
-  const hexInput = document.createElement("input");
-  hexInput.type = "text";
-  hexInput.className = "cps-picker-hex-input";
-  hexInput.maxLength = 7;
-  hexInput.spellcheck = false;
-  hexInput.autocomplete = "off";
-  hexRow.append(hexLabel, hexInput);
-  const preview = document.createElement("div");
-  preview.className = "cps-picker-preview";
-  preview.title = "Click left half to revert to original colour";
-  const previewOld = document.createElement("div");
-  previewOld.className = "cps-picker-preview-old";
-  const previewNew = document.createElement("div");
-  previewNew.className = "cps-picker-preview-new";
-  preview.append(previewOld, previewNew);
+  const wheel = createColorWheel({
+    getHsv: () => hsv,
+    original: initial,
+    onChange: (next) => setHsv(next),
+    onRevert: () => setHex(initial)
+  });
+  const fields = createColorFields(
+    () => hsv,
+    (next) => setHsv(next, true)
+  );
   const recentsEl = document.createElement("div");
   recentsEl.className = "cps-picker-recents";
-  root.append(sv.element, hue.element, hexRow, preview, recentsEl);
-  const applyHsv = (newHsv, skipHexField = false) => {
-    hsv = newHsv;
-    current = hsvToHex(hsv);
-    sv.draw();
-    sv.position();
-    hue.position();
-    if (!skipHexField) syncHexField();
-    previewNew.style.backgroundColor = current;
-    opts.onInput(current);
-  };
-  const applyHex = (hex) => {
-    const normalized = normalizeHex(hex);
-    if (!normalized) return;
-    const newHsv = hexToHsv(normalized);
-    if (!newHsv) return;
-    applyHsv(newHsv);
-  };
-  const syncHexField = () => {
-    hexInput.value = current.slice(1).toUpperCase();
-    hexInput.classList.remove("cps-invalid");
-  };
-  const applyHexField = () => {
-    const raw = hexInput.value.trim();
-    const normalized = normalizeHex(raw);
-    if (normalized) {
-      hexInput.classList.remove("cps-invalid");
-      applyHex(normalized);
-    } else {
-      hexInput.classList.add("cps-invalid");
-      syncHexField();
-    }
-  };
-  hexInput.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      event.stopPropagation();
-      applyHexField();
-      hexInput.blur();
-    }
-    if (event.key === "Escape") applyHexField();
-  });
-  hexInput.addEventListener("blur", () => {
-    applyHexField();
-  });
-  hexInput.addEventListener("input", () => {
-    const raw = hexInput.value.trim();
-    const normalized = normalizeHex(raw);
-    if (normalized) {
-      hexInput.classList.remove("cps-invalid");
-      applyHex(normalized);
-    } else {
-      hexInput.classList.add("cps-invalid");
-    }
-  });
-  previewOld.style.backgroundColor = initial;
-  previewOld.title = "Click to revert to original colour";
-  previewOld.addEventListener("click", () => {
-    applyHex(initial);
-  });
+  root.append(wheel.element, fields.element, recentsEl);
   requestAnimationFrame(() => {
-    sv.resize();
-    sv.draw();
-    sv.position();
-    hue.position();
-    syncHexField();
-    previewOld.style.backgroundColor = initial;
-    previewNew.style.backgroundColor = current;
-    renderRecentColors(recentsEl, applyHex);
+    wheel.layout();
+    fields.sync();
+    renderRecentColors(recentsEl, setHex);
   });
-  const handle = host.open(root, {
+  const unfollow = opts.follow?.((hex) => {
+    const normalized = normalizeHex(hex);
+    if (!normalized || normalized === current) return;
+    const next = hexToHsv(normalized);
+    if (!next) return;
+    hsv = next.s === 0 || next.v === 0 ? { ...next, h: hsv.h } : next;
+    current = normalized;
+    wheel.update();
+    fields.sync();
+  });
+  return host.open(root, {
     anchor,
     placement: "below",
+    ...opts.keepOpenOn ? { keepOpenOn: opts.keepOpenOn } : {},
     onClose: () => {
+      unfollow?.();
+      saveLastHue(hsv.h);
       if (current !== initial) {
         saveRecentColor(current);
         opts.onCommit?.(current);
@@ -2592,7 +3222,6 @@ function openColorPicker(host, anchor, opts) {
       opts.onClose?.();
     }
   });
-  return handle;
 }
 const DRAG_BLOCKED_TEXT = "Couldn't load the dragged image (the site doesn't allow it). Save it and drop the file instead.";
 const DRAG_NOT_IMAGE_NOTE = "The dropped item is not an image.";
@@ -4434,217 +5063,6 @@ function rasterizeLayer(s, layer) {
 }
 function entryLayerId(entry) {
   return entry.kind === "patch" || entry.kind === "translate" || entry.kind === "text" ? entry.layerId : null;
-}
-const LUCIDE = {
-  "ban": "<circle cx='12' cy='12' r='10'/><path d='M4.929 4.929 19.07 19.071'/>",
-  "bold": "<path d='M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8'/>",
-  "brush": "<path d='m11 10 3 3'/><path d='M6.5 21A3.5 3.5 0 1 0 3 17.5a2.62 2.62 0 0 1-.708 1.792A1 1 0 0 0 3 21z'/><path d='M9.969 17.031 21.378 5.624a1 1 0 0 0-3.002-3.002L6.967 14.031'/>",
-  "brush-cleaning": "<path d='m16 22-1-4'/><path d='M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1'/><path d='M19 14H5l-1.973 6.767A1 1 0 0 0 4 22h16a1 1 0 0 0 .973-1.233z'/><path d='m8 22 1-4'/>",
-  "check": "<path d='M20 6 9 17l-5-5'/>",
-  "circle-dashed": "<path d='M10.1 2.182a10 10 0 0 1 3.8 0'/><path d='M13.9 21.818a10 10 0 0 1-3.8 0'/><path d='M17.609 3.721a10 10 0 0 1 2.69 2.7'/><path d='M2.182 13.9a10 10 0 0 1 0-3.8'/><path d='M20.279 17.609a10 10 0 0 1-2.7 2.69'/><path d='M21.818 10.1a10 10 0 0 1 0 3.8'/><path d='M3.721 6.391a10 10 0 0 1 2.7-2.69'/><path d='M6.391 20.279a10 10 0 0 1-2.69-2.7'/>",
-  "circle-dot": "<circle cx='12' cy='12' r='1'/><circle cx='12' cy='12' r='10'/>",
-  "clipboard": "<rect width='8' height='4' x='8' y='2' rx='1' ry='1'/><path d='M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2'/>",
-  "contrast": "<circle cx='12' cy='12' r='10'/><path d='M12 18a6 6 0 0 0 0-12v12z'/>",
-  "copy": "<rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/>",
-  "copy-plus": "<line x1='15' x2='15' y1='12' y2='18'/><line x1='12' x2='18' y1='15' y2='15'/><rect width='14' height='14' x='8' y='8' rx='2' ry='2'/><path d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/>",
-  "ellipse": "<ellipse cx='12' cy='12' rx='10' ry='6'/>",
-  "eraser": "<path d='M21 21H8a2 2 0 0 1-1.42-.587l-3.994-3.999a2 2 0 0 1 0-2.828l10-10a2 2 0 0 1 2.829 0l5.999 6a2 2 0 0 1 0 2.828L12.834 21'/><path d='m5.082 11.09 8.828 8.828'/>",
-  "eye": "<path d='M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0'/><circle cx='12' cy='12' r='3'/>",
-  "eye-off": "<path d='M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49'/><path d='M14.084 14.158a3 3 0 0 1-4.242-4.242'/><path d='M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143'/><path d='m2 2 20 20'/>",
-  "fullscreen": "<path d='M3 7V5a2 2 0 0 1 2-2h2'/><path d='M17 3h2a2 2 0 0 1 2 2v2'/><path d='M21 17v2a2 2 0 0 1-2 2h-2'/><path d='M7 21H5a2 2 0 0 1-2-2v-2'/><rect width='10' height='8' x='7' y='8' rx='1'/>",
-  "hand": "<path d='M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2'/><path d='M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2'/><path d='M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8'/><path d='M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15'/>",
-  "hand-grab": "<path d='M18 11.5V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v1.4'/><path d='M14 10V8a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2'/><path d='M10 9.9V9a2 2 0 0 0-2-2a2 2 0 0 0-2 2v5'/><path d='M6 14a2 2 0 0 0-2-2a2 2 0 0 0-2 2'/><path d='M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-4a8 8 0 0 1-8-8 2 2 0 1 1 4 0'/>",
-  "hourglass": "<path d='M5 22h14'/><path d='M5 2h14'/><path d='M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22'/><path d='M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2'/>",
-  "images": "<path d='m22 11-1.296-1.296a2.4 2.4 0 0 0-3.408 0L11 16'/><path d='M4 8a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2'/><circle cx='13' cy='7' r='1' fill='currentColor'/><rect x='8' y='2' width='14' height='14' rx='2'/>",
-  "italic": "<line x1='19' x2='10' y1='4' y2='4'/><line x1='14' x2='5' y1='20' y2='20'/><line x1='15' x2='9' y1='4' y2='20'/>",
-  "lasso": "<path d='M3.704 14.467a10 8 0 1 1 3.115 2.375'/><path d='M7 22a5 5 0 0 1-2-3.994'/><circle cx='5' cy='16' r='2'/>",
-  "layers-arrow-down": "<path d='M12 7v15'/><path d='M2 12a1 1 0 00.58.91l5.093 2.316'/><path d='M22 12a1 1 0 01-.59.92l-5.077 2.308'/><path d='M8 10.37 2.6 7.91a1 1 0 010-1.831l8.57-3.9a2 2 0 011.66.001l8.59 3.91a1 1 0 010 1.831l-5.392 2.45'/><path d='m9 19 3 3 3-3'/>",
-  "lock": "<rect width='18' height='11' x='3' y='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 10 0v4'/>",
-  "lock-open": "<rect width='18' height='11' x='3' y='11' rx='2' ry='2'/><path d='M7 11V7a5 5 0 0 1 9.9-1'/>",
-  "maximize-2": "<path d='M15 3h6v6'/><path d='m21 3-7 7'/><path d='m3 21 7-7'/><path d='M9 21H3v-6'/>",
-  "minimize-2": "<path d='m14 10 7-7'/><path d='M20 10h-6V4'/><path d='m3 21 7-7'/><path d='M4 14h6v6'/>",
-  "mouse-pointer-2": "<path d='M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z'/>",
-  "move": "<path d='M12 2v20'/><path d='m15 19-3 3-3-3'/><path d='m19 9 3 3-3 3'/><path d='M2 12h20'/><path d='m5 9-3 3 3 3'/><path d='m9 5 3-3 3 3'/>",
-  "move-diagonal": "<path d='M11 19H5v-6'/><path d='M13 5h6v6'/><path d='M19 5 5 19'/>",
-  "move-diagonal-2": "<path d='M19 13v6h-6'/><path d='M5 11V5h6'/><path d='m5 5 14 14'/>",
-  "move-horizontal": "<path d='m18 8 4 4-4 4'/><path d='M2 12h20'/><path d='m6 8-4 4 4 4'/>",
-  "move-up-right": "<path d='M13 5H19V11'/><path d='M19 5L5 19'/>",
-  "move-vertical": "<path d='M12 2v20'/><path d='m8 18 4 4 4-4'/><path d='m8 6 4-4 4 4'/>",
-  "paint-bucket": "<path d='M11 7 6 2'/><path d='M18.992 12H2.041'/><path d='M21.145 18.38A3.34 3.34 0 0 1 20 16.5a3.3 3.3 0 0 1-1.145 1.88c-.575.46-.855 1.02-.855 1.595A2 2 0 0 0 20 22a2 2 0 0 0 2-2.025c0-.58-.285-1.13-.855-1.595'/><path d='m8.5 4.5 2.148-2.148a1.205 1.205 0 0 1 1.704 0l7.296 7.296a1.205 1.205 0 0 1 0 1.704l-7.592 7.592a3.615 3.615 0 0 1-5.112 0l-3.888-3.888a3.615 3.615 0 0 1 0-5.112L5.67 7.33'/>",
-  "panel-right": "<rect width='18' height='18' x='3' y='3' rx='2'/><path d='M15 3v18'/>",
-  "pen": "<path d='M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z'/>",
-  "pipette": "<path d='m12 9-8.414 8.414A2 2 0 0 0 3 18.828v1.344a2 2 0 0 1-.586 1.414A2 2 0 0 1 3.828 21h1.344a2 2 0 0 0 1.414-.586L15 12'/><path d='m18 9 .4.4a1 1 0 1 1-3 3l-3.8-3.8a1 1 0 1 1 3-3l.4.4 3.4-3.4a1 1 0 1 1 3 3z'/><path d='m2 22 .414-.414'/>",
-  "plus": "<path d='M5 12h14'/><path d='M12 5v14'/>",
-  "rectangle-horizontal": "<rect width='20' height='12' x='2' y='6' rx='2'/>",
-  "redo-2": "<path d='m15 14 5-5-5-5'/><path d='M20 9H9.5A5.5 5.5 0 0 0 4 14.5A5.5 5.5 0 0 0 9.5 20H13'/>",
-  "refresh-cw": "<path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8'/><path d='M21 3v5h-5'/><path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16'/><path d='M8 16H3v5'/>",
-  "scaling": "<path d='M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7'/><path d='M14 15H9v-5'/><path d='M16 3h5v5'/><path d='M21 3 9 15'/>",
-  "scan-eye": "<path d='M3 7V5a2 2 0 0 1 2-2h2'/><path d='M17 3h2a2 2 0 0 1 2 2v2'/><path d='M21 17v2a2 2 0 0 1-2 2h-2'/><path d='M7 21H5a2 2 0 0 1-2-2v-2'/><circle cx='12' cy='12' r='1'/><path d='M18.944 12.33a1 1 0 0 0 0-.66 7.5 7.5 0 0 0-13.888 0 1 1 0 0 0 0 .66 7.5 7.5 0 0 0 13.888 0'/>",
-  "scissors": "<circle cx='6' cy='6' r='3'/><path d='M8.12 8.12 12 12'/><path d='M20 4 8.12 15.88'/><circle cx='6' cy='18' r='3'/><path d='M14.8 14.8 20 20'/>",
-  "slash": "<path d='M22 2 2 22'/>",
-  "square-dashed": "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/>",
-  "square-dashed-plus": "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/><path d='M8 12h8'/><path d='M12 8v8'/>",
-  "square-dashed-x": "<path d='M14 21h1'/><path d='M14 3h1'/><path d='M19 3a2 2 0 012 2'/><path d='M21 14v1'/><path d='M21 19a2 2 0 01-2 2'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M3 9v1'/><path d='M5 21a2 2 0 01-2-2'/><path d='M5 3a2 2 0 00-2 2'/><path d='m9 15 6-6'/><path d='M9 21h1'/><path d='M9 3h1'/><path d='m9 9 6 6'/>",
-  "text-cursor": "<path d='M17 22h-1a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4h1'/><path d='M7 22h1a4 4 0 0 0 4-4'/><path d='M7 2h1a4 4 0 0 1 4 4'/>",
-  "trash": "<path d='M10 11v6'/><path d='M14 11v6'/><path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6'/><path d='M3 6h18'/><path d='M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'/>",
-  "triangles-centerline-dashed-horizontal": "<path d='M10 12H8'/><path d='M16 12h-2'/><path d='M22 12h-2'/><path d='M4 12H2'/><path d='M7.298 20.288A1 1 0 008 22h8a1 1 0 00.703-1.712l-3.991-3.99a1 1 0 00-1.424-.001z'/><path d='M7.298 3.712A1 1 0 018 2h8a1 1 0 01.703 1.712l-3.991 3.99a1 1 0 01-1.424.001z'/>",
-  "triangles-centerline-dashed-vertical": "<path d='M12 14v2'/><path d='M12 20v2'/><path d='M12 2v2'/><path d='M12 8v2'/><path d='M20.288 16.703A1 1 0 0022 16V8a1 1 0 00-1.712-.703l-3.99 3.991a1 1 0 00-.001 1.424z'/><path d='M3.712 16.703A1 1 0 012 16V8a1 1 0 011.712-.703l3.99 3.991a1 1 0 01.001 1.424z'/>",
-  "type": "<path d='M12 4v16'/><path d='M4 7V5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v2'/><path d='M9 20h6'/>",
-  "undo-2": "<path d='M9 14 4 9l5-5'/><path d='M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11'/>",
-  "vector-square": "<path d='M17.055 4.533a24 24 0 00-10.11 0'/><path d='M19.467 17.055a24 24 0 000-10.11'/><path d='M4.533 6.945a24 24 0 000 10.11'/><path d='M6.945 19.467a24 24 0 0010.11 0'/><circle cx='19' cy='19' r='2'/><circle cx='19' cy='5' r='2'/><circle cx='5' cy='19' r='2'/><circle cx='5' cy='5' r='2'/>",
-  "x": "<path d='M18 6 6 18'/><path d='m6 6 12 12'/>",
-  // UI refresh additions.
-  "circle-help": "<circle cx='12' cy='12' r='10'/><path d='M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'/><path d='M12 17h.01'/>",
-  "triangle-alert": "<path d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/><path d='M12 9v4'/><path d='M12 17h.01'/>",
-  "chevron-down": "<path d='m6 9 6 6 6-6'/>",
-  "arrow-left": "<path d='m12 19-7-7 7-7'/><path d='M19 12H5'/>",
-  "link": "<path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/><path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>",
-  "text-align-start": "<path d='M21 5H3'/><path d='M15 12H3'/><path d='M17 19H3'/>",
-  "text-align-center": "<path d='M21 5H3'/><path d='M17 12H7'/><path d='M19 19H5'/>",
-  "text-align-end": "<path d='M21 5H3'/><path d='M21 12H9'/><path d='M21 19H7'/>"
-};
-const SQUARE_DASHED = "<path d='M5 3a2 2 0 0 0-2 2'/><path d='M19 3a2 2 0 0 1 2 2'/><path d='M21 19a2 2 0 0 1-2 2'/><path d='M5 21a2 2 0 0 1-2-2'/><path d='M9 3h1'/><path d='M9 21h1'/><path d='M14 3h1'/><path d='M14 21h1'/><path d='M3 9v1'/><path d='M21 9v1'/><path d='M3 14v1'/><path d='M21 14v1'/>";
-const NEW_SHEET = "<path d='M11.35 22H5a2 2 0 01-2-2V4a2 2 0 012-2h14a2 2 0 012 2v9.35'/><path d='M14 19h8'/><path d='M18 15v8'/>";
-const CUSTOM$1 = {
-  // Align drawing: the bottom sheet of a layer pile with a large isometric
-  // four-way arrow in the sheet's plane (the user's drawing).
-  // The arrow is drawn 0.5 thinner than the icon stroke (follows `--cps-icon-stroke`).
-  alignDrawing: "<path d='M4 11.5 1.5 13 12 19l10.5-6-2.5-1.5'/><path style='stroke-width:calc(var(--cps-icon-stroke, 2) - 0.5)' d='M7 6.2l10 6.4M7 12.6l10-6.4M10.5 6 7 6.2v2.1M13.5 6l3.5.2v2.1M10.5 12.8 7 12.6v-2.1M13.5 12.8l3.5-.2v-2.1'/>",
-  // Photoshop's Quick Mask: a rectangle with a circle in it.
-  quickMask: "<rect x='3' y='4' width='18' height='16' rx='2'/><circle cx='12' cy='12' r='4.5'/>",
-  // Paste from the system clipboard: a clipboard with two scribbled lines (the user's drawing).
-  paste: "<path d='m10 16 6 .5'/><path d='M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2'/><path d='m8 11.5 7-1'/><rect x='8' y='2' width='8' height='4' rx='1'/>",
-  // Paste from the ComfyUI clipspace: Lucide `clipboard` with a filled, slanted "C" (the user's drawing).
-  pasteClipspace: `${LUCIDE["clipboard"]}<path fill='currentColor' stroke='none' d='M9.47 19.44Q8.55 19.44 8.82 18.54L9.2 17.24H8.05Q7.14 17.24 7.4 16.34L8.47 12.65Q8.73 11.75 9.64 11.75H10.82L11.19 10.46Q11.45 9.56 12.36 9.56H15.95Q16.86 9.56 16.6 10.46L16.17 11.96Q15.91 12.85 15 12.85H11.76L10.8 16.14H14.03Q14.94 16.14 14.68 17.04L14.24 18.54Q13.98 19.44 13.07 19.44Z'/>`,
-  // Mask glyph (Photoshop's add-mask symbol).
-  mask: "<rect x='3' y='3' width='18' height='18' rx='2'/><circle cx='12' cy='12' r='4' fill='currentColor'/>",
-  // Inverted mask glyph (Alt on the add-mask button: hide all).
-  maskInverted: "<path fill='currentColor' fill-rule='evenodd' d='M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12z'/>",
-  // New layer: a sheet with its bottom-right corner open for a plus (the user's drawing).
-  layerAdd: NEW_SHEET,
-  // New mask / add layer mask: the new-layer sheet with the mask's filled circle.
-  maskAdd: `${NEW_SHEET}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
-  // Magic wand (the user's drawing): sparkles, a stick ending in a star point.
-  magicWand: "<path d='M13 1v2m1-1h-2m1 6 3 3m5 1v4m2-2h-4M6 4v4m2-2H4'/><path d='M20.68 2.68A3.9 3.9 0 0 1 16.6 4.4L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L19.6 7.4a3.9 3.9 0 0 1 1.72-4.08z'/>",
-  // Pointer tip of the Photoshop-style cursors: Lucide `mouse-pointer-2`
-  // rotated about its apex (3.59, 3.59) so the left edge is vertical.
-  pointer: `<g transform='rotate(22.109 3.592 3.592)'>${LUCIDE["mouse-pointer-2"]}</g>`,
-  // Selection to mask: dashed square with the mask's filled circle.
-  selectionToMask: `${SQUARE_DASHED}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
-  // Selection subtract badge, pairing Lucide `square-dashed-plus` / `-x`.
-  squareDashedMinus: `${SQUARE_DASHED}<path d='M8 12h8'/>`,
-  // FG/BG swap (Photoshop's curved double arrow; kept from the old set).
-  swap: "<path d='M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3'/>",
-  // Polygonal lasso: the lasso loop drawn as straight segments.
-  polygonLasso: "<path d='M3.7 14.5 3 8l5-5 8 .5L21 8l-2 6-7 3.5-5-.6'/><path d='M7 22l-2-4'/><circle cx='5' cy='16' r='2'/>",
-  // Precise cross (the user's): outer ticks and inward wedges, centre open.
-  preciseCross: "<path d='M12 2v3M12 22v-3M2 12h3M22 12h-3'/><path fill='currentColor' stroke='none' d='M11 5H13L12 10.5ZM11 19H13L12 13.5ZM5 11V13L10.5 12ZM19 11V13L13.5 12Z'/>",
-  // Ring tools' cursor dot (drawn filled, 8 px).
-  dot: "<circle cx='12' cy='12' r='3'/>",
-  // Eyedropper badge: the pick goes to the background slot (the user's drawing).
-  bgSlot: "<path d='M14 20a2 2 0 002 2h4a2 2 0 002-2v-4a2 2 0 00-2-2v6z'/><path d='M14 20a6 6 0 006-6'/><rect x='8' y='8' width='8' height='8' rx='2'/>",
-  // ── UI refresh glyphs (the maintainer's, from the design handoff icon module) ──
-  // Sliders pill: brush size (two dots), hardness (soft ring + hard core), line width (three rules).
-  brushSize: "<circle cx='7' cy='17' r='2.5'/><circle cx='15.5' cy='8.5' r='5.5'/>",
-  hardness: "<circle cx='12' cy='12' r='9' stroke-dasharray='1.5 2.6'/><circle cx='12' cy='12' r='4.5' fill='currentColor'/>",
-  lineWidth: "<path d='M4 5h16' style='stroke-width:1'/><path d='M4 11h16' style='stroke-width:2'/><path d='M4 18h16' style='stroke-width:3.5'/>",
-  // Copy merged: the copy glyph with a three-line badge.
-  copyMerged: `${LUCIDE["copy"]}<path d='M13.5 13.5h5M13.5 16.5h5M13.5 19.5h5' style='stroke-width:1.5'/>`,
-  // Text angle.
-  angle: "<path d='M4 20h16'/><path d='M4 20 15 6'/><path d='M10.5 20A6.5 6.5 0 0 0 8 14.9'/>",
-  // Side panel shrink / expand (rotates 180° when shrunk).
-  panelCollapse: "<path d='m17 11-5-5-5 5'/><path d='m17 18-5-5-5 5'/>",
-  // Rasterize text (a pixel grid).
-  rasterize: "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M3 9h18M3 15h18M9 3v18M15 3v18'/>",
-  // Default colours (D): a filled square over an outlined one.
-  resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>"
-};
-const ALIASES = {
-  // Tools.
-  brush: "brush",
-  eraser: "eraser",
-  bucket: "paint-bucket",
-  eyedropper: "pipette",
-  line: "slash",
-  arrow: "move-up-right",
-  rectangle: "rectangle-horizontal",
-  ellipse: "ellipse",
-  text: "type",
-  move: "move",
-  marqueeRect: "square-dashed",
-  marqueeEllipse: "circle-dashed",
-  lasso: "lasso",
-  region: "vector-square",
-  transform: "scaling",
-  // Rail actions.
-  copy: "copy",
-  cut: "scissors",
-  undo: "undo-2",
-  redo: "redo-2",
-  fit: "fullscreen",
-  clear: "brush-cleaning",
-  fullscreen: "maximize-2",
-  exitFullscreen: "minimize-2",
-  images: "images",
-  // Options bar.
-  panel: "panel-right",
-  stylus: "pen",
-  flipH: "triangles-centerline-dashed-vertical",
-  flipV: "triangles-centerline-dashed-horizontal",
-  check: "check",
-  close: "x",
-  trash: "trash",
-  invert: "contrast",
-  bold: "bold",
-  italic: "italic",
-  // Layers panel.
-  plus: "plus",
-  duplicate: "copy",
-  mergeDown: "layers-arrow-down",
-  eye: "eye",
-  eyeOff: "eye-off",
-  lock: "lock",
-  unlock: "lock-open",
-  solo: "circle-dot",
-  maskView: "scan-eye",
-  // UI refresh: bottom bar, menus, strip.
-  help: "circle-help",
-  warning: "triangle-alert",
-  chevronDown: "chevron-down",
-  back: "arrow-left",
-  link: "link",
-  alignLeft: "text-align-start",
-  alignCenter: "text-align-center",
-  alignRight: "text-align-end",
-  // Cursor glyphs and badges.
-  textCursor: "text-cursor",
-  ban: "ban",
-  copyPlus: "copy-plus",
-  squareDashedPlus: "square-dashed-plus",
-  squareDashedX: "square-dashed-x",
-  resizeEW: "move-horizontal",
-  resizeNS: "move-vertical",
-  resizeNESW: "move-diagonal",
-  resizeNWSE: "move-diagonal-2",
-  rotate: "refresh-cw",
-  hand: "hand",
-  handGrab: "hand-grab",
-  hourglass: "hourglass"
-};
-const SHARED = { layerMaskAdd: "maskAdd" };
-const FALLBACK = "<rect x='5' y='5' width='14' height='14'/>";
-function iconMarkup(name) {
-  const key = SHARED[name] ?? name;
-  const custom = CUSTOM$1[key];
-  if (custom !== void 0) return custom;
-  const lucide = ALIASES[key];
-  return (lucide !== void 0 ? LUCIDE[lucide] : void 0) ?? FALLBACK;
-}
-function iconSvg(name, size = 20) {
-  return `<svg class="cps-icon" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconMarkup(name)}</svg>`;
-}
-function setIcon(element, name, size = 20) {
-  element.innerHTML = iconSvg(name, size);
 }
 function openMenu(popovers, options) {
   const menu = document.createElement("div");
@@ -8720,9 +9138,13 @@ class OutputOptionsRow {
     element.append(dec, field.element, inc);
     return { element, dec, inc, field };
   }
-  /** Fill / border colour picker: one session = one undo step; Esc / click-outside keep the colour. */
+  /**
+   * Fill / border colour picker: one session = one undo step; Esc /
+   * click-outside keep the colour; a second click on the swatch closes it.
+   */
   pickColor() {
     const { popovers, editor } = this.ctx;
+    if (popovers.closeAnchoredAt(this.swatch)) return;
     const ops = editor.regionOps;
     this.ctx.beforeEdit();
     popovers.close();
@@ -10714,14 +11136,18 @@ const GAP = 4;
 class PopoverHost {
   /**
    * @param root - Editor root (the host is appended to it).
+   * @param dismissOnly - Element whose presses only close popovers (the
+   *   stage): a press there that closed one is swallowed.
    */
-  constructor(root) {
+  constructor(root, dismissOnly = null) {
     this.root = root;
+    this.dismissOnly = dismissOnly;
     this.element = document.createElement("div");
     this.element.className = "cps-popover-host";
     root.appendChild(this.element);
   }
   root;
+  dismissOnly;
   /** Overlay element (append-only child of the editor root). */
   element;
   /** `close` fires after any popover closed. */
@@ -10731,9 +11157,15 @@ class PopoverHost {
   outside = (event) => {
     const target = event.target;
     if (!(target instanceof Node)) return;
+    let closed = false;
     for (let top = this.stack.at(-1); top; top = this.stack.at(-1)) {
-      if (top.element.contains(target) || top.anchor.contains(target)) return;
+      if (top.element.contains(target) || top.anchor.contains(target) || top.keepOpenOn?.(event)) break;
       top.close();
+      closed = true;
+    }
+    if (closed && this.dismissOnly?.contains(target)) {
+      event.preventDefault();
+      event.stopPropagation();
     }
   };
   /** Whether a popover is open. */
@@ -10769,6 +11201,7 @@ class PopoverHost {
     const handle = {
       element,
       anchor: options.anchor,
+      ...options.keepOpenOn ? { keepOpenOn: options.keepOpenOn } : {},
       close: () => {
         if (closed) return;
         closed = true;
@@ -10795,6 +11228,19 @@ class PopoverHost {
     const bottom = this.stack[0];
     if (!bottom) return false;
     bottom.close();
+    return true;
+  }
+  /**
+   * Toggle support: close the popover opened for exactly this anchor (and
+   * its children), if one is open. Call before opening one for the anchor so
+   * a second click on it closes instead of re-opening.
+   * @param anchor - Anchor element.
+   * @returns `true` if a popover closed.
+   */
+  closeAnchoredAt(anchor) {
+    const handle = this.stack.find((h) => h.anchor === anchor);
+    if (!handle) return false;
+    handle.close();
     return true;
   }
   /**
@@ -11029,7 +11475,7 @@ class EditorShell {
       this.sidePanel.element,
       this.overlaySlot
     );
-    this.popoverHost = new PopoverHost(this.root);
+    this.popoverHost = new PopoverHost(this.root, this.stage);
     this.resizeObserver = new ResizeObserver(() => this.requestLayout());
     for (const el2 of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot, this.sidePanel.element]) {
       this.resizeObserver.observe(el2);
@@ -13463,8 +13909,8 @@ class StageView {
   /** Badges of the tool in effect now. */
   cursorExtras(tool, session) {
     const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
-    const eyedropperAlt = tool.id === "eyedropper" && tool === session.tools.active && this.altDown;
-    const mode = this.badge ?? (eyedropperAlt ? "bgSlot" : null);
+    const toBg = tool.id === "eyedropper" && (session.editor.colors.sampleSlot === "bg" || tool === session.tools.active && this.altDown);
+    const mode = this.badge ?? (toBg ? "bgSlot" : null);
     return { mode, ban: target?.blocked ?? false };
   }
   /**
@@ -13769,12 +14215,20 @@ class EditorHost {
       const colors = this.session?.editor.colors;
       if (!colors) return;
       const slot = request.slot;
-      openColorPicker(this.shell.popoverHost, request.anchor, {
+      const setSampleSlot = (value) => {
+        colors.sampleSlot = value;
+        this.view.syncCursor();
+      };
+      const handle = openColorPicker(this.shell.popoverHost, request.anchor, {
         initial: colors[slot],
         title: slot === "fg" ? "Foreground" : "Background",
         onInput: (hex) => colors.set(slot, hex),
-        onCommit: (hex) => colors.set(slot, hex)
+        onCommit: (hex) => colors.set(slot, hex),
+        onClose: () => setSampleSlot(null),
+        follow: (onExternal) => colors.events.on("change", () => onExternal(colors[slot])),
+        keepOpenOn: (event) => this.isEyedropperPress(event)
       });
+      if (handle) setSampleSlot(slot === "bg" ? "bg" : null);
     });
     this.input = new StageInput(this.stage, {
       session: () => this.session,
@@ -14032,6 +14486,19 @@ class EditorHost {
       },
       clipboard: this.clipboard
     });
+  }
+  /**
+   * Whether a press is eyedropper use: the dock's eyedropper button, or a
+   * left press on the stage (no Space pan) where the tool the stage would
+   * resolve (Ctrl > Alt > active, as in `stageInput.ts`) is the eyedropper.
+   */
+  isEyedropperPress(event) {
+    const session = this.session;
+    const target = event.target;
+    if (target instanceof Element && target.closest(".cps-dropper-pill")) return true;
+    if (!session || event.button !== 0 || this.keyboard.isSpaceDown) return false;
+    if (!(target instanceof Node) || !this.stage.contains(target)) return false;
+    return session.tools.resolve(event.altKey, event.ctrlKey || event.metaKey).id === "eyedropper";
   }
   // ── Sizing ──────────────────────────────────────────────────────────────
   handleResize() {
@@ -16014,12 +16481,12 @@ function fitScale$1(source, area) {
   if (source.width <= 0 || source.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
   return Math.min(1, area.width / source.width, area.height / source.height);
 }
-function insertParams(source, imageArea, docPerImage, place) {
+function insertParams(source, imageArea, docPerImage, place2) {
   const k = fitScale$1(source, { width: imageArea.width / docPerImage, height: imageArea.height / docPerImage });
   const t = k * docPerImage;
   const w = source.width * t;
   const h = source.height * t;
-  const tl = pasteTopLeft({ width: w, height: h }, { ...place, imageArea, original: null });
+  const tl = pasteTopLeft({ width: w, height: h }, { ...place2, imageArea, original: null });
   return { cx: tl.x + w / 2, cy: tl.y + h / 2, sx: t, sy: t, angle: 0 };
 }
 class SourceInsertOps {
@@ -16052,7 +16519,7 @@ class SourceInsertOps {
     return this.start(
       pixels,
       name?.trim() || imageLayerName(this.s.doc.layers),
-      (place, area, docPerImage) => insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place)
+      (place2, area, docPerImage) => insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place2)
     ) !== null;
   }
   /**
@@ -16082,7 +16549,7 @@ class SourceInsertOps {
     if (!id) return null;
     const map = documentMap(s.doc, s.imageSize);
     const sel = s.selection.current;
-    const place = pasteContext({ selection: sel, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
+    const place2 = pasteContext({ selection: sel, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
     if (sel) {
       s.selection.set(null);
       recordSelectionMove(s, sel, null, true);
@@ -16091,7 +16558,7 @@ class SourceInsertOps {
     const docPerImage = 1 / map.scale;
     const area = imageRectToDoc(map, frameRect(s.imageSize));
     const { width: w, height: h } = pixels;
-    const params = paramsFor(place, area, docPerImage);
+    const params = paramsFor(place2, area, docPerImage);
     const m = paramsMatrix(params, w, h);
     s.ensureBounds(transformedAabb(m, w, h), true);
     const surface = createSurface(w, h);
@@ -17047,11 +17514,11 @@ class LayerStore {
     const from = this.currentBounds;
     for (const [id, surface] of this.surfaces) {
       const next = createSurface(bounds.width, bounds.height);
-      const place = { x: from.x * factor + tx - bounds.x, y: from.y * factor + ty - bounds.y, width: from.width * factor, height: from.height * factor };
-      if (this.hideOutside.has(id)) fillOutside(next, place, HIDE_FILL);
+      const place2 = { x: from.x * factor + tx - bounds.x, y: from.y * factor + ty - bounds.y, width: from.width * factor, height: from.height * factor };
+      if (this.hideOutside.has(id)) fillOutside(next, place2, HIDE_FILL);
       next.ctx.imageSmoothingEnabled = true;
       next.ctx.imageSmoothingQuality = "high";
-      next.ctx.drawImage(surface.canvas, place.x, place.y, place.width, place.height);
+      next.ctx.drawImage(surface.canvas, place2.x, place2.y, place2.width, place2.height);
       releaseSurface(surface);
       this.surfaces.set(id, next);
     }
@@ -23183,7 +23650,7 @@ class EyedropperTool {
       editor.events.emit("note", LAYER_MASK_EYEDROPPER_NOTE);
       return;
     }
-    const slot = first.altKey && !this.isTemporary ? "bg" : "fg";
+    const slot = editor.colors.sampleSlot ?? (first.altKey && !this.isTemporary ? "bg" : "fg");
     const previous = editor.colors[slot];
     this.picking = { slot, previous, color: previous };
     this.pick(editor, first);
@@ -25635,7 +26102,258 @@ function installPageGuards() {
 }
 const barsCss = '/*\n * Shared primitives of the floating UI (design handoff): the bar pill, the\n * 32 px bar button, dividers, the corner caret, menus, the light "commit"\n * button and the segmented control. Component files (dock, strip, bottom\n * bar, panel) build on these. Tokens live on .cps-root (editor.css).\n */\n\n/* ── Pills (bars) ──────────────────────────────────────────────────────── */\n\n.cps-pill {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 4px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  white-space: nowrap;\n}\n\n/* Vertical divider inside a pill / bar. */\n.cps-vdiv {\n  flex: none;\n  width: 1px;\n  height: 20px;\n  margin: 0 3px;\n  background: var(--cps-line-2);\n}\n\n.cps-vdiv.cps-vdiv-short {\n  height: 16px;\n}\n\n/* ── Buttons ───────────────────────────────────────────────────────────── */\n\n.cps-bar-button,\n.cps-icon-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  padding: 0;\n  border: 0;\n  border-radius: var(--cps-r-btn);\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bar-button {\n  width: var(--cps-bar-btn);\n  height: var(--cps-bar-btn);\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n  border-radius: 6px;\n}\n\n.cps-bar-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bar-button.cps-active,\n.cps-icon-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* Hovering a selected button keeps (slightly deepens) its accent; the plain\n   hover rule above is more specific and would otherwise replace it. */\n.cps-bar-button.cps-active:hover:not(:disabled),\n.cps-icon-button.cps-active:hover:not(:disabled) {\n  background: var(--cps-acc-35);\n}\n\n.cps-bar-button:disabled,\n.cps-icon-button:disabled {\n  color: var(--cps-fg-disabled);\n  cursor: default;\n}\n\n/* Modal states (transform, region mode, align) dim the whole group. */\n.cps-dimmed > .cps-bar-button,\n.cps-dimmed > .cps-bar-button.cps-active {\n  background: transparent;\n  color: var(--cps-fg-disabled);\n}\n\n/* Light "commit" button (Commit, Done, Match resolution). */\n.cps-light-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 10px;\n  border: 0;\n  border-radius: 6px;\n  background: var(--cps-light-btn-bg);\n  color: var(--cps-light-btn-fg);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-light-button:hover {\n  background: var(--cps-fg-strong);\n}\n\n/* Text button in a bar (Apply, Cancel, Done). */\n.cps-text-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 5px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-text-button:hover {\n  background: var(--cps-hover);\n}\n\n.cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Corner caret (button has a menu) ──────────────────────────────────── */\n\n.cps-corner {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 12px;\n  height: 12px;\n  display: flex;\n  align-items: flex-end;\n  justify-content: flex-end;\n  padding: 3px;\n  cursor: pointer;\n}\n\n.cps-corner-mark {\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid var(--cps-fg-muted);\n  pointer-events: none;\n}\n\n/* ── Menus (ui/menu.ts) ────────────────────────────────────────────────── */\n\n.cps-popover.cps-pop-menu {\n  padding: 5px;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-menu-bg);\n  box-shadow: var(--cps-shadow-menu);\n}\n\n.cps-menu {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 170px;\n  font-size: 12.5px;\n  color: var(--cps-fg);\n}\n\n.cps-menu-title {\n  padding: 6px 8px 4px;\n  font-size: 11px;\n  letter-spacing: 0.04em;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n}\n\n.cps-menu-divider {\n  height: 1px;\n  margin: 4px 6px;\n  background: var(--cps-line-1);\n}\n\n.cps-menu-footer {\n  padding: 5px 8px 4px;\n  border-top: 1px solid var(--cps-line-1);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 9px;\n  padding: 6px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-menu-item:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-menu-item.cps-current {\n  background: var(--cps-acc-20);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-80);\n}\n\n.cps-menu-item:disabled {\n  cursor: default;\n}\n\n.cps-menu-label {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-menu-icon,\n.cps-menu-check {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-value);\n}\n\n.cps-menu-swatch {\n  flex: none;\n  width: 16px;\n  height: 16px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-menu-key {\n  flex: none;\n  font-family: var(--cps-mono);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Segmented control ─────────────────────────────────────────────────── */\n\n.cps-segmented {\n  display: flex;\n  gap: 2px;\n  padding: 2px;\n  border-radius: var(--cps-r-seg);\n  background: var(--cps-field-bg);\n}\n\n.cps-segmented > button {\n  flex: 1 1 0;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 5px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: center;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-segmented > button:hover {\n  color: var(--cps-fg);\n}\n\n.cps-segmented > button.cps-active {\n  background: var(--cps-chip-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Generic dim ───────────────────────────────────────────────────────── */\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Mono value text (resolution, strip values, slot numbers). */\n.cps-mono {\n  font-family: var(--cps-mono);\n  font-variant-numeric: tabular-nums;\n}\n';
 const bottomBarCss = "/*\n * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button\n * (quickMaskButton.ts), lmask options, status pill, the resolution notice\n * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design\n * handoff sections 6 and 9. Builds on bars.css primitives; tokens on\n * .cps-root (editor.css).\n */\n\n/* ── Bars ──────────────────────────────────────────────────────────────── */\n\n/* The two pills: left group left, right group right. */\n.cps-bottom-bars {\n  display: flex;\n  align-items: flex-end;\n  justify-content: space-between;\n  gap: 8px;\n}\n\n.cps-bottom-bar {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-bb-lmask {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n/* 30 x 26 icon button. */\n.cps-bb-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  width: 30px;\n  height: 26px;\n  padding: 0;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bb-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bb-button.cps-bb-muted {\n  color: var(--cps-fg-muted);\n}\n\n.cps-bb-button.cps-bb-muted:hover {\n  color: var(--cps-fg);\n}\n\n.cps-bottom-bar .cps-text-button {\n  color: inherit;\n}\n\n.cps-bb-text-icon,\n.cps-bb-align-icon {\n  display: flex;\n}\n\n.cps-bottom-bar .cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Status pill ───────────────────────────────────────────────────────── */\n\n.cps-bb-pill {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  flex: none;\n  margin-right: 2px;\n  padding: 4px 6px 4px 9px;\n  border: 0;\n  border-radius: 999px;\n  background: var(--cps-acc-30);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-bb-pill:hover {\n  background: var(--cps-acc-45);\n}\n\n.cps-bb-pill-close {\n  display: flex;\n}\n\n/* ── Edit chip ─────────────────────────────────────────────────────────── */\n\n.cps-chip {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  min-width: 0;\n  padding: 4px 6px 4px 5px;\n  border: 0;\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-chip:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-chip:disabled {\n  cursor: default;\n  opacity: 0.6;\n}\n\n.cps-chip-swatch {\n  flex: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 4px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-chip-swatch.cps-ring2 {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-chip-name {\n  max-width: 160px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-chip-part {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-chip-part:empty {\n  display: none;\n}\n\n.cps-chip-chevron {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Quick Mask button ─────────────────────────────────────────────────── */\n\n.cps-qm-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  flex: none;\n  padding: 5px 14px 5px 9px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-qm-button:hover {\n  background: var(--cps-hover-strong);\n}\n\n.cps-qm-icon {\n  display: flex;\n}\n\n.cps-qm-button.cps-on {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);\n  color: var(--cps-fg-strong);\n}\n\n.cps-qm-button.cps-on:hover {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);\n}\n\n.cps-qm-button.cps-on .cps-qm-icon {\n  color: var(--cps-qm-color, #ff4d4d);\n}\n\n/* ── Align / resolution ────────────────────────────────────────────────── */\n\n.cps-bottom-bar .cps-bb-align {\n  padding: 5px 9px;\n}\n\n.cps-bottom-bar .cps-bb-align:hover {\n  filter: brightness(1.2);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn {\n  background: var(--cps-warn-bg-2);\n  color: var(--cps-warn-fg);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {\n  color: var(--cps-warn-icon);\n}\n\n/* Active wins over the amber warning. */\n.cps-bottom-bar .cps-bb-align.cps-active {\n  background: var(--cps-align-bg);\n  color: var(--cps-align-fg);\n}\n\n.cps-bb-resolution {\n  padding: 5px 9px;\n  font-size: 11.5px;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-bb-resolution:empty {\n  display: none;\n}\n\n/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */\n\n.cps-notice-pill {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding: 6px 6px 6px 12px;\n  border: 1px solid var(--cps-warn-border);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-warn-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-warn-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-notice-icon {\n  display: flex;\n  color: var(--cps-warn-icon);\n}\n\n.cps-notice-pill .cps-notice-match {\n  background: var(--cps-warn-fg);\n  color: #2a2010;\n}\n\n.cps-notice-pill .cps-notice-match:hover {\n  background: #fff;\n}\n\n.cps-notice-pill .cps-notice-hide {\n  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);\n}\n\n.cps-notice-pill .cps-notice-hide:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-warn-fg);\n}\n\n/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */\n\n.cps-help-backdrop {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: inherit;\n  background: rgba(0, 0, 0, 0.6);\n}\n\n/* Wide card; only the section area scrolls (vertically), never sideways. */\n.cps-help-card {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  box-sizing: border-box;\n  width: calc(100% - 2 * var(--cps-edge));\n  max-width: 1120px;\n  max-height: calc(100% - 2 * var(--cps-edge));\n  padding: 12px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-2);\n  border-radius: 12px;\n  background: var(--cps-panel-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n  cursor: default;\n}\n\n.cps-help-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n}\n\n.cps-help-title {\n  font-size: 13px;\n  font-weight: 600;\n}\n\n.cps-help-close {\n  color: var(--cps-fg-muted);\n}\n\n.cps-help-close:hover {\n  color: var(--cps-fg);\n}\n\n/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so\n   wide editors show everything without scrolling and cards never get a ragged\n   grid gap. */\n.cps-help-grid {\n  columns: 360px;\n  column-gap: 8px;\n}\n\n/* The one scroller under the header: Essentials band + section columns. */\n.cps-help-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n/* Essentials: accent-tinted band across the full width, items in a grid. */\n.cps-help-quick {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border: 1px solid var(--cps-acc-35);\n  border-radius: 8px;\n  background: var(--cps-acc-09);\n}\n\n.cps-help-quick-items {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));\n  gap: 4px 12px;\n  padding: 0 4px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n.cps-help-quick-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 3px 0;\n}\n\n.cps-help-quick-item .cps-help-keys {\n  flex: none;\n}\n\n.cps-help-section {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  break-inside: avoid;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border-radius: 8px;\n  background: var(--cps-card-bg);\n}\n\n/* Accent title over a rule, so each card's start stands out. */\n.cps-help-section-title {\n  margin: 0 4px 2px;\n  padding-bottom: 6px;\n  border-bottom: 1px solid var(--cps-line-2);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--cps-accent);\n}\n\n.cps-help-rows {\n  display: grid;\n  /* Keys take what they need up to half the card, then wrap; the action\n     always keeps at least half. Rows share these columns (subgrid). */\n  grid-template-columns: fit-content(50%) minmax(0, 1fr);\n  column-gap: 12px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n/* One row = one band (zebra + hover), so the eye can follow it across. */\n.cps-help-row {\n  display: grid;\n  grid-column: 1 / -1;\n  grid-template-columns: subgrid;\n  align-items: center;\n  padding: 4px 6px;\n  border-radius: 5px;\n}\n\n.cps-help-row:nth-child(even) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);\n}\n\n.cps-help-row:hover {\n  background: var(--cps-acc-18);\n}\n\n.cps-help-keys {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 3px 4px;\n}\n\n/* A key chip: one key or key combination. */\n.cps-help-kbd {\n  padding: 1px 6px;\n  border: 1px solid var(--cps-line-2);\n  border-bottom-color: rgba(0, 0, 0, 0.45);\n  border-radius: 4px;\n  background: var(--cps-field-bg);\n  font-family: var(--cps-mono);\n  font-size: 10.5px;\n  line-height: 1.5;\n  color: var(--cps-fg);\n  white-space: nowrap;\n}\n\n.cps-help-or {\n  font-size: 10.5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-help-action {\n  min-width: 0;\n  color: var(--cps-fg-value);\n}\n";
-const colorPickerCss = '/*\n * PainterSketch colour picker popover (SPEC "Colour"). Scoped under .cps-* to avoid\n * collisions with ComfyUI. Injected together with editor.css by inject.ts.\n * CSS variables are inherited from .cps-root (editor.css).\n */\n\n/* ── Picker container ──────────────────────────────────────────────────── */\n\n.cps-picker {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  width: 200px;\n  user-select: none;\n}\n\n/* ── Title row ─────────────────────────────────────────────────────────── */\n\n.cps-picker-title {\n  font-size: 10px;\n  font-weight: 600;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n  letter-spacing: 0.04em;\n  padding: 0 2px;\n}\n\n/* ── SV square ─────────────────────────────────────────────────────────── */\n\n.cps-picker-sv {\n  position: relative;\n  width: 100%;\n  aspect-ratio: 1 / 1;\n  border-radius: 3px;\n  overflow: hidden;\n  cursor: crosshair;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-sv-canvas {\n  display: block;\n  width: 100%;\n  height: 100%;\n}\n\n/* Thumb marker on the SV square */\n.cps-picker-sv-thumb {\n  position: absolute;\n  width: 10px;\n  height: 10px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left, top;\n}\n\n/* ── Hue slider ────────────────────────────────────────────────────────── */\n\n.cps-picker-hue {\n  position: relative;\n  height: 12px;\n  border-radius: 6px;\n  background: linear-gradient(\n    to right,\n    #f00 0%,\n    #ff0 16.67%,\n    #0f0 33.33%,\n    #0ff 50%,\n    #00f 66.67%,\n    #f0f 83.33%,\n    #f00 100%\n  );\n  cursor: ew-resize;\n  touch-action: none;\n  flex: none;\n}\n\n.cps-picker-hue-thumb {\n  position: absolute;\n  top: 50%;\n  width: 14px;\n  height: 14px;\n  border-radius: 50%;\n  border: 2px solid #fff;\n  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);\n  transform: translate(-50%, -50%);\n  pointer-events: none;\n  will-change: left;\n}\n\n/* ── Hex input row ─────────────────────────────────────────────────────── */\n\n.cps-picker-hex-row {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n}\n\n.cps-picker-hex-label {\n  font-size: 10px;\n  color: var(--cps-fg-muted);\n  flex: none;\n}\n\n.cps-picker-hex-input {\n  flex: 1 1 auto;\n  height: 20px;\n  padding: 0 4px;\n  border: 1px solid var(--cps-border);\n  border-radius: 3px;\n  background: var(--cps-input-bg);\n  color: var(--cps-fg);\n  font: inherit;\n  font-variant-numeric: tabular-nums;\n  text-transform: uppercase;\n  outline: none;\n  min-width: 0;\n}\n\n.cps-picker-hex-input:focus {\n  border-color: var(--cps-accent);\n}\n\n.cps-picker-hex-input.cps-invalid {\n  border-color: #c0392b;\n  color: #c0392b;\n}\n\n/* ── Old / new preview ─────────────────────────────────────────────────── */\n\n.cps-picker-preview {\n  display: flex;\n  height: 16px;\n  border-radius: 3px;\n  overflow: hidden;\n  border: 1px solid var(--cps-border);\n  cursor: pointer;\n  flex: none;\n}\n\n.cps-picker-preview-old,\n.cps-picker-preview-new {\n  flex: 1 1 auto;\n}\n\n.cps-picker-preview-old {\n  cursor: pointer; /* click to revert */\n}\n\n/* ── Recent colours ────────────────────────────────────────────────────── */\n\n.cps-picker-recents {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 3px;\n  flex: none;\n}\n\n.cps-picker-recent {\n  width: 16px;\n  height: 16px;\n  border-radius: 2px;\n  border: 1px solid rgba(0, 0, 0, 0.35);\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);\n  cursor: pointer;\n  padding: 0;\n  background: transparent; /* set via inline style */\n  flex: none;\n}\n\n.cps-picker-recent:hover {\n  outline: 2px solid var(--cps-accent);\n  outline-offset: 1px;\n}\n';
+const colorPickerCss = `/*
+ * PainterSketch colour picker popover (SPEC "Colour"; ui/colorPicker.ts,
+ * colorWheel.ts, colorFields.ts). Scoped under .cps-* to avoid collisions
+ * with ComfyUI. Injected together with editor.css by inject.ts. CSS
+ * variables are inherited from .cps-root (editor.css). The wheel's parts are
+ * placed inline (in % of the wheel) from colorWheelGeometry.ts.
+ */
+
+/* ── Picker container ──────────────────────────────────────────────────── */
+
+.cps-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Width: inline, the wheel size. */
+  user-select: none;
+}
+
+/* ── Title row ─────────────────────────────────────────────────────────── */
+
+.cps-picker-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--cps-fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 2px;
+}
+
+/* ── Wheel ─────────────────────────────────────────────────────────────── */
+
+/* Margins: room for the cycle buttons poking out above / below the box. */
+.cps-picker-wheel {
+  position: relative;
+  margin: 6px 0;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  flex: none;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.cps-picker-wheel-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Thumbs: filled with their colour, a white ring and a dark outline so they
+   read on any colour (fixed backdrop: the wheel). */
+.cps-picker-thumb {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  will-change: left, top;
+}
+
+.cps-picker-thumb-ring {
+  width: 14px;
+  height: 14px;
+}
+
+.cps-picker-thumb-sv {
+  width: 12px;
+  height: 12px;
+}
+
+/* Swatch in the left gap: a tall oval, flat towards the triangle. New colour
+   on top, the original below (a button: click reverts). */
+.cps-picker-swatch {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Horizontal radii sum to 100%: top and bottom are one smooth curve; the
+     left is a half-ellipse, only the right side is straight. */
+  border-radius: 72% 28% 28% 72% / 50% 20% 20% 50%;
+  box-shadow: 0 0 0 1px var(--cps-line-2), 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+
+.cps-picker-swatch-new,
+.cps-picker-swatch-old {
+  flex: 1 1 50%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+}
+
+.cps-picker-swatch-old {
+  cursor: pointer;
+}
+
+/* Circle groups (harmonies top-right, variations bottom-right); the larger
+   current colour sits on top of the two partners. */
+.cps-picker-dot {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 2.5px var(--cps-line-2);
+  appearance: none;
+  cursor: pointer;
+}
+
+.cps-picker-dot:hover {
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 3px var(--cps-accent);
+}
+
+.cps-picker-dot-base {
+  z-index: 1;
+  cursor: default;
+}
+
+.cps-picker-dot-base:hover {
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 2.5px var(--cps-line-2);
+}
+
+/* Cycle buttons: just outside the ring, in line with their circles (placed
+   inline); they poke a few px out of the wheel box (see .cps-picker-wheel). */
+.cps-picker-cycle {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  appearance: none;
+  cursor: pointer;
+}
+
+.cps-picker-cycle:hover {
+  background: var(--cps-hover-strong);
+  color: var(--cps-fg);
+}
+
+/* ── Value row: fields + format button ─────────────────────────────────── */
+
+.cps-picker-fields {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cps-picker-inputs {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cps-picker-field {
+  flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 0 0 6px;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-field-bg);
+  box-shadow: inset 0 0 0 1px var(--cps-line-2);
+}
+
+.cps-picker-field:focus-within {
+  box-shadow: inset 0 0 0 1px var(--cps-accent);
+}
+
+.cps-picker-field-label {
+  flex: none;
+  color: var(--cps-fg-muted);
+  font-size: 10.5px;
+}
+
+.cps-picker-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg);
+  font-family: var(--cps-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+}
+
+.cps-picker-inputs[data-format="hex"] .cps-picker-input {
+  text-transform: uppercase;
+}
+
+.cps-picker-input.cps-invalid {
+  color: var(--cps-danger);
+}
+
+.cps-picker-format {
+  flex: none;
+  min-width: 40px;
+  height: 24px;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-segment-bg);
+  color: var(--cps-fg);
+  font: 600 10.5px var(--cps-font);
+  letter-spacing: 0.04em;
+  appearance: none;
+  cursor: pointer;
+}
+
+.cps-picker-format:hover {
+  background: var(--cps-chip-bg);
+}
+
+/* ── Recent colours ────────────────────────────────────────────────────── */
+
+.cps-picker-recents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: none;
+}
+
+.cps-picker-recent {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
+  cursor: pointer;
+  padding: 0;
+  background: transparent; /* set via inline style */
+  flex: none;
+}
+
+.cps-picker-recent:hover {
+  outline: 2px solid var(--cps-accent);
+  outline-offset: 1px;
+}
+`;
 const controlsCss = '/*\n * PainterSketch options strip, generic option controls and popovers\n * (ui/optionsStrip.ts, ui/optionControls.ts, ui/optionGroup.ts,\n * ui/textOptionControl.ts; design handoff "Options strip"). Tokens live on\n * .cps-root (editor.css); shared primitives in bars.css.\n */\n\n/* ── Strip ─────────────────────────────────────────────────────────────── */\n\n.cps-strip {\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 2px;\n  padding: 3px 4px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-strip-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-strip-part {\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 2px;\n}\n\n.cps-strip-part:empty {\n  display: none;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  margin: 0 3px;\n  background: var(--cps-line-2);\n}\n\n/* Static caption option. */\n.cps-bar-label {\n  flex: none;\n  padding: 4px 6px;\n  color: var(--cps-fg-muted);\n}\n\n/* State label ("Regions", "Align drawing") and hint. */\n.cps-strip-state {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 8px;\n  color: var(--cps-fg-strong);\n}\n\n.cps-strip-hint {\n  padding: 4px 8px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-strip-icon {\n  display: flex;\n  flex: none;\n}\n\n/* "To mask": current cmask colour swatch (or the selection-to-mask icon). */\n.cps-strip-swatch {\n  flex: none;\n  width: 11px;\n  height: 11px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);\n}\n\n.cps-strip-swatch.cps-strip-swatch-icon {\n  display: flex;\n  width: auto;\n  height: auto;\n  border-radius: 0;\n  box-shadow: none;\n}\n\n.cps-strip .cps-light-button,\n.cps-strip .cps-text-button {\n  padding: 4px 8px;\n}\n\n/* ── Number (opt): muted label (scrubs) + mono value (slider popover) ───── */\n\n.cps-num {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding: 0 0 0 8px;\n  border-radius: var(--cps-r-field);\n}\n\n.cps-num:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value {\n  min-width: 2.6em;\n  padding: 4px 8px 4px 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg);\n  font-family: var(--cps-mono);\n  font-size: 11.5px;\n  font-variant-numeric: tabular-nums;\n  text-align: left;\n  cursor: pointer;\n}\n\n/* ── Toggle / command button ───────────────────────────────────────────── */\n\n.cps-toggle {\n  flex: none;\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-toggle:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-toggle.cps-active {\n  background: var(--cps-acc-28);\n  color: var(--cps-fg-strong);\n}\n\n/* Command buttons (btn): a faint fill. */\n.cps-toggle.cps-command {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-toggle.cps-command:hover {\n  background: var(--cps-line-2);\n}\n\n/* Icon toggles / commands (B, I, align, flips, Transform, link). */\n.cps-toggle.cps-icon-command {\n  justify-content: center;\n  min-width: 26px;\n  padding: 4px 5px;\n}\n\n/* Just the icon\'s width: it sits between W and H. Same specificity as\n   `.cps-toggle.cps-icon-command` so it wins (comes later). */\n.cps-toggle.cps-link-toggle {\n  min-width: 0;\n  padding: 4px 1px;\n}\n\n.cps-link-toggle .cps-icon {\n  transform: rotate(-45deg);\n}\n\n.cps-icon-choices {\n  display: flex;\n  gap: 2px;\n}\n\n/* ── Select (dropdown chip) ────────────────────────────────────────────── */\n\n.cps-select {\n  flex: none;\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 3px 4px 3px 8px;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-select:hover,\n.cps-select.cps-menu-open {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n}\n\n.cps-select-label {\n  color: var(--cps-fg-muted);\n}\n\n.cps-dd {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 1px 4px 1px 8px;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n}\n\n.cps-dd-chevron {\n  display: flex;\n  color: var(--cps-fg-muted);\n}\n\n/* Dropdown menu (strip): tighter than the bar menus. */\n.cps-popover.cps-pop-menu.cps-pop-dd {\n  padding: 4px;\n  border-radius: 8px;\n}\n\n.cps-pop-dd .cps-menu {\n  min-width: 110px;\n}\n\n.cps-pop-dd .cps-menu-item {\n  padding: 6px 10px;\n  border-radius: 6px;\n}\n\n.cps-pop-dd .cps-menu-item.cps-current {\n  background: var(--cps-acc-35);\n  box-shadow: none;\n  color: var(--cps-fg-strong);\n}\n\n.cps-pop-dd .cps-menu-check {\n  display: none;\n}\n\n/* ── Text option (font): native menu styled as a chip ──────────────────── */\n\n.cps-text-option {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding: 0 4px 0 8px;\n}\n\n.cps-text-option select,\n.cps-text-field {\n  height: 22px;\n  max-width: 11em;\n  padding: 0 6px;\n  border: 0;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n  font: inherit;\n  outline: none;\n}\n\n.cps-text-option select:hover {\n  box-shadow: inset 0 0 0 1px var(--cps-fg-muted);\n}\n\n.cps-text-field {\n  width: 10em;\n  user-select: text;\n}\n\n.cps-text-field:focus {\n  box-shadow: inset 0 0 0 1px var(--cps-accent);\n}\n\n/* ── Collapsed option group (pen pressure) ─────────────────────────────── */\n\n.cps-option-group {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 28px;\n  height: 24px;\n  padding: 0;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-option-group:hover {\n  background: var(--cps-hover);\n}\n\n.cps-option-group.cps-on {\n  background: var(--cps-acc-18);\n  color: color-mix(in srgb, var(--cps-accent) 35%, var(--cps-fg-strong));\n}\n\n.cps-option-group.cps-menu-open {\n  background: var(--cps-line-2);\n}\n\n.cps-popover.cps-pop-group {\n  width: 190px;\n  padding: 12px;\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  font-size: 12.5px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg);\n  font-weight: 600;\n}\n\n.cps-group-pills {\n  display: flex;\n  gap: 6px;\n}\n\n.cps-group-pills .cps-toggle {\n  padding: 4px 12px;\n  border-radius: 999px;\n  background: var(--cps-field-bg);\n}\n\n.cps-group-pills .cps-toggle.cps-active {\n  background: var(--cps-acc-30);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-80);\n  color: var(--cps-fg-strong);\n}\n\n.cps-group-row.cps-num {\n  justify-content: space-between;\n  padding: 0;\n}\n\n.cps-group-row.cps-num:hover {\n  background: transparent;\n}\n\n.cps-group-row .cps-num-value {\n  min-width: 0;\n  padding: 3px 8px;\n  border-radius: var(--cps-r-field);\n  background: var(--cps-field-bg);\n  text-align: right;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: visible;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 8px;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-menu);\n  background: var(--cps-menu-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n}\n\n/* Slider popover (number value click). */\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 52px;\n  height: 22px;\n  padding: 0 6px;\n  border: 0;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n  font-family: var(--cps-mono);\n  font-size: 11.5px;\n  font-variant-numeric: tabular-nums;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  box-shadow: inset 0 0 0 1px var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n';
 const dockCss = "/*\n * Top bars and the left sliders pill (design handoff sections 1-5): the\n * history pill (ui/historyPill.ts), the tool dock with its swatches and the\n * eyedropper reveal (ui/toolDock.ts, ui/swatches.ts), tool fly-outs\n * (ui/toolGroupSlot.ts), the images / clipboard pill and the Images tray\n * (ui/clipGroup.ts, ui/imagesPanel.ts), the sliders pill (ui/slidersPill.ts).\n * Builds on bars.css; tokens on .cps-root (editor.css).\n */\n\n/* ── Dock ──────────────────────────────────────────────────────────────── */\n\n.cps-dock {\n  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n}\n\n/* Keyboard indicator: the editor owns the shortcuts (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-dock {\n  box-shadow: inset 0 2px 0 var(--cps-fg-strong), var(--cps-shadow-bar);\n}\n\n.cps-dock-tools {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n.cps-dock .cps-vdiv {\n  margin: 0 4px;\n}\n\n/* A press-and-hold menu is open on this button. */\n.cps-bar-button.cps-menu-open {\n  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n}\n\n/* Modal states: the dock's active tint goes too. */\n.cps-dimmed .cps-bar-button,\n.cps-dimmed .cps-bar-button.cps-active,\n.cps-dimmed .cps-bar-button.cps-active:hover:not(:disabled) {\n  background: transparent;\n  color: var(--cps-fg-disabled);\n}\n\n/* ── Tool fly-out (group slot menu) ────────────────────────────────────── */\n\n.cps-popover.cps-pop-menu.cps-pop-flyout {\n  border-radius: var(--cps-r-menu);\n}\n\n.cps-pop-flyout .cps-menu {\n  gap: 2px;\n  font-size: 13px;\n}\n\n.cps-pop-flyout .cps-menu-item {\n  gap: 10px;\n}\n\n.cps-pop-flyout .cps-menu-icon {\n  width: 20px;\n  justify-content: center;\n}\n\n/* Fly-outs mark the current member by the tint and ring only. */\n.cps-pop-flyout .cps-menu-check {\n  display: none;\n}\n\n/* ── Swatches ──────────────────────────────────────────────────────────── */\n\n.cps-dock-swatches {\n  position: relative;\n  display: flex;\n  align-items: center;\n}\n\n.cps-swatches {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-swatch-pair {\n  position: relative;\n  width: 32px;\n  height: 32px;\n  flex: none;\n}\n\n.cps-swatch {\n  position: absolute;\n  padding: 0;\n  border: 2px solid var(--cps-bar-bg);\n  border-radius: 50%;\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 3px;\n  top: 3px;\n  width: 21px;\n  height: 21px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 38%, transparent);\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  left: 13px;\n  top: 12px;\n  width: 19px;\n  height: 19px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);\n}\n\n.cps-swatch-icons {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  padding-right: 2px;\n}\n\n.cps-swatch-icon {\n  display: flex;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-icon:hover {\n  color: var(--cps-fg-strong);\n}\n\n/* Layer mask swatches: black / white only, no picker. */\n.cps-mask-swatches .cps-swatch {\n  cursor: default;\n}\n\n/* Quick Mask: masks only take coverage -- the swatches step back. */\n.cps-root.cps-quickmask .cps-swatches {\n  opacity: 0.35;\n  filter: grayscale(1);\n}\n\n/* ── Eyedropper reveal (above the dock; below it in fullscreen) ────────── */\n\n.cps-dropper-pill {\n  position: absolute;\n  left: -4px;\n  bottom: calc(100% + 14px);\n  z-index: 6;\n  padding: 4px;\n  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n  border-radius: 11px;\n}\n\n.cps-root.cps-is-fullscreen .cps-dropper-pill {\n  top: calc(100% + 14px);\n  bottom: auto;\n}\n\n.cps-root.cps-quickmask .cps-dropper-pill {\n  display: none;\n}\n\n/* ── History / clipboard pills ─────────────────────────────────────────── */\n\n.cps-history .cps-bar-button,\n.cps-clip .cps-bar-button {\n  color: var(--cps-fg-icon);\n}\n\n.cps-history .cps-bar-button:disabled {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-clip .cps-corner-mark {\n  border-bottom-color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n/* Images button count badge. */\n.cps-images-badge {\n  position: absolute;\n  top: 2px;\n  right: 1px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-width: 14px;\n  height: 14px;\n  padding: 0 3px;\n  border-radius: 7px;\n  background: var(--cps-accent);\n  color: #ffffff; /* on solid accent, both themes */\n  font-size: 9.5px;\n  font-weight: 600;\n  line-height: 1;\n  pointer-events: none;\n}\n\n.cps-images-button.cps-active {\n  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n  color: var(--cps-fg-icon);\n}\n\n/* No sources yet: the button is hidden, so its divider goes too. */\n.cps-images-button[hidden] + .cps-vdiv {\n  display: none;\n}\n\n/* ── Images tray (popover layer, right-aligned under the clip pill) ────── */\n\n.cps-images-tray {\n  position: absolute;\n  width: 118px;\n  padding: 8px;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-bar);\n  background: color-mix(in srgb, var(--cps-strip-bg) 95%, transparent);\n  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);\n  pointer-events: auto;\n}\n\n.cps-images-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.cps-images-item {\n  position: relative;\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  height: 66px;\n  padding: 0;\n  overflow: hidden;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: var(--cps-field-bg);\n  cursor: pointer;\n}\n\n.cps-images-item:hover {\n  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cps-fg-strong) 50%, transparent);\n}\n\n.cps-images-item.cps-new {\n  box-shadow: inset 0 0 0 2px var(--cps-accent);\n}\n\n.cps-images-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  object-fit: contain;\n  pointer-events: none;\n}\n\n.cps-images-new {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  padding: 1px 5px;\n  border-radius: 4px;\n  background: var(--cps-accent);\n  color: #ffffff; /* on solid accent, both themes */\n  font-size: 9.5px;\n  font-weight: 600;\n  pointer-events: none;\n}\n\n/* ── Sliders pill ──────────────────────────────────────────────────────── */\n\n/* Shrinks to the slot's height on short nodes (.cps-slot-sliders): each slider\n   gives up height through its track (flex-basis = the roomy height, floor\n   --cps-vslider-min); the icon and value never shrink. */\n.cps-sliders {\n  --cps-vslider-min: 48px;\n  /* Icon 16 + value 14 + two 8 px gaps: what a slider needs besides its track. */\n  --cps-vslider-chrome: 46px;\n  box-sizing: border-box;\n  width: 40px;\n  max-height: 100%;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 8px;\n  padding: 12px 0 10px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-panel);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n}\n\n.cps-vslider {\n  flex: 1 1 auto;\n  min-height: calc(var(--cps-vslider-chrome) + var(--cps-vslider-min));\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 8px;\n}\n\n.cps-vslider-icon {\n  flex: none;\n  display: flex;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-vslider-hit {\n  position: relative;\n  display: flex;\n  justify-content: center;\n  flex: 1 1 96px;\n  min-height: var(--cps-vslider-min);\n  width: 24px;\n  cursor: ns-resize;\n  touch-action: none;\n}\n\n.cps-vslider-hardness .cps-vslider-hit {\n  flex-basis: 72px;\n}\n\n.cps-root.cps-is-fullscreen .cps-vslider-size .cps-vslider-hit {\n  flex-basis: 140px;\n}\n\n.cps-root.cps-is-fullscreen .cps-vslider-hardness .cps-vslider-hit {\n  flex-basis: 110px;\n}\n\n.cps-vslider-track {\n  position: relative;\n  width: 8px;\n  /* Stretches to the track hit area (a percentage height would not resolve in a shrunk flex item). */\n  align-self: stretch;\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--cps-field-bg) 90%, #000);\n  pointer-events: none;\n}\n\n.cps-vslider-fill {\n  position: absolute;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  border-radius: 4px;\n  background: var(--cps-fg-muted);\n}\n\n.cps-vslider-thumb {\n  position: absolute;\n  left: -8px;\n  width: 24px;\n  height: 12px;\n  margin-bottom: -6px;\n  border-radius: 6px;\n  background: var(--cps-fg);\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);\n}\n\n.cps-vslider-hit:hover .cps-vslider-thumb,\n.cps-vslider-hit.cps-dragging .cps-vslider-thumb {\n  background: var(--cps-fg-strong);\n}\n\n.cps-vslider-value {\n  flex: none;\n  font-size: 10.5px;\n  line-height: 14px;\n  color: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));\n}\n\n.cps-sliders-div {\n  width: 22px;\n  height: 1px;\n  background: var(--cps-line-2);\n}\n";
 const editorCss = `/*

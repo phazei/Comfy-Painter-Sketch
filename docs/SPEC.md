@@ -755,7 +755,11 @@ overflow sticks out to the left into graph space, never under the side panel.
 **Popovers** (`ui/popover.ts`) live inside the root (they follow it into
 fullscreen). One at a time, except nesting. They close on a press outside the
 popover and its anchor, Esc inside, the Esc chain, the anchor leaving the DOM,
-or the parent closing. Placed below / above / right of the anchor, flipped and
+or the parent closing. **A press on the stage that closes a popover only
+closes it**: it is swallowed, so it never paints, fills or selects. Colour
+swatches toggle their picker: a second click on the same swatch closes it
+(committing); clicking the other swatch (FG <-> BG) switches pickers.
+Placed below / above / right of the anchor, flipped and
 clamped inside the root widened to include the anchor (the floating side panel
 hangs outside the node).
 
@@ -1179,17 +1183,64 @@ Files: `engine/layerMask.ts`, `layerMaskOps.ts`, `layerMaskCarry.ts`,
   FG; "Both" fills with BG. Text uses FG (changing FG recolours an open edit;
   re-editing a text layer loads its colour into FG). Alt+Backspace fills FG,
   Ctrl+Backspace fills BG (cmask: always white coverage; lmask: the mask swatches).
-- **Picker** (popover, ~200 px): optional title, saturation/value square,
-  hue slider, hex field (no `#`, upper case, 3 or 6 digits; typing applies live;
-  invalid input is marked; Enter or blur applies or reverts the field; Enter
-  does not close), old/new preview (click old to reset), up to 10 recent colours
-  (`localStorage["PainterSketch.recentColors"]`, saved when the picker closes
-  with a changed colour; shared with cmask colour pickers). A click outside
-  commits and closes. **Esc closes and keeps the colour** in every colour picker (FG/BG, cmask colour, output fill/border), even from the hex field; only the old half of the preview reverts. No alpha.
+- **Picker** (popover, 224 px wide; one picker for FG/BG, cmask colour and
+  output fill/border):
+  - Optional title.
+  - **Wheel**: a hue ring (red upper-left, yellow on top, blue at the
+    bottom) around a **fixed** saturation/value triangle (pure hue at the
+    right corner, white top-left, black bottom-left; it never rotates). A press
+    on the ring drags the hue, a press in the triangle drags in it (clamped
+    to it); the zone is fixed for the drag. Presses in the gaps (around the
+    swatch and circles) do nothing. Greys keep their hue while the picker
+    is open; a picker opened on black, white or a grey (no hue of their own)
+    starts at the hue the last picker closed with
+    (`localStorage["PainterSketch.colorLastHue"]`, shared by every picker),
+    the first time at 260° (`GREY_HUE`, purple).
+  - **Swatch** in the left gap: a tall oval, flat towards the triangle
+    (top and bottom one smooth curve); top
+    half the new colour, bottom half the colour the picker opened with
+    (click it to revert).
+  - **Circle groups** in the two right-hand gaps, built the same way: the
+    larger current colour in the middle, over two smaller partners either
+    side. Click a partner to take it; the group then recomputes around it.
+    Each group has a small cycle button just outside the ring, on the line
+    from the opposite triangle corner through its circles; the mode is
+    remembered in `localStorage`.
+    - **Harmonies** (top-right, wheel icon, `PainterSketch.colorHarmony`):
+      hue partners at the same saturation and value -- Analogous (±30°) ->
+      Triadic (±120°) -> Split-complementary (180° ±30°).
+    - **Variations** (bottom-right, light/dark circles icon,
+      `PainterSketch.colorVariation`), first partner upper-right, second
+      lower-left: Lighter / darker (RGB mix with 30 % white / black) ->
+      Warmer / cooler (RGB mix with 20 % orange `#ff7a1a` / blue `#1a6cff`:
+      no seam on the wheel, greys warm and cool too, a strong colour mixed
+      with its opposite gets duller) -> More / less saturated (±25 %).
+  - **Value row**: editable fields in Hex (no `#`, upper case, 3 or 6
+    digits), RGB (0-255), HSV or HSL (H 0-360, the others 0-100); the
+    button at the right cycles Hex -> RGB -> HSV -> HSL, remembered in
+    `localStorage["PainterSketch.colorFormat"]`. Typing applies as soon as
+    every field parses; a bad field is marked red and the colour stays.
+    Enter applies and leaves the field (does not close); ArrowUp/Down steps a
+    number by 1 (Shift 10); leaving the row rewrites the fields.
+  - Up to 10 recent colours (`localStorage["PainterSketch.recentColors"]`,
+    saved when the picker closes with a changed colour; shared by every
+    picker).
+  - **Eyedropper while open** (FG/BG picker): a stage press that samples
+    (the Eyedropper tool, or Alt with a tool that has the temporary
+    eyedropper; not with Ctrl or Space) and a press on the dock's eyedropper
+    button go through and keep the picker open; the picker follows the
+    sampled colour (wheel, fields, swatch top) without echoing it back.
+    While the **background** picker is open every eyedropper sample goes to
+    the background, with or without Alt (as if Alt-clicking with the
+    Eyedropper; the cursor shows the BG-slot badge); `ColorState.sampleSlot`.
+  - A click outside commits and closes. **Esc closes and keeps the colour**
+    in every colour picker, even from a field; only the swatch's lower half
+    reverts. No alpha.
 - **Eyedropper**: see Tools.
 
-Files: `engine/colors.ts`, `ui/swatches.ts`, `colorPicker.ts`, `hsvControls.ts`,
-`colorMath.ts`, `recentColors.ts`.
+Files: `engine/colors.ts`, `ui/swatches.ts`, `colorPicker.ts`, `colorWheel.ts`,
+`colorWheelGeometry.ts`, `colorSchemes.ts`, `colorFields.ts`, `colorMath.ts`,
+`recentColors.ts`.
 
 ## 11. Undo and redo
 

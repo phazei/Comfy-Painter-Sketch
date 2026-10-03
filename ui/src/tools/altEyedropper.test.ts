@@ -46,6 +46,22 @@ describe("Alt = temporary eyedropper", () => {
     expect(set[set.length - 1]).toEqual(["fg", "#123456"]);
   });
 
+  it("writes the background without Alt while the background picker is open (sampleSlot)", () => {
+    const set: Array<[string, string]> = [];
+    const editor = {
+      colors: { fg: "#000000", bg: "#ffffff", sampleSlot: "bg", set: (slot: string, hex: string) => set.push([slot, hex]) },
+      pixelOps: { sampleColor: () => "#123456" },
+      layerMask: { targeted: null },
+    } as unknown as Editor;
+    const click: ToolPointer = { x: 1, y: 1, pressure: 1, pointerType: "mouse", shiftKey: false, altKey: false, ctrlKey: false };
+    const eyedropper = createEyedropperTool();
+    eyedropper.onPointerDown(editor, [click]);
+    eyedropper.onPointerUp(editor, click);
+    eyedropper.temporary.onPointerDown(editor, [{ ...click, altKey: true }]);
+    expect(set.every(([slot]) => slot === "bg")).toBe(true);
+    expect(set.length).toBeGreaterThan(1);
+  });
+
   it("is refused with a note while a layer mask is targeted", () => {
     const set: Array<[string, string]> = [];
     const notes: string[] = [];

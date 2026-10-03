@@ -1,7 +1,9 @@
 /*
- * PainterSketch colour picker popover (SPEC "Colour"). Scoped under .cps-* to avoid
- * collisions with ComfyUI. Injected together with editor.css by inject.ts.
- * CSS variables are inherited from .cps-root (editor.css).
+ * PainterSketch colour picker popover (SPEC "Colour"; ui/colorPicker.ts,
+ * colorWheel.ts, colorFields.ts). Scoped under .cps-* to avoid collisions
+ * with ComfyUI. Injected together with editor.css by inject.ts. CSS
+ * variables are inherited from .cps-root (editor.css). The wheel's parts are
+ * placed inline (in % of the wheel) from colorWheelGeometry.ts.
  */
 
 /* ── Picker container ──────────────────────────────────────────────────── */
@@ -9,8 +11,8 @@
 .cps-picker {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  width: 200px;
+  gap: 8px;
+  /* Width: inline, the wheel size. */
   user-select: none;
 }
 
@@ -25,129 +27,201 @@
   padding: 0 2px;
 }
 
-/* ── SV square ─────────────────────────────────────────────────────────── */
+/* ── Wheel ─────────────────────────────────────────────────────────────── */
 
-.cps-picker-sv {
+/* Margins: room for the cycle buttons poking out above / below the box. */
+.cps-picker-wheel {
   position: relative;
+  margin: 6px 0;
   width: 100%;
   aspect-ratio: 1 / 1;
-  border-radius: 3px;
-  overflow: hidden;
+  flex: none;
   cursor: crosshair;
   touch-action: none;
-  flex: none;
 }
 
-.cps-picker-sv-canvas {
+.cps-picker-wheel-canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-/* Thumb marker on the SV square */
-.cps-picker-sv-thumb {
+/* Thumbs: filled with their colour, a white ring and a dark outline so they
+   read on any colour (fixed backdrop: the wheel). */
+.cps-picker-thumb {
   position: absolute;
-  width: 10px;
-  height: 10px;
   border-radius: 50%;
   border: 2px solid #fff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.25);
   transform: translate(-50%, -50%);
   pointer-events: none;
   will-change: left, top;
 }
 
-/* ── Hue slider ────────────────────────────────────────────────────────── */
-
-.cps-picker-hue {
-  position: relative;
-  height: 12px;
-  border-radius: 6px;
-  background: linear-gradient(
-    to right,
-    #f00 0%,
-    #ff0 16.67%,
-    #0f0 33.33%,
-    #0ff 50%,
-    #00f 66.67%,
-    #f0f 83.33%,
-    #f00 100%
-  );
-  cursor: ew-resize;
-  touch-action: none;
-  flex: none;
-}
-
-.cps-picker-hue-thumb {
-  position: absolute;
-  top: 50%;
+.cps-picker-thumb-ring {
   width: 14px;
   height: 14px;
-  border-radius: 50%;
-  border: 2px solid #fff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  will-change: left;
 }
 
-/* ── Hex input row ─────────────────────────────────────────────────────── */
+.cps-picker-thumb-sv {
+  width: 12px;
+  height: 12px;
+}
 
-.cps-picker-hex-row {
+/* Swatch in the left gap: a tall oval, flat towards the triangle. New colour
+   on top, the original below (a button: click reverts). */
+.cps-picker-swatch {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Horizontal radii sum to 100%: top and bottom are one smooth curve; the
+     left is a half-ellipse, only the right side is straight. */
+  border-radius: 72% 28% 28% 72% / 50% 20% 20% 50%;
+  box-shadow: 0 0 0 1px var(--cps-line-2), 0 2px 6px rgba(0, 0, 0, 0.35);
+  cursor: default;
+}
+
+.cps-picker-swatch-new,
+.cps-picker-swatch-old {
+  flex: 1 1 50%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  appearance: none;
+}
+
+.cps-picker-swatch-old {
+  cursor: pointer;
+}
+
+/* Circle groups (harmonies top-right, variations bottom-right); the larger
+   current colour sits on top of the two partners. */
+.cps-picker-dot {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 2.5px var(--cps-line-2);
+  appearance: none;
+  cursor: pointer;
+}
+
+.cps-picker-dot:hover {
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 3px var(--cps-accent);
+}
+
+.cps-picker-dot-base {
+  z-index: 1;
+  cursor: default;
+}
+
+.cps-picker-dot-base:hover {
+  box-shadow: 0 0 0 1.5px var(--cps-panel-bg), 0 0 0 2.5px var(--cps-line-2);
+}
+
+/* Cycle buttons: just outside the ring, in line with their circles (placed
+   inline); they poke a few px out of the wheel box (see .cps-picker-wheel). */
+.cps-picker-cycle {
+  position: absolute;
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-.cps-picker-hex-label {
-  font-size: 10px;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
   color: var(--cps-fg-muted);
-  flex: none;
+  appearance: none;
+  cursor: pointer;
 }
 
-.cps-picker-hex-input {
-  flex: 1 1 auto;
-  height: 20px;
-  padding: 0 4px;
-  border: 1px solid var(--cps-border);
-  border-radius: 3px;
-  background: var(--cps-input-bg);
+.cps-picker-cycle:hover {
+  background: var(--cps-hover-strong);
   color: var(--cps-fg);
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  text-transform: uppercase;
-  outline: none;
+}
+
+/* ── Value row: fields + format button ─────────────────────────────────── */
+
+.cps-picker-fields {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cps-picker-inputs {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 4px;
   min-width: 0;
 }
 
-.cps-picker-hex-input:focus {
-  border-color: var(--cps-accent);
-}
-
-.cps-picker-hex-input.cps-invalid {
-  border-color: #c0392b;
-  color: #c0392b;
-}
-
-/* ── Old / new preview ─────────────────────────────────────────────────── */
-
-.cps-picker-preview {
+.cps-picker-field {
+  flex: 1 1 0;
   display: flex;
-  height: 16px;
-  border-radius: 3px;
-  overflow: hidden;
-  border: 1px solid var(--cps-border);
-  cursor: pointer;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 24px;
+  padding: 0 0 0 6px;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-field-bg);
+  box-shadow: inset 0 0 0 1px var(--cps-line-2);
+}
+
+.cps-picker-field:focus-within {
+  box-shadow: inset 0 0 0 1px var(--cps-accent);
+}
+
+.cps-picker-field-label {
   flex: none;
+  color: var(--cps-fg-muted);
+  font-size: 10.5px;
 }
 
-.cps-picker-preview-old,
-.cps-picker-preview-new {
+.cps-picker-input {
   flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 6px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg);
+  font-family: var(--cps-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  outline: none;
 }
 
-.cps-picker-preview-old {
-  cursor: pointer; /* click to revert */
+.cps-picker-inputs[data-format="hex"] .cps-picker-input {
+  text-transform: uppercase;
+}
+
+.cps-picker-input.cps-invalid {
+  color: var(--cps-danger);
+}
+
+.cps-picker-format {
+  flex: none;
+  min-width: 40px;
+  height: 24px;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-segment-bg);
+  color: var(--cps-fg);
+  font: 600 10.5px var(--cps-font);
+  letter-spacing: 0.04em;
+  appearance: none;
+  cursor: pointer;
+}
+
+.cps-picker-format:hover {
+  background: var(--cps-chip-bg);
 }
 
 /* ── Recent colours ────────────────────────────────────────────────────── */
@@ -155,14 +229,14 @@
 .cps-picker-recents {
   display: flex;
   flex-wrap: wrap;
-  gap: 3px;
+  gap: 4px;
   flex: none;
 }
 
 .cps-picker-recent {
-  width: 16px;
-  height: 16px;
-  border-radius: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
   border: 1px solid rgba(0, 0, 0, 0.35);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
   cursor: pointer;

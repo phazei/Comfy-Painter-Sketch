@@ -83,6 +83,11 @@ const CUSTOM: Readonly<Record<string, string>> = {
   panelCollapse: "<path d='m17 11-5-5-5 5'/><path d='m17 18-5-5-5 5'/>",
   // Rasterize text (a pixel grid).
   rasterize: "<rect x='3' y='3' width='18' height='18' rx='2'/><path d='M3 9h18M3 15h18M9 3v18M15 3v18'/>",
+  // Colour harmony (picker): a wheel cut in thirds with a filled hub.
+  colorWheel:
+    "<circle cx='12' cy='12' r='9'/><path d='M12 3v6M14.6 13.5l5.2 3M9.4 13.5l-5.2 3'/><circle cx='12' cy='12' r='3' fill='currentColor'/>",
+  // Colour variations (picker): a light and a dark circle side by side.
+  colorVariations: "<circle cx='8' cy='12' r='5'/><circle cx='16' cy='12' r='5' fill='currentColor'/>",
   // Default colours (D): a filled square over an outlined one.
   resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>",
 };

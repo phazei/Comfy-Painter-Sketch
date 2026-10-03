@@ -14,6 +14,9 @@
  * The same tool also serves as the temporary Alt eyedropper of tools with
  * `altEyedropper` ({@link EyedropperTool.temporary}: shares the options,
  * always writes the foreground, since Alt is what engaged it).
+ *
+ * `editor.colors.sampleSlot` overrides both rules: while the background
+ * colour picker is open every sample goes to the background.
  */
 
 import type { ColorSlot } from "../engine/colors";
@@ -94,7 +97,7 @@ export class EyedropperTool implements Tool {
       editor.events.emit("note", LAYER_MASK_EYEDROPPER_NOTE);
       return;
     }
-    const slot: ColorSlot = first.altKey && !this.isTemporary ? "bg" : "fg";
+    const slot: ColorSlot = editor.colors.sampleSlot ?? (first.altKey && !this.isTemporary ? "bg" : "fg");
     const previous = editor.colors[slot];
     this.picking = { slot, previous, color: previous };
     this.pick(editor, first);

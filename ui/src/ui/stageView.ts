@@ -247,8 +247,12 @@ export class StageView {
   /** Badges of the tool in effect now. */
   private cursorExtras(tool: Tool, session: EditorSession): CursorExtras {
     const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
-    const eyedropperAlt = tool.id === "eyedropper" && tool === session.tools.active && this.altDown;
-    const mode = this.badge ?? (eyedropperAlt ? "bgSlot" : null);
+    // The eyedropper writes the background: Alt with the tool itself, or any
+    // eyedropper while the background picker is open (`colors.sampleSlot`).
+    const toBg =
+      tool.id === "eyedropper" &&
+      (session.editor.colors.sampleSlot === "bg" || (tool === session.tools.active && this.altDown));
+    const mode = this.badge ?? (toBg ? "bgSlot" : null);
     return { mode, ban: target?.blocked ?? false };
   }
 

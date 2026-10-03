@@ -8,7 +8,8 @@
  * an open popover (e.g. a slider opened from the pressure group popover)
  * stacks on top of it. Opening closes every open popover that does not
  * contain the new anchor. A popover closes on a pointerdown outside it and
- * its anchor (a press inside a parent closes only its children), Escape
+ * its anchor (a press inside a parent closes only its children; a press on
+ * the stage that closes one is swallowed, so it never paints), Escape
  * (inside the popover, or via {@link PopoverHost.close} from the shortcut
  * handler), when the anchor leaves the DOM, or when its parent closes. Positions are
  * computed in root-local CSS px, dividing out the graph zoom (the root may be
@@ -30,6 +31,11 @@ export interface PopoverOptions {
   className?: string;
   /** Called once when the popover closes (any reason). */
   onClose?: () => void;
+  /**
+   * A press outside for which this popover stays open and the press goes
+   * through (e.g. the eyedropper on the stage while a colour picker is open).
+   */
+  keepOpenOn?: (event: PointerEvent) => boolean;
 }
 
 /** An open popover. */
@@ -38,6 +44,8 @@ export interface PopoverHandle {
   readonly element: HTMLDivElement;
   /** Anchor it was opened for. */
   readonly anchor: HTMLElement;
+  /** {@link PopoverOptions.keepOpenOn}, if any. */
+  readonly keepOpenOn?: (event: PointerEvent) => boolean;
   /** Close it (idempotent). */
   close(): void;
   /** Re-run positioning (after content size changes). */
@@ -67,16 +75,29 @@ export class PopoverHost {
   private readonly outside = (event: PointerEvent): void => {
     const target = event.target;
     if (!(target instanceof Node)) return;
+    let closed = false;
     for (let top = this.stack.at(-1); top; top = this.stack.at(-1)) {
-      if (top.element.contains(target) || top.anchor.contains(target)) return;
+      if (top.element.contains(target) || top.anchor.contains(target) || top.keepOpenOn?.(event)) break;
       top.close();
+      closed = true;
+    }
+    // A press on the stage that dismissed a popover only dismisses: it never
+    // reaches the stage (no dot from the brush, no fill, no selection).
+    if (closed && this.dismissOnly?.contains(target)) {
+      event.preventDefault();
+      event.stopPropagation();
     }
   };
 
   /**
    * @param root - Editor root (the host is appended to it).
+   * @param dismissOnly - Element whose presses only close popovers (the
+   *   stage): a press there that closed one is swallowed.
    */
-  constructor(private readonly root: HTMLElement) {
+  constructor(
+    private readonly root: HTMLElement,
+    private readonly dismissOnly: HTMLElement | null = null,
+  ) {
     this.element = document.createElement("div");
     this.element.className = "cps-popover-host";
     root.appendChild(this.element);
@@ -117,6 +138,7 @@ export class PopoverHost {
     const handle: PopoverHandle = {
       element,
       anchor: options.anchor,
+      ...(options.keepOpenOn ? { keepOpenOn: options.keepOpenOn } : {}),
       close: () => {
         if (closed) return;
         closed = true;
@@ -145,6 +167,20 @@ export class PopoverHost {
     const bottom = this.stack[0];
     if (!bottom) return false;
     bottom.close();
+    return true;
+  }
+
+  /**
+   * Toggle support: close the popover opened for exactly this anchor (and
+   * its children), if one is open. Call before opening one for the anchor so
+   * a second click on it closes instead of re-opening.
+   * @param anchor - Anchor element.
+   * @returns `true` if a popover closed.
+   */
+  closeAnchoredAt(anchor: HTMLElement): boolean {
+    const handle = this.stack.find((h) => h.anchor === anchor);
+    if (!handle) return false;
+    handle.close();
     return true;
   }
 

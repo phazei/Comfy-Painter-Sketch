@@ -1,5 +1,5 @@
 /**
- * Pure colour math: hex <-> RGB <-> HSV conversions, round-trips, clamping.
+ * Pure colour math: hex <-> RGB <-> HSV <-> HSL conversions, round-trips, clamping.
  * No DOM dependencies; unit-testable in Node.
  *
  * HSV: hue [0,360), saturation [0,1], value [0,1].
@@ -21,6 +21,13 @@ export interface Hsv {
   h: number;
   s: number;
   v: number;
+}
+
+/** HSL with h in [0, 360), s and l in [0, 1]. */
+export interface Hsl {
+  h: number;
+  s: number;
+  l: number;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -137,6 +144,36 @@ export function hexToHsv(hex: string): Hsv | null {
  */
 export function hsvToHex(hsv: Hsv): string {
   return rgbToHex(hsvToRgb(hsv));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// HSV <-> HSL
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Convert HSV to HSL (same hue; the picker's HSL fields).
+ * @param hsv - HSV values.
+ * @returns HSL with s and l in [0, 1].
+ */
+export function hsvToHsl(hsv: Hsv): Hsl {
+  const s = clamp01(hsv.s);
+  const v = clamp01(hsv.v);
+  const l = v * (1 - s / 2);
+  const sl = l === 0 || l === 1 ? 0 : (v - l) / Math.min(l, 1 - l);
+  return { h: hsv.h, s: sl, l };
+}
+
+/**
+ * Convert HSL to HSV (same hue).
+ * @param hsl - HSL values (s and l clamped to [0, 1]).
+ * @returns HSV representation.
+ */
+export function hslToHsv(hsl: Hsl): Hsv {
+  const s = clamp01(hsl.s);
+  const l = clamp01(hsl.l);
+  const v = l + s * Math.min(l, 1 - l);
+  const sv = v === 0 ? 0 : 2 * (1 - l / v);
+  return { h: hsl.h, s: sv, v };
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────

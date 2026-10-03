@@ -125,7 +125,7 @@ export class EditorShell {
       this.sidePanel.element,
       this.overlaySlot,
     );
-    this.popoverHost = new PopoverHost(this.root);
+    this.popoverHost = new PopoverHost(this.root, this.stage);
 
     this.resizeObserver = new ResizeObserver(() => this.requestLayout());
     for (const el of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot, this.sidePanel.element]) {

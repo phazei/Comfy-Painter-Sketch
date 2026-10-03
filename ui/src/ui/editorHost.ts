@@ -163,16 +163,27 @@ export class EditorHost {
     this.shell.events.on("help", () => this.sync.help.toggle());
 
     // ── Colour picker ─────────────────────────────────────────────────────
+    // Stays open for eyedropper presses on the stage (the tool, or Alt) and
+    // follows the sampled colour; while it edits the background, every
+    // eyedropper sample goes there (`colors.sampleSlot`, BG cursor badge).
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
       if (!colors) return;
       const slot = request.slot;
-      openColorPicker(this.shell.popoverHost, request.anchor, {
+      const setSampleSlot = (value: "bg" | null): void => {
+        colors.sampleSlot = value;
+        this.view.syncCursor();
+      };
+      const handle = openColorPicker(this.shell.popoverHost, request.anchor, {
         initial: colors[slot],
         title: slot === "fg" ? "Foreground" : "Background",
         onInput: (hex) => colors.set(slot, hex),
         onCommit: (hex) => colors.set(slot, hex),
+        onClose: () => setSampleSlot(null),
+        follow: (onExternal) => colors.events.on("change", () => onExternal(colors[slot])),
+        keepOpenOn: (event) => this.isEyedropperPress(event),
       });
+      if (handle) setSampleSlot(slot === "bg" ? "bg" : null);
     });
 
     this.input = new StageInput(this.stage, {
@@ -418,6 +429,20 @@ export class EditorHost {
       },
       clipboard: this.clipboard,
     });
+  }
+
+  /**
+   * Whether a press is eyedropper use: the dock's eyedropper button, or a
+   * left press on the stage (no Space pan) where the tool the stage would
+   * resolve (Ctrl > Alt > active, as in `stageInput.ts`) is the eyedropper.
+   */
+  private isEyedropperPress(event: PointerEvent): boolean {
+    const session = this.session;
+    const target = event.target;
+    if (target instanceof Element && target.closest(".cps-dropper-pill")) return true;
+    if (!session || event.button !== 0 || this.keyboard.isSpaceDown) return false;
+    if (!(target instanceof Node) || !this.stage.contains(target)) return false;
+    return session.tools.resolve(event.altKey, event.ctrlKey || event.metaKey).id === "eyedropper";
   }
 
   // ── Sizing ──────────────────────────────────────────────────────────────

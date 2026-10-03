@@ -305,9 +305,13 @@ export class OutputOptionsRow {
     return { element, dec, inc, field };
   }
 
-  /** Fill / border colour picker: one session = one undo step; Esc / click-outside keep the colour. */
+  /**
+   * Fill / border colour picker: one session = one undo step; Esc /
+   * click-outside keep the colour; a second click on the swatch closes it.
+   */
   private pickColor(): void {
     const { popovers, editor } = this.ctx;
+    if (popovers.closeAnchoredAt(this.swatch)) return;
     const ops = editor.regionOps;
     this.ctx.beforeEdit();
     popovers.close();

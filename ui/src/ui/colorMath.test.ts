@@ -5,10 +5,31 @@ import {
   hexToHsv,
   hexToRgb,
   hsvToHex,
+  hslToHsv,
+  hsvToHsl,
   hsvToRgb,
   rgbToHex,
   rgbToHsv,
 } from "./colorMath";
+
+// ── HSV <-> HSL ───────────────────────────────────────────────────────────
+
+describe("hsvToHsl / hslToHsv", () => {
+  it("converts known colours", () => {
+    expect(hsvToHsl({ h: 0, s: 1, v: 1 })).toEqual({ h: 0, s: 1, l: 0.5 });
+    expect(hsvToHsl({ h: 0, s: 0, v: 1 })).toEqual({ h: 0, s: 0, l: 1 });
+    expect(hsvToHsl({ h: 0, s: 0, v: 0 })).toEqual({ h: 0, s: 0, l: 0 });
+  });
+
+  it("round-trips", () => {
+    for (const hsv of [{ h: 30, s: 0.4, v: 0.7 }, { h: 200, s: 1, v: 0.5 }, { h: 90, s: 0.1, v: 0.95 }]) {
+      const back = hslToHsv(hsvToHsl(hsv));
+      expect(back.h).toBe(hsv.h);
+      expect(back.s).toBeCloseTo(hsv.s, 9);
+      expect(back.v).toBeCloseTo(hsv.v, 9);
+    }
+  });
+});
 
 // ── hexToRgb ──────────────────────────────────────────────────────────────
 

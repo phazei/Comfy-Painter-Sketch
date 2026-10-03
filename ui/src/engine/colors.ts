@@ -43,6 +43,12 @@ export function normalizeHex(value: string): string | null {
  */
 export class ColorState {
   readonly events = new Emitter<ColorEvents>();
+  /**
+   * Where the eyedropper writes regardless of Alt, or `null` for its own
+   * rule (FG; Alt with the Eyedropper tool: BG). The host sets `"bg"` while
+   * the background colour picker is open. Transient UI state.
+   */
+  sampleSlot: ColorSlot | null = null;
   private pair: ColorPair;
 
   /**
