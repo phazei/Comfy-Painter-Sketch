@@ -62,17 +62,17 @@
 
 .cps-output-slot.cps-filled {
   background: var(--cps-chip-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-output-slot.cps-filled:hover {
-  background: color-mix(in srgb, var(--cps-chip-bg) 85%, #fff);
+  background: color-mix(in srgb, var(--cps-chip-bg) 85%, var(--cps-fg-strong));
 }
 
 .cps-output-slot.cps-selected,
 .cps-output-slot.cps-selected:hover {
   background: var(--cps-ring);
-  color: #111;
+  color: var(--cps-bar-bg);
 }
 
 /* ── Cards ────────────────────────────────────────────────────────────── */
@@ -125,7 +125,7 @@
   border-radius: 4px;
   outline: none;
   background: var(--cps-field-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
   font: inherit;
 }
 
@@ -277,7 +277,7 @@
 
 .cps-output-pill.cps-active {
   background: var(--cps-chip-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-output-pill.cps-disabled {
@@ -328,7 +328,7 @@
 }
 
 .cps-stepper-button:hover:not(:disabled) {
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-stepper-button:disabled {

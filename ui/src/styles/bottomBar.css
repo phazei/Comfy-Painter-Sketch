@@ -6,13 +6,20 @@
  * .cps-root (editor.css).
  */
 
-/* ── Bar ───────────────────────────────────────────────────────────────── */
+/* ── Bars ──────────────────────────────────────────────────────────────── */
+
+/* The two pills: left group left, right group right. */
+.cps-bottom-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
 
 .cps-bottom-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 2px;
   padding: 3px;
   border: 1px solid var(--cps-line-1);
   border-radius: var(--cps-r-bottom);
@@ -21,13 +28,6 @@
   color: var(--cps-fg-icon);
   font-size: 12px;
   white-space: nowrap;
-}
-
-.cps-bb-group {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
 }
 
 .cps-bb-lmask {
@@ -76,7 +76,7 @@
 
 .cps-bottom-bar .cps-text-button.cps-active {
   background: var(--cps-active-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 /* ── Status pill ───────────────────────────────────────────────────────── */
@@ -91,7 +91,7 @@
   border: 0;
   border-radius: 999px;
   background: var(--cps-acc-30);
-  color: #fff;
+  color: var(--cps-fg-strong);
   font: inherit;
   font-weight: 500;
   cursor: pointer;
@@ -115,7 +115,7 @@
   padding: 4px 6px 4px 5px;
   border: 0;
   border-radius: 7px;
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);
   color: var(--cps-fg);
   font: inherit;
   cursor: pointer;
@@ -135,7 +135,7 @@
   width: 18px;
   height: 18px;
   border-radius: 4px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);
 }
 
 .cps-chip-swatch.cps-ring2 {
@@ -191,7 +191,7 @@
 .cps-qm-button.cps-on {
   background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-qm-button.cps-on:hover {
@@ -272,7 +272,7 @@
 }
 
 .cps-notice-pill .cps-notice-hide:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);
   color: var(--cps-warn-fg);
 }
 
@@ -288,15 +288,17 @@
   background: rgba(0, 0, 0, 0.6);
 }
 
+/* Wide card; only the section area scrolls (vertically), never sideways. */
 .cps-help-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: 86%;
-  max-width: 520px;
-  max-height: 80%;
+  box-sizing: border-box;
+  width: calc(100% - 2 * var(--cps-edge));
+  max-width: 1120px;
+  max-height: calc(100% - 2 * var(--cps-edge));
   padding: 12px;
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--cps-line-2);
   border-radius: 12px;
   background: var(--cps-panel-bg);
@@ -324,45 +326,133 @@
   color: var(--cps-fg);
 }
 
+/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so
+   wide editors show everything without scrolling and cards never get a ragged
+   grid gap. */
 .cps-help-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  columns: 360px;
+  column-gap: 8px;
+}
+
+/* The one scroller under the header: Essentials band + section columns. */
+.cps-help-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Essentials: accent-tinted band across the full width, items in a grid. */
+.cps-help-quick {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: start;
+  margin-bottom: 8px;
+  padding: 10px 8px 8px;
+  border: 1px solid var(--cps-acc-35);
+  border-radius: 8px;
+  background: var(--cps-acc-09);
+}
+
+.cps-help-quick-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 12px;
+  padding: 0 4px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+
+.cps-help-quick-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 0;
+}
+
+.cps-help-quick-item .cps-help-keys {
+  flex: none;
 }
 
 .cps-help-section {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 8px 10px;
+  break-inside: avoid;
+  margin-bottom: 8px;
+  padding: 10px 8px 8px;
   border-radius: 8px;
   background: var(--cps-card-bg);
 }
 
+/* Accent title over a rule, so each card's start stands out. */
 .cps-help-section-title {
+  margin: 0 4px 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--cps-line-2);
   font-size: 11px;
-  letter-spacing: 0.06em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--cps-fg-muted);
+  color: var(--cps-accent);
 }
 
 .cps-help-rows {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  column-gap: 10px;
-  row-gap: 4px;
+  /* Keys take what they need up to half the card, then wrap; the action
+     always keeps at least half. Rows share these columns (subgrid). */
+  grid-template-columns: fit-content(50%) minmax(0, 1fr);
+  column-gap: 12px;
   font-size: 11.5px;
   line-height: 1.3;
 }
 
+/* One row = one band (zebra + hover), so the eye can follow it across. */
+.cps-help-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+
+.cps-help-row:nth-child(even) {
+  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);
+}
+
+.cps-help-row:hover {
+  background: var(--cps-acc-18);
+}
+
 .cps-help-keys {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 4px;
+}
+
+/* A key chip: one key or key combination. */
+.cps-help-kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--cps-line-2);
+  border-bottom-color: rgba(0, 0, 0, 0.45);
+  border-radius: 4px;
+  background: var(--cps-field-bg);
   font-family: var(--cps-mono);
-  font-size: 11px;
-  color: var(--cps-fg-muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--cps-fg);
   white-space: nowrap;
+}
+
+.cps-help-or {
+  font-size: 10.5px;
+  color: var(--cps-fg-hint);
 }
 
 .cps-help-action {
   min-width: 0;
+  color: var(--cps-fg-value);
 }

@@ -10,7 +10,12 @@
 /* ── Dock ──────────────────────────────────────────────────────────────── */
 
 .cps-dock {
-  border-color: rgba(255, 255, 255, 0.09);
+  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
+}
+
+/* Keyboard indicator: the editor owns the shortcuts (set by ui/keyboard.ts). */
+.cps-root.cps-has-keys .cps-dock {
+  box-shadow: inset 0 2px 0 var(--cps-fg-strong), var(--cps-shadow-bar);
 }
 
 .cps-dock-tools {
@@ -25,12 +30,13 @@
 
 /* A press-and-hold menu is open on this button. */
 .cps-bar-button.cps-menu-open {
-  background: rgba(255, 255, 255, 0.09);
+  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
 }
 
 /* Modal states: the dock's active tint goes too. */
 .cps-dimmed .cps-bar-button,
-.cps-dimmed .cps-bar-button.cps-active {
+.cps-dimmed .cps-bar-button.cps-active,
+.cps-dimmed .cps-bar-button.cps-active:hover:not(:disabled) {
   background: transparent;
   color: var(--cps-fg-disabled);
 }
@@ -94,7 +100,7 @@
   top: 3px;
   width: 21px;
   height: 21px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.38);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 38%, transparent);
   z-index: 1;
 }
 
@@ -103,7 +109,7 @@
   top: 12px;
   width: 19px;
   height: 19px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
 }
 
 .cps-swatch-icons {
@@ -123,7 +129,7 @@
 }
 
 .cps-swatch-icon:hover {
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 /* Layer mask swatches: black / white only, no picker. */
@@ -145,7 +151,7 @@
   bottom: calc(100% + 14px);
   z-index: 6;
   padding: 4px;
-  border-color: rgba(255, 255, 255, 0.09);
+  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
   border-radius: 11px;
 }
 
@@ -186,7 +192,7 @@
   padding: 0 3px;
   border-radius: 7px;
   background: var(--cps-accent);
-  color: #fff;
+  color: #ffffff; /* on solid accent, both themes */
   font-size: 9.5px;
   font-weight: 600;
   line-height: 1;
@@ -194,8 +200,13 @@
 }
 
 .cps-images-button.cps-active {
-  background: rgba(255, 255, 255, 0.09);
+  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
   color: var(--cps-fg-icon);
+}
+
+/* No sources yet: the button is hidden, so its divider goes too. */
+.cps-images-button[hidden] + .cps-vdiv {
+  display: none;
 }
 
 /* ── Images tray (popover layer, right-aligned under the clip pill) ────── */
@@ -236,7 +247,7 @@
 }
 
 .cps-images-item:hover {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cps-fg-strong) 50%, transparent);
 }
 
 .cps-images-item.cps-new {
@@ -258,7 +269,7 @@
   padding: 1px 5px;
   border-radius: 4px;
   background: var(--cps-accent);
-  color: #fff;
+  color: #ffffff; /* on solid accent, both themes */
   font-size: 9.5px;
   font-weight: 600;
   pointer-events: none;
@@ -266,13 +277,23 @@
 
 /* ── Sliders pill ──────────────────────────────────────────────────────── */
 
+/* Shrinks to the slot's height on short nodes (.cps-slot-sliders): each slider
+   gives up height through its track (flex-basis = the roomy height, floor
+   --cps-vslider-min); the icon and value never shrink. */
 .cps-sliders {
+  --cps-vslider-min: 48px;
+  /* Icon 16 + value 14 + two 8 px gaps: what a slider needs besides its track. */
+  --cps-vslider-chrome: 46px;
+  box-sizing: border-box;
   width: 40px;
+  max-height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   padding: 12px 0 10px;
+  overflow: hidden;
   border: 1px solid var(--cps-line-1);
   border-radius: var(--cps-r-panel);
   background: var(--cps-bar-bg);
@@ -280,6 +301,8 @@
 }
 
 .cps-vslider {
+  flex: 1 1 auto;
+  min-height: calc(var(--cps-vslider-chrome) + var(--cps-vslider-min));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -287,6 +310,7 @@
 }
 
 .cps-vslider-icon {
+  flex: none;
   display: flex;
   color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
 }
@@ -295,28 +319,30 @@
   position: relative;
   display: flex;
   justify-content: center;
+  flex: 1 1 96px;
+  min-height: var(--cps-vslider-min);
   width: 24px;
-  height: 96px;
   cursor: ns-resize;
   touch-action: none;
 }
 
 .cps-vslider-hardness .cps-vslider-hit {
-  height: 72px;
+  flex-basis: 72px;
 }
 
 .cps-root.cps-is-fullscreen .cps-vslider-size .cps-vslider-hit {
-  height: 140px;
+  flex-basis: 140px;
 }
 
 .cps-root.cps-is-fullscreen .cps-vslider-hardness .cps-vslider-hit {
-  height: 110px;
+  flex-basis: 110px;
 }
 
 .cps-vslider-track {
   position: relative;
   width: 8px;
-  height: 100%;
+  /* Stretches to the track hit area (a percentage height would not resolve in a shrunk flex item). */
+  align-self: stretch;
   border-radius: 4px;
   background: color-mix(in srgb, var(--cps-field-bg) 90%, #000);
   pointer-events: none;
@@ -328,7 +354,7 @@
   right: 0;
   bottom: 0;
   border-radius: 4px;
-  background: #8a8d93;
+  background: var(--cps-fg-muted);
 }
 
 .cps-vslider-thumb {
@@ -338,17 +364,19 @@
   height: 12px;
   margin-bottom: -6px;
   border-radius: 6px;
-  background: #eaeaea;
+  background: var(--cps-fg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 
 .cps-vslider-hit:hover .cps-vslider-thumb,
 .cps-vslider-hit.cps-dragging .cps-vslider-thumb {
-  background: #fff;
+  background: var(--cps-fg-strong);
 }
 
 .cps-vslider-value {
+  flex: none;
   font-size: 10.5px;
+  line-height: 14px;
   color: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));
 }
 

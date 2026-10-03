@@ -6,15 +6,15 @@
  * | State | Chip | Menu |
  * |---|---|---|
  * | Region mode | Main / region · Outputs | outputs, Back to {layer} |
+ * | Background selected | Background · Read-only | Duplicate to an editable layer, Back |
  * | Image / Input Mask current (Quick Mask) | {row} · Read-only | Duplicate to an editable mask, Back |
- * | Quick Mask | {cmask} · ComfyUI mask | Invert, View alone, Lock, Back (Q) |
+ * | Quick Mask | {cmask} · Mask | Invert, View alone, Lock, Back (Q) |
  * | lmask targeted | {layer} · Mask | Pixels / Layer mask, View, Enable |
  * | Paint layer | {layer} · Pixels | same; no lmask: Add layer mask |
  * | Text layer | {layer} · Pixels | Rasterize text |
  *
  * Region mode wins so a mask or lmask selection never leaks into Outputs.
- * The Background row isn't selectable here (its Duplicate lives on its
- * panel row). The menu is rebuilt from the live state on every open.
+ * The menu is rebuilt from the live state on every open.
  */
 
 import { IMAGE_MASK_ID } from "../document/imageMask";
@@ -22,6 +22,7 @@ import { findPaintLayer, maskDisplayColor } from "../document/masks";
 import { regionName } from "../document/regions";
 import type { Layer } from "../document/types";
 import type { Editor } from "../engine/editor";
+import { BACKGROUND_NAME } from "../engine/layerOps";
 import { RASTERIZE_PROMPT } from "../engine/rasterize";
 import { REGION_TOOL_ID } from "../tools/region";
 import type { EditorSession } from "../widget/sessions";
@@ -55,9 +56,11 @@ export interface EditChipContext {
 export const CHECKER_SWATCH = "repeating-conic-gradient(#8d8f94 0 25%, #c9cbcf 0 50%) 0 0 / 8px 8px";
 /** Half white / half black: a layer mask. */
 export const LMASK_SWATCH = "linear-gradient(90deg, #f2f2f2 50%, #111 50%)";
+/** Dark stripes: the selected Background row over an input image. */
+export const BACKGROUND_SWATCH = "repeating-linear-gradient(135deg, #3a3f45 0 4px, #353a40 4px 8px)";
 
 /** Chip content. */
-interface ChipModel {
+export interface ChipModel {
   name: string;
   part: string;
   swatch: string;
@@ -142,6 +145,21 @@ export class EditChip {
     const paint = findPaintLayer(editor.doc);
     const backName = paint?.name ?? "layer";
     if (inRegionMode(session)) return this.outputsMenu(editor);
+    if (editor.backgroundSelected) {
+      return {
+        title: `${BACKGROUND_NAME} \u00b7 Read-only`,
+        entries: [
+          {
+            label: "Duplicate to an editable layer",
+            icon: "duplicate",
+            disabled: editor.loading,
+            onPick: () => this.edit(editor, () => editor.layerOps.duplicateBackground()),
+          },
+          "divider",
+          { label: `Back to ${backName}`, icon: "back", onPick: () => this.edit(editor, () => editor.setPaintTarget("paint")) },
+        ],
+      };
+    }
     const mask = editor.paintTarget === "mask" ? editor.maskLayer : undefined;
     if (mask?.id === IMAGE_MASK_ID) {
       return {
@@ -256,16 +274,21 @@ export class EditChip {
  * @param session - Session.
  * @returns Model.
  */
-function chipModel(session: EditorSession): ChipModel {
+export function chipModel(session: EditorSession): ChipModel {
   const editor = session.editor;
   if (inRegionMode(session)) {
     const id = editor.regionOps.selectedId;
     const region = id === null ? undefined : editor.doc.regions.find((r) => r.id === id);
     return { name: region ? regionName(region) : "Main", part: "Outputs", swatch: "var(--cps-ring)", ring: false };
   }
+  if (editor.backgroundSelected) {
+    // The fill colour without an image; the design handoff's stripes for an image (no thumbnail in a 14 px swatch).
+    const bg = editor.background;
+    return { name: BACKGROUND_NAME, part: "Read-only", swatch: bg.kind === "fill" ? bg.color : BACKGROUND_SWATCH, ring: false };
+  }
   const mask = editor.paintTarget === "mask" ? editor.maskLayer : undefined;
   if (mask) {
-    const part = mask.id === IMAGE_MASK_ID ? "Read-only" : "ComfyUI mask";
+    const part = mask.id === IMAGE_MASK_ID ? "Read-only" : "Mask";
     return { name: mask.name, part, swatch: maskDisplayColor(mask), ring: false };
   }
   const paint = findPaintLayer(editor.doc);

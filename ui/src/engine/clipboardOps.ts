@@ -9,6 +9,9 @@
  *   trimmed to the non-transparent bbox. A mask copies as an OPAQUE
  *   grayscale image (white = masked; what other apps expect). `merged` =
  *   what is visible incl. the image, within the selection or the image area.
+ *   The read-only SOURCE rows copy too (reading isn't editing): the
+ *   Background row what it shows, the Image / Input Mask row its coverage as
+ *   gray. Cut on them is refused like any edit.
  * - {@link ClipboardOps.cut}: copy + clear the same pixels (one patch, via
  *   the `preparePixelEdit` gate; a text layer is rasterized first, same step).
  * - {@link ClipboardOps.paste}: a new ordinary paint layer above the current
@@ -43,7 +46,9 @@ import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "
 import type { Point, Rect, Size } from "../geometry/rect";
 import { boundsCap } from "./bounds";
 import { applyCoverage, cropToCap, imageToMaskGray, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
-import { readDocRegion, visibleScene } from "./docComposite";
+import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
+import { coverageInDoc } from "./imageMask";
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import type { EditorState } from "./editorState";
 import type { FloatState } from "./floatLift";
 import type { FloatOps } from "./floatOps";
@@ -128,16 +133,28 @@ export class ClipboardOps {
     const s = this.s;
     if (s.loading || s.stroke.active) return null;
     s.settleFloat();
-    const layer = merged ? undefined : this.editLayer();
+    const clip = merged ? this.copyMerged() : this.copyCurrent();
+    if (clip !== undefined && !clip) s.events.emit("note", NOTHING_TO_COPY_NOTE);
+    return clip ?? null;
+  }
+
+  /**
+   * Copy of the selected row: the read-only SOURCE rows copy what they show
+   * (reading isn't editing), any other layer its pixels through the gate.
+   * @returns Pixels, `null` when empty, `undefined` when refused (note sent).
+   */
+  private copyCurrent(): ClipImage | null | undefined {
+    const s = this.s;
+    if (s.sourceSelected === "background") return this.copyBackground();
+    const layer = this.editLayer();
+    if (layer?.id === IMAGE_MASK_ID) return this.copyImageMask(layer);
     // Copying a layer you can't see is refused like an edit (locked is fine to copy).
     const block = layer ? editBlockNote(s, layer, this.kind(layer)) : null;
     if (block && block !== LOCKED_LAYER_NOTE) {
       s.events.emit("note", block);
-      return null;
+      return undefined;
     }
-    const clip = merged ? this.copyMerged() : this.copyLayer(layer);
-    if (!clip) s.events.emit("note", NOTHING_TO_COPY_NOTE);
-    return clip;
+    return this.copyLayer(layer);
   }
 
   /**
@@ -308,18 +325,55 @@ export class ClipboardOps {
     return gray ? this.clip(read.data, read.rect) : this.trimmed(read.data, read.rect);
   }
 
+  /** The image rect (doc coords) or the selection's extent within it + the paint area; empty when nothing. */
+  private imageArea(): Rect {
+    const s = this.s;
+    const image = roundOutRect(imageRectToDoc(documentMap(s.doc, s.imageSize), frameRect(s.imageSize)));
+    const sel = s.selection.current;
+    return sel ? selectionExtent(sel, unionRect(image, s.store.bounds)) : image;
+  }
+
   private copyMerged(): ClipImage | null {
     const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const image = roundOutRect(imageRectToDoc(map, frameRect(s.imageSize)));
-    const sel = s.selection.current;
-    const area = sel ? selectionExtent(sel, unionRect(image, s.store.bounds)) : image;
+    const area = this.imageArea();
     if (isEmptyRect(area)) return null;
     if (s.target === "mask") return this.copyMergedMasks(area);
-    const data = readDocRegion(visibleScene(s), area);
+    return this.copyScene(visibleScene(s), area);
+  }
+
+  /** The Background row: what the background shows (image or fill), within the selection. */
+  private copyBackground(): ClipImage | null {
+    const area = this.imageArea();
+    if (isEmptyRect(area)) return null;
+    return this.copyScene(sceneFor(visibleScene(this.s), "background"), area);
+  }
+
+  /** A scene read over `area`, coverage-weighted by the selection, trimmed. */
+  private copyScene(scene: Parameters<typeof readDocRegion>[0], area: Rect): ClipImage | null {
+    const sel = this.s.selection.current;
+    const data = readDocRegion(scene, area);
     if (!data) return null;
     if (!applyCoverage(data.data, sel ? coverageFor(sel, area) : null)) return null;
     return this.trimmed(data, area);
+  }
+
+  /**
+   * The Image / Input Mask row: its effective coverage (invert applied,
+   * 0 outside the image, like its Ctrl+click selection) as opaque gray,
+   * within the selection -- the same format as a mask layer copy.
+   */
+  private copyImageMask(layer: Layer): ClipImage | null {
+    const s = this.s;
+    const area = this.imageArea();
+    const plane = s.imageMask.coverage;
+    if (isEmptyRect(area) || !plane) return null;
+    const size = s.imageMask.size;
+    const coverage = coverageInDoc(plane, size, documentMap(s.doc, size), area, layer.invert === true);
+    const data = new ImageData(area.width, area.height);
+    for (let i = 0; i < coverage.length; i++) data.data[i * 4 + 3] = coverage[i] as number;
+    const sel = s.selection.current;
+    if (!maskToGray(data.data, sel ? coverageFor(sel, area) : null)) return null;
+    return this.clip(data, area);
   }
 
   /**

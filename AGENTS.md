@@ -86,6 +86,11 @@ detail against the local frontend/backend source listed under Local References.
 - **CSS**: ComfyUI only auto-loads `.js`. Import CSS as a string (`?inline`) and
   inject a single `<style>` element once, or inject a `<link>`. Scope every class
   under a project prefix (`.cps-`) so we never collide with the frontend.
+  Colours follow the ComfyUI theme (dark and light): use the tokens in
+  `styles/editor.css`; tints, lines, hovers and "brightest text" mix
+  `--cps-fg-strong` (ComfyUI `--fg-color`), never literal white/black. Literal
+  colours only where the backdrop is fixed (on the canvas, on a solid accent,
+  colour-picker thumbs, cursors).
 - **Imports from ComfyUI**: only `app` and `api`, externalized by Vite and
   resolved at runtime: `import { app } from "../../scripts/app.js"` /
   `"../../scripts/api.js"`. In source, import them as `@comfy/scripts/app.js` /

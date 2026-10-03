@@ -126,6 +126,20 @@ describe("Image Mask row", () => {
     expect(depth(ed)).toBe(steps + 1); // only the Select All step
   });
 
+  it("copies its coverage as opaque gray (reading isn't editing); cut is refused", () => {
+    const { ed, notes } = setup();
+    ed.selectMask(IMAGE_MASK_ID);
+    const clip = ed.clipboard.copy(false);
+    expect(clip).not.toBeNull();
+    expect(clip?.rect).toEqual({ x: 0, y: 0, width: 8, height: 8 });
+    const px = clip?.data.data;
+    const gray = (x: number, y: number): number => px?.[(y * 8 + x) * 4] ?? -1;
+    // The transparent hole is the masked part (white); opaque pixels are black; the copy is opaque.
+    expect([gray(0, 0), gray(1, 1), px?.[3]]).toEqual([0, 255, 255]);
+    expect(ed.clipboard.cut()).toBeNull();
+    expect(notes).toContain(IMAGE_MASK_NOTE);
+  });
+
   it("Ctrl+click selects the effective coverage (invert applied, image only)", () => {
     const { ed } = setup();
     expect(ed.selection.fromLayer(IMAGE_MASK_ID, "replace")).toBe(true);

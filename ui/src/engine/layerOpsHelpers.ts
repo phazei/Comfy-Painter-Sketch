@@ -58,7 +58,8 @@ export function readyCheck(s: EditorState): boolean {
  * @param layer - Layer to insert (not yet in the document).
  * @param index - Target position.
  * @param pixels - Pre-captured pixels, or `null` for an empty layer.
- * @param activate - Whether to make the new layer active (default `true`).
+ * @param activate - Whether to make the new layer active (default `true`;
+ *   also ends a Background row selection: the new layer is the selection).
  */
 export function insertLayer(
   s: EditorState,
@@ -70,7 +71,10 @@ export function insertLayer(
   const activeBefore = s.doc.activeLayerId;
   s.doc.layers.splice(index, 0, layer);
   installLayerPixels(s, layer.id, pixels);
-  if (activate) s.doc.activeLayerId = layer.id;
+  if (activate) {
+    s.doc.activeLayerId = layer.id;
+    s.sourceSelected = null;
+  }
   recordLayerChange(s, [{ op: "insert", index, layer: { ...layer }, pixels }], activeBefore);
 }
 

@@ -66,6 +66,8 @@ export interface TopRegions {
 const EDGE = 12;
 /** Gap between the top-row groups when they share one row. */
 const ROW_GAP = 10;
+/** Width cap of the top row / bottom bars, CSS px (editor.css `--cps-bar-max`). */
+const BAR_MAX = 1100;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EditorShell
@@ -185,11 +187,12 @@ export class EditorShell {
    * dock would overlap a side group): one centred row of all three with the
    * strip floating under the dock. Very narrow (a bar wider than the node):
    * that bar anchors to the node's right edge so the overflow sticks out to
-   * the left, never under the side panel.
+   * the left, never under the side panel. The rows are capped at
+   * {@link BAR_MAX} and centred, so the maths uses the capped width.
    */
   private layout(): void {
-    const rootW = this.root.clientWidth;
-    if (rootW === 0) return;
+    if (this.root.clientWidth === 0) return;
+    const rootW = Math.min(this.root.clientWidth, BAR_MAX + 2 * EDGE);
     const historyW = this.top.history.offsetWidth;
     const dockW = this.top.dock.offsetWidth;
     const clipW = this.top.clip.offsetWidth;

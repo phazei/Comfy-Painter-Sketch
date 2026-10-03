@@ -72,19 +72,24 @@ function click(target: FakeElement, mods: Partial<MouseEvent> = {}): void {
 }
 
 describe("layer row clicks", () => {
-  it("any click on the Background row reaches select (ends the lmask-only view); its eye doesn't", async () => {
+  it("a plain click on the Background row selects it; Ctrl+click and its buttons don't", async () => {
     const { LayerRow } = await import("./layerRow");
     const { actions, calls } = recorder();
     const row = new LayerRow("background", "bg", actions);
+    row.update({ id: "bg", name: "Background", visible: true, locked: true, selected: true, standby: false, canDuplicate: true });
     const root = row.element as unknown as FakeElement;
     click(root);
     click(root, { ctrlKey: true });
-    expect(calls).toEqual([["select", "bg"], ["select", "bg"]]);
+    expect(calls).toEqual([["select", "bg"]]);
     const eye = root.find("cps-layer-eye")[0];
-    if (!eye) throw new Error("no eye");
+    const dup = root.find("cps-layer-dup")[0];
+    if (!eye || !dup) throw new Error("no eye / duplicate");
     click(eye);
     expect(calls.at(-1)).toEqual(["toggleVisible", "bg"]);
-    expect(calls.filter((c) => c[0] === "select")).toHaveLength(2);
+    expect(dup.title).toBe("Duplicate to an editable layer");
+    click(dup);
+    expect(calls.at(-1)).toEqual(["duplicate", "bg"]);
+    expect(calls.filter((c) => c[0] === "select")).toHaveLength(1);
   });
 
   it("lmask thumbnail: Alt+click views, click targets the mask; the pixel thumbnail targets the pixels", async () => {

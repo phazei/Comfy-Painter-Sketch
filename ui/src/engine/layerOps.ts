@@ -1,7 +1,7 @@
 /**
  * Layer commands of the editor core (layers panel, SPEC "Layers"):
- * add / duplicate / delete / reorder / rename / opacity / mask colour and
- * invert (undoable {@link LayersEntry} history entries), plus visibility,
+ * add / duplicate (incl. the Background row) / delete / reorder / rename /
+ * opacity / mask colour and invert (undoable {@link LayersEntry} history entries), plus visibility,
  * lock and the active layer (not undoable, like Photoshop and the mask eye).
  *
  * The document's `activeLayerId` always names a paint-like layer (the layer
@@ -31,9 +31,14 @@ import {
 import { copyLayerName } from "../document/layerList";
 import { IMAGE_MASK_ID } from "../document/imageMask";
 import { findMaskLayer } from "../document/masks";
-import type { Layer } from "../document/types";
+import type { Layer, PainterDocument } from "../document/types";
+import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
+import type { Rect } from "../geometry/rect";
+import { boundsCap } from "./bounds";
+import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
 import type { LayerPixels } from "./editorTypes";
 import type { EditorState } from "./editorState";
+import { documentMap, imageRectToDoc } from "./frameMap";
 import { captureLayerPixels, releaseRemovedLayers } from "./layerHistory";
 import {
   afterMetaChange,
@@ -127,18 +132,29 @@ export class LayerOps {
   /**
    * Make a paint layer the active one (the layer strokes go to outside
    * Quick Mask). Mask layers are selected via the paint target instead.
+   * Ends a Background row selection, also when the layer was already active.
    * @param layerId - Paint layer id.
    * @returns `true` if the active layer changed.
    */
   setActiveLayer(layerId: string): boolean {
     const s = this.s;
     const layer = findLayer(s, layerId);
-    if (!layer || !isPaintLike(layer) || s.doc.activeLayerId === layerId) return false;
+    if (!layer || !isPaintLike(layer)) return false;
+    if (s.doc.activeLayerId === layerId) {
+      if (s.sourceSelected) {
+        s.sourceSelected = null;
+        s.events.emit("mask", undefined);
+      }
+      return false;
+    }
     s.settleFloat();
     if (s.stroke.active) s.cancelStroke();
+    const fromSource = s.sourceSelected !== null;
+    s.sourceSelected = null;
     s.doc.activeLayerId = layerId;
     s.events.emit("layers", undefined);
     s.events.emit("change", undefined);
+    if (fromSource) s.events.emit("mask", undefined);
     return true;
   }
 
@@ -262,6 +278,30 @@ export class LayerOps {
   }
 
   /**
+   * Duplicate the read-only Background row: what the background shows (the
+   * input image, or the background-colour fill without one) over the image
+   * rect in document coords -- clipped to the paint-area cap, like the
+   * Image Mask's Duplicate -- becomes "Background copy", a paint layer at
+   * the bottom of the paint stack (right above the Background). It becomes
+   * active (ending the Background selection); one undo step. The background
+   * eye doesn't matter (an explicit request for the image).
+   * @returns New layer id, or `null` if not possible (note when nothing is covered).
+   */
+  duplicateBackground(): string | null {
+    const s = this.s;
+    if (!readyCheck(s)) return null;
+    const rect = backgroundArea(s);
+    if (isEmptyRect(rect)) {
+      s.events.emit("note", NOTHING_TO_DUPLICATE_NOTE);
+      return null;
+    }
+    const data = readDocRegion(sceneFor(visibleScene(s), "background"), rect);
+    if (!data) return null;
+    const layer = createPaintLayer(copyLayerName(BACKGROUND_NAME, s.doc.layers));
+    return this.addWithPixels(layer, bottomPaintIndex(s.doc), { x: rect.x, y: rect.y, data });
+  }
+
+  /**
    * Delete a paint layer or mask (not the last of its kind). The pixels stay
    * in the undo entry. Deleting the current mask makes the next one below it
    * current (else the one above), like the active paint layer.
@@ -365,4 +405,35 @@ export class LayerOps {
     if (solo.paint === null && solo.mask === null) return;
     this.s.solo.set({ ...solo, [soloGroup(layer)]: layer.id });
   }
+}
+
+// ── Background duplicate ──────────────────────────────────────────────────────
+
+/** Name of the Background row (its duplicate is "Background copy"). */
+export const BACKGROUND_NAME = "Background";
+
+/** Note when the Background's Duplicate has nothing to copy (no image area inside the paint-area cap). */
+export const NOTHING_TO_DUPLICATE_NOTE = "Nothing to duplicate.";
+
+/**
+ * The current image's rect in document coords (frame map incl. Move
+ * placement), rounded out and clipped to the paint-area cap.
+ * @param s - Editor state.
+ * @returns Integer document rect (empty when nothing is covered).
+ */
+export function backgroundArea(s: EditorState): Rect {
+  const size = s.imageSize;
+  const limit = unionRect(boundsCap(s.doc.frame), s.store.bounds);
+  return intersectRect(roundOutRect(imageRectToDoc(documentMap(s.doc, size), frameRect(size))), limit);
+}
+
+/**
+ * Index right above the Background: the lowest paint layer's slot (paint
+ * sits below the masks), else where a new paint layer would go.
+ * @param doc - Document.
+ * @returns Index in `doc.layers`.
+ */
+export function bottomPaintIndex(doc: Readonly<Pick<PainterDocument, "layers" | "activeLayerId">>): number {
+  const first = doc.layers.findIndex((l) => isPaintLike(l));
+  return first >= 0 ? first : paintInsertIndex(doc);
 }

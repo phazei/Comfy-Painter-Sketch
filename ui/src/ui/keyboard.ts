@@ -73,11 +73,12 @@ export interface KeyboardHandlers {
    */
   onDeactivate?(): void;
   /**
-   * The scope became active (`true`) or inactive (`false`); called on every
-   * transition, after {@link KeyboardHandlers.onDeactivate}. Drives the side
-   * panel's visibility.
+   * The scope became active (`true`) or inactive (`false`), or its
+   * engagement changed while active; called after
+   * {@link KeyboardHandlers.onDeactivate}. Drives the chrome's visibility:
+   * `engaged` (a click inside) shows it at once, hover alone after a delay.
    */
-  onActiveChange?(active: boolean): void;
+  onActiveChange?(active: boolean, engaged: boolean): void;
 }
 
 /**
@@ -102,6 +103,8 @@ export class KeyboardScope {
   private hovered = false;
   private held = false;
   private engaged = false;
+  /** `engaged` as last passed to `onActiveChange`. */
+  private reportedEngaged = false;
   private previousFocus: Element | null = null;
   /** Fullscreen overlay (contains the root) while fullscreen, else `null`. */
   private captureScope: HTMLElement | null = null;
@@ -156,7 +159,7 @@ export class KeyboardScope {
   };
   /**
    * Fullscreen: buttons and other non-input elements outside the root (the
-   * overlay exit button, the backdrop) don't keep focus.
+   * backdrop, the in-node placeholder) don't keep focus.
    */
   private readonly scopeFocusIn = (event: FocusEvent): void => {
     const target = event.target;
@@ -298,8 +301,15 @@ export class KeyboardScope {
       engaged: this.engaged,
       fullscreen: this.captureScope !== null,
     });
-    if (shouldBeActive === this.active) return;
+    if (shouldBeActive === this.active) {
+      if (this.active && this.engaged !== this.reportedEngaged) {
+        this.reportedEngaged = this.engaged;
+        this.handlers.onActiveChange?.(true, this.engaged);
+      }
+      return;
+    }
     this.active = shouldBeActive;
+    this.reportedEngaged = this.engaged;
     if (shouldBeActive) {
       window.addEventListener("keydown", this.keydown, true);
       window.addEventListener("keyup", this.keyup, true);
@@ -312,7 +322,7 @@ export class KeyboardScope {
       this.returnFocus();
       this.handlers.onDeactivate?.();
     }
-    this.handlers.onActiveChange?.(shouldBeActive);
+    this.handlers.onActiveChange?.(shouldBeActive, this.engaged);
     this.syncIndicator();
   }
 

@@ -214,6 +214,8 @@ export class HostSync {
       pickColor: (anchor, options) => openColorPicker(popovers, anchor, options),
       beforeEdit: () => this.cancelDrag(),
       releaseFocus: () => ctx.releaseFocus(),
+      // Same channel as the engine's refused edits: the editor's "note" event -> EditorHost -> StageView.showNote.
+      showNote: (text) => this.getSession()?.editor.events.emit("note", text),
     });
     this.outputs = new OutputsPanel({
       popovers,
@@ -291,6 +293,8 @@ export class HostSync {
       if (prev) tools.setActive(prev.id);
     } else {
       tools.setActive(ALIGN_TOOL_ID);
+      // A hidden (×) notice comes back with Align: that is where it is fixed.
+      this.resolution.redisplay();
     }
     this.syncTools();
   }
@@ -378,7 +382,6 @@ export class HostSync {
     this.help.dispose();
     this.layers.dispose();
     this.outputs.dispose();
-    this.shell.sidePanel.dispose();
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

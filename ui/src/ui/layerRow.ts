@@ -2,15 +2,16 @@
  * One row of the layers panel (design handoff "Layers tab"), left to right:
  *
  * - cmask: 3 px current bar (mask colour) | eye | 36 x 28 thumbnail | name
- *   over a sub-line (10 px colour swatch + "Overlay N%" scrub/slider) |
- *   invert | lock | solo.
+ *   over a sub-line (10 px colour swatch; the overlay opacity is the panel
+ *   header's chip) | invert | lock | solo.
  * - paint / text: spacer | eye | checker thumbnail ("T" badge for text) |
  *   lmask slot (`layerMaskThumb.ts`) | name (+ "Text") | lock | solo.
- * - Image / Input Mask: like a cmask (bar, swatch, Overlay, invert) with a
+ * - Image / Input Mask: like a cmask (bar, swatch, invert) with a
  *   lock badge on the thumbnail instead of a lock button, plus Duplicate
  *   ("Duplicate to an editable mask"); no rename, never dragged.
  * - Background: spacer | eye | thumbnail + lock badge | "Background" /
- *   "Read-only" | solo. Not selectable: a click only ends the lmask view.
+ *   "Read-only" | Duplicate ("Duplicate to an editable layer") | solo.
+ *   Selectable (read-only, like the Image Mask); Ctrl+click does nothing.
  *
  * Name: double-click renames inline (Enter / blur commit, Esc cancels).
  * Selected rows get the accent background and a ring on the targeted
@@ -22,7 +23,6 @@
 import { INPUT_MASK_NAME } from "../document/imageMask";
 import type { SelectionMode } from "../engine/selection";
 import { layerSelectMode } from "./moveCursors";
-import type { OptionControl } from "./optionControls";
 import { setIcon } from "./icons";
 import { startInlineRename } from "./inlineRename";
 import { LayerMaskSlot } from "./layerMaskThumb";
@@ -68,7 +68,7 @@ export interface RowModel {
   text?: boolean;
   /** Small note under the row (e.g. the Input Mask waiting for a run). */
   hint?: string;
-  /** Image / Input Mask row: Duplicate enabled. */
+  /** Read-only rows (Image / Input Mask, Background): Duplicate enabled. */
   canDuplicate?: boolean;
   /**
    * Solo display (view only): `"on"` = this row is soloed, `"dimmed"` =
@@ -84,7 +84,7 @@ export type SoloMark = "on" | "dimmed" | "off";
 
 /** Row callbacks (ids are layer ids). */
 export interface RowActions extends MaskSlotActions {
-  /** Plain row click (also the Background row, which isn't selectable: it only ends the lmask-only view). */
+  /** Plain row click (also the read-only Background row). */
   select(id: string): void;
   /** Plain click on a masked layer's thumbnail: edit its pixels. */
   targetLayer(id: string): void;
@@ -97,7 +97,7 @@ export interface RowActions extends MaskSlotActions {
   rename(id: string, name: string): void;
   pickColor(id: string, anchor: HTMLElement): void;
   toggleInvert(id: string): void;
-  /** Duplicate button of a read-only row (Image / Input Mask). */
+  /** Duplicate button of a read-only row (Image / Input Mask, Background). */
   duplicate(id: string): void;
   /** Inline rename started/ended (the panel defers rebuilds; focus is handed back). */
   renaming(active: boolean): void;
@@ -130,13 +130,11 @@ export class LayerRow {
    * @param kind - Row kind.
    * @param id - Layer id (`"background"` for the background row).
    * @param actions - Callbacks.
-   * @param maskOpacity - Overlay opacity control (mask rows; shown as "Overlay N%").
    */
   constructor(
     readonly kind: RowKind,
     readonly id: string,
     private readonly actions: RowActions,
-    maskOpacity?: OptionControl,
   ) {
     const maskLike = kind === "mask" || kind === "imageMask";
     const readOnly = kind === "imageMask" || kind === "background";
@@ -181,7 +179,6 @@ export class LayerRow {
       const swatch = button("cps-layer-swatch", () => actions.pickColor(id, swatch));
       swatch.title = "Mask colour (display only)";
       this.sub.appendChild(swatch);
-      if (maskOpacity) this.sub.appendChild(maskOpacity.element);
       this.swatch = swatch;
     } else if (kind === "background") {
       this.sub.textContent = "Read-only";
@@ -204,9 +201,9 @@ export class LayerRow {
       this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
       this.element.appendChild(this.lock);
     }
-    if (kind === "imageMask") {
+    if (readOnly) {
       this.dupButton = button("cps-layer-dup", () => actions.duplicate(id));
-      this.dupButton.title = "Duplicate to an editable mask";
+      this.dupButton.title = kind === "background" ? "Duplicate to an editable layer" : "Duplicate to an editable mask";
       setIcon(this.dupButton, "duplicate", 15);
       this.element.appendChild(this.dupButton);
     }
@@ -214,10 +211,10 @@ export class LayerRow {
     setIcon(this.soloButton, "solo", 16);
     this.element.appendChild(this.soloButton);
 
-    // The Background row isn't selectable, but any click on it still goes to `select` (it ends the lmask-only view).
+    // The Background row: a plain click selects it (read-only); Ctrl+click does nothing (no pixels to load).
     if (kind === "background") {
       this.element.addEventListener("click", (event) => {
-        if (!isControl(event.target)) actions.select(id);
+        if (!isControl(event.target) && !event.ctrlKey && !event.metaKey) actions.select(id);
       });
     } else {
       this.element.addEventListener("click", (event) => {
@@ -358,10 +355,10 @@ function button(className: string, onClick: (event: MouseEvent) => void): HTMLBu
 
 /**
  * Whether an event target is an interactive control inside a row (buttons,
- * inputs, the opacity control) rather than the row itself.
+ * inputs) rather than the row itself.
  * @param target - Event target.
  * @returns `true` for controls.
  */
 export function isControl(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest("button, input, select, .cps-num") !== null;
+  return target instanceof Element && target.closest("button, input, select") !== null;
 }

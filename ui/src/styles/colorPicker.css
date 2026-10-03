@@ -164,7 +164,7 @@
   height: 16px;
   border-radius: 2px;
   border: 1px solid rgba(0, 0, 0, 0.35);
-  box-shadow: 0 0 0 1px color-mix(in srgb, #fff 25%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
   cursor: pointer;
   padding: 0;
   background: transparent; /* set via inline style */

@@ -2,7 +2,8 @@
  * The one gate every pixel-editing operation passes before it modifies a
  * layer (brush / eraser / shapes via `paintOps.ts`, bucket via
  * `pixelOps.ts`, selection fill / clear via `selectionOps.ts`): lock and
- * visibility notes, the Image Mask refusal (it is never edited), and
+ * visibility notes, the Image Mask and selected-Background refusals (they
+ * are never edited), and
  * -- for text layers -- the rasterize prompt (SPEC "Layers" > "The edit gate").
  *
  * Rasterizing turns the layer into a paint layer (drops `textData`; the
@@ -16,7 +17,7 @@
 
 import { IMAGE_MASK_ID } from "../document/imageMask";
 import type { Layer } from "../document/types";
-import { HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, imageMaskNote, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { BACKGROUND_NOTE, HIDDEN_LAYER_NOTE, HIDDEN_MASK_NOTE, imageMaskNote, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
 import { editsViewedMask, layerMaskBlockNote } from "./layerMask";
 import type { EditKind } from "./layerMask";
 import { shownOnStage } from "./solo";
@@ -52,8 +53,25 @@ export function rasterizeDecision(layer: Pick<Layer, "kind">, confirm: () => boo
 export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
 
 /**
- * Why `layer` can't be edited right now, or `null`. The Image Mask / Input Mask row
- * never is. Order otherwise: hidden (eye) > hidden by another layer's
+ * Why `layer` can't be edited right now, or `null`. While the Background
+ * row is selected (`EditorState.sourceSelected`) nothing is: every edit
+ * resolves to the current row, and that row is the read-only Background.
+ * Otherwise {@link layerBlockNote}.
+ * @param s - Editor state (solos, source selection).
+ * @param layer - Layer to edit.
+ * @param kind - What the edit is (default: a mask-aware pixel edit).
+ * @returns Note text, or `null` if editing is allowed.
+ */
+export function editBlockNote(s: EditorState, layer: Layer, kind: EditKind = "paint"): string | null {
+  if (s.sourceSelected === "background") return BACKGROUND_NOTE;
+  return layerBlockNote(s, layer, kind);
+}
+
+/**
+ * The layer's own part of {@link editBlockNote} (ignores a selected
+ * Background row): for edits that name their layer explicitly and select
+ * it (opening a text layer with the Text tool). The Image Mask / Input Mask row
+ * never is editable. Order otherwise: hidden (eye) > hidden by another layer's
  * solo > locked -- showing it is the first fix. A soloed layer with its eye
  * off stays blocked (eye state wins). Exception: in the lmask-only
  * view, the viewed layer's targeted mask is editable while the layer is
@@ -66,7 +84,7 @@ export type PixelEditPlan = "proceed" | "blocked" | "rasterized";
  * @param kind - What the edit is (default: a mask-aware pixel edit).
  * @returns Note text, or `null` if editing is allowed.
  */
-export function editBlockNote(s: EditorState, layer: Layer, kind: EditKind = "paint"): string | null {
+export function layerBlockNote(s: EditorState, layer: Layer, kind: EditKind = "paint"): string | null {
   if (layer.id === IMAGE_MASK_ID) return imageMaskNote(layer.name);
   // The lmask-only view edits its mask even with the layer hidden; lock still refuses.
   const viewedMask = kind !== "whole" && editsViewedMask(s, layer);

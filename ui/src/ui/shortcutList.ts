@@ -3,7 +3,10 @@
  * handoff section 9). A condensed copy of SPEC section 24 "Shortcuts": one
  * row per key or key pair, short action text, grouped into the overlay's
  * eight section cards. When a binding changes, update SPEC section 24 and
- * this list together (`shortcuts.ts` stays the implementation).
+ * this list together (`shortcuts.ts` stays the implementation). Only the
+ * editor's own keys: ComfyUI keys the editor merely lets through or wraps
+ * (Ctrl+S save, Ctrl+Enter queue) are not listed. User-facing wording: an
+ * lmask is "Layer Mask", a cmask is "Mask" (internal terms stay out).
  */
 
 /** One row: the keys (or click / drag gesture) and what they do. */
@@ -18,6 +21,25 @@ export interface ShortcutSection {
   readonly rows: readonly ShortcutRow[];
 }
 
+/**
+ * The "Essentials" band at the top of the overlay: a curated handful of the
+ * keys used most, repeated from the sections below (keep both in sync).
+ */
+export const QUICK_ROWS: readonly ShortcutRow[] = [
+  { keys: "Ctrl Z / Ctrl ⇧ Z", action: "Undo / redo" },
+  { keys: "B / E", action: "Brush / eraser" },
+  { keys: "[ / ]", action: "Brush size" },
+  { keys: "1..9 / 0", action: "Opacity" },
+  { keys: "X", action: "Swap colours" },
+  { keys: "Alt (hold)", action: "Eyedropper" },
+  { keys: "Ctrl (hold)", action: "Move layer" },
+  { keys: "⇧ click", action: "Straight line" },
+  { keys: "Space drag", action: "Pan" },
+  { keys: "Ctrl 0", action: "Fit to view" },
+  { keys: "Q", action: "Quick Mask" },
+  { keys: "F", action: "Fullscreen" },
+];
+
 /** Every section of the help overlay, in display order. */
 export const HELP_SECTIONS: readonly ShortcutSection[] = [
   {
@@ -25,7 +47,6 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
     rows: [
       { keys: "Ctrl Z", action: "Undo" },
       { keys: "Ctrl ⇧ Z / Ctrl Y", action: "Redo" },
-      { keys: "Ctrl S", action: "Save (uploads first)" },
       { keys: "Esc", action: "Close menu · commit text · cancel float · deselect · exit fullscreen" },
       { keys: "Q", action: "Quick Mask" },
       { keys: "F", action: "Fullscreen" },
@@ -51,7 +72,7 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
       { keys: "M / ⇧ M", action: "Marquees / cycle marquees" },
       { keys: "Ctrl (hold)", action: "Temporary Move layer" },
       { keys: "Alt (hold)", action: "Temporary eyedropper" },
-      { keys: "Hold / right-click a slot", action: "Tool fly-out" },
+      { keys: "Hold / right-click", action: "Tool slot: fly-out" },
       { keys: "Esc / Ctrl Enter", action: "Commit text (Enter = new line)" },
       { keys: "Ctrl drag (Text)", action: "Move the text layer" },
     ],
@@ -65,7 +86,7 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
       { keys: "⇧ click", action: "Straight line from the last stroke" },
       { keys: "⇧ drag", action: "15° steps / square, circle" },
       { keys: "Alt drag", action: "Rectangle, ellipse from centre" },
-      { keys: "X", action: "Swap colours (lmask: swatches)" },
+      { keys: "X", action: "Swap colours (Layer Mask: swatches)" },
       { keys: "D", action: "Default colours" },
       { keys: "Alt click (Eyedropper)", action: "Pick into background" },
       { keys: "Drag a number label", action: "Scrub (⇧ ×10)" },
@@ -74,31 +95,31 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
   {
     title: "Selection",
     rows: [
-      { keys: "⇧ / Alt / ⇧ Alt press", action: "Add / subtract / intersect" },
+      { keys: "⇧ / Alt / ⇧ Alt", action: "Held at press: add / subtract / intersect" },
       { keys: "Ctrl A / Ctrl D", action: "Select all / deselect" },
       { keys: "Ctrl ⇧ I / ⇧ F7", action: "Invert" },
-      { keys: "Alt / Ctrl Backspace", action: "Fill with foreground / background" },
-      { keys: "Del / Backspace", action: "Clear (lmask: reveal)" },
+      { keys: "Alt Backspace / Ctrl Backspace", action: "Fill with foreground / background" },
+      { keys: "Del / Backspace", action: "Clear (Layer Mask: reveal)" },
       { keys: "Drag inside", action: "Move the outline" },
-      { keys: "Ctrl / Ctrl Alt drag inside", action: "Lift the pixels / a copy" },
+      { keys: "Ctrl drag / Ctrl Alt drag", action: "Inside: lift the pixels / a copy" },
       { keys: "Arrows / ⇧ arrows", action: "Nudge the outline 1 / 10 px" },
       { keys: "Alt (Lasso)", action: "Straight segments" },
-      { keys: "Double-click / click the start", action: "Close the polygon" },
+      { keys: "Double-click / click start", action: "Close the polygon (Lasso)" },
     ],
   },
   {
     title: "Layers and masks",
     rows: [
-      { keys: "Click a row", action: "Select (cmask row: Quick Mask on)" },
+      { keys: "Click a row", action: "Select (Mask row: Quick Mask on)" },
       { keys: "Ctrl click a row", action: "Selection from the layer (+⇧ / Alt)" },
       { keys: "Double-click a name", action: "Rename" },
       { keys: "Drag a row", action: "Reorder" },
       { keys: "Ctrl E", action: "Merge down" },
-      { keys: "Click / Alt click add-mask", action: "Add lmask: reveal / hide all" },
-      { keys: "Click lmask", action: "Edit the lmask" },
-      { keys: "⇧ click lmask", action: "Enable / disable" },
-      { keys: "Alt click lmask", action: "View the lmask alone" },
-      { keys: "Ctrl click lmask", action: "Soft selection of the shown part" },
+      { keys: "Click / Alt click", action: "Add Layer Mask button: reveal / hide all" },
+      { keys: "Click Layer Mask", action: "Edit the Layer Mask" },
+      { keys: "⇧ click Layer Mask", action: "Enable / disable" },
+      { keys: "Alt click Layer Mask", action: "View the Layer Mask alone" },
+      { keys: "Ctrl click Layer Mask", action: "Soft selection of the shown part" },
       { keys: "Click layer thumbnail", action: "Edit the pixels" },
     ],
   },
@@ -122,7 +143,7 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
       { keys: "Ctrl X", action: "Cut" },
       { keys: "Ctrl V", action: "Paste as a new layer" },
       { keys: "Ctrl ⇧ V", action: "Paste in place" },
-      { keys: "Hold / right-click Paste", action: "Choose the source" },
+      { keys: "Hold / right-click", action: "Paste button: choose the source" },
     ],
   },
   {

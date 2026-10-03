@@ -1,16 +1,18 @@
 /**
  * Layers tab of the side panel (SPEC "Layers" > "Layers panel"; design
  * handoff "Layers tab"). Collapsible sections (`layerSections.ts`,
- * `layerSectionHeader.ts`): COMFYUI MASKS (cmask rows), LAYERS (paint and
+ * `layerSectionHeader.ts`): MASKS (cmask rows), LAYERS (paint and
  * text rows), SOURCE (the Image / Input Mask row, `imageMaskRow.ts`, and the
- * Background). The opacity of the selected row's layer is
+ * Background). The MASKS and LAYERS headers carry "+" and Delete (the
+ * selected row of that section). The opacity of the selected row's layer is
  * {@link LayersPanel.headerControl}, shown in the side panel header; the
  * footer is `layersFooter.ts`.
  *
  * Selection follows the paint target: clicking a paint row makes it the
  * active layer and turns Quick Mask off; clicking a mask row makes it the
  * current mask and turns Quick Mask on (so `Q`, the Quick Mask button and
- * the panel stay in sync). The current mask always has a left bar in its
+ * the panel stay in sync); clicking the Background row selects it read-only
+ * (`Editor.selectBackground`: edits refused, Duplicate makes a paint layer). The current mask always has a left bar in its
  * colour; solo buttons (view only) dim the other rows. Paint rows carry the
  * layer mask slot (add icon / mask thumbnail; its clicks select the row
  * first). All edits go through the editor; the panel re-renders from editor
@@ -21,7 +23,7 @@ import type { Editor } from "../engine/editor";
 import { BACKGROUND_SOLO_ID } from "../engine/solo";
 import { findAnyLayer, IMAGE_MASK_ID } from "../document/imageMask";
 import { maskDisplayColor } from "../document/masks";
-import { duplicateRow, imageMaskHint } from "./imageMaskRow";
+import { canDuplicateRow, duplicateRow, imageMaskHint } from "./imageMaskRow";
 import { isPaintLike } from "../document/layerList";
 import type { Layer } from "../document/types";
 import { LayerDrag } from "./layerDrag";
@@ -29,7 +31,7 @@ import { layerOpacityControl, MaskColorPicker } from "./layerControls";
 import type { ColorPickFn, LayerTarget } from "./layerControls";
 import { LayerRow } from "./layerRow";
 import type { RowActions, RowKind } from "./layerRow";
-import { arrangeSections } from "./layerSections";
+import { arrangeSections, sectionDeleteState } from "./layerSections";
 import type { SectionId } from "./layerSections";
 import { SectionHeader } from "./layerSectionHeader";
 import { LayerSelectHover } from "./layerSelectHover";
@@ -56,6 +58,12 @@ export interface LayersPanelContext {
   beforeEdit(): void;
   /** A text field of the panel lost focus: hand keyboard focus back. */
   releaseFocus(): void;
+  /**
+   * Show a transient stage note (the pill refused edits use), e.g. why a
+   * header Delete was refused.
+   * @param text - Note text.
+   */
+  showNote(text: string): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -74,7 +82,6 @@ export class LayersPanel {
   private readonly headers: Readonly<Record<SectionId, SectionHeader>>;
   private readonly collapsed: Record<SectionId, boolean> = { masks: false, layers: false, source: false };
   private readonly rows = new Map<string, LayerRow>();
-  private readonly maskControls = new Map<string, OptionControl>();
   private readonly drag: LayerDrag;
   private readonly thumbs = new RefreshThrottle(() => this.refreshThumbs());
   private readonly imageKeys = new ImageKeys();
@@ -95,17 +102,18 @@ export class LayersPanel {
     this.headerControl.append(this.opacity.element);
 
     this.list = el("div", "cps-layers-list");
+    // A refused Delete (last layer, Image Mask, nothing of that section selected) explains itself as the stage note.
+    const remove = { onDelete: () => this.deleteSelected(), onRefused: (reason: string) => ctx.showNote(reason) };
     this.headers = {
-      masks: new SectionHeader("masks", () => this.toggleSection("masks"), { title: "New mask", onClick: () => this.addMask() }),
-      layers: new SectionHeader("layers", () => this.toggleSection("layers"), { title: "New layer", onClick: () => this.addLayer() }),
+      masks: new SectionHeader("masks", () => this.toggleSection("masks"), { title: "New mask", onClick: () => this.addMask() }, remove),
+      layers: new SectionHeader("layers", () => this.toggleSection("layers"), { title: "New layer", onClick: () => this.addLayer() }, remove),
       source: new SectionHeader("source", () => undefined),
     };
     this.footer = new LayersFooter({
       addLayer: () => this.addLayer(),
       addMask: () => this.addMask(),
-      duplicate: () => this.withEditor((e) => duplicateRow(e, this.selectedTarget()?.layerId ?? null)),
+      duplicate: () => this.withEditor((e) => duplicateRow(e, this.selectedRowId())),
       mergeDown: () => this.withEditor((e) => e.mergeDown()),
-      remove: () => this.deleteSelected(),
     });
     this.element.append(this.list, this.footer.element);
 
@@ -141,7 +149,6 @@ export class LayersPanel {
     this.renaming = false;
     for (const row of this.rows.values()) row.element.remove();
     this.rows.clear();
-    this.maskControls.clear();
     if (editor) {
       this.editorUnbind = [
         editor.events.on("layers", () => this.sync()),
@@ -185,16 +192,17 @@ export class LayersPanel {
     if (editor) {
       const doc = editor.doc;
       const targeting = editor.paintTarget === "mask";
+      const bgSelected = editor.backgroundSelected;
       const maskId = editor.maskLayer?.id;
       const add = (kind: RowKind, layer: Readonly<Layer>, extra?: { hint?: string; canDuplicate?: boolean }): void => {
         const row = this.rowFor(kind, layer.id);
         const active = layer.id === doc.activeLayerId;
         const isCurrentMask = kind !== "paint" && layer.id === maskId;
-        const selected = kind !== "paint" ? targeting && isCurrentMask : !targeting && active;
+        const selected = kind !== "paint" ? targeting && isCurrentMask : !targeting && !bgSelected && active;
         const solo = soloMark(layer, editor.solo);
         const maskTarget = editor.layerMask.target(layer.id) === "mask";
         const maskViewing = editor.layerMask.viewing === layer.id;
-        const flags = { selected, standby: targeting && active, current: isCurrentMask, solo, maskTarget, maskViewing };
+        const flags = { selected, standby: (targeting || bgSelected) && active, current: isCurrentMask, solo, maskTarget, maskViewing };
         const model = rowModel(layer, flags);
         if (extra?.hint) model.hint = extra.hint;
         if (extra?.canDuplicate !== undefined) model.canDuplicate = extra.canDuplicate;
@@ -212,7 +220,8 @@ export class LayersPanel {
       }
       const bg = this.rowFor("background", BACKGROUND_ID);
       const bgSolo = editor.solo.paint === BACKGROUND_ID ? "on" : "off";
-      bg.update({ id: BACKGROUND_ID, name: "Background", visible: doc.backgroundVisible !== false, locked: true, selected: false, standby: false, solo: bgSolo });
+      const visible = doc.backgroundVisible !== false;
+      bg.update({ id: BACKGROUND_ID, name: "Background", visible, locked: true, selected: bgSelected, standby: false, solo: bgSolo, canDuplicate: canDuplicateRow(editor, BACKGROUND_ID) });
       wanted.push(bg);
     }
     const keep = new Set(wanted.map((r) => r.id));
@@ -220,7 +229,6 @@ export class LayersPanel {
       if (keep.has(id)) continue;
       row.element.remove();
       this.rows.delete(id);
-      this.maskControls.delete(id);
     }
     this.syncHeaders();
     const children = arrangeSections<LayerRow, HTMLElement>(
@@ -231,7 +239,6 @@ export class LayersPanel {
     ).map((item) => (item instanceof LayerRow ? item.element : item));
     const current = [...this.list.children];
     if (current.length !== children.length || children.some((c, i) => current[i] !== c)) this.list.replaceChildren(...children);
-    for (const control of this.maskControls.values()) control.refresh();
     this.syncFooter();
     this.thumbs.request();
   }
@@ -239,20 +246,30 @@ export class LayersPanel {
   private syncHeaders(): void {
     const editor = this.editor;
     const current = editor?.maskLayer ?? null;
+    // Delete acts on the selected row (as the footer's did): allowed or refused per section.
+    const targeting = editor?.paintTarget === "mask";
+    const targetId = this.selectedRowId();
+    const deletable = !!(editor && targetId && editor.layerOps.canDelete(targetId));
+    const rowName = editor?.imageMask.info?.name;
     this.headers.masks.update({
       collapsed: this.collapsed.masks,
       currentMask: current ? { name: current.name, color: maskDisplayColor(current) } : null,
       addDisabled: editor && !editor.layerOps.canAddMask() ? { title: newMaskTitle(editor) } : null,
+      remove: sectionDeleteState("masks", targeting, targetId, deletable, rowName),
     });
     const active = editor ? findAnyLayer(editor.doc, editor.doc.activeLayerId) : undefined;
-    this.headers.layers.update({ collapsed: this.collapsed.layers, ...(active ? { activeName: active.name } : {}) });
+    this.headers.layers.update({
+      collapsed: this.collapsed.layers,
+      ...(active ? { activeName: active.name } : {}),
+      remove: sectionDeleteState("layers", targeting, targetId, deletable, rowName),
+    });
     this.headers.source.update({ collapsed: false });
   }
 
   private syncFooter(): void {
     const editor = this.editor;
     const target = this.selectedTarget();
-    this.footer.sync(editor, target?.layerId ?? null);
+    this.footer.sync(editor, this.selectedRowId());
     this.opacity.refresh();
     this.headerControl.classList.toggle("cps-dim", !target);
     const label = this.opacity.element.querySelector(".cps-num-label");
@@ -263,12 +280,7 @@ export class LayersPanel {
     const existing = this.rows.get(id);
     if (existing && existing.kind === kind) return existing;
     existing?.element.remove();
-    let maskOpacity: OptionControl | undefined;
-    if (kind === "mask" || kind === "imageMask") {
-      maskOpacity = layerOpacityControl("Overlay", "Mask overlay opacity (display only)", () => this.targetFor(id), this.ctx.popovers);
-      this.maskControls.set(id, maskOpacity);
-    }
-    const row = new LayerRow(kind, id, this.actions, maskOpacity);
+    const row = new LayerRow(kind, id, this.actions);
     this.rows.set(id, row);
     return row;
   }
@@ -288,9 +300,9 @@ export class LayersPanel {
       // The lmask-only view follows these in the engine (`LayerMaskOps`): it ends on a
       // cmask row / a paint row targeting its pixels and moves to a row targeting its mask.
       select: (id) => {
-        // The Background row isn't selectable; a click on it only ends the lmask-only view.
-        if (id === BACKGROUND_ID) return this.editor?.layerMask.endView();
         this.withEditor((e) => {
+          // Read-only like the Image Mask row (its selection also ends the lmask-only view).
+          if (id === BACKGROUND_ID) return e.selectBackground();
           if (e.selectMask(id)) return;
           selectPaint(e, id);
         });
@@ -318,8 +330,8 @@ export class LayersPanel {
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
       toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
-      // Read-only rows: only the Image / Input Mask has a duplicate path (an editable cmask).
-      duplicate: (id) => this.withEditor((e) => id === IMAGE_MASK_ID && duplicateRow(e, id)),
+      // Read-only rows: the Image / Input Mask (an editable cmask) and the Background (a paint layer).
+      duplicate: (id) => this.withEditor((e) => (id === IMAGE_MASK_ID || id === BACKGROUND_ID) && duplicateRow(e, id)),
       pickColor: (id, anchor) => {
         const editor = this.editor;
         const layer = editor && findLayer(editor, id);
@@ -347,7 +359,7 @@ export class LayersPanel {
     });
   }
 
-  /** Delete the selected row's layer (the current mask in Quick Mask, else the active layer). */
+  /** Delete the selected row's layer (the current mask in Quick Mask, else the active layer); the section headers' trash buttons. */
   private deleteSelected(): void {
     this.withEditor((e) => {
       const target = this.selectedTarget();
@@ -362,12 +374,18 @@ export class LayersPanel {
     fn(editor);
   }
 
-  /** Layer the header opacity edits: the mask in Quick Mask, else the active paint layer. */
+  /** Layer the header opacity edits: the mask in Quick Mask, else the active paint layer; none with the Background selected. */
   private selectedTarget(): LayerTarget | null {
+    const id = this.selectedRowId();
+    return id ? this.targetFor(id) : null;
+  }
+
+  /** Id of the selected row: {@link BACKGROUND_ID}, the mask in Quick Mask, else the active paint layer. */
+  private selectedRowId(): string | null {
     const editor = this.editor;
     if (!editor) return null;
-    const id = editor.paintTarget === "mask" ? editor.maskLayer?.id : editor.doc.activeLayerId;
-    return id ? this.targetFor(id) : null;
+    if (editor.backgroundSelected) return BACKGROUND_ID;
+    return (editor.paintTarget === "mask" ? editor.maskLayer?.id : editor.doc.activeLayerId) ?? null;
   }
 
   private targetFor(id: string): LayerTarget | null {

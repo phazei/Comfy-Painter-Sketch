@@ -220,5 +220,8 @@ export function imageMaskNote(name: string): string {
 /** {@link imageMaskNote} of the Image Mask row. */
 export const IMAGE_MASK_NOTE = imageMaskNote("Image Mask");
 
+/** Note shown when any pixel edit is attempted while the Background row is selected. */
+export const BACKGROUND_NOTE = imageMaskNote("Background");
+
 /** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
 export const HIDDEN_MASK_NOTE = "The mask is hidden.";

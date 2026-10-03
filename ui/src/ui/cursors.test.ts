@@ -47,14 +47,13 @@ describe("cursors", () => {
     expect(dotCursor()).toMatch(/\) 4 4, crosshair$/);
   });
 
-  it("badges: mode, target and ban change the cursor; ban replaces the mode", () => {
+  it("badges: mode and ban change the cursor; ban replaces the mode", () => {
     const plain = iconCursor("crosshair");
     const add = iconCursor("crosshair", { mode: "add" });
     expect(new Set([plain, add, iconCursor("crosshair", { mode: "subtract" }), iconCursor("crosshair", { mode: "intersect" })]).size).toBe(4);
-    const art = iconCursorArt("bucket", { mode: "add", target: true, ban: true });
-    expect(art.parts.map((p) => p.icon)).toEqual(["bucket", "pointer", "mask", "ban"]);
+    const art = iconCursorArt("bucket", { mode: "add", ban: true });
+    expect(art.parts.map((p) => p.icon)).toEqual(["bucket", "pointer", "ban"]);
     expect(art.parts.find((p) => p.icon === "ban")?.tone).toBe("ban");
-    expect(art.parts.find((p) => p.icon === "mask")?.tone).toBe("accent");
   });
 
   it("selection badges: mode at pointer-down, only with a selection", () => {
@@ -86,7 +85,7 @@ describe("cursors", () => {
   });
 
   it("every glyph the cursors use exists", () => {
-    for (const name of ["preciseCross", "textCursor", "pointer", "bucket", "lasso", "polygonLasso", "eyedropper", "magicWand", "move", "cut", "copyPlus", "marqueeRect", "squareDashedPlus", "squareDashedMinus", "squareDashedX", "bgSlot", "mask", "ban", "eraser", "dot", "resizeNS", "resizeEW", "resizeNWSE", "resizeNESW", "rotate", "hand", "handGrab", "hourglass"]) {
+    for (const name of ["preciseCross", "textCursor", "pointer", "bucket", "lasso", "polygonLasso", "eyedropper", "magicWand", "move", "cut", "copyPlus", "marqueeRect", "squareDashedPlus", "squareDashedMinus", "squareDashedX", "bgSlot", "ban", "eraser", "dot", "resizeNS", "resizeEW", "resizeNWSE", "resizeNESW", "rotate", "hand", "handGrab", "hourglass"]) {
       expect(hasIcon(name), name).toBe(true);
     }
   });

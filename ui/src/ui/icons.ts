@@ -37,7 +37,7 @@ const CUSTOM: Readonly<Record<string, string>> = {
   pasteClipspace:
     `${LUCIDE["clipboard"]}` +
     "<path fill='currentColor' stroke='none' d='M9.47 19.44Q8.55 19.44 8.82 18.54L9.2 17.24H8.05Q7.14 17.24 7.4 16.34L8.47 12.65Q8.73 11.75 9.64 11.75H10.82L11.19 10.46Q11.45 9.56 12.36 9.56H15.95Q16.86 9.56 16.6 10.46L16.17 11.96Q15.91 12.85 15 12.85H11.76L10.8 16.14H14.03Q14.94 16.14 14.68 17.04L14.24 18.54Q13.98 19.44 13.07 19.44Z'/>",
-  // Mask glyph (Photoshop's add-mask symbol); also the cursor's mask-target badge.
+  // Mask glyph (Photoshop's add-mask symbol).
   mask: "<rect x='3' y='3' width='18' height='18' rx='2'/><circle cx='12' cy='12' r='4' fill='currentColor'/>",
   // Inverted mask glyph (Alt on the add-mask button: hide all).
   maskInverted:

@@ -55,8 +55,7 @@
   z-index: 1790;
   box-sizing: border-box;
   display: flex;
-  /* Top strip holds the exit button so it never covers the options bar. */
-  padding: 40px 12px 12px;
+  padding: 12px;
   background: color-mix(in srgb, var(--bg-color, #202020) 92%, black);
   overscroll-behavior: contain;
 }
@@ -69,30 +68,6 @@
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
 }
 
-.cps-fullscreen-exit {
-  position: absolute;
-  top: 6px;
-  right: 12px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  margin: 0;
-  padding: 0 10px;
-  border: 1px solid var(--border-color, #4e4e4e);
-  border-radius: 4px;
-  background: var(--comfy-menu-bg, #353535);
-  color: var(--input-text, #ddd);
-  font: 12px/1 system-ui, sans-serif;
-  cursor: pointer;
-  appearance: none;
-}
-
-.cps-fullscreen-exit:hover {
-  background: color-mix(in srgb, var(--input-text, #ddd) 14%, var(--comfy-menu-bg, #353535));
-}
-
-.cps-fullscreen-exit:focus-visible,
 .cps-fullscreen-placeholder:focus-visible {
   outline: 2px solid var(--p-primary-color, #3b82f6);
   outline-offset: 1px;

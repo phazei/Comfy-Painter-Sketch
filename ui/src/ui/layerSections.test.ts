@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import { findDropTarget } from "./layerDrag";
 import type { DropRow } from "./layerDrag";
 import type { RowKind } from "./layerRow";
-import { arrangeSections, isCollapsible, rowSection, sectionTitle } from "./layerSections";
+import { INPUT_MASK_NAME, IMAGE_MASK_ID } from "../document/imageMask";
+import { BACKGROUND_SOLO_ID } from "../engine/solo";
+import { arrangeSections, isCollapsible, rowSection, sectionDeleteState, sectionTitle } from "./layerSections";
 import type { SectionId } from "./layerSections";
 
 /** Row kinds top -> bottom as the panel builds them. */
@@ -36,8 +38,8 @@ describe("rowSection / isCollapsible", () => {
 
 describe("sectionTitle", () => {
   it("fixed titles", () => {
-    expect(sectionTitle("masks", false)).toBe("COMFYUI MASKS");
-    expect(sectionTitle("masks", true, "x")).toBe("COMFYUI MASKS");
+    expect(sectionTitle("masks", false)).toBe("MASKS");
+    expect(sectionTitle("masks", true, "x")).toBe("MASKS");
     expect(sectionTitle("source", true)).toBe("SOURCE");
   });
 
@@ -45,6 +47,46 @@ describe("sectionTitle", () => {
     expect(sectionTitle("layers", false, "Sky")).toBe("LAYERS");
     expect(sectionTitle("layers", true, "Sky 2")).toBe("LAYER: SKY 2");
     expect(sectionTitle("layers", true)).toBe("LAYERS");
+  });
+});
+
+describe("sectionDeleteState (header trash buttons)", () => {
+  it("MASKS: allowed for a deletable current cmask under Quick Mask", () => {
+    expect(sectionDeleteState("masks", true, "M1", true)).toEqual({ refused: false, title: "Delete mask" });
+  });
+
+  it("MASKS: the last mask can't be deleted", () => {
+    expect(sectionDeleteState("masks", true, "M1", false)).toEqual({ refused: true, title: "The last mask can't be deleted (clear it instead)" });
+  });
+
+  it("MASKS: the Image / Input Mask row is never deletable", () => {
+    expect(sectionDeleteState("masks", true, IMAGE_MASK_ID, false).refused).toBe(true);
+    expect(sectionDeleteState("masks", true, IMAGE_MASK_ID, false).title).toBe("The Image Mask can't be deleted (it follows the image's transparency)");
+    expect(sectionDeleteState("masks", true, IMAGE_MASK_ID, false, INPUT_MASK_NAME).title).toBe("The Input Mask can't be deleted (it follows the mask input)");
+  });
+
+  it("MASKS: refused while a paint row is selected (asks to select a mask)", () => {
+    expect(sectionDeleteState("masks", false, "A", true)).toEqual({ refused: true, title: "Select a mask to delete it" });
+  });
+
+  it("LAYERS: allowed for a deletable active layer, refused for the last one", () => {
+    expect(sectionDeleteState("layers", false, "A", true)).toEqual({ refused: false, title: "Delete layer" });
+    expect(sectionDeleteState("layers", false, "A", false)).toEqual({ refused: true, title: "The last layer can't be deleted" });
+  });
+
+  it("LAYERS: refused while a cmask row is selected (Quick Mask on)", () => {
+    expect(sectionDeleteState("layers", true, "M1", true)).toEqual({ refused: true, title: "Select a layer to delete it" });
+  });
+
+  it("Background row selected: both headers ask for a row of their own", () => {
+    expect(sectionDeleteState("layers", false, BACKGROUND_SOLO_ID, false)).toEqual({ refused: true, title: "Select a layer to delete it" });
+    expect(sectionDeleteState("masks", false, BACKGROUND_SOLO_ID, false)).toEqual({ refused: true, title: "Select a mask to delete it" });
+  });
+
+  it("no selection or SOURCE: refused", () => {
+    expect(sectionDeleteState("masks", true, null, true)).toEqual({ refused: true, title: "Select a mask to delete it" });
+    expect(sectionDeleteState("layers", false, null, true)).toEqual({ refused: true, title: "Select a layer to delete it" });
+    expect(sectionDeleteState("source", false, "A", true).refused).toBe(true);
   });
 });
 

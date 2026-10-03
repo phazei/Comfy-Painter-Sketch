@@ -57,14 +57,16 @@ export class PaintOps {
 
   /**
    * Switch the paint target. Targeting the mask adds a default mask layer to
-   * documents that have none.
+   * documents that have none. Ends a Background row selection (even when
+   * the target stays the same).
    * @param target - New target.
    */
   setPaintTarget(target: PaintTarget): void {
     const s = this.s;
-    if (target === s.target) return;
+    if (target === s.target && !s.sourceSelected) return;
     if (s.stroke.active) s.cancelStroke();
     if (target === "mask") s.ensureMask();
+    s.sourceSelected = null;
     s.target = target;
     s.events.emit("mask", undefined);
   }

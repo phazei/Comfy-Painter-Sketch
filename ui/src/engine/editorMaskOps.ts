@@ -3,8 +3,8 @@
  * `editor.ts` to keep that file under the ~400-line guideline.
  *
  * Encapsulates the `paintTarget`, `maskLayer`, `setPaintTarget`,
- * `togglePaintTarget`, and `setMaskVisible` operations over the shared
- * editor state and paint operations.
+ * `togglePaintTarget`, `setMaskVisible` and Background row selection
+ * operations over the shared editor state and paint operations.
  */
 
 import { findAnyLayer } from "../document/imageMask";
@@ -70,12 +70,35 @@ export class EditorMaskOps {
     const s = this.s;
     // Mask layers and the Image Mask row (pixel edits on it are refused).
     if (findAnyLayer(s.doc, layerId)?.kind !== "mask") return false;
-    const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId;
+    const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId || s.sourceSelected !== null;
     if (changed && s.stroke.active) s.cancelStroke();
     s.currentMaskId = layerId;
     if (s.target !== "mask") this.paint.setPaintTarget("mask");
-    else if (changed) s.events.emit("mask", undefined);
+    else if (changed) {
+      s.sourceSelected = null;
+      s.events.emit("mask", undefined);
+    }
     return true;
+  }
+
+  /** The Background row is selected (read-only; {@link selectBackground}). */
+  get backgroundSelected(): boolean {
+    return this.s.sourceSelected === "background";
+  }
+
+  /**
+   * Select the read-only Background row (session state: not saved, not
+   * undoable). Quick Mask turns off; the active layer and current mask stay
+   * as they are, and every pixel edit is refused with a note until another
+   * row is selected (`editBlockNote`).
+   */
+  selectBackground(): void {
+    const s = this.s;
+    if (s.sourceSelected === "background") return;
+    if (s.stroke.active) s.cancelStroke();
+    s.target = "paint";
+    s.sourceSelected = "background";
+    s.events.emit("mask", undefined);
   }
 
   /**
@@ -97,6 +120,7 @@ export class EditorMaskOps {
    */
   editTarget(kind: "paint" | "other"): { mask: boolean; blocked: boolean } {
     const s = this.s;
+    if (s.sourceSelected) return { mask: false, blocked: !s.loading };
     const layer = targetLayer(s.doc, s.target, s.currentMaskId);
     const mask = s.target === "mask" || targetedMaskLayer(s) !== null;
     return { mask, blocked: !s.loading && layer !== undefined && editBlockNote(s, layer, kind) !== null };

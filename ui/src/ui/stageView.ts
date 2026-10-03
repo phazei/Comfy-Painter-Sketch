@@ -220,7 +220,7 @@ export class StageView {
 
   /**
    * CSS cursor of a (non-move) tool with its badges: the selection mode (or
-   * Alt on the eyedropper: background slot), and for pixel tools the mask target and
+   * Alt on the eyedropper: background slot), and for pixel tools
    * `ban` while the edit gate would refuse.
    */
   private toolCss(tool: Tool, session: EditorSession): string {
@@ -249,7 +249,7 @@ export class StageView {
     const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
     const eyedropperAlt = tool.id === "eyedropper" && tool === session.tools.active && this.altDown;
     const mode = this.badge ?? (eyedropperAlt ? "bgSlot" : null);
-    return { mode, target: target?.mask ?? false, ban: target?.blocked ?? false };
+    return { mode, ban: target?.blocked ?? false };
   }
 
   /**
@@ -367,7 +367,7 @@ export class StageView {
     if (cursor.kind !== "ring") return;
     const radius = Math.max(1, (cursor.diameter * session.editor.view.current.scale * pr) / 2);
     const target = tool.editsPixels ? session.editor.editTarget(tool.editsPixels) : null;
-    const indicators = { glyph: cursor.glyph, target: target?.mask ?? false, ban: target?.blocked ?? false };
+    const indicators = { glyph: cursor.glyph, ban: target?.blocked ?? false };
     drawRingCursor(ctx, hover.x * pr, hover.y * pr, radius, pr, indicators, () => this.requestOverlay());
   }
 }

@@ -70,7 +70,14 @@
 .cps-bar-button.cps-active,
 .cps-icon-button.cps-active {
   background: var(--cps-active-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
+}
+
+/* Hovering a selected button keeps (slightly deepens) its accent; the plain
+   hover rule above is more specific and would otherwise replace it. */
+.cps-bar-button.cps-active:hover:not(:disabled),
+.cps-icon-button.cps-active:hover:not(:disabled) {
+  background: var(--cps-acc-35);
 }
 
 .cps-bar-button:disabled,
@@ -102,7 +109,7 @@
 }
 
 .cps-light-button:hover {
-  background: #fff;
+  background: var(--cps-fg-strong);
 }
 
 /* Text button in a bar (Apply, Cancel, Done). */
@@ -126,7 +133,7 @@
 
 .cps-text-button.cps-active {
   background: var(--cps-active-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 /* ── Corner caret (button has a menu) ──────────────────────────────────── */
@@ -239,7 +246,7 @@
   width: 16px;
   height: 16px;
   border-radius: 3px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);
 }
 
 .cps-menu-key {
@@ -278,7 +285,7 @@
 
 .cps-segmented > button.cps-active {
   background: var(--cps-chip-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 /* ── Generic dim ───────────────────────────────────────────────────────── */

@@ -1,8 +1,8 @@
 /**
  * Cursor composer (SPEC "Remaining work" item 2): builds stage cursors as
  * SVG data URLs from icon glyphs (`icons.ts`) placed on a 64 x 64 canvas --
- * a base glyph plus badges in fixed slots (mode bottom-right, target
- * bottom-left). Every glyph is drawn twice: a wide halo stroke, then the
+ * a base glyph plus badges in fixed slots (mode / ban
+ * bottom-right). Every glyph is drawn twice: a wide halo stroke, then the
  * glyph stroke on top, so it reads on any background.
  *
  * Colours come from the `--cps-cursor-*` CSS variables. A cursor image
@@ -198,14 +198,12 @@ function round(n: number): number {
 export interface BadgeSlots {
   /** Mode / ban badge, bottom-right. */
   mode: readonly [number, number];
-  /** Target (mask) badge, further left. */
-  target: readonly [number, number];
 }
 
 /** Base glyph centred on the canvas; hotspot at the centre. */
-export const CENTRED_SLOTS: BadgeSlots = { mode: [46, 46], target: [2, 46] };
+export const CENTRED_SLOTS: BadgeSlots = { mode: [46, 46] };
 /** Photoshop pointer layout: tiny arrow tip (the hotspot) top-left, glyph lower-right. */
-export const POINTER_SLOTS: BadgeSlots = { mode: [40, 40], target: [0, 40] };
+export const POINTER_SLOTS: BadgeSlots = { mode: [40, 40] };
 
 /** Pointer-tip glyph size, px (Lucide `mouse-pointer-2`, tip at (4, 4.7) of 24). */
 const POINTER_SIZE = 12;

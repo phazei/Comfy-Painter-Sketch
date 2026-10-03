@@ -1,6 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import { HELP_SECTIONS } from "./shortcutList";
+import { HELP_SECTIONS, QUICK_ROWS } from "./shortcutList";
+
+describe("QUICK_ROWS", () => {
+  it("is a short list of distinct, filled rows", () => {
+    expect(QUICK_ROWS.length).toBeGreaterThan(0);
+    expect(QUICK_ROWS.length).toBeLessThanOrEqual(16);
+    expect(new Set(QUICK_ROWS.map((r) => r.keys)).size).toBe(QUICK_ROWS.length);
+    for (const row of QUICK_ROWS) expect(row.action.trim()).not.toBe("");
+  });
+
+  it("every key alternative also appears in a full section", () => {
+    const all = HELP_SECTIONS.flatMap((s) => s.rows.map((r) => r.keys)).join(" / ");
+    for (const row of QUICK_ROWS) {
+      for (const alt of row.keys.split(" / ")) expect(all, alt).toContain(alt.replace(" (hold)", ""));
+    }
+  });
+});
 
 describe("HELP_SECTIONS", () => {
   it("has the overlay's eight sections, in order", () => {

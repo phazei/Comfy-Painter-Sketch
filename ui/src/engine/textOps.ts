@@ -21,7 +21,7 @@ import { commitName, nameFromText, sameTextData, withRotation } from "../documen
 import type { TextData } from "../document/textData";
 import type { Layer } from "../document/types";
 import type { Point } from "../geometry/rect";
-import { editBlockNote } from "./rasterize";
+import { editBlockNote, layerBlockNote } from "./rasterize";
 import { LAYER_MASK_TOOL_NOTE } from "./layerMask";
 import type { EditorState } from "./editorState";
 import { emitLayerEvents, releaseRemovedLayers } from "./layerHistory";
@@ -164,7 +164,8 @@ export class TextOps {
     s.settleFloat();
     const layer = this.find(layerId);
     if (s.loading || s.stroke.active || layer?.kind !== "text" || !layer.textData) return false;
-    const note = this.viewBlockNote() ?? editBlockNote(s, layer);
+    // Clicking a text layer selects it, so a selected Background row doesn't refuse (`layerBlockNote`).
+    const note = this.viewBlockNote() ?? layerBlockNote(s, layer);
     if (note) {
       s.events.emit("note", note);
       return false;

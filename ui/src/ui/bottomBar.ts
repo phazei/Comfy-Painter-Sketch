@@ -1,8 +1,11 @@
 /**
- * The bottom bar (design handoff section 6), mounted in `shell.bottomSlot`:
+ * The bottom bar (design handoff section 6), mounted in `shell.bottomSlot`.
+ * Two pills -- the left group at the left edge, the right group at the right
+ * edge of the shared bar width (editor.css `--cps-bar-max`), so nothing
+ * stretches across a wide stage:
  *
  * ```
- * [status pill] [edit chip] [Quick Mask] [│ Invert  Apply  🗑]      Align │ W × H │ Fit  Fullscreen  ?
+ * ([status pill] [edit chip] [Quick Mask] [│ Invert  Apply  🗑])      (Align │ W × H │ Fit  Fullscreen  ?)
  * ```
  *
  * - Status pill: "LMask ×" while the lmask-only view is on (wins), else
@@ -51,7 +54,7 @@ export interface BottomBarContext extends EditChipContext {
  * The bottom bar of one editor.
  */
 export class BottomBar {
-  /** `.cps-bottom-bar` (child of the container). */
+  /** `.cps-bottom-bars` (child of the container): the two pills. */
   readonly element: HTMLDivElement;
   private readonly pill: HTMLButtonElement;
   private readonly pillLabel: HTMLSpanElement;
@@ -77,9 +80,9 @@ export class BottomBar {
     container: HTMLElement,
     private readonly ctx: BottomBarContext,
   ) {
-    this.element = div("cps-bottom-bar");
-    const left = div("cps-bb-group cps-bb-left");
-    const right = div("cps-bb-group cps-bb-right");
+    this.element = div("cps-bottom-bars");
+    const left = div("cps-bottom-bar cps-bb-left");
+    const right = div("cps-bottom-bar cps-bb-right");
 
     // ── Left: pill, chip, Quick Mask, lmask options ──
     this.pill = button("cps-bb-pill", () => this.endPill());

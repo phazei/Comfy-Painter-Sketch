@@ -6,11 +6,9 @@
  * extra (the Layers tab's opacity chip); body: the tab panels. Only the
  * tab's own list scrolls; the header and the tab's footer stay fixed.
  *
- * - Visibility is decided by the host ({@link SidePanel.setVisible}: node
- *   selected, editor engaged or fullscreen). A hide waits
- *   {@link HIDE_GRACE_MS} so the pointer can cross the gap between node and
- *   panel; entering the panel cancels the pending hide, and the panel stays
- *   while hovered.
+ * - Visibility is decided and timed by the host ({@link SidePanel.setVisible};
+ *   see `chromeVisibility.ts`, which also keeps the chrome up while the
+ *   pointer is over the panel).
  * - Height: {@link SidePanel.setHeightCap} sets `max-height`; below the cap
  *   the panel fits its content.
  * - Shrunk = header only (the third segment); clicking a tab expands.
@@ -18,9 +16,6 @@
 
 import { Emitter } from "../engine/emitter";
 import { setIcon } from "./icons";
-
-/** Delay before a requested hide takes effect, ms. */
-export const HIDE_GRACE_MS = 250;
 
 /** Side panel events. */
 export interface SidePanelEvents {
@@ -69,13 +64,8 @@ export class SidePanel {
   private tabs: MountedTab[] = [];
   private currentTab = "";
   private isShrunk = false;
-  /** What the host asked for. */
-  private wanted = false;
-  /** Pointer over the panel. */
-  private hovered = false;
   /** On screen (last emitted). */
   private shown = false;
-  private graceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     this.element = div("cps-side");
@@ -95,16 +85,8 @@ export class SidePanel {
     placeholder.textContent = "Layers";
     this.content.appendChild(placeholder);
     this.element.append(header, this.content);
-    this.element.addEventListener("pointerenter", () => {
-      this.hovered = true;
-      this.cancelGrace();
-    });
-    this.element.addEventListener("pointerleave", () => {
-      this.hovered = false;
-      if (!this.wanted) this.startGrace();
-    });
     this.syncShrink();
-    this.apply(false);
+    this.element.hidden = true;
   }
 
   /** Id of the visible tab ("" before {@link SidePanel.setTabs}). */
@@ -117,7 +99,7 @@ export class SidePanel {
     return this.isShrunk;
   }
 
-  /** Whether the panel is on screen (including a pending hide's grace). */
+  /** Whether the panel is on screen. */
   get visible(): boolean {
     return this.shown;
   }
@@ -192,39 +174,15 @@ export class SidePanel {
   }
 
   /**
-   * Show or hide the panel. A hide is delayed by {@link HIDE_GRACE_MS} and
-   * waits while the pointer is over the panel; a show is immediate.
-   * @param visible - Requested visibility.
+   * Show or hide the panel (immediate; the host times it). Emits `visible`
+   * on change.
+   * @param visible - New visibility.
    */
   setVisible(visible: boolean): void {
-    this.wanted = visible;
-    if (visible) {
-      this.cancelGrace();
-      this.apply(true);
-    } else if (this.shown && !this.hovered) {
-      this.startGrace();
-    } else if (!this.shown) {
-      this.apply(false);
-    }
-  }
-
-  /** Cancel timers (the shell clears listeners). */
-  dispose(): void {
-    this.cancelGrace();
-  }
-
-  private startGrace(): void {
-    if (this.graceTimer !== null) return;
-    this.graceTimer = setTimeout(() => {
-      this.graceTimer = null;
-      if (!this.wanted && !this.hovered) this.apply(false);
-    }, HIDE_GRACE_MS);
-  }
-
-  private cancelGrace(): void {
-    if (this.graceTimer === null) return;
-    clearTimeout(this.graceTimer);
-    this.graceTimer = null;
+    this.element.hidden = !visible;
+    if (visible === this.shown) return;
+    this.shown = visible;
+    this.events.emit("visible", visible);
   }
 
   private syncShrink(): void {
@@ -234,12 +192,6 @@ export class SidePanel {
     this.shrinkButton.setAttribute("aria-pressed", String(this.isShrunk));
   }
 
-  private apply(shown: boolean): void {
-    this.element.hidden = !shown;
-    if (shown === this.shown) return;
-    this.shown = shown;
-    this.events.emit("visible", shown);
-  }
 }
 
 function div(className: string): HTMLDivElement {

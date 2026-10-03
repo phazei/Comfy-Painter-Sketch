@@ -349,6 +349,12 @@ export class Editor extends EditorBase {
    */
   selectMask(layerId: string): boolean { this.s.settleFloat(); return this.maskOps.selectMask(layerId); }
 
+  /** The read-only Background row is selected (session state; pixel edits are refused). */
+  get backgroundSelected(): boolean { return this.maskOps.backgroundSelected; }
+
+  /** Select the read-only Background row (Background row click): Quick Mask off, every pixel edit refused with a note. */
+  selectBackground(): void { this.s.settleFloat(); this.maskOps.selectBackground(); }
+
   /**
    * Show or hide the mask layer (adds one if missing). Hidden mask layers are
    * also excluded from the `MASK` output (saved-file contract).

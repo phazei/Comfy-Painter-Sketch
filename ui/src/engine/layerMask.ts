@@ -67,12 +67,13 @@ export type EditKind = "paint" | "other" | "whole";
 
 /**
  * The paint layer whose MASK the paint target edits now: Quick Mask off, the
- * paint target has a mask and its target is the mask.
+ * paint target has a mask and its target is the mask. None while the
+ * Background row is selected (the layer keeps its target for later).
  * @param s - Editor state.
  * @returns The layer, or `null`.
  */
 export function targetedMaskLayer(s: EditorState): Layer | null {
-  if (s.target !== "paint") return null;
+  if (s.target !== "paint" || s.sourceSelected) return null;
   const layer = findPaintLayer(s.doc);
   return layer?.layerMask && s.layerMasks.targets.has(layer.id) ? layer : null;
 }

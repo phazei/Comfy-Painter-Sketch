@@ -14,7 +14,7 @@
  *
  * Badges: mode bottom-right (selection add / subtract / intersect, the
  * eyedropper's background slot; `ban` replaces it while the tool can't edit
- * its target), mask target further left.
+ * its target).
  */
 
 import { selectionMode } from "../engine/selection";
@@ -54,8 +54,6 @@ const MODE_ICONS: Readonly<Record<ModeBadge, string>> = {
 export interface CursorExtras {
   /** Mode badge (bottom-right), or `null`. */
   mode?: ModeBadge | null;
-  /** The tool edits a cmask / lmask: mask badge (left). */
-  target?: boolean;
   /** The tool can't edit its target: `ban` replaces the mode badge. */
   ban?: boolean;
 }
@@ -152,7 +150,6 @@ function baseOf(icon: CursorIcon): Base {
 export function iconCursorArt(icon: CursorIcon, extras: CursorExtras = {}): CursorArt {
   const base = baseOf(icon);
   const parts = [...base.parts];
-  if (extras.target) parts.push(badgePart("mask", base.slots.target, "accent"));
   if (extras.ban) parts.push(badgePart("ban", base.slots.mode, "ban"));
   else if (extras.mode) parts.push(badgePart(MODE_ICONS[extras.mode], base.slots.mode));
   return { parts, hotspot: base.hotspot, fallback: base.fallback };
@@ -165,7 +162,7 @@ export function iconCursorArt(icon: CursorIcon, extras: CursorExtras = {}): Curs
  * @returns CSS value.
  */
 export function iconCursor(icon: CursorIcon, extras: CursorExtras = {}): string {
-  const key = `icon:${icon}:${extras.mode ?? ""}:${extras.target ? 1 : 0}:${extras.ban ? 1 : 0}`;
+  const key = `icon:${icon}:${extras.mode ?? ""}:${extras.ban ? 1 : 0}`;
   return cursorCss(key, () => iconCursorArt(icon, extras));
 }
 

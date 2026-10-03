@@ -1,13 +1,14 @@
 /**
  * Footer of the layers tab (SPEC "Layers panel" > Footer; design handoff:
  * border-top, 30 x 28 buttons, icons 18): New layer, New mask, Duplicate,
- * Merge Down, [spacer], Delete. Align drawing moved to the bottom bar.
- * Enabled states and tooltips follow the selected row (`sync`).
+ * Merge Down. Delete lives in the section headers (`layerSectionHeader.ts`:
+ * the header stays put while the panel shrinks). Align drawing moved to the
+ * bottom bar. Enabled states and tooltips follow the selected row (`sync`).
  */
 
 import type { Editor } from "../engine/editor";
 import { MAX_MASKS } from "../document/layerList";
-import { canDuplicateRow, deleteTitle } from "./imageMaskRow";
+import { canDuplicateRow } from "./imageMaskRow";
 import { el, footerButton } from "./layersPanelParts";
 
 /** Footer commands (the panel runs them through the editor). */
@@ -16,7 +17,6 @@ export interface FooterActions {
   addMask(): void;
   duplicate(): void;
   mergeDown(): void;
-  remove(): void;
 }
 
 /** Tooltip of New mask while it is available. */
@@ -40,7 +40,6 @@ export class LayersFooter {
   private readonly addMaskButton: HTMLButtonElement;
   private readonly duplicateButton: HTMLButtonElement;
   private readonly mergeButton: HTMLButtonElement;
-  private readonly deleteButton: HTMLButtonElement;
 
   /**
    * @param actions - Commands.
@@ -51,9 +50,7 @@ export class LayersFooter {
     this.addMaskButton = footerButton("maskAdd", NEW_MASK_TITLE, () => actions.addMask());
     this.duplicateButton = footerButton("duplicate", "Duplicate layer", () => actions.duplicate());
     this.mergeButton = footerButton("mergeDown", "Merge Down (Ctrl+E)", () => actions.mergeDown());
-    this.deleteButton = footerButton("trash", "Delete layer", () => actions.remove());
-    const spacer = el("span", "cps-layers-footer-spacer");
-    this.element.append(this.addButton, this.addMaskButton, this.duplicateButton, this.mergeButton, spacer, this.deleteButton);
+    this.element.append(this.addButton, this.addMaskButton, this.duplicateButton, this.mergeButton);
   }
 
   /**
@@ -62,14 +59,10 @@ export class LayersFooter {
    * @param targetId - Selected row's layer id (the current cmask under Quick Mask, else the active layer).
    */
   sync(editor: Editor | null, targetId: string | null): void {
-    const targeting = editor?.paintTarget === "mask";
     this.addButton.disabled = !editor;
     this.addMaskButton.disabled = !(editor && editor.layerOps.canAddMask());
     this.addMaskButton.title = newMaskTitle(editor);
     this.duplicateButton.disabled = !(editor && canDuplicateRow(editor, targetId));
     this.mergeButton.disabled = !editor?.canMergeDown();
-    const deletable = !!(editor && targetId && editor.layerOps.canDelete(targetId));
-    this.deleteButton.disabled = !deletable;
-    this.deleteButton.title = deleteTitle(targetId, targeting, deletable, editor?.imageMask.info?.name);
   }
 }

@@ -22,12 +22,8 @@
   touch-action: none;
 }
 
-.cps-layer-row.cps-layer-background {
-  cursor: default;
-}
-
 .cps-layer-row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: color-mix(in srgb, var(--cps-fg-strong) 4%, transparent);
 }
 
 .cps-layer-row.cps-standby {
@@ -100,12 +96,21 @@
   display: block;
   max-width: 100%;
   max-height: 100%;
-  background-color: #fff;
+  /* Transparency checkerboard: white / gray, not theme colours. Dark themes
+     get a darker gray: next to a dark panel the white glares and #ccc reads
+     as almost plain white. */
+  --cps-checker: #ccc;
+  background-color: #ffffff;
   background-image:
-    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%),
-    linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%);
+    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%),
+    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%);
   background-position: 0 0, 4px 4px;
   background-size: 8px 8px;
+}
+
+/* ComfyUI sets `dark-theme` on <html> for dark palettes. */
+.dark-theme .cps-layer-thumb {
+  --cps-checker: #a6a6a6;
 }
 
 .cps-layer-mask .cps-layer-thumb,
@@ -261,31 +266,6 @@
   color: var(--cps-fg-muted);
 }
 
-/* "Overlay N%": the scrubby opacity control drawn as plain text. */
-.cps-layer-sub .cps-num {
-  gap: 3px;
-}
-
-.cps-layer-sub .cps-num-label {
-  color: inherit;
-}
-
-.cps-layer-sub .cps-num-value {
-  height: auto;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-}
-
-.cps-layer-sub .cps-num-label:hover,
-.cps-layer-sub .cps-num-value:hover {
-  color: var(--cps-fg);
-}
-
 /* Input Mask waiting for a run. */
 .cps-layer-hint {
   overflow: hidden;
@@ -306,7 +286,7 @@
   border-radius: 4px;
   outline: none;
   background: var(--cps-field-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
   font: inherit;
   font-size: 13px;
   user-select: text;
@@ -323,7 +303,7 @@
 }
 
 .cps-icon-button.cps-layer-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);
   color: var(--cps-fg);
 }
 
@@ -362,7 +342,7 @@
 
 .cps-layer-button.cps-layer-invert.cps-active {
   background: var(--cps-active-bg);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-layer-button.cps-layer-solo {
@@ -371,15 +351,16 @@
 
 .cps-layer-button.cps-layer-solo.cps-active {
   background: transparent;
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
-/* Mask colour swatch in the sub-line (colour set inline). */
+/* Mask colour swatch in the sub-line (colour set inline); inset 6 px from the thumbnail. */
 .cps-icon-button.cps-layer-button.cps-layer-swatch {
+  margin-left: 6px;
   width: 10px;
   height: 10px;
   border-radius: 3px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);
 }
 
 .cps-icon-button.cps-layer-button.cps-layer-swatch:hover:not(:disabled) {

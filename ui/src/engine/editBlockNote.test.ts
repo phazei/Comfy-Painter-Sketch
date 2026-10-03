@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Layer } from "../document/types";
-import { HIDDEN_LAYER_NOTE, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
+import { BACKGROUND_NOTE, HIDDEN_LAYER_NOTE, LOCKED_LAYER_NOTE, SOLO_HIDDEN_NOTE } from "./editorTypes";
 import type { EditorState } from "./editorState";
-import { editBlockNote } from "./rasterize";
+import { editBlockNote, layerBlockNote } from "./rasterize";
 import type { SoloIds } from "./solo";
 
 const state = (solo: SoloIds): EditorState => ({ solo: { current: solo } }) as unknown as EditorState;
@@ -22,5 +22,13 @@ describe("editBlockNote", () => {
     const solo = state({ paint: "a", mask: null });
     expect(editBlockNote(solo, layer("a", { visible: false, locked: true }))).toBe(HIDDEN_LAYER_NOTE);
     expect(editBlockNote(solo, layer("a", { locked: true }))).toBe(LOCKED_LAYER_NOTE);
+  });
+  it("a selected Background row refuses every edit first; layerBlockNote ignores it", () => {
+    const s = { solo: { current: { paint: null, mask: null } }, sourceSelected: "background" } as unknown as EditorState;
+    expect(editBlockNote(s, layer("a"))).toBe(BACKGROUND_NOTE);
+    expect(editBlockNote(s, layer("a", { visible: false, locked: true }), "whole")).toBe(BACKGROUND_NOTE);
+    expect(BACKGROUND_NOTE).toBe("Background can't be edited \u2014 duplicate it to edit.");
+    expect(layerBlockNote(s, layer("a"))).toBeNull();
+    expect(layerBlockNote(s, layer("a", { locked: true }))).toBe(LOCKED_LAYER_NOTE);
   });
 });

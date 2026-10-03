@@ -23,8 +23,6 @@
  * enter and removed on exit, so nothing is left on `document.body`.
  */
 
-import { setIcon } from "./icons";
-
 /** Poll interval of the exit conditions while fullscreen. */
 const WATCH_MS = 250;
 
@@ -114,7 +112,7 @@ export class FullscreenMount {
     if (this.overlay || this.disposed || !this.container.isConnected) return;
     openMount?.exit();
     this.options.beforeChange?.();
-    const overlay = buildOverlay(() => this.exit());
+    const overlay = buildOverlay();
     this.overlay = overlay;
     openMount = this;
     overlay.prepend(this.root);
@@ -153,27 +151,16 @@ export class FullscreenMount {
 // ── Overlay ───────────────────────────────────────────────────────────────────
 
 /**
- * Build the overlay: backdrop + top-right exit button. Pointer, wheel and
- * drag events are kept from reaching document-level graph handlers.
- * @param exit - Exit handler.
+ * Build the overlay: a bare backdrop (exit is the bottom bar toggle or Esc / F).
+ * Pointer, wheel and drag events are kept from reaching document-level graph
+ * handlers.
  * @returns The (not yet attached) overlay.
  */
-function buildOverlay(exit: () => void): HTMLDivElement {
+function buildOverlay(): HTMLDivElement {
   const overlay = document.createElement("div");
   overlay.className = "cps-fullscreen";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-label", "PainterSketch fullscreen editor");
-
-  const button = document.createElement("button");
-  button.type = "button";
-  button.className = "cps-fullscreen-exit";
-  button.title = "Exit fullscreen (Esc)";
-  setIcon(button, "exitFullscreen", 16);
-  const label = document.createElement("span");
-  label.textContent = "Exit fullscreen";
-  button.appendChild(label);
-  button.addEventListener("click", exit);
-  overlay.appendChild(button);
 
   const stop = (event: Event): void => event.stopPropagation();
   for (const type of OVERLAY_STOPPED) overlay.addEventListener(type, stop);

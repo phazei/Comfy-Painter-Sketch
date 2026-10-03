@@ -54,7 +54,7 @@
   align-items: center;
   gap: 5px;
   padding: 4px 8px;
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-strip-hint {
@@ -73,7 +73,7 @@
   width: 11px;
   height: 11px;
   border-radius: 3px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
 }
 
 .cps-strip-swatch.cps-strip-swatch-icon {
@@ -101,7 +101,7 @@
 }
 
 .cps-num:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);
 }
 
 .cps-num-label {
@@ -146,18 +146,18 @@
 }
 
 .cps-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);
   color: var(--cps-fg);
 }
 
 .cps-toggle.cps-active {
   background: var(--cps-acc-28);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 /* Command buttons (btn): a faint fill. */
 .cps-toggle.cps-command {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);
   color: var(--cps-fg);
 }
 
@@ -172,7 +172,10 @@
   padding: 4px 5px;
 }
 
-.cps-link-toggle {
+/* Just the icon's width: it sits between W and H. Same specificity as
+   `.cps-toggle.cps-icon-command` so it wins (comes later). */
+.cps-toggle.cps-link-toggle {
+  min-width: 0;
   padding: 4px 1px;
 }
 
@@ -203,7 +206,7 @@
 
 .cps-select:hover,
 .cps-select.cps-menu-open {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);
 }
 
 .cps-select-label {
@@ -244,7 +247,7 @@
 .cps-pop-dd .cps-menu-item.cps-current {
   background: var(--cps-acc-35);
   box-shadow: none;
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-pop-dd .cps-menu-check {
@@ -311,7 +314,7 @@
 
 .cps-option-group.cps-on {
   background: var(--cps-acc-18);
-  color: color-mix(in srgb, var(--cps-accent) 35%, #fff);
+  color: color-mix(in srgb, var(--cps-accent) 35%, var(--cps-fg-strong));
 }
 
 .cps-option-group.cps-menu-open {
@@ -343,13 +346,13 @@
 .cps-group-pills .cps-toggle {
   padding: 4px 12px;
   border-radius: 999px;
-  background: var(--cps-panel-bg);
+  background: var(--cps-field-bg);
 }
 
 .cps-group-pills .cps-toggle.cps-active {
   background: var(--cps-acc-30);
   box-shadow: inset 0 0 0 1px var(--cps-acc-80);
-  color: #fff;
+  color: var(--cps-fg-strong);
 }
 
 .cps-group-row.cps-num {
@@ -365,7 +368,7 @@
   min-width: 0;
   padding: 3px 8px;
   border-radius: var(--cps-r-field);
-  background: var(--cps-panel-bg);
+  background: var(--cps-field-bg);
   text-align: right;
 }
 

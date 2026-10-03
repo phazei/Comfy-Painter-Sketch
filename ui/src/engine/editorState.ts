@@ -72,6 +72,14 @@ export class EditorState {
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId: string | null = null;
+  /**
+   * A read-only SOURCE row is the selection (the Background row; UI state,
+   * not saved, not in history). Wins over `target`: every pixel edit is
+   * refused (`rasterize.ts` `editBlockNote`) and no lmask is targeted.
+   * Cleared by any other selection: `setActiveLayer`, `selectMask`,
+   * `setPaintTarget`, and an insert that activates a new layer.
+   */
+  sourceSelected: "background" | null = null;
   /** Selected output row/region (session-only). */
   selectedRegionId: string | null = null;
   /** Layer the current stroke paints into. */

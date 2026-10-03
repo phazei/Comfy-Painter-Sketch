@@ -17,8 +17,10 @@
  * {@link openColorPicker} popover (the only colour picker; there is no
  * native fallback), and `help` by toggling the help overlay.
  *
- * Side panel visibility: shown while the node is selected, the keyboard
- * scope is active (hover / engaged) or fullscreen is open.
+ * Chrome visibility (bars + side panel, `chromeVisibility.ts`): shown while
+ * the node is selected, the keyboard scope is active (hover / engaged) or
+ * fullscreen is open; hover alone shows it after a delay. Hidden chrome is
+ * a root class (`cps-chrome-hidden`, editor.css) plus the panel's `hidden`.
  *
  * The `fullscreen` event toggles {@link FullscreenMount}, which moves
  * `root` between the stable DOM widget element ({@link EditorHost.element})
@@ -28,6 +30,7 @@
 
 import type { EditorSession } from "../widget/sessions";
 import type { SourceHistory } from "../widget/sourceHistory";
+import { ChromeVisibility } from "./chromeVisibility";
 import { ClipboardActions } from "./clipboardActions";
 import { insertSourceUrl } from "./sourceInsertAction";
 import { openColorPicker } from "./colorPicker";
@@ -40,6 +43,9 @@ import { handleShortcut } from "./shortcuts";
 import { StageInput } from "./stageInput";
 import { StageView } from "./stageView";
 import { TextOverlay } from "./textOverlay";
+
+/** Root class while the chrome (bars) is hidden; the panel uses `hidden`. */
+const CHROME_HIDDEN_CLASS = "cps-chrome-hidden";
 
 /** Callbacks from the host to its owner. */
 export interface EditorHostEvents {
@@ -91,10 +97,14 @@ export class EditorHost {
   private readonly removeDrop: () => void;
   /** Whether the view was fitting when fullscreen opened (re-fit on leaving). */
   private fittingBeforeFullscreen = true;
-  /** The node is selected on the graph (side panel visibility). */
+  /** The node is selected on the graph (chrome visibility). */
   private nodeSelected = false;
-  /** The keyboard scope is active (side panel visibility). */
+  /** The keyboard scope is active (chrome visibility). */
   private keyboardActive = false;
+  /** The keyboard scope is engaged by a click (chrome shows at once). */
+  private keyboardEngaged = false;
+  /** Timed show / hide of the bars and the side panel. */
+  private readonly chrome: ChromeVisibility;
   /** In-node side panel height cap, CSS px (`null` = none). */
   private panelHeightCap: number | null = null;
 
@@ -120,6 +130,14 @@ export class EditorHost {
       isDetached: () => this.events.isDetached?.() ?? false,
     });
     this.element = this.fullscreen.container;
+    this.chrome = new ChromeVisibility((shown) => {
+      this.root.classList.toggle(CHROME_HIDDEN_CLASS, !shown);
+      this.shell.sidePanel.setVisible(shown);
+      // Nothing to anchor a menu / picker to once the bars are gone.
+      if (!shown) this.shell.popoverHost.close();
+    });
+    this.chrome.hold(this.shell.sidePanel.element);
+    this.root.classList.add(CHROME_HIDDEN_CLASS);
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
     // ── Clipboard (keys, clipboard pill, image drops on the stage) ────────
@@ -178,9 +196,10 @@ export class EditorHost {
       onCtrlChange: (down) => this.setCtrl(down),
       onSave: () => this.events.onSave?.(),
       onDeactivate: () => this.events.onDisengage?.(),
-      onActiveChange: (active) => {
+      onActiveChange: (active, engaged) => {
         this.keyboardActive = active;
-        this.syncPanelVisibility();
+        this.keyboardEngaged = active && engaged;
+        this.syncChromeVisibility();
       },
     });
     this.shell.popoverHost.events.on("close", () => this.keyboard.reclaimFocus());
@@ -285,13 +304,13 @@ export class EditorHost {
   }
 
   /**
-   * The node was selected / deselected on the graph (side panel visibility).
+   * The node was selected / deselected on the graph (chrome visibility).
    * @param selected - Node selected.
    */
   setNodeSelected(selected: boolean): void {
     if (selected === this.nodeSelected) return;
     this.nodeSelected = selected;
-    this.syncPanelVisibility();
+    this.syncChromeVisibility();
   }
 
   /**
@@ -319,6 +338,7 @@ export class EditorHost {
     this.clipboard.dispose();
     this.input.dispose();
     this.keyboard.dispose();
+    this.chrome.dispose();
     this.sync.dispose();
     this.textOverlay.dispose();
     this.view.dispose();
@@ -336,7 +356,7 @@ export class EditorHost {
     // Fullscreen: the CSS cap (editor height); in-node: the node-derived cap.
     this.shell.sidePanel.setHeightCap(open ? null : this.panelHeightCap);
     this.keyboard.setCaptureScope(open ? this.fullscreen.overlayElement : null);
-    this.syncPanelVisibility();
+    this.syncChromeVisibility();
     if (open) {
       this.fittingBeforeFullscreen = view?.isFitting ?? true;
       view?.fit();
@@ -350,12 +370,17 @@ export class EditorHost {
     this.handleResize();
   }
 
-  // ── Side panel visibility ───────────────────────────────────────────────
+  // ── Chrome visibility ───────────────────────────────────────────────────
 
-  /** Shown while the node is selected, the keyboard scope is active or fullscreen is open. */
-  private syncPanelVisibility(): void {
+  /**
+   * Shown while the node is selected, the keyboard scope is active or
+   * fullscreen is open. Hover alone (scope active, not engaged) is the only
+   * non-deliberate cause, so only it waits the show delay.
+   */
+  private syncChromeVisibility(): void {
     if (this.disposed) return;
-    this.shell.sidePanel.setVisible(this.nodeSelected || this.keyboardActive || this.fullscreen.isOpen);
+    const deliberate = this.nodeSelected || this.keyboardEngaged || this.fullscreen.isOpen;
+    this.chrome.request(deliberate || this.keyboardActive, deliberate);
   }
 
   // ── Keys ────────────────────────────────────────────────────────────────

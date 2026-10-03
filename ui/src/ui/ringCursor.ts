@@ -1,8 +1,8 @@
 /**
  * Brush / eraser ring on the stage overlay (SPEC "Remaining work" item 2):
  * the size ring (halo circle + light circle just outside) and its
- * indicators just outside the ring on the 45-degree diagonals -- the mask
- * target bottom-left, the tool glyph (eraser) or `ban` bottom-right. The
+ * indicator just outside the ring on the bottom-right 45-degree diagonal --
+ * the tool glyph (eraser) or `ban`. The
  * CSS cursor meanwhile is only a dot (`cursors.ts`), since the ring can be
  * far larger than any cursor image.
  *
@@ -18,8 +18,6 @@ import type { CursorTone } from "./cursorArt";
 export interface RingIndicators {
   /** Glyph bottom-right (the eraser's), or none. */
   glyph?: string;
-  /** Paints a cmask / lmask: mask badge bottom-left. */
-  target: boolean;
   /** The tool can't edit its target: `ban` bottom-right (replaces the glyph). */
   ban: boolean;
 }
@@ -115,13 +113,12 @@ export function drawRingCursor(ctx: CanvasRenderingContext2D, x: number, y: numb
   const radiusCss = radius / pr;
   const size = ringBadgeSize(radiusCss);
   const offset = ringBadgeOffset(radiusCss, size) * pr;
-  const draw = (icon: string, tone: CursorTone, dx: number): void => {
+  const draw = (icon: string, tone: CursorTone): void => {
     const glyph = glyphImage(icon, size, tone, onLoad);
     if (!glyph) return;
     const s = glyph.size * pr;
-    ctx.drawImage(glyph.image, x + dx - s / 2, y + offset - s / 2, s, s);
+    ctx.drawImage(glyph.image, x + offset - s / 2, y + offset - s / 2, s, s);
   };
-  if (indicators.target) draw("mask", "accent", -offset);
-  if (indicators.ban) draw("ban", "ban", offset);
-  else if (indicators.glyph) draw(indicators.glyph, "fg", offset);
+  if (indicators.ban) draw("ban", "ban");
+  else if (indicators.glyph) draw(indicators.glyph, "fg");
 }

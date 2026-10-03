@@ -105,8 +105,8 @@ export interface Tool {
   readonly drawsShapes?: boolean;
   /**
    * Pixel tool: what its edits are for the edit gate (`engine/rasterize.ts`
-   * `editBlockNote`). The stage shows the mask-target badge while it would
-   * paint a cmask / lmask, and `ban` while the gate would refuse.
+   * `editBlockNote`). The stage shows `ban` while the gate would refuse;
+        * the edit target is shown by the bottom bar's edit chip.
    */
   readonly editsPixels?: "paint" | "other";
 

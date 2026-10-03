@@ -1,13 +1,14 @@
 /**
  * Layers-panel pieces for the Image Mask row (`engine/imageMaskOps.ts`),
  * kept out of `layersPanel.ts`: its thumbnail (image-px coverage), the
- * Input Mask's "run the workflow" hint and the footer's Duplicate / Delete
- * behaviour for it. The row itself is a
+ * Input Mask's "run the workflow" hint and the footer's Duplicate (also for
+ * the selected Background row) and the headers' Delete behaviour for it. The row itself is a
  * `LayerRow` of kind `imageMask`, directly above the Background row.
  */
 
 import { IMAGE_MASK_ID, IMAGE_MASK_NAME, INPUT_MASK_NAME } from "../document/imageMask";
 import type { Editor } from "../engine/editor";
+import { BACKGROUND_SOLO_ID } from "../engine/solo";
 import type { LayerRow } from "./layerRow";
 
 /** Zero-sized stand-in for a thumbnail without coverage. */
@@ -59,16 +60,23 @@ export function imageMaskHint(editor: Editor): string | undefined {
  */
 export function canDuplicateRow(editor: Editor, id: string | null): boolean {
   if (id === IMAGE_MASK_ID) return editor.imageMask.canDuplicate();
+  if (id === BACKGROUND_SOLO_ID) return !editor.loading;
   return id !== null && editor.layerOps.canDuplicate(id);
 }
 
 /**
- * Footer Duplicate: the Image Mask becomes an ordinary mask (and the current
- * mask); otherwise the active paint layer is duplicated as before.
+ * Footer / row Duplicate: the Image Mask becomes an ordinary mask (and the
+ * current mask), the Background an ordinary paint layer at the bottom of the
+ * paint stack (and the active layer); otherwise the active paint layer is
+ * duplicated as before.
  * @param editor - Bound editor.
- * @param id - Selected row id.
+ * @param id - Selected row id (`BACKGROUND_SOLO_ID` = the Background row).
  */
 export function duplicateRow(editor: Editor, id: string | null): void {
+  if (id === BACKGROUND_SOLO_ID) {
+    editor.layerOps.duplicateBackground();
+    return;
+  }
   if (id !== IMAGE_MASK_ID) {
     editor.layerOps.duplicate();
     return;
@@ -78,7 +86,7 @@ export function duplicateRow(editor: Editor, id: string | null): void {
 }
 
 /**
- * Footer Delete tooltip.
+ * Delete tooltip (section header trash buttons, `sectionDeleteState`).
  * @param id - Selected row id.
  * @param targeting - Quick Mask on (a mask row is selected).
  * @param deletable - Delete is enabled.

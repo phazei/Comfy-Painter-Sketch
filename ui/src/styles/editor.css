@@ -12,7 +12,7 @@
   --cps-bar-bg: var(--comfy-menu-bg, #2f3033);
   --cps-strip-bg: var(--comfy-menu-secondary-bg, #26272a);
   --cps-panel-bg: var(--comfy-menu-bg, #2a2b2e);
-  --cps-card-bg: color-mix(in srgb, var(--cps-panel-bg) 94%, #fff);
+  --cps-card-bg: color-mix(in srgb, var(--cps-panel-bg) 94%, var(--cps-fg-strong));
   --cps-field-bg: var(--comfy-input-bg, #1d1e20);
   --cps-menu-bg: var(--comfy-menu-secondary-bg, #1f2022);
   --cps-segment-bg: color-mix(in srgb, var(--cps-fg) 12%, var(--cps-field-bg));
@@ -23,15 +23,19 @@
   --cps-surface: var(--cps-menu-bg);
   --cps-input-bg: var(--cps-field-bg);
   /* ── Lines ── */
-  --cps-line-1: rgba(255, 255, 255, 0.08);
-  --cps-line-2: rgba(255, 255, 255, 0.12);
+  --cps-line-1: color-mix(in srgb, var(--cps-fg-strong) 8%, transparent);
+  --cps-line-2: color-mix(in srgb, var(--cps-fg-strong) 12%, transparent);
   --cps-border: var(--cps-line-2);
   /* ── Text ── */
+  /* Strongest text / tint colour: white in dark themes, near-black in light
+     ones. Every light-on-dark overlay (lines, hovers, active text) mixes it,
+     never a literal white, so light themes keep their contrast. */
+  --cps-fg-strong: var(--fg-color, #fff);
   --cps-fg: var(--input-text, #e6e6e6);
-  --cps-fg-icon: color-mix(in srgb, var(--cps-fg) 92%, #000);
+  --cps-fg-icon: color-mix(in srgb, var(--cps-fg) 92%, var(--cps-bar-bg));
   --cps-fg-muted: var(--descrip-text, #9a9ca1);
-  --cps-fg-hint: color-mix(in srgb, var(--cps-fg-muted) 90%, #000);
-  --cps-fg-disabled: color-mix(in srgb, var(--cps-fg-muted) 70%, #000);
+  --cps-fg-hint: color-mix(in srgb, var(--cps-fg-muted) 90%, var(--cps-bar-bg));
+  --cps-fg-disabled: color-mix(in srgb, var(--cps-fg-muted) 70%, var(--cps-bar-bg));
   --cps-fg-value: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));
   /* ── Accent and its alpha steps ── */
   --cps-accent: var(--p-primary-color, oklch(0.68 0.14 250));
@@ -44,13 +48,14 @@
   --cps-acc-35: color-mix(in srgb, var(--cps-accent) 35%, transparent);
   --cps-acc-45: color-mix(in srgb, var(--cps-accent) 45%, transparent);
   --cps-acc-80: color-mix(in srgb, var(--cps-accent) 80%, transparent);
-  --cps-hover: rgba(255, 255, 255, 0.08);
-  --cps-hover-strong: rgba(255, 255, 255, 0.12);
+  --cps-hover: color-mix(in srgb, var(--cps-fg-strong) 8%, transparent);
+  --cps-hover-strong: color-mix(in srgb, var(--cps-fg-strong) 12%, transparent);
   --cps-active-bg: var(--cps-acc-28);
   /* ── Rings, states ── */
-  --cps-ring: #f2f2f2;
-  --cps-light-btn-bg: #e6e6e6;
-  --cps-light-btn-fg: #111;
+  /* UI rings and the high-contrast (inverted) button / note: follow the theme. */
+  --cps-ring: color-mix(in srgb, var(--cps-fg-strong) 92%, var(--cps-bar-bg));
+  --cps-light-btn-bg: color-mix(in srgb, var(--cps-fg-strong) 88%, var(--cps-bar-bg));
+  --cps-light-btn-fg: var(--cps-bar-bg);
   --cps-danger: var(--p-red-400, #f87171);
   --cps-danger-strong: oklch(0.62 0.17 25);
   --cps-warn-bg: oklch(0.33 0.06 75);
@@ -79,6 +84,12 @@
   /* ── Sizes ── */
   --cps-edge: 12px;
   --cps-bar-btn: 32px;
+  /* Widest the top row and the bottom bars spread (wide nodes, fullscreen). */
+  --cps-bar-max: 1100px;
+  /* Inset of the capped bars from the root's sides (>= the edge margin). */
+  --cps-bar-inset: max(var(--cps-edge), calc((100% - var(--cps-bar-max)) / 2));
+  /* Bottom space the bottom bar takes (34 px bar + margins): floating panels stop above it. */
+  --cps-bottom-clear: calc(var(--cps-edge) * 2 + 34px);
   /* Stage cursor colours (ui/cursorArt.ts reads them; cursors rebuild on change). */
   --cps-cursor-fg: #ffffff;
   --cps-cursor-halo: #111111;
@@ -181,7 +192,7 @@
   margin: 0;
   padding: 0;
   border: 0;
-  outline: 1px dashed var(--cps-ring);
+  outline: 1px dashed #f2f2f2; /* on the canvas, not the theme */
   background: transparent;
   color: transparent;
   resize: none;
@@ -235,10 +246,11 @@
   pointer-events: auto;
 }
 
+/* The top row and the bottom bars share a centred width cap (--cps-bar-max). */
 .cps-float-top {
   position: absolute;
-  left: var(--cps-edge);
-  right: var(--cps-edge);
+  left: var(--cps-bar-inset);
+  right: var(--cps-bar-inset);
   top: var(--cps-edge);
   height: 0;
   z-index: 3;
@@ -298,10 +310,14 @@
   transform: none;
 }
 
+/* Not positioned: the strip below is placed against the whole row (its
+   right edge is the node's), not against the dock in the row's middle. */
 .cps-root[data-layout="narrow"] .cps-dock-column {
+  position: static;
   display: block;
 }
 
+/* Under the row, centred on it (the row is centred on the node). */
 .cps-root[data-layout="narrow"] .cps-slot-strip {
   position: absolute;
   left: 50%;
@@ -324,24 +340,33 @@
   transform: none;
 }
 
+/* Spans from below the history pill to above the bottom bar; the pill
+   (ui/slidersPill.ts) is centred in that span and shrinks to it on short nodes. */
 .cps-slot-sliders {
   position: absolute;
   left: var(--cps-edge);
-  top: 120px;
+  top: calc(var(--cps-edge) * 2 + var(--cps-bar-btn) + 10px);
+  bottom: var(--cps-bottom-clear);
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
 }
 
+/* Above the right bottom pill. */
 .cps-slot-notice {
   position: absolute;
-  right: var(--cps-edge);
+  right: var(--cps-bar-inset);
   bottom: 56px;
   z-index: 2;
 }
 
+/* Two pills (ui/bottomBar.ts): left group at the left edge, right group at the right. */
 .cps-slot-bottom {
   position: absolute;
-  left: var(--cps-edge);
-  right: var(--cps-edge);
+  left: var(--cps-bar-inset);
+  right: var(--cps-bar-inset);
   bottom: var(--cps-edge);
   z-index: 3;
   display: flex;
@@ -349,9 +374,10 @@
 
 .cps-slot-bottom > * {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: max-content;
 }
 
+/* Narrow: the two pills sit together, centred. */
 .cps-root[data-layout="narrow"] .cps-slot-bottom {
   left: 50%;
   right: auto;
@@ -364,6 +390,13 @@
   left: auto;
   right: var(--cps-edge);
   transform: none;
+}
+
+/* Chrome hidden (idle node; ui/chromeVisibility.ts): only the image shows.
+   After the layout rules above: the narrow row sets display too, at the same
+   specificity, so this must come last. */
+.cps-root.cps-chrome-hidden :is(.cps-float-top, .cps-slot-sliders, .cps-slot-notice, .cps-slot-bottom) {
+  display: none;
 }
 
 .cps-overlay-slot {

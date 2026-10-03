@@ -4,7 +4,8 @@
  * amber floating pill above the bottom bar's right end (`shell.noticeSlot`)
  * with a warning icon, "Drawing grid G px -- image I px (N.Nx)", a light
  * **Match image resolution** button and a × that hides the pill until the
- * notice text changes. While the condition holds, `setWarning(true)` turns
+ * notice text changes or Align drawing is enabled ({@link ResolutionNotice.redisplay}).
+ * While the condition holds, `setWarning(true)` turns
  * the bottom bar's Align button amber -- also while the pill is hidden. A
  * one-time toast per document per session points to the button. Second case
  * (same button, own toast): the image area doesn't fit the maximum paint
@@ -123,11 +124,18 @@ export class ResolutionNotice {
     }
   }
 
-  /** ×: hide the pill until the notice text changes (the Align button stays amber). */
+  /** ×: hide the pill until the notice text changes or Align drawing is enabled (the Align button stays amber). */
   private dismiss(): void {
     if (!this.text) return;
     this.dismissed = this.text;
     this.element.hidden = true;
+  }
+
+  /** Undo a ×: show the pill again if the condition still holds (Align drawing was enabled). */
+  redisplay(): void {
+    if (this.dismissed === null) return;
+    this.dismissed = null;
+    this.element.hidden = !this.text;
   }
 
   /** Button: confirm, then resample. */

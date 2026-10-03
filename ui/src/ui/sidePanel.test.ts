@@ -1,6 +1,6 @@
 /**
- * Side panel against a minimal fake DOM: hide grace (pointer crossing the
- * gap), hover keeps it, shrink / tab-click expand, height cap, events.
+ * Side panel against a minimal fake DOM: visibility (immediate; timing is
+ * chromeVisibility.ts), shrink / tab-click expand, height cap, events.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -52,41 +52,16 @@ async function panel(): Promise<{ side: import("./sidePanel").SidePanel; root: F
 }
 
 describe("SidePanel visibility", () => {
-  it("starts hidden; shows at once; hides after the grace", async () => {
+  it("starts hidden; shows and hides at once; emits on change only", async () => {
     const { side, root, events } = await panel();
-    const { HIDE_GRACE_MS } = await import("./sidePanel");
     expect(root.hidden).toBe(true);
     side.setVisible(true);
     expect(root.hidden).toBe(false);
-    side.setVisible(false);
-    vi.advanceTimersByTime(HIDE_GRACE_MS - 1);
     expect(side.visible).toBe(true);
-    vi.advanceTimersByTime(1);
+    side.setVisible(true);
+    side.setVisible(false);
     expect(root.hidden).toBe(true);
     expect(events).toEqual([["visible", true], ["visible", false]]);
-  });
-
-  it("entering the panel cancels the grace; leaving restarts it", async () => {
-    const { side, root } = await panel();
-    const { HIDE_GRACE_MS } = await import("./sidePanel");
-    side.setVisible(true);
-    side.setVisible(false);
-    root.dispatchEvent(new Event("pointerenter"));
-    vi.advanceTimersByTime(HIDE_GRACE_MS * 4);
-    expect(root.hidden).toBe(false);
-    root.dispatchEvent(new Event("pointerleave"));
-    vi.advanceTimersByTime(HIDE_GRACE_MS);
-    expect(root.hidden).toBe(true);
-  });
-
-  it("a show during the grace keeps it up", async () => {
-    const { side, root } = await panel();
-    const { HIDE_GRACE_MS } = await import("./sidePanel");
-    side.setVisible(true);
-    side.setVisible(false);
-    side.setVisible(true);
-    vi.advanceTimersByTime(HIDE_GRACE_MS * 2);
-    expect(root.hidden).toBe(false);
   });
 });
 

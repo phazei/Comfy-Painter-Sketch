@@ -1,7 +1,8 @@
 /**
  * Shortcuts help overlay (design handoff section 9): a dim backdrop over the
- * editor with a centred card titled "Shortcuts" and a two-column grid of
- * section cards generated from the one shortcut list (`shortcutList.ts`).
+ * editor with a centred card titled "Shortcuts": an "Essentials" band of the
+ * most-used keys, then flowing columns of section cards, both generated from
+ * the one shortcut list (`shortcutList.ts`).
  * Opened by the bottom bar's Help button or the `?` key; closed by Esc (the
  * host's Esc chain calls {@link HelpOverlay.close}), a backdrop click or the
  * × button. It holds only buttons and text, so keyboard focus stays on the
@@ -9,7 +10,7 @@
  */
 
 import { setIcon } from "./icons";
-import { HELP_SECTIONS } from "./shortcutList";
+import { HELP_SECTIONS, QUICK_ROWS } from "./shortcutList";
 
 /**
  * The help overlay of one editor.
@@ -92,6 +93,21 @@ function buildCard(close: () => void): HTMLDivElement {
   closeButton.addEventListener("click", close);
   header.append(title, closeButton);
 
+  // Body (the one scroller): the Essentials band, then the section columns.
+  const body = el("div", "cps-help-body");
+  const quick = el("section", "cps-help-quick");
+  const quickTitle = el("div", "cps-help-section-title");
+  quickTitle.textContent = "Essentials";
+  const quickItems = el("div", "cps-help-quick-items");
+  for (const row of QUICK_ROWS) {
+    const item = el("div", "cps-help-quick-item");
+    const action = el("span", "cps-help-action");
+    action.textContent = row.action;
+    item.append(buildKeys(row.keys), action);
+    quickItems.appendChild(item);
+  }
+  quick.append(quickTitle, quickItems);
+
   const grid = el("div", "cps-help-grid");
   for (const section of HELP_SECTIONS) {
     const box = el("section", "cps-help-section");
@@ -99,17 +115,38 @@ function buildCard(close: () => void): HTMLDivElement {
     heading.textContent = section.title;
     const rows = el("div", "cps-help-rows");
     for (const row of section.rows) {
-      const keys = el("span", "cps-help-keys");
-      keys.textContent = row.keys;
+      const line = el("div", "cps-help-row");
       const action = el("span", "cps-help-action");
       action.textContent = row.action;
-      rows.append(keys, action);
+      line.append(buildKeys(row.keys), action);
+      rows.appendChild(line);
     }
     box.append(heading, rows);
     grid.appendChild(box);
   }
-  card.append(header, grid);
+  body.append(quick, grid);
+  card.append(header, body);
   return card;
+}
+
+/**
+ * The keys cell: each " / " alternative as a key chip, a muted slash between.
+ * @param keys - Row keys, e.g. `"Ctrl ⇧ Z / Ctrl Y"`.
+ * @returns The cell element.
+ */
+function buildKeys(keys: string): HTMLSpanElement {
+  const cell = el("span", "cps-help-keys");
+  keys.split(" / ").forEach((alternative, index) => {
+    if (index > 0) {
+      const slash = el("span", "cps-help-or");
+      slash.textContent = "/";
+      cell.appendChild(slash);
+    }
+    const chip = el("kbd", "cps-help-kbd");
+    chip.textContent = alternative;
+    cell.appendChild(chip);
+  });
+  return cell;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string): HTMLElementTagNameMap[K] {

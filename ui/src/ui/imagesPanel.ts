@@ -1,8 +1,8 @@
 /**
  * The Images button and its tray (SPEC "Image sources and the Images panel";
  * design handoff "Top-right group"): the button sits first in the top-right
- * pill (`clipGroup.ts`) with a count badge and is disabled while the node's
- * source history is empty. It opens a narrow tray right-aligned under that
+ * pill (`clipGroup.ts`) with a count badge and is hidden (with its divider)
+ * while the node's source history is empty. It opens a narrow tray right-aligned under that
  * pill: a vertical, scrollable thumbnail column, newest first; clicking a
  * thumbnail runs `pick` and the tray STAYS open (insert several sources in a
  * row; the next stage press closes it anyway).
@@ -166,12 +166,12 @@ export class ImagesPanel {
     if (change === "new") this.show();
   }
 
-  /** Badge, disabled state, and the open list. */
+  /** Badge, the button's presence (hidden until a source exists), and the open list. */
   private sync(): void {
     const count = this.entries.length;
     this.badge.textContent = count > 0 ? String(count) : "";
     this.badge.hidden = count === 0;
-    this.button.disabled = count === 0;
+    this.button.hidden = count === 0;
     if (!this.open) return;
     if (count === 0) this.close();
     else this.render();
