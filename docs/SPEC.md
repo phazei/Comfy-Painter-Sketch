@@ -550,8 +550,16 @@ cancelled and popovers closed. Keys are read only from inside the overlay
 (a dialog over it is ignored). Exit with Esc (last in the Esc chain),
 F, the bottom bar's Exit button, the placeholder, or automatically (250 ms poll)
 when the node leaves the DOM or the viewed graph. One fullscreen editor per page.
-The overlay is a bare backdrop with 12 px padding (no top strip or own buttons); it stops pointer/wheel events and refuses drops (so a dropped file
+The overlay is a bare backdrop with 12 px padding top and bottom (no top strip or own buttons); it stops pointer/wheel events and refuses drops (so a dropped file
 never loads a workflow into the hidden graph).
+**Width handles** (`ui/fullscreenWidth.ts`): a 16 px vertical bar on each side
+of the editor (they are the side margins), each with a dotted grip that turns
+accent on hover. Dragging either one moves both, symmetrically about the
+overlay's centre, so on a wide monitor the bars and side panel stay near a
+centred image. Minimum 640 px; within 16 px of the full width it snaps to full.
+Double-click a handle: full width. The width is the root's `max-width`
+(a narrower window just shrinks the editor), remembered per browser in
+`localStorage` (`PainterSketch.fullscreenWidth`), not in the document.
 Why: Nodes 2.0 only checks that `widget.element` is its child, so only the
 inner root may move, never the wrapper.
 
@@ -563,7 +571,7 @@ inner root may move, never the wrapper.
 | Unhandled keys | pass to ComfyUI (except arrows while engaged) | swallowed except the pass-through list (section 24) |
 
 Files: `engine/view.ts`, `viewport.ts`, `compositor.ts`, `ui/stageView.ts`,
-`stageInput.ts`, `fullscreen.ts`, `fullscreenKeys.ts`, `webClick.ts`, `widget/eventIsolation.ts`, `constants.ts`, `painterWidget.ts`,
+`stageInput.ts`, `fullscreen.ts`, `fullscreenWidth.ts`, `fullscreenKeys.ts`, `webClick.ts`, `widget/eventIsolation.ts`, `constants.ts`, `painterWidget.ts`,
 `nodeHooks.ts`.
 
 ## 7. Editor shell and focus
@@ -723,7 +731,8 @@ the key sink.
 
 - In-node it sits **outside the node**, 16 px to its right, top-aligned with the
   editor; in fullscreen inside the editor at the right, below the top row
-  (so it never covers the clipboard pill).
+  (so it never covers the clipboard pill), and below the options strip when
+  the strip reaches the panel's column.
 - Shown and hidden with the rest of the chrome (above).
 - Header: segmented tabs `Layers | Outputs` ("Outputs (O)") + an icon-only
   shrink segment ("Shrink panel" / "Expand panel"; shrunk = header only).

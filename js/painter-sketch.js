@@ -2654,6 +2654,118 @@ async function pasteDrop(actions, files, url, point, note) {
   }
   if (!await actions.pasteDropped([result.blob], point)) note(DRAG_NOT_IMAGE_NOTE);
 }
+const STORAGE_KEY = "PainterSketch.fullscreenWidth";
+const MIN_FULLSCREEN_WIDTH = 640;
+const FULL_SNAP = 16;
+function widthForPointer(pointerX, centerX, available, handleWidth) {
+  const width = Math.round(2 * Math.abs(pointerX - centerX) - handleWidth);
+  if (width >= available - FULL_SNAP) return null;
+  return Math.max(Math.min(MIN_FULLSCREEN_WIDTH, available), width);
+}
+function parseStoredWidth(raw) {
+  if (raw === null) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < MIN_FULLSCREEN_WIDTH) return null;
+  return Math.round(value);
+}
+function loadWidth() {
+  try {
+    return parseStoredWidth(window.localStorage.getItem(STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+function saveWidth(width) {
+  try {
+    if (width === null) window.localStorage.removeItem(STORAGE_KEY);
+    else window.localStorage.setItem(STORAGE_KEY, String(width));
+  } catch (error) {
+    console.warn("[PainterSketch] Could not remember the fullscreen width:", error);
+  }
+}
+class FullscreenWidth {
+  /**
+   * Insert the handles around `root` (already a child of `overlay`) and apply
+   * the remembered width.
+   * @param overlay - Fullscreen overlay (centred flex row).
+   * @param root - Editor root inside the overlay.
+   */
+  constructor(overlay, root) {
+    this.overlay = overlay;
+    this.root = root;
+    this.left = this.buildHandle("left");
+    this.right = this.buildHandle("right");
+    root.before(this.left);
+    root.after(this.right);
+    this.apply();
+  }
+  overlay;
+  root;
+  left;
+  right;
+  width = loadWidth();
+  dragging = null;
+  /** Remove the handles and the width limit from the root. */
+  dispose() {
+    this.left.remove();
+    this.right.remove();
+    this.root.style.removeProperty("max-width");
+  }
+  buildHandle(side) {
+    const handle = document.createElement("div");
+    handle.className = `cps-fs-handle cps-fs-handle-${side}`;
+    handle.title = "Drag to narrow or widen the editor (double-click: full width)";
+    const grip = document.createElement("div");
+    grip.className = "cps-fs-grip";
+    handle.appendChild(grip);
+    handle.addEventListener("pointerdown", (event) => this.down(event, handle));
+    handle.addEventListener("pointermove", (event) => this.move(event, handle));
+    handle.addEventListener("pointerup", (event) => this.up(event, handle));
+    handle.addEventListener("pointercancel", (event) => this.up(event, handle));
+    handle.addEventListener("lostpointercapture", () => this.end());
+    handle.addEventListener("dblclick", () => {
+      this.width = null;
+      this.apply();
+      saveWidth(null);
+    });
+    return handle;
+  }
+  down(event, handle) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    this.dragging = handle;
+    this.overlay.classList.add("cps-fs-resizing");
+  }
+  move(event, handle) {
+    if (this.dragging !== handle) return;
+    const rect = this.overlay.getBoundingClientRect();
+    const style = getComputedStyle(this.overlay);
+    const padLeft = parseFloat(style.paddingLeft) || 0;
+    const padRight = parseFloat(style.paddingRight) || 0;
+    const handleWidth = handle.getBoundingClientRect().width;
+    const content = rect.width - padLeft - padRight;
+    const centerX = rect.left + padLeft + content / 2;
+    this.width = widthForPointer(event.clientX, centerX, content - 2 * handleWidth, handleWidth);
+    this.apply();
+  }
+  up(event, handle) {
+    if (this.dragging !== handle) return;
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    this.end();
+  }
+  /** Finish a drag (once): remember the width. */
+  end() {
+    if (!this.dragging) return;
+    this.dragging = null;
+    this.overlay.classList.remove("cps-fs-resizing");
+    saveWidth(this.width);
+  }
+  apply() {
+    if (this.width === null) this.root.style.removeProperty("max-width");
+    else this.root.style.maxWidth = `${this.width}px`;
+  }
+}
 const WATCH_MS = 250;
 const PLACEHOLDER_TEXT = "Editing in fullscreen — press Esc or click to return";
 const OVERLAY_STOPPED = [
@@ -2690,6 +2802,8 @@ class FullscreenMount {
   container;
   placeholder;
   overlay = null;
+  /** Width handles of the open overlay. */
+  widthHandles = null;
   watchTimer = null;
   disposed = false;
   /** Whether the editor is fullscreen. */
@@ -2714,6 +2828,7 @@ class FullscreenMount {
     this.overlay = overlay;
     openMount = this;
     overlay.prepend(this.root);
+    this.widthHandles = new FullscreenWidth(overlay, this.root);
     this.container.appendChild(this.placeholder);
     document.body.appendChild(overlay);
     this.watchTimer = setInterval(() => this.watch(), WATCH_MS);
@@ -2728,6 +2843,8 @@ class FullscreenMount {
     if (openMount === this) openMount = null;
     if (this.watchTimer !== null) clearInterval(this.watchTimer);
     this.watchTimer = null;
+    this.widthHandles?.dispose();
+    this.widthHandles = null;
     this.placeholder.remove();
     this.container.appendChild(this.root);
     overlay.remove();
@@ -10868,6 +10985,7 @@ function div$1(className) {
 const EDGE = 12;
 const ROW_GAP = 10;
 const BAR_MAX = 1100;
+const STRIP_GAP = 8;
 class EditorShell {
   /** Editor root (child of the DOM widget element; re-parented for fullscreen). */
   root;
@@ -10913,7 +11031,7 @@ class EditorShell {
     );
     this.popoverHost = new PopoverHost(this.root);
     this.resizeObserver = new ResizeObserver(() => this.requestLayout());
-    for (const el2 of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot]) {
+    for (const el2 of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot, this.sidePanel.element]) {
       this.resizeObserver.observe(el2);
     }
   }
@@ -10985,6 +11103,28 @@ class EditorShell {
     this.top.element.classList.toggle("cps-anchor-right", narrow && rowW > avail);
     this.top.strip.classList.toggle("cps-anchor-right", this.top.strip.scrollWidth > avail);
     this.bottomSlot.classList.toggle("cps-anchor-right", this.bottomSlot.scrollWidth > avail);
+    this.syncStripClear();
+  }
+  /**
+   * Fullscreen side panel vs the options strip: when the strip reaches under
+   * the panel's column (right edge, {@link EDGE} in), publish the strip's
+   * bottom as `--cps-strip-clear` (root CSS px + a gap) so panel.css drops the
+   * panel below it; otherwise clear the variable. Measured in client px and
+   * divided by the root's on-screen scale (graph zoom in-node).
+   */
+  syncStripClear() {
+    const rootRect = this.root.getBoundingClientRect();
+    const stripRect = this.top.strip.getBoundingClientRect();
+    const panelW = this.sidePanel.element.offsetWidth;
+    const scale = rootRect.width / this.root.clientWidth || 1;
+    const panelLeft = rootRect.right - (EDGE + panelW) * scale;
+    const overlaps = stripRect.width > 0 && panelW > 0 && stripRect.right > panelLeft;
+    if (overlaps) {
+      const bottom = (stripRect.bottom - rootRect.top) / scale + STRIP_GAP;
+      this.root.style.setProperty("--cps-strip-clear", `${Math.ceil(bottom)}px`);
+    } else {
+      this.root.style.removeProperty("--cps-strip-clear");
+    }
   }
 }
 function div(className) {
@@ -25972,7 +26112,9 @@ const fullscreenCss = `/*
   z-index: 1790;
   box-sizing: border-box;
   display: flex;
-  padding: 12px;
+  justify-content: center;
+  /* Sides: the width handles are the margin. */
+  padding: 12px 0;
   background: color-mix(in srgb, var(--bg-color, #202020) 92%, black);
   overscroll-behavior: contain;
 }
@@ -25981,8 +26123,49 @@ const fullscreenCss = `/*
   flex: 1 1 auto;
   width: auto;
   height: auto;
+  min-width: 0;
   min-height: 0;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Width handles (ui/fullscreenWidth.ts) ─────────────────────────────────
+ * Outside .cps-root, so the editor tokens don't apply: mix ComfyUI's
+ * --fg-color directly (the backdrop follows the theme). */
+
+.cps-fs-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.cps-fs-grip {
+  width: 4px;
+  height: 56px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--fg-color, #fff) 70%, transparent) 1.2px, transparent 1.6px)
+      center / 4px 8px repeat-y,
+    color-mix(in srgb, var(--fg-color, #fff) 14%, transparent);
+  transition: background-color 120ms, height 120ms;
+}
+
+.cps-fs-handle:hover .cps-fs-grip,
+.cps-fs-resizing .cps-fs-grip {
+  height: 72px;
+  background-color: color-mix(in srgb, var(--p-primary-color, #3b82f6) 55%, transparent);
+}
+
+/* While dragging, keep the resize cursor everywhere and the editor inert. */
+.cps-fs-resizing {
+  cursor: ew-resize;
+}
+
+.cps-fs-resizing > .cps-root {
+  pointer-events: none;
 }
 
 .cps-fullscreen-placeholder:focus-visible {
@@ -26380,10 +26563,12 @@ const panelCss = `/*
 }
 
 /* Fullscreen: inside the editor, at the right, below the top row (the
-    clipboard pill sits in the corner); capped to the editor height above the
-   bottom bar (the host clears the in-node inline cap). */
+   clipboard pill sits in the corner), and below the options strip when the
+   strip reaches the panel's column (shell.ts sets --cps-strip-clear); capped
+   to the editor height above the bottom bar (the host clears the in-node
+   inline cap). */
 .cps-root.cps-is-fullscreen .cps-side {
-  --cps-side-top: calc(var(--cps-edge) * 2 + var(--cps-bar-btn) + 10px);
+  --cps-side-top: max(calc(var(--cps-edge) * 2 + var(--cps-bar-btn) + 10px), var(--cps-strip-clear, 0px));
   left: auto;
   right: var(--cps-edge);
   top: var(--cps-side-top);

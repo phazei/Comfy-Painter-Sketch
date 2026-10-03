@@ -68,6 +68,8 @@ const EDGE = 12;
 const ROW_GAP = 10;
 /** Width cap of the top row / bottom bars, CSS px (editor.css `--cps-bar-max`). */
 const BAR_MAX = 1100;
+/** Gap between the options strip and a fullscreen side panel dropped below it, CSS px. */
+const STRIP_GAP = 8;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EditorShell
@@ -126,7 +128,7 @@ export class EditorShell {
     this.popoverHost = new PopoverHost(this.root);
 
     this.resizeObserver = new ResizeObserver(() => this.requestLayout());
-    for (const el of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot]) {
+    for (const el of [this.root, this.top.history, this.top.dock, this.top.strip, this.top.clip, this.bottomSlot, this.sidePanel.element]) {
       this.resizeObserver.observe(el);
     }
   }
@@ -204,6 +206,29 @@ export class EditorShell {
     this.top.element.classList.toggle("cps-anchor-right", narrow && rowW > avail);
     this.top.strip.classList.toggle("cps-anchor-right", this.top.strip.scrollWidth > avail);
     this.bottomSlot.classList.toggle("cps-anchor-right", this.bottomSlot.scrollWidth > avail);
+    this.syncStripClear();
+  }
+
+  /**
+   * Fullscreen side panel vs the options strip: when the strip reaches under
+   * the panel's column (right edge, {@link EDGE} in), publish the strip's
+   * bottom as `--cps-strip-clear` (root CSS px + a gap) so panel.css drops the
+   * panel below it; otherwise clear the variable. Measured in client px and
+   * divided by the root's on-screen scale (graph zoom in-node).
+   */
+  private syncStripClear(): void {
+    const rootRect = this.root.getBoundingClientRect();
+    const stripRect = this.top.strip.getBoundingClientRect();
+    const panelW = this.sidePanel.element.offsetWidth;
+    const scale = rootRect.width / this.root.clientWidth || 1;
+    const panelLeft = rootRect.right - (EDGE + panelW) * scale;
+    const overlaps = stripRect.width > 0 && panelW > 0 && stripRect.right > panelLeft;
+    if (overlaps) {
+      const bottom = (stripRect.bottom - rootRect.top) / scale + STRIP_GAP;
+      this.root.style.setProperty("--cps-strip-clear", `${Math.ceil(bottom)}px`);
+    } else {
+      this.root.style.removeProperty("--cps-strip-clear");
+    }
   }
 }
 

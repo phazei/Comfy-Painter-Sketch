@@ -30,10 +30,12 @@
 }
 
 /* Fullscreen: inside the editor, at the right, below the top row (the
-    clipboard pill sits in the corner); capped to the editor height above the
-   bottom bar (the host clears the in-node inline cap). */
+   clipboard pill sits in the corner), and below the options strip when the
+   strip reaches the panel's column (shell.ts sets --cps-strip-clear); capped
+   to the editor height above the bottom bar (the host clears the in-node
+   inline cap). */
 .cps-root.cps-is-fullscreen .cps-side {
-  --cps-side-top: calc(var(--cps-edge) * 2 + var(--cps-bar-btn) + 10px);
+  --cps-side-top: max(calc(var(--cps-edge) * 2 + var(--cps-bar-btn) + 10px), var(--cps-strip-clear, 0px));
   left: auto;
   right: var(--cps-edge);
   top: var(--cps-side-top);

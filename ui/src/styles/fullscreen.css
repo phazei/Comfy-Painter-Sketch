@@ -55,7 +55,9 @@
   z-index: 1790;
   box-sizing: border-box;
   display: flex;
-  padding: 12px;
+  justify-content: center;
+  /* Sides: the width handles are the margin. */
+  padding: 12px 0;
   background: color-mix(in srgb, var(--bg-color, #202020) 92%, black);
   overscroll-behavior: contain;
 }
@@ -64,8 +66,49 @@
   flex: 1 1 auto;
   width: auto;
   height: auto;
+  min-width: 0;
   min-height: 0;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Width handles (ui/fullscreenWidth.ts) ─────────────────────────────────
+ * Outside .cps-root, so the editor tokens don't apply: mix ComfyUI's
+ * --fg-color directly (the backdrop follows the theme). */
+
+.cps-fs-handle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.cps-fs-grip {
+  width: 4px;
+  height: 56px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--fg-color, #fff) 70%, transparent) 1.2px, transparent 1.6px)
+      center / 4px 8px repeat-y,
+    color-mix(in srgb, var(--fg-color, #fff) 14%, transparent);
+  transition: background-color 120ms, height 120ms;
+}
+
+.cps-fs-handle:hover .cps-fs-grip,
+.cps-fs-resizing .cps-fs-grip {
+  height: 72px;
+  background-color: color-mix(in srgb, var(--p-primary-color, #3b82f6) 55%, transparent);
+}
+
+/* While dragging, keep the resize cursor everywhere and the editor inert. */
+.cps-fs-resizing {
+  cursor: ew-resize;
+}
+
+.cps-fs-resizing > .cps-root {
+  pointer-events: none;
 }
 
 .cps-fullscreen-placeholder:focus-visible {

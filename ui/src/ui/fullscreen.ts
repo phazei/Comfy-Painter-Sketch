@@ -21,7 +21,10 @@
  * a short poll that only runs while open. At most one editor is fullscreen
  * per page; entering another exits the first. The overlay is created on
  * enter and removed on exit, so nothing is left on `document.body`.
+ * Width handles on both sides of the root: `fullscreenWidth.ts`.
  */
+
+import { FullscreenWidth } from "./fullscreenWidth";
 
 /** Poll interval of the exit conditions while fullscreen. */
 const WATCH_MS = 250;
@@ -70,6 +73,8 @@ export class FullscreenMount {
   readonly container: HTMLDivElement;
   private readonly placeholder: HTMLButtonElement;
   private overlay: HTMLDivElement | null = null;
+  /** Width handles of the open overlay. */
+  private widthHandles: FullscreenWidth | null = null;
   private watchTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
@@ -116,6 +121,7 @@ export class FullscreenMount {
     this.overlay = overlay;
     openMount = this;
     overlay.prepend(this.root);
+    this.widthHandles = new FullscreenWidth(overlay, this.root);
     this.container.appendChild(this.placeholder);
     document.body.appendChild(overlay);
     this.watchTimer = setInterval(() => this.watch(), WATCH_MS);
@@ -131,6 +137,8 @@ export class FullscreenMount {
     if (openMount === this) openMount = null;
     if (this.watchTimer !== null) clearInterval(this.watchTimer);
     this.watchTimer = null;
+    this.widthHandles?.dispose();
+    this.widthHandles = null;
     this.placeholder.remove();
     this.container.appendChild(this.root);
     overlay.remove();
