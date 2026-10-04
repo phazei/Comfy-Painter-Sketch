@@ -5,6 +5,11 @@
  * fuse when they meet, and webbing is draped across acute forks. No canvas,
  * no scheduling: runs in the worker or on the main thread and is unit-tested
  * directly. Deterministic for a seed.
+ *
+ * Timing (what animated growth shows): edge strands start staggered,
+ * spreading along the edge from a few random points (`stagger`), and a drape
+ * unrolls from its fork one arm node per step (`Drape.shown`) instead of
+ * appearing whole.
  */
 
 import { genExtent } from "./cobwebOptions";
@@ -38,6 +43,8 @@ export interface Drape {
   sag: number;
   /** Per thread: add a diagonal thread. */
   diag: boolean[];
+  /** Arm nodes revealed so far (1..`a.length`); grows one per step. */
+  shown: number;
 }
 
 interface Fork {
@@ -117,6 +124,11 @@ export class CobwebCore {
   private readonly grid = new Map<number, WebNode[]>();
   private tips: Tip[] = [];
   private tipId = 0;
+  /** Edge strands not started yet, latest first (popped when `steps` reaches `at`). */
+  private pending: { at: number; tip: Tip }[] = [];
+  /** Drapes still unrolling. */
+  private unrolling: Drape[] = [];
+  private steps = 0;
 
   /**
    * @param o - Options.
@@ -141,11 +153,11 @@ export class CobwebCore {
    */
   grow(ms: number): boolean {
     const t0 = now();
-    while (this.tips.length && this.nodes < this.o.maxNodes) {
+    while (this.active()) {
       this.step();
       if (now() - t0 >= ms) break;
     }
-    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    this.done = !this.active();
     return this.done;
   }
 
@@ -155,11 +167,14 @@ export class CobwebCore {
    * @returns Whether growth has finished.
    */
   growSteps(n: number): boolean {
-    for (let i = 0; i < n && this.tips.length && this.nodes < this.o.maxNodes; i++) {
-      this.step();
-    }
-    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    for (let i = 0; i < n && this.active(); i++) this.step();
+    this.done = !this.active();
     return this.done;
+  }
+
+  /** Strands can still grow (under the node cap), or a drape is still unrolling. */
+  private active(): boolean {
+    return ((this.tips.length > 0 || this.pending.length > 0) && this.nodes < this.o.maxNodes) || this.unrolling.length > 0;
   }
 
   /**
@@ -182,8 +197,12 @@ export class CobwebCore {
     const H = this.gh;
     const per = 2 * (W + H);
     const count = Math.round(per / this.o.seedSpacing);
+    // Staggered start: growth spreads along the edge from a few random points.
+    const origins = Array.from({ length: 3 + Math.trunc(R() * 3) }, () => R() * per);
+    const seeds: { at: number; tip: Tip }[] = [];
     for (let i = 0; i < count; i++) {
       let t = ((i + R() * 0.8) / count) * per;
+      const along = Math.min(...origins.map((p) => Math.min(Math.abs(t - p), per - Math.abs(t - p))));
       let x: number;
       let y: number;
       let a: number;
@@ -207,8 +226,19 @@ export class CobwebCore {
       }
       const n = this.addNode(x, y, 0);
       const angle = a + (R() - 0.5) * 1.2;
-      this.tips.push({ id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] });
+      seeds.push({ at: along, tip: { id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] } });
     }
+    // Distance along the edge -> start step (the farthest strand starts near `stagger`).
+    const far = Math.max(1, ...seeds.map((s) => s.at));
+    for (const s of seeds) s.at = Math.round((s.at / far) * this.o.stagger * (0.85 + R() * 0.3));
+    this.pending = seeds.sort((p, q) => q.at - p.at);
+    this.release();
+  }
+
+  /** Start the edge strands whose time has come. */
+  private release(): void {
+    const p = this.pending;
+    while (p.length && p[p.length - 1]!.at <= this.steps) this.tips.push(p.pop()!.tip);
   }
 
   // ── Mesh ──────────────────────────────────────────────────────────────────
@@ -281,7 +311,9 @@ export class CobwebCore {
     if (w <= 0 || R() > w) return;
     const diag: boolean[] = [];
     for (let i = 0; i < n; i++) diag.push(R() < 0.5);
-    this.drapes.push({ o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag });
+    const d: Drape = { o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag, shown: 1 };
+    this.drapes.push(d);
+    this.unrolling.push(d);
   }
 
   private kill(t: Tip): void {
@@ -292,6 +324,16 @@ export class CobwebCore {
   // ── Step ──────────────────────────────────────────────────────────────────
 
   private step(): void {
+    this.steps++;
+    if (this.nodes < this.o.maxNodes) {
+      this.release();
+      if (this.tips.length) this.stepTips();
+    }
+    // Drapes unroll at strand speed (one arm node per step).
+    if (this.unrolling.length) this.unrolling = this.unrolling.filter((d) => ++d.shown < d.a.length);
+  }
+
+  private stepTips(): void {
     const o = this.o;
     const R = this.rand;
     const M = o.margin;

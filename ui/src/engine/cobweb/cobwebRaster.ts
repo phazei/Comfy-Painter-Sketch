@@ -51,7 +51,10 @@ export class CobwebRaster {
   /** One screen px in gen units. */
   private readonly px: number;
   private readonly drawnSegs = new Array<number>(COBWEB_BUCKETS).fill(0);
-  private drawnDrapes = 0;
+  /** Per drape: last band edge drawn (arm index, -1 = none). */
+  private readonly drapeDrawn: number[] = [];
+  /** Drapes before this index are drawn completely. */
+  private drapeFrom = 0;
 
   /**
    * @param core - Growth state.
@@ -100,12 +103,19 @@ export class CobwebRaster {
   drawNew(): void {
     const core = this.core;
     const ctx = this.ctx;
-    if (this.drawnDrapes < core.drapes.length) {
+    if (this.drapeFrom < core.drapes.length) {
       ctx.save();
       ctx.globalCompositeOperation = "destination-over"; // webbing sits behind strands
-      for (let i = this.drawnDrapes; i < core.drapes.length; i++) this.drawDrape(core.drapes[i]!);
+      for (let i = this.drapeFrom; i < core.drapes.length; i++) {
+        const d = core.drapes[i]!;
+        const last = this.drapeDrawn[i] ?? -1;
+        const to = drapeStop(d.a.length, d.shown);
+        if (to <= last) continue;
+        this.drawDrape(d, last, to);
+        this.drapeDrawn[i] = to;
+      }
       ctx.restore();
-      this.drawnDrapes = core.drapes.length;
+      while (this.drapeFrom < core.drapes.length && this.drapeDrawn[this.drapeFrom] === core.drapes[this.drapeFrom]!.a.length - 1) this.drapeFrom++;
     }
     const [c0, c1, c2] = core.o.color;
     const [lw0, lw1] = core.o.lineWidth;
@@ -128,16 +138,23 @@ export class CobwebRaster {
 
   // ── Drapes ────────────────────────────────────────────────────────────────
 
-  private drawDrape(d: Drape): void {
+  /**
+   * Draw the band of a drape between arm indices `last` (exclusive; -1 = from
+   * the fork) and `to`. Band edges are cross-thread curves (or the outer
+   * edge), so the seam between two bands sits under a thread; drawn in one
+   * go (`-1 .. n-1`) it is the whole drape.
+   */
+  private drawDrape(d: Drape, last: number, to: number): void {
     const ctx = this.ctx;
     const { o, a, b, alpha, sag, diag } = d;
     const n = a.length;
     const [r, g, bl] = this.core.o.drapeColor;
     const col = (x: number): string => `rgba(${r},${g},${bl},${x})`;
     const A = a[n - 1]!;
-    const B = b[n - 1]!;
-    // Control point pulled back toward the fork.
-    const across = (p: { x: number; y: number }, q: { x: number; y: number }, k: number): [number, number] => {
+    // Cross curve at arm index i: control point pulled back toward the fork,
+    // more the farther out (the outer edge bows by `sag`).
+    const control = (p: { x: number; y: number }, q: { x: number; y: number }, i: number): [number, number] => {
+      const k = (sag * i) / (n - 1);
       const mx = (p.x + q.x) / 2;
       const my = (p.y + q.y) / 2;
       return [mx + (o.x - mx) * k, my + (o.y - my) * k];
@@ -147,28 +164,36 @@ export class CobwebRaster {
     grad.addColorStop(1, col(0.08 * alpha));
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(o.x, o.y);
-    for (let i = 0; i < n; i++) ctx.lineTo(a[i]!.x, a[i]!.y);
-    const [qx, qy] = across(A, B, sag);
-    ctx.quadraticCurveTo(qx, qy, B.x, B.y);
-    for (let i = n - 1; i >= 0; i--) ctx.lineTo(b[i]!.x, b[i]!.y);
+    const lo = Math.max(0, last);
+    if (last < 0) ctx.moveTo(o.x, o.y);
+    else ctx.moveTo(a[last]!.x, a[last]!.y);
+    for (let i = lo; i <= to; i++) ctx.lineTo(a[i]!.x, a[i]!.y);
+    const [qx, qy] = control(a[to]!, b[to]!, to);
+    ctx.quadraticCurveTo(qx, qy, b[to]!.x, b[to]!.y);
+    for (let i = to - 1; i >= lo; i--) ctx.lineTo(b[i]!.x, b[i]!.y);
+    if (last >= 0) {
+      const [px, py] = control(a[last]!, b[last]!, last);
+      ctx.quadraticCurveTo(px, py, a[last]!.x, a[last]!.y);
+    }
     ctx.closePath();
     ctx.fill();
 
     ctx.lineWidth = 0.55 * this.px;
-    for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) {
+    for (const i of drapeThreads(n)) {
       const p = a[i]!;
-      const q = b[i]!;
-      const k = sag * (i / n);
-      const [cx, cy] = across(p, q, k);
-      ctx.strokeStyle = col(alpha * (0.95 - (0.45 * i) / n));
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.quadraticCurveTo(cx, cy, q.x, q.y);
-      ctx.stroke();
-      if (i + 3 < n && diag[i]) {
+      if (i > last && i <= to) {
+        const q = b[i]!;
+        const [cx, cy] = control(p, q, i);
+        ctx.strokeStyle = col(alpha * (0.95 - (0.45 * i) / n));
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.quadraticCurveTo(cx, cy, q.x, q.y);
+        ctx.stroke();
+      }
+      // The diagonal reaches 3 nodes farther: drawn with the band holding its end.
+      if (i + 3 < n && diag[i] && i + 3 > last && i + 3 <= to) {
         const q2 = b[i + 3]!;
-        const [dx, dy] = across(p, q2, k);
+        const [dx, dy] = control(p, q2, i);
         ctx.strokeStyle = col(alpha * 0.5);
         ctx.beginPath();
         ctx.moveTo(p.x, p.y);
@@ -177,4 +202,35 @@ export class CobwebRaster {
       }
     }
   }
+}
+
+// ── Drape bands ───────────────────────────────────────────────────────────────
+
+/**
+ * Arm indices of a drape's cross threads (denser near the fork).
+ * @param n - Arm length (nodes).
+ * @returns Increasing indices in [1, n).
+ */
+export function drapeThreads(n: number): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) out.push(i);
+  return out;
+}
+
+/**
+ * How far an unrolling drape may be drawn: the outermost cross thread within
+ * the revealed nodes (bands end on threads so their seams stay hidden), or
+ * the outer edge once fully revealed.
+ * @param n - Arm length (nodes).
+ * @param shown - Revealed arm nodes.
+ * @returns Arm index of the band edge, -1 = nothing yet.
+ */
+export function drapeStop(n: number, shown: number): number {
+  if (shown >= n) return n - 1;
+  let stop = -1;
+  for (const i of drapeThreads(n)) {
+    if (i > shown - 1) break;
+    stop = i;
+  }
+  return stop;
 }

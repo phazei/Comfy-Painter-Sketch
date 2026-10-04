@@ -39,6 +39,11 @@ export interface CobwebOptions {
   join: number;
   /** Chance per step that a strand forks. */
   branch: number;
+  /**
+   * Staggered start: growth steps until the last edge strand starts (0 = all
+   * at once). Starts spread along the edge from 3-5 random points.
+   */
+  stagger: number;
   maxNodes: number;
   maxTips: number;
   /** Stroke width in screen px at the edge and at full distance. */
@@ -74,6 +79,7 @@ export const COBWEB_DEFAULTS: CobwebOptions = {
   step: STEP,
   join: 5.5,
   branch: 0.052,
+  stagger: 120,
   maxNodes: 70000,
   maxTips: 1400,
   lineWidth: [1.3, 0.5],

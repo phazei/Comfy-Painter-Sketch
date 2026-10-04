@@ -12280,6 +12280,7 @@ const COBWEB_DEFAULTS = {
   step: STEP,
   join: 5.5,
   branch: 0.052,
+  stagger: 120,
   maxNodes: 7e4,
   maxTips: 1400,
   lineWidth: [1.3, 0.5],
@@ -12343,6 +12344,11 @@ class CobwebCore {
   grid = /* @__PURE__ */ new Map();
   tips = [];
   tipId = 0;
+  /** Edge strands not started yet, latest first (popped when `steps` reaches `at`). */
+  pending = [];
+  /** Drapes still unrolling. */
+  unrolling = [];
+  steps = 0;
   /**
    * Grow for up to `ms` milliseconds (`Infinity` = to completion).
    * @param ms - Time budget.
@@ -12350,11 +12356,11 @@ class CobwebCore {
    */
   grow(ms) {
     const t0 = now();
-    while (this.tips.length && this.nodes < this.o.maxNodes) {
+    while (this.active()) {
       this.step();
       if (now() - t0 >= ms) break;
     }
-    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    this.done = !this.active();
     return this.done;
   }
   /**
@@ -12363,11 +12369,13 @@ class CobwebCore {
    * @returns Whether growth has finished.
    */
   growSteps(n) {
-    for (let i = 0; i < n && this.tips.length && this.nodes < this.o.maxNodes; i++) {
-      this.step();
-    }
-    this.done = !(this.tips.length && this.nodes < this.o.maxNodes);
+    for (let i = 0; i < n && this.active(); i++) this.step();
+    this.done = !this.active();
     return this.done;
+  }
+  /** Strands can still grow (under the node cap), or a drape is still unrolling. */
+  active() {
+    return (this.tips.length > 0 || this.pending.length > 0) && this.nodes < this.o.maxNodes || this.unrolling.length > 0;
   }
   /**
    * Distance from the rect (0 on or inside it).
@@ -12387,8 +12395,11 @@ class CobwebCore {
     const H = this.gh;
     const per = 2 * (W2 + H);
     const count = Math.round(per / this.o.seedSpacing);
+    const origins = Array.from({ length: 3 + Math.trunc(R() * 3) }, () => R() * per);
+    const seeds = [];
     for (let i = 0; i < count; i++) {
       let t = (i + R() * 0.8) / count * per;
+      const along = Math.min(...origins.map((p) => Math.min(Math.abs(t - p), per - Math.abs(t - p))));
       let x;
       let y;
       let a;
@@ -12412,8 +12423,17 @@ class CobwebCore {
       }
       const n = this.addNode(x, y, 0);
       const angle = a + (R() - 0.5) * 1.2;
-      this.tips.push({ id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] });
+      seeds.push({ at: along, tip: { id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] } });
     }
+    const far = Math.max(1, ...seeds.map((s) => s.at));
+    for (const s of seeds) s.at = Math.round(s.at / far * this.o.stagger * (0.85 + R() * 0.3));
+    this.pending = seeds.sort((p, q) => q.at - p.at);
+    this.release();
+  }
+  /** Start the edge strands whose time has come. */
+  release() {
+    const p = this.pending;
+    while (p.length && p[p.length - 1].at <= this.steps) this.tips.push(p.pop().tip);
   }
   // ── Mesh ──────────────────────────────────────────────────────────────────
   key(gx, gy) {
@@ -12478,7 +12498,9 @@ class CobwebCore {
     if (w <= 0 || R() > w) return;
     const diag = [];
     for (let i = 0; i < n; i++) diag.push(R() < 0.5);
-    this.drapes.push({ o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag });
+    const d = { o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag, shown: 1 };
+    this.drapes.push(d);
+    this.unrolling.push(d);
   }
   kill(t) {
     for (const f of t.feeds) this.endSide(f.fork);
@@ -12486,6 +12508,14 @@ class CobwebCore {
   }
   // ── Step ──────────────────────────────────────────────────────────────────
   step() {
+    this.steps++;
+    if (this.nodes < this.o.maxNodes) {
+      this.release();
+      if (this.tips.length) this.stepTips();
+    }
+    if (this.unrolling.length) this.unrolling = this.unrolling.filter((d) => ++d.shown < d.a.length);
+  }
+  stepTips() {
     const o = this.o;
     const R = this.rand;
     const M = o.margin;
@@ -12590,7 +12620,10 @@ class CobwebRaster {
   /** One screen px in gen units. */
   px;
   drawnSegs = new Array(COBWEB_BUCKETS).fill(0);
-  drawnDrapes = 0;
+  /** Per drape: last band edge drawn (arm index, -1 = none). */
+  drapeDrawn = [];
+  /** Drapes before this index are drawn completely. */
+  drapeFrom = 0;
   /**
    * New bitmap at zoom `k` and pixel ratio `pr` covering `reg`, with
    * everything grown so far drawn.
@@ -12616,12 +12649,19 @@ class CobwebRaster {
   drawNew() {
     const core = this.core;
     const ctx = this.ctx;
-    if (this.drawnDrapes < core.drapes.length) {
+    if (this.drapeFrom < core.drapes.length) {
       ctx.save();
       ctx.globalCompositeOperation = "destination-over";
-      for (let i = this.drawnDrapes; i < core.drapes.length; i++) this.drawDrape(core.drapes[i]);
+      for (let i = this.drapeFrom; i < core.drapes.length; i++) {
+        const d = core.drapes[i];
+        const last = this.drapeDrawn[i] ?? -1;
+        const to = drapeStop(d.a.length, d.shown);
+        if (to <= last) continue;
+        this.drawDrape(d, last, to);
+        this.drapeDrawn[i] = to;
+      }
       ctx.restore();
-      this.drawnDrapes = core.drapes.length;
+      while (this.drapeFrom < core.drapes.length && this.drapeDrawn[this.drapeFrom] === core.drapes[this.drapeFrom].a.length - 1) this.drapeFrom++;
     }
     const [c0, c1, c2] = core.o.color;
     const [lw0, lw1] = core.o.lineWidth;
@@ -12642,15 +12682,21 @@ class CobwebRaster {
     }
   }
   // ── Drapes ────────────────────────────────────────────────────────────────
-  drawDrape(d) {
+  /**
+   * Draw the band of a drape between arm indices `last` (exclusive; -1 = from
+   * the fork) and `to`. Band edges are cross-thread curves (or the outer
+   * edge), so the seam between two bands sits under a thread; drawn in one
+   * go (`-1 .. n-1`) it is the whole drape.
+   */
+  drawDrape(d, last, to) {
     const ctx = this.ctx;
     const { o, a, b, alpha, sag, diag } = d;
     const n = a.length;
     const [r, g, bl] = this.core.o.drapeColor;
     const col = (x) => `rgba(${r},${g},${bl},${x})`;
     const A = a[n - 1];
-    const B = b[n - 1];
-    const across = (p, q, k) => {
+    const control = (p, q, i) => {
+      const k = sag * i / (n - 1);
       const mx = (p.x + q.x) / 2;
       const my = (p.y + q.y) / 2;
       return [mx + (o.x - mx) * k, my + (o.y - my) * k];
@@ -12660,27 +12706,34 @@ class CobwebRaster {
     grad.addColorStop(1, col(0.08 * alpha));
     ctx.fillStyle = grad;
     ctx.beginPath();
-    ctx.moveTo(o.x, o.y);
-    for (let i = 0; i < n; i++) ctx.lineTo(a[i].x, a[i].y);
-    const [qx, qy] = across(A, B, sag);
-    ctx.quadraticCurveTo(qx, qy, B.x, B.y);
-    for (let i = n - 1; i >= 0; i--) ctx.lineTo(b[i].x, b[i].y);
+    const lo = Math.max(0, last);
+    if (last < 0) ctx.moveTo(o.x, o.y);
+    else ctx.moveTo(a[last].x, a[last].y);
+    for (let i = lo; i <= to; i++) ctx.lineTo(a[i].x, a[i].y);
+    const [qx, qy] = control(a[to], b[to], to);
+    ctx.quadraticCurveTo(qx, qy, b[to].x, b[to].y);
+    for (let i = to - 1; i >= lo; i--) ctx.lineTo(b[i].x, b[i].y);
+    if (last >= 0) {
+      const [px, py] = control(a[last], b[last], last);
+      ctx.quadraticCurveTo(px, py, a[last].x, a[last].y);
+    }
     ctx.closePath();
     ctx.fill();
     ctx.lineWidth = 0.55 * this.px;
-    for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) {
+    for (const i of drapeThreads(n)) {
       const p = a[i];
-      const q = b[i];
-      const k = sag * (i / n);
-      const [cx, cy] = across(p, q, k);
-      ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));
-      ctx.beginPath();
-      ctx.moveTo(p.x, p.y);
-      ctx.quadraticCurveTo(cx, cy, q.x, q.y);
-      ctx.stroke();
-      if (i + 3 < n && diag[i]) {
+      if (i > last && i <= to) {
+        const q = b[i];
+        const [cx, cy] = control(p, q, i);
+        ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.quadraticCurveTo(cx, cy, q.x, q.y);
+        ctx.stroke();
+      }
+      if (i + 3 < n && diag[i] && i + 3 > last && i + 3 <= to) {
         const q2 = b[i + 3];
-        const [dx, dy] = across(p, q2, k);
+        const [dx, dy] = control(p, q2, i);
         ctx.strokeStyle = col(alpha * 0.5);
         ctx.beginPath();
         ctx.moveTo(p.x, p.y);
@@ -12690,7 +12743,21 @@ class CobwebRaster {
     }
   }
 }
-const jsContent = '(function() {\n  "use strict";\n  function genExtent(genSize, aspect) {\n    const gw = aspect >= 1 ? genSize : genSize * aspect;\n    return { gw, gh: gw / aspect };\n  }\n  const COBWEB_BUCKETS = 24;\n  const CELL = 8;\n  const KEY_OFFSET = 1 << 14;\n  const KEY_STRIDE = 1 << 15;\n  function mulberry32(seed) {\n    let a = seed | 0;\n    return () => {\n      a = a + 1831565813 | 0;\n      let t = Math.imul(a ^ a >>> 15, 1 | a);\n      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;\n      return ((t ^ t >>> 14) >>> 0) / 4294967296;\n    };\n  }\n  function wrapAngle(a) {\n    return Math.atan2(Math.sin(a), Math.cos(a));\n  }\n  const now = () => typeof performance !== "undefined" ? performance.now() : Date.now();\n  class CobwebCore {\n    /**\n     * @param o - Options.\n     * @param aspect - Rect width / height.\n     */\n    constructor(o, aspect) {\n      this.o = o;\n      this.rand = mulberry32(o.seed);\n      const { gw, gh } = genExtent(o.genSize, aspect);\n      this.gw = gw;\n      this.gh = gh;\n      this.segs = Array.from({ length: COBWEB_BUCKETS }, () => []);\n      this.seedEdges();\n    }\n    o;\n    /** Rect width / height in gen units. */\n    gw;\n    gh;\n    /** Per brightness bucket: flat `x1, y1, x2, y2` runs. */\n    segs;\n    drapes = [];\n    /** Growth finished. */\n    done = false;\n    rand;\n    nodes = 0;\n    grid = /* @__PURE__ */ new Map();\n    tips = [];\n    tipId = 0;\n    /**\n     * Grow for up to `ms` milliseconds (`Infinity` = to completion).\n     * @param ms - Time budget.\n     * @returns Whether growth has finished.\n     */\n    grow(ms) {\n      const t0 = now();\n      while (this.tips.length && this.nodes < this.o.maxNodes) {\n        this.step();\n        if (now() - t0 >= ms) break;\n      }\n      this.done = !(this.tips.length && this.nodes < this.o.maxNodes);\n      return this.done;\n    }\n    /**\n     * Grow a fixed number of steps (rate-limited animated growth).\n     * @param n - Steps to run.\n     * @returns Whether growth has finished.\n     */\n    growSteps(n) {\n      for (let i = 0; i < n && this.tips.length && this.nodes < this.o.maxNodes; i++) {\n        this.step();\n      }\n      this.done = !(this.tips.length && this.nodes < this.o.maxNodes);\n      return this.done;\n    }\n    /**\n     * Distance from the rect (0 on or inside it).\n     * @param x - Gen x.\n     * @param y - Gen y.\n     * @returns Distance in gen units.\n     */\n    dist(x, y) {\n      const dx = Math.max(-x, 0, x - this.gw);\n      const dy = Math.max(-y, 0, y - this.gh);\n      return Math.hypot(dx, dy);\n    }\n    // ── Setup ─────────────────────────────────────────────────────────────────\n    seedEdges() {\n      const R = this.rand;\n      const W = this.gw;\n      const H = this.gh;\n      const per = 2 * (W + H);\n      const count = Math.round(per / this.o.seedSpacing);\n      for (let i = 0; i < count; i++) {\n        let t = (i + R() * 0.8) / count * per;\n        let x;\n        let y;\n        let a;\n        if (t < W) {\n          x = t;\n          y = 0;\n          a = -Math.PI / 2;\n        } else if ((t -= W) < H) {\n          x = W;\n          y = t;\n          a = 0;\n        } else if ((t -= H) < W) {\n          x = W - t;\n          y = H;\n          a = Math.PI / 2;\n        } else {\n          t -= W;\n          x = 0;\n          y = H - t;\n          a = Math.PI;\n        }\n        const n = this.addNode(x, y, 0);\n        const angle = a + (R() - 0.5) * 1.2;\n        this.tips.push({ id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] });\n      }\n    }\n    // ── Mesh ──────────────────────────────────────────────────────────────────\n    key(gx, gy) {\n      return (gx + KEY_OFFSET) * KEY_STRIDE + (gy + KEY_OFFSET);\n    }\n    addNode(x, y, owner) {\n      const n = { x, y, owner };\n      this.nodes++;\n      const k = this.key(Math.trunc(x / CELL), Math.trunc(y / CELL));\n      let cell = this.grid.get(k);\n      if (!cell) {\n        cell = [];\n        this.grid.set(k, cell);\n      }\n      cell.push(n);\n      return n;\n    }\n    /** Nearest foreign node within `join` (not the tip\'s own or its parent\'s). */\n    near(x, y, tip) {\n      const gx = Math.trunc(x / CELL);\n      const gy = Math.trunc(y / CELL);\n      let best = null;\n      let bd = this.o.join * this.o.join;\n      for (let i = -1; i <= 1; i++) {\n        for (let j = -1; j <= 1; j++) {\n          const cell = this.grid.get(this.key(gx + i, gy + j));\n          if (!cell) continue;\n          for (const n of cell) {\n            if (n.owner <= 0 || n.owner === tip.id || n.owner === tip.parent) continue;\n            const d = (n.x - x) ** 2 + (n.y - y) ** 2;\n            if (d < bd) {\n              bd = d;\n              best = n;\n            }\n          }\n        }\n      }\n      return best;\n    }\n    seg(a, b, d) {\n      const i = Math.min(COBWEB_BUCKETS - 1, Math.trunc(d / this.o.margin * COBWEB_BUCKETS));\n      this.segs[i].push(a.x, a.y, b.x, b.y);\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    drapeWeight(d) {\n      const { start, ramp } = this.o.drape;\n      const M = this.o.margin;\n      return Math.max(0, Math.min(1, (d - M * start) / (M * ramp)));\n    }\n    /** One arm of a fork ended; when both have, maybe drape it. */\n    endSide(f) {\n      if (++f.ends < 2) return;\n      const n = Math.min(f.a.length, f.b.length);\n      if (n < 4) return;\n      const o = f.o;\n      const A = f.a[n - 1];\n      const B = f.b[n - 1];\n      const ang = Math.abs(wrapAngle(Math.atan2(A.y - o.y, A.x - o.x) - Math.atan2(B.y - o.y, B.x - o.x)));\n      if (ang > this.o.drape.maxAngle * Math.PI / 180) return;\n      const w = this.drapeWeight(this.dist(o.x, o.y));\n      const R = this.rand;\n      if (w <= 0 || R() > w) return;\n      const diag = [];\n      for (let i = 0; i < n; i++) diag.push(R() < 0.5);\n      this.drapes.push({ o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag });\n    }\n    kill(t) {\n      for (const f of t.feeds) this.endSide(f.fork);\n      t.feeds = [];\n    }\n    // ── Step ──────────────────────────────────────────────────────────────────\n    step() {\n      const o = this.o;\n      const R = this.rand;\n      const M = o.margin;\n      const cx = this.gw / 2;\n      const cy = this.gh / 2;\n      const next = [];\n      for (const t of this.tips) {\n        const out = Math.atan2(t.y - cy, t.x - cx);\n        t.a += (R() - 0.5) * 0.45 + t.drift + wrapAngle(out - t.a) * 0.015;\n        const x = t.x + Math.cos(t.a) * o.step;\n        const y = t.y + Math.sin(t.a) * o.step;\n        const inside = x > 0 && x < this.gw && y > 0 && y < this.gh;\n        if (inside || x < -M || y < -M || x > this.gw + M || y > this.gh + M) {\n          this.kill(t);\n          continue;\n        }\n        const d = this.dist(x, y);\n        t.age++;\n        const hit = t.age > 14 ? this.near(x, y, t) : null;\n        if (hit) {\n          this.seg(t.last, hit, d);\n          if (R() < 0.45) {\n            this.kill(t);\n            continue;\n          }\n        }\n        const n = this.addNode(x, y, t.id);\n        this.seg(t.last, n, d);\n        t.x = x;\n        t.y = y;\n        t.last = n;\n        t.feeds = t.feeds.filter((feed) => {\n          const arm = feed.fork[feed.side];\n          arm.push(n);\n          if (arm.length < feed.fork.L) return true;\n          this.endSide(feed.fork);\n          return false;\n        });\n        if (R() < 15e-4 + d / M * 0.012) {\n          this.kill(t);\n          continue;\n        }\n        next.push(t);\n        if (R() < o.branch) this.fork(t, n, d, next);\n      }\n      if (next.length > o.maxTips) {\n        for (let i = next.length - 1; i > 0; i--) {\n          const j = Math.trunc(R() * (i + 1));\n          const tmp = next[i];\n          next[i] = next[j];\n          next[j] = tmp;\n        }\n        for (const t of next.slice(o.maxTips)) this.kill(t);\n        next.length = o.maxTips;\n      }\n      this.tips = next;\n    }\n    fork(t, n, d, next) {\n      const R = this.rand;\n      const s = R() < 0.5 ? -1 : 1;\n      const L = Math.max(4, Math.round(this.o.drape.length * (0.5 + R()) * (1 + 0.8 * this.drapeWeight(d))));\n      const f = { o: n, a: [], b: [], ends: 0, L };\n      t.feeds.push({ fork: f, side: "a" });\n      const a = t.a + s * (0.35 + R() * 0.7);\n      next.push({ id: ++this.tipId, parent: t.id, x: n.x, y: n.y, a, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [{ fork: f, side: "b" }] });\n    }\n  }\n  function makeCanvas(w, h) {\n    if (typeof OffscreenCanvas !== "undefined") {\n      const canvas2 = new OffscreenCanvas(w, h);\n      const ctx2 = canvas2.getContext("2d");\n      return ctx2 ? { canvas: canvas2, ctx: ctx2 } : null;\n    }\n    if (typeof document === "undefined") return null;\n    const canvas = document.createElement("canvas");\n    canvas.width = w;\n    canvas.height = h;\n    const ctx = canvas.getContext("2d");\n    return ctx ? { canvas, ctx } : null;\n  }\n  class CobwebRaster {\n    /**\n     * @param core - Growth state.\n     * @param pair - Target canvas (sized by {@link CobwebRaster.create}).\n     * @param scale - Device px per gen unit.\n     * @param k - Screen units per gen unit.\n     * @param reg - Covered gen region.\n     */\n    constructor(core2, pair, scale, k, reg) {\n      this.core = core2;\n      this.reg = reg;\n      this.canvas = pair.canvas;\n      this.ctx = pair.ctx;\n      this.px = 1 / k;\n      this.ctx.setTransform(scale, 0, 0, scale, -reg.x0 * scale, -reg.y0 * scale);\n      this.ctx.lineCap = "round";\n    }\n    core;\n    reg;\n    canvas;\n    ctx;\n    /** One screen px in gen units. */\n    px;\n    drawnSegs = new Array(COBWEB_BUCKETS).fill(0);\n    drawnDrapes = 0;\n    /**\n     * New bitmap at zoom `k` and pixel ratio `pr` covering `reg`, with\n     * everything grown so far drawn.\n     * @param core - Growth state.\n     * @param k - Screen units per gen unit.\n     * @param pr - Device px per screen unit.\n     * @param reg - Gen region.\n     * @returns The raster, or `null` without canvas support.\n     */\n    static create(core2, k, pr, reg) {\n      let W = (reg.x1 - reg.x0) * k * pr;\n      let H = (reg.y1 - reg.y0) * k * pr;\n      const es = Math.min(1, Math.sqrt(core2.o.maxBitmapPixels / Math.max(1, W * H)));\n      W = Math.max(1, Math.ceil(W * es));\n      H = Math.max(1, Math.ceil(H * es));\n      const pair = makeCanvas(W, H);\n      if (!pair) return null;\n      const raster2 = new CobwebRaster(core2, pair, k * pr * es, k, reg);\n      raster2.drawNew();\n      return raster2;\n    }\n    /** Draw whatever has grown since the last pass. */\n    drawNew() {\n      const core2 = this.core;\n      const ctx = this.ctx;\n      if (this.drawnDrapes < core2.drapes.length) {\n        ctx.save();\n        ctx.globalCompositeOperation = "destination-over";\n        for (let i = this.drawnDrapes; i < core2.drapes.length; i++) this.drawDrape(core2.drapes[i]);\n        ctx.restore();\n        this.drawnDrapes = core2.drapes.length;\n      }\n      const [c0, c1, c2] = core2.o.color;\n      const [lw0, lw1] = core2.o.lineWidth;\n      for (let b = 0; b < COBWEB_BUCKETS; b++) {\n        const arr = core2.segs[b];\n        const from = this.drawnSegs[b];\n        if (from >= arr.length) continue;\n        const p = new Path2D();\n        for (let i = from; i < arr.length; i += 4) {\n          p.moveTo(arr[i], arr[i + 1]);\n          p.lineTo(arr[i + 2], arr[i + 3]);\n        }\n        const t = (b + 0.5) / COBWEB_BUCKETS;\n        ctx.strokeStyle = `rgba(${c0},${c1},${c2},${0.85 * (1 - t) ** 1.4 + 0.06})`;\n        ctx.lineWidth = (lw0 + (lw1 - lw0) * t) * this.px;\n        ctx.stroke(p);\n        this.drawnSegs[b] = arr.length;\n      }\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    drawDrape(d) {\n      const ctx = this.ctx;\n      const { o, a, b, alpha, sag, diag } = d;\n      const n = a.length;\n      const [r, g, bl] = this.core.o.drapeColor;\n      const col = (x) => `rgba(${r},${g},${bl},${x})`;\n      const A = a[n - 1];\n      const B = b[n - 1];\n      const across = (p, q, k) => {\n        const mx = (p.x + q.x) / 2;\n        const my = (p.y + q.y) / 2;\n        return [mx + (o.x - mx) * k, my + (o.y - my) * k];\n      };\n      const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, Math.hypot(A.x - o.x, A.y - o.y) + 1);\n      grad.addColorStop(0, col(0.42 * alpha));\n      grad.addColorStop(1, col(0.08 * alpha));\n      ctx.fillStyle = grad;\n      ctx.beginPath();\n      ctx.moveTo(o.x, o.y);\n      for (let i = 0; i < n; i++) ctx.lineTo(a[i].x, a[i].y);\n      const [qx, qy] = across(A, B, sag);\n      ctx.quadraticCurveTo(qx, qy, B.x, B.y);\n      for (let i = n - 1; i >= 0; i--) ctx.lineTo(b[i].x, b[i].y);\n      ctx.closePath();\n      ctx.fill();\n      ctx.lineWidth = 0.55 * this.px;\n      for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) {\n        const p = a[i];\n        const q = b[i];\n        const k = sag * (i / n);\n        const [cx, cy] = across(p, q, k);\n        ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));\n        ctx.beginPath();\n        ctx.moveTo(p.x, p.y);\n        ctx.quadraticCurveTo(cx, cy, q.x, q.y);\n        ctx.stroke();\n        if (i + 3 < n && diag[i]) {\n          const q2 = b[i + 3];\n          const [dx, dy] = across(p, q2, k);\n          ctx.strokeStyle = col(alpha * 0.5);\n          ctx.beginPath();\n          ctx.moveTo(p.x, p.y);\n          ctx.quadraticCurveTo(dx, dy, q2.x, q2.y);\n          ctx.stroke();\n        }\n      }\n    }\n  }\n  const scope = self;\n  let core = null;\n  let raster = null;\n  let gen = 0;\n  let animate = false;\n  let timer;\n  function send() {\n    if (!core || !raster || !(raster.canvas instanceof OffscreenCanvas)) return;\n    const bitmap = raster.canvas.transferToImageBitmap();\n    const ctx = raster.ctx;\n    ctx.save();\n    ctx.setTransform(1, 0, 0, 1, 0, 0);\n    ctx.drawImage(bitmap, 0, 0);\n    ctx.restore();\n    scope.postMessage({ gen, reg: raster.reg, done: core.done, bitmap }, [bitmap]);\n  }\n  function loop() {\n    if (!core) return;\n    const done = animate ? core.growSteps(core.o.stepsPerFrame) : core.grow(Infinity);\n    if (animate || done) {\n      raster?.drawNew();\n      send();\n    }\n    if (!done) timer = setTimeout(loop, animate ? 16 : 0);\n  }\n  scope.onmessage = (event) => {\n    const m = event.data;\n    if (m.type === "start") {\n      clearTimeout(timer);\n      gen = m.gen;\n      animate = m.animate;\n      core = new CobwebCore(m.opts, m.aspect);\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      loop();\n    } else if (m.gen === gen && core) {\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      if (core.done || animate) send();\n    }\n  };\n})();\n';
+function drapeThreads(n) {
+  const out = [];
+  for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) out.push(i);
+  return out;
+}
+function drapeStop(n, shown) {
+  if (shown >= n) return n - 1;
+  let stop2 = -1;
+  for (const i of drapeThreads(n)) {
+    if (i > shown - 1) break;
+    stop2 = i;
+  }
+  return stop2;
+}
+const jsContent = '(function() {\n  "use strict";\n  function genExtent(genSize, aspect) {\n    const gw = aspect >= 1 ? genSize : genSize * aspect;\n    return { gw, gh: gw / aspect };\n  }\n  const COBWEB_BUCKETS = 24;\n  const CELL = 8;\n  const KEY_OFFSET = 1 << 14;\n  const KEY_STRIDE = 1 << 15;\n  function mulberry32(seed) {\n    let a = seed | 0;\n    return () => {\n      a = a + 1831565813 | 0;\n      let t = Math.imul(a ^ a >>> 15, 1 | a);\n      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;\n      return ((t ^ t >>> 14) >>> 0) / 4294967296;\n    };\n  }\n  function wrapAngle(a) {\n    return Math.atan2(Math.sin(a), Math.cos(a));\n  }\n  const now = () => typeof performance !== "undefined" ? performance.now() : Date.now();\n  class CobwebCore {\n    /**\n     * @param o - Options.\n     * @param aspect - Rect width / height.\n     */\n    constructor(o, aspect) {\n      this.o = o;\n      this.rand = mulberry32(o.seed);\n      const { gw, gh } = genExtent(o.genSize, aspect);\n      this.gw = gw;\n      this.gh = gh;\n      this.segs = Array.from({ length: COBWEB_BUCKETS }, () => []);\n      this.seedEdges();\n    }\n    o;\n    /** Rect width / height in gen units. */\n    gw;\n    gh;\n    /** Per brightness bucket: flat `x1, y1, x2, y2` runs. */\n    segs;\n    drapes = [];\n    /** Growth finished. */\n    done = false;\n    rand;\n    nodes = 0;\n    grid = /* @__PURE__ */ new Map();\n    tips = [];\n    tipId = 0;\n    /** Edge strands not started yet, latest first (popped when `steps` reaches `at`). */\n    pending = [];\n    /** Drapes still unrolling. */\n    unrolling = [];\n    steps = 0;\n    /**\n     * Grow for up to `ms` milliseconds (`Infinity` = to completion).\n     * @param ms - Time budget.\n     * @returns Whether growth has finished.\n     */\n    grow(ms) {\n      const t0 = now();\n      while (this.active()) {\n        this.step();\n        if (now() - t0 >= ms) break;\n      }\n      this.done = !this.active();\n      return this.done;\n    }\n    /**\n     * Grow a fixed number of steps (rate-limited animated growth).\n     * @param n - Steps to run.\n     * @returns Whether growth has finished.\n     */\n    growSteps(n) {\n      for (let i = 0; i < n && this.active(); i++) this.step();\n      this.done = !this.active();\n      return this.done;\n    }\n    /** Strands can still grow (under the node cap), or a drape is still unrolling. */\n    active() {\n      return (this.tips.length > 0 || this.pending.length > 0) && this.nodes < this.o.maxNodes || this.unrolling.length > 0;\n    }\n    /**\n     * Distance from the rect (0 on or inside it).\n     * @param x - Gen x.\n     * @param y - Gen y.\n     * @returns Distance in gen units.\n     */\n    dist(x, y) {\n      const dx = Math.max(-x, 0, x - this.gw);\n      const dy = Math.max(-y, 0, y - this.gh);\n      return Math.hypot(dx, dy);\n    }\n    // ── Setup ─────────────────────────────────────────────────────────────────\n    seedEdges() {\n      const R = this.rand;\n      const W = this.gw;\n      const H = this.gh;\n      const per = 2 * (W + H);\n      const count = Math.round(per / this.o.seedSpacing);\n      const origins = Array.from({ length: 3 + Math.trunc(R() * 3) }, () => R() * per);\n      const seeds = [];\n      for (let i = 0; i < count; i++) {\n        let t = (i + R() * 0.8) / count * per;\n        const along = Math.min(...origins.map((p) => Math.min(Math.abs(t - p), per - Math.abs(t - p))));\n        let x;\n        let y;\n        let a;\n        if (t < W) {\n          x = t;\n          y = 0;\n          a = -Math.PI / 2;\n        } else if ((t -= W) < H) {\n          x = W;\n          y = t;\n          a = 0;\n        } else if ((t -= H) < W) {\n          x = W - t;\n          y = H;\n          a = Math.PI / 2;\n        } else {\n          t -= W;\n          x = 0;\n          y = H - t;\n          a = Math.PI;\n        }\n        const n = this.addNode(x, y, 0);\n        const angle = a + (R() - 0.5) * 1.2;\n        seeds.push({ at: along, tip: { id: ++this.tipId, parent: -1, x, y, a: angle, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [] } });\n      }\n      const far = Math.max(1, ...seeds.map((s) => s.at));\n      for (const s of seeds) s.at = Math.round(s.at / far * this.o.stagger * (0.85 + R() * 0.3));\n      this.pending = seeds.sort((p, q) => q.at - p.at);\n      this.release();\n    }\n    /** Start the edge strands whose time has come. */\n    release() {\n      const p = this.pending;\n      while (p.length && p[p.length - 1].at <= this.steps) this.tips.push(p.pop().tip);\n    }\n    // ── Mesh ──────────────────────────────────────────────────────────────────\n    key(gx, gy) {\n      return (gx + KEY_OFFSET) * KEY_STRIDE + (gy + KEY_OFFSET);\n    }\n    addNode(x, y, owner) {\n      const n = { x, y, owner };\n      this.nodes++;\n      const k = this.key(Math.trunc(x / CELL), Math.trunc(y / CELL));\n      let cell = this.grid.get(k);\n      if (!cell) {\n        cell = [];\n        this.grid.set(k, cell);\n      }\n      cell.push(n);\n      return n;\n    }\n    /** Nearest foreign node within `join` (not the tip\'s own or its parent\'s). */\n    near(x, y, tip) {\n      const gx = Math.trunc(x / CELL);\n      const gy = Math.trunc(y / CELL);\n      let best = null;\n      let bd = this.o.join * this.o.join;\n      for (let i = -1; i <= 1; i++) {\n        for (let j = -1; j <= 1; j++) {\n          const cell = this.grid.get(this.key(gx + i, gy + j));\n          if (!cell) continue;\n          for (const n of cell) {\n            if (n.owner <= 0 || n.owner === tip.id || n.owner === tip.parent) continue;\n            const d = (n.x - x) ** 2 + (n.y - y) ** 2;\n            if (d < bd) {\n              bd = d;\n              best = n;\n            }\n          }\n        }\n      }\n      return best;\n    }\n    seg(a, b, d) {\n      const i = Math.min(COBWEB_BUCKETS - 1, Math.trunc(d / this.o.margin * COBWEB_BUCKETS));\n      this.segs[i].push(a.x, a.y, b.x, b.y);\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    drapeWeight(d) {\n      const { start, ramp } = this.o.drape;\n      const M = this.o.margin;\n      return Math.max(0, Math.min(1, (d - M * start) / (M * ramp)));\n    }\n    /** One arm of a fork ended; when both have, maybe drape it. */\n    endSide(f) {\n      if (++f.ends < 2) return;\n      const n = Math.min(f.a.length, f.b.length);\n      if (n < 4) return;\n      const o = f.o;\n      const A = f.a[n - 1];\n      const B = f.b[n - 1];\n      const ang = Math.abs(wrapAngle(Math.atan2(A.y - o.y, A.x - o.x) - Math.atan2(B.y - o.y, B.x - o.x)));\n      if (ang > this.o.drape.maxAngle * Math.PI / 180) return;\n      const w = this.drapeWeight(this.dist(o.x, o.y));\n      const R = this.rand;\n      if (w <= 0 || R() > w) return;\n      const diag = [];\n      for (let i = 0; i < n; i++) diag.push(R() < 0.5);\n      const d = { o, a: f.a.slice(0, n), b: f.b.slice(0, n), alpha: 0.35 + 0.65 * w, sag: 0.18 + R() * 0.22, diag, shown: 1 };\n      this.drapes.push(d);\n      this.unrolling.push(d);\n    }\n    kill(t) {\n      for (const f of t.feeds) this.endSide(f.fork);\n      t.feeds = [];\n    }\n    // ── Step ──────────────────────────────────────────────────────────────────\n    step() {\n      this.steps++;\n      if (this.nodes < this.o.maxNodes) {\n        this.release();\n        if (this.tips.length) this.stepTips();\n      }\n      if (this.unrolling.length) this.unrolling = this.unrolling.filter((d) => ++d.shown < d.a.length);\n    }\n    stepTips() {\n      const o = this.o;\n      const R = this.rand;\n      const M = o.margin;\n      const cx = this.gw / 2;\n      const cy = this.gh / 2;\n      const next = [];\n      for (const t of this.tips) {\n        const out = Math.atan2(t.y - cy, t.x - cx);\n        t.a += (R() - 0.5) * 0.45 + t.drift + wrapAngle(out - t.a) * 0.015;\n        const x = t.x + Math.cos(t.a) * o.step;\n        const y = t.y + Math.sin(t.a) * o.step;\n        const inside = x > 0 && x < this.gw && y > 0 && y < this.gh;\n        if (inside || x < -M || y < -M || x > this.gw + M || y > this.gh + M) {\n          this.kill(t);\n          continue;\n        }\n        const d = this.dist(x, y);\n        t.age++;\n        const hit = t.age > 14 ? this.near(x, y, t) : null;\n        if (hit) {\n          this.seg(t.last, hit, d);\n          if (R() < 0.45) {\n            this.kill(t);\n            continue;\n          }\n        }\n        const n = this.addNode(x, y, t.id);\n        this.seg(t.last, n, d);\n        t.x = x;\n        t.y = y;\n        t.last = n;\n        t.feeds = t.feeds.filter((feed) => {\n          const arm = feed.fork[feed.side];\n          arm.push(n);\n          if (arm.length < feed.fork.L) return true;\n          this.endSide(feed.fork);\n          return false;\n        });\n        if (R() < 15e-4 + d / M * 0.012) {\n          this.kill(t);\n          continue;\n        }\n        next.push(t);\n        if (R() < o.branch) this.fork(t, n, d, next);\n      }\n      if (next.length > o.maxTips) {\n        for (let i = next.length - 1; i > 0; i--) {\n          const j = Math.trunc(R() * (i + 1));\n          const tmp = next[i];\n          next[i] = next[j];\n          next[j] = tmp;\n        }\n        for (const t of next.slice(o.maxTips)) this.kill(t);\n        next.length = o.maxTips;\n      }\n      this.tips = next;\n    }\n    fork(t, n, d, next) {\n      const R = this.rand;\n      const s = R() < 0.5 ? -1 : 1;\n      const L = Math.max(4, Math.round(this.o.drape.length * (0.5 + R()) * (1 + 0.8 * this.drapeWeight(d))));\n      const f = { o: n, a: [], b: [], ends: 0, L };\n      t.feeds.push({ fork: f, side: "a" });\n      const a = t.a + s * (0.35 + R() * 0.7);\n      next.push({ id: ++this.tipId, parent: t.id, x: n.x, y: n.y, a, drift: (R() - 0.5) * 0.04, last: n, age: 0, feeds: [{ fork: f, side: "b" }] });\n    }\n  }\n  function makeCanvas(w, h) {\n    if (typeof OffscreenCanvas !== "undefined") {\n      const canvas2 = new OffscreenCanvas(w, h);\n      const ctx2 = canvas2.getContext("2d");\n      return ctx2 ? { canvas: canvas2, ctx: ctx2 } : null;\n    }\n    if (typeof document === "undefined") return null;\n    const canvas = document.createElement("canvas");\n    canvas.width = w;\n    canvas.height = h;\n    const ctx = canvas.getContext("2d");\n    return ctx ? { canvas, ctx } : null;\n  }\n  class CobwebRaster {\n    /**\n     * @param core - Growth state.\n     * @param pair - Target canvas (sized by {@link CobwebRaster.create}).\n     * @param scale - Device px per gen unit.\n     * @param k - Screen units per gen unit.\n     * @param reg - Covered gen region.\n     */\n    constructor(core2, pair, scale, k, reg) {\n      this.core = core2;\n      this.reg = reg;\n      this.canvas = pair.canvas;\n      this.ctx = pair.ctx;\n      this.px = 1 / k;\n      this.ctx.setTransform(scale, 0, 0, scale, -reg.x0 * scale, -reg.y0 * scale);\n      this.ctx.lineCap = "round";\n    }\n    core;\n    reg;\n    canvas;\n    ctx;\n    /** One screen px in gen units. */\n    px;\n    drawnSegs = new Array(COBWEB_BUCKETS).fill(0);\n    /** Per drape: last band edge drawn (arm index, -1 = none). */\n    drapeDrawn = [];\n    /** Drapes before this index are drawn completely. */\n    drapeFrom = 0;\n    /**\n     * New bitmap at zoom `k` and pixel ratio `pr` covering `reg`, with\n     * everything grown so far drawn.\n     * @param core - Growth state.\n     * @param k - Screen units per gen unit.\n     * @param pr - Device px per screen unit.\n     * @param reg - Gen region.\n     * @returns The raster, or `null` without canvas support.\n     */\n    static create(core2, k, pr, reg) {\n      let W = (reg.x1 - reg.x0) * k * pr;\n      let H = (reg.y1 - reg.y0) * k * pr;\n      const es = Math.min(1, Math.sqrt(core2.o.maxBitmapPixels / Math.max(1, W * H)));\n      W = Math.max(1, Math.ceil(W * es));\n      H = Math.max(1, Math.ceil(H * es));\n      const pair = makeCanvas(W, H);\n      if (!pair) return null;\n      const raster2 = new CobwebRaster(core2, pair, k * pr * es, k, reg);\n      raster2.drawNew();\n      return raster2;\n    }\n    /** Draw whatever has grown since the last pass. */\n    drawNew() {\n      const core2 = this.core;\n      const ctx = this.ctx;\n      if (this.drapeFrom < core2.drapes.length) {\n        ctx.save();\n        ctx.globalCompositeOperation = "destination-over";\n        for (let i = this.drapeFrom; i < core2.drapes.length; i++) {\n          const d = core2.drapes[i];\n          const last = this.drapeDrawn[i] ?? -1;\n          const to = drapeStop(d.a.length, d.shown);\n          if (to <= last) continue;\n          this.drawDrape(d, last, to);\n          this.drapeDrawn[i] = to;\n        }\n        ctx.restore();\n        while (this.drapeFrom < core2.drapes.length && this.drapeDrawn[this.drapeFrom] === core2.drapes[this.drapeFrom].a.length - 1) this.drapeFrom++;\n      }\n      const [c0, c1, c2] = core2.o.color;\n      const [lw0, lw1] = core2.o.lineWidth;\n      for (let b = 0; b < COBWEB_BUCKETS; b++) {\n        const arr = core2.segs[b];\n        const from = this.drawnSegs[b];\n        if (from >= arr.length) continue;\n        const p = new Path2D();\n        for (let i = from; i < arr.length; i += 4) {\n          p.moveTo(arr[i], arr[i + 1]);\n          p.lineTo(arr[i + 2], arr[i + 3]);\n        }\n        const t = (b + 0.5) / COBWEB_BUCKETS;\n        ctx.strokeStyle = `rgba(${c0},${c1},${c2},${0.85 * (1 - t) ** 1.4 + 0.06})`;\n        ctx.lineWidth = (lw0 + (lw1 - lw0) * t) * this.px;\n        ctx.stroke(p);\n        this.drawnSegs[b] = arr.length;\n      }\n    }\n    // ── Drapes ────────────────────────────────────────────────────────────────\n    /**\n     * Draw the band of a drape between arm indices `last` (exclusive; -1 = from\n     * the fork) and `to`. Band edges are cross-thread curves (or the outer\n     * edge), so the seam between two bands sits under a thread; drawn in one\n     * go (`-1 .. n-1`) it is the whole drape.\n     */\n    drawDrape(d, last, to) {\n      const ctx = this.ctx;\n      const { o, a, b, alpha, sag, diag } = d;\n      const n = a.length;\n      const [r, g, bl] = this.core.o.drapeColor;\n      const col = (x) => `rgba(${r},${g},${bl},${x})`;\n      const A = a[n - 1];\n      const control = (p, q, i) => {\n        const k = sag * i / (n - 1);\n        const mx = (p.x + q.x) / 2;\n        const my = (p.y + q.y) / 2;\n        return [mx + (o.x - mx) * k, my + (o.y - my) * k];\n      };\n      const grad = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, Math.hypot(A.x - o.x, A.y - o.y) + 1);\n      grad.addColorStop(0, col(0.42 * alpha));\n      grad.addColorStop(1, col(0.08 * alpha));\n      ctx.fillStyle = grad;\n      ctx.beginPath();\n      const lo = Math.max(0, last);\n      if (last < 0) ctx.moveTo(o.x, o.y);\n      else ctx.moveTo(a[last].x, a[last].y);\n      for (let i = lo; i <= to; i++) ctx.lineTo(a[i].x, a[i].y);\n      const [qx, qy] = control(a[to], b[to], to);\n      ctx.quadraticCurveTo(qx, qy, b[to].x, b[to].y);\n      for (let i = to - 1; i >= lo; i--) ctx.lineTo(b[i].x, b[i].y);\n      if (last >= 0) {\n        const [px, py] = control(a[last], b[last], last);\n        ctx.quadraticCurveTo(px, py, a[last].x, a[last].y);\n      }\n      ctx.closePath();\n      ctx.fill();\n      ctx.lineWidth = 0.55 * this.px;\n      for (const i of drapeThreads(n)) {\n        const p = a[i];\n        if (i > last && i <= to) {\n          const q = b[i];\n          const [cx, cy] = control(p, q, i);\n          ctx.strokeStyle = col(alpha * (0.95 - 0.45 * i / n));\n          ctx.beginPath();\n          ctx.moveTo(p.x, p.y);\n          ctx.quadraticCurveTo(cx, cy, q.x, q.y);\n          ctx.stroke();\n        }\n        if (i + 3 < n && diag[i] && i + 3 > last && i + 3 <= to) {\n          const q2 = b[i + 3];\n          const [dx, dy] = control(p, q2, i);\n          ctx.strokeStyle = col(alpha * 0.5);\n          ctx.beginPath();\n          ctx.moveTo(p.x, p.y);\n          ctx.quadraticCurveTo(dx, dy, q2.x, q2.y);\n          ctx.stroke();\n        }\n      }\n    }\n  }\n  function drapeThreads(n) {\n    const out = [];\n    for (let i = 1; i < n; i += 1 + Math.trunc(i / 6)) out.push(i);\n    return out;\n  }\n  function drapeStop(n, shown) {\n    if (shown >= n) return n - 1;\n    let stop = -1;\n    for (const i of drapeThreads(n)) {\n      if (i > shown - 1) break;\n      stop = i;\n    }\n    return stop;\n  }\n  const scope = self;\n  let core = null;\n  let raster = null;\n  let gen = 0;\n  let animate = false;\n  let timer;\n  function send() {\n    if (!core || !raster || !(raster.canvas instanceof OffscreenCanvas)) return;\n    const bitmap = raster.canvas.transferToImageBitmap();\n    const ctx = raster.ctx;\n    ctx.save();\n    ctx.setTransform(1, 0, 0, 1, 0, 0);\n    ctx.drawImage(bitmap, 0, 0);\n    ctx.restore();\n    scope.postMessage({ gen, reg: raster.reg, done: core.done, bitmap }, [bitmap]);\n  }\n  function loop() {\n    if (!core) return;\n    const done = animate ? core.growSteps(core.o.stepsPerFrame) : core.grow(Infinity);\n    if (animate || done) {\n      raster?.drawNew();\n      send();\n    }\n    if (!done) timer = setTimeout(loop, animate ? 16 : 0);\n  }\n  scope.onmessage = (event) => {\n    const m = event.data;\n    if (m.type === "start") {\n      clearTimeout(timer);\n      gen = m.gen;\n      animate = m.animate;\n      core = new CobwebCore(m.opts, m.aspect);\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      loop();\n    } else if (m.gen === gen && core) {\n      raster = CobwebRaster.create(core, m.k, m.pr, m.reg);\n      if (core.done || animate) send();\n    }\n  };\n})();\n';
 const blob = typeof self !== "undefined" && self.Blob && new Blob(["(self.URL || self.webkitURL).revokeObjectURL(self.location.href);", jsContent], { type: "text/javascript;charset=utf-8" });
 function WorkerWrapper(options) {
   let objURL;

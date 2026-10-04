@@ -4,7 +4,7 @@ import { isPlainClick } from "../../ui/webClick";
 import { CobwebBackdrop, workerSupported } from "./cobwebBackdrop";
 import { CobwebCore, wrapAngle } from "./cobwebCore";
 import { COBWEB_DEFAULTS, genExtent, mergeCobwebOptions } from "./cobwebOptions";
-import { CobwebRaster, makeCanvas } from "./cobwebRaster";
+import { CobwebRaster, drapeStop, drapeThreads, makeCanvas } from "./cobwebRaster";
 
 /** Smaller web so tests stay fast. */
 const small = (seed: number) => mergeCobwebOptions(COBWEB_DEFAULTS, { seed, maxNodes: 12000, maxTips: 400 });
@@ -60,11 +60,49 @@ describe("CobwebCore", () => {
     }
   });
 
+  it("staggers the edge strands' start (stagger 0 = all at once)", () => {
+    const firstStep = (stagger: number): number => {
+      const core = new CobwebCore(mergeCobwebOptions(small(4), { stagger }), 1.5);
+      core.growSteps(1);
+      return core.segs.reduce((n, b) => n + b.length, 0);
+    };
+    const all = firstStep(0);
+    const staggered = firstStep(COBWEB_DEFAULTS.stagger);
+    expect(staggered).toBeGreaterThan(0);
+    expect(staggered).toBeLessThan(all / 4);
+  });
+
+  it("unrolls drapes from the fork; growth is done only once all are unrolled", () => {
+    const core = new CobwebCore(small(6), 1.5);
+    let partial = false;
+    while (!core.growSteps(1)) {
+      if (core.drapes.some((d) => d.shown < d.a.length)) partial = true;
+    }
+    expect(partial).toBe(true);
+    expect(core.drapes.length).toBeGreaterThan(0);
+    for (const d of core.drapes) expect(d.shown).toBe(d.a.length);
+  });
+
   it("uses the user's drape settings", () => {
     expect(COBWEB_DEFAULTS.drape.maxAngle).toBe(160);
     expect(COBWEB_DEFAULTS.drape.length * COBWEB_DEFAULTS.step).toBeCloseTo(80, -1);
     expect(COBWEB_DEFAULTS.drape.start).toBe(0.03);
     expect(COBWEB_DEFAULTS.drape.ramp).toBe(0.12);
+  });
+});
+
+describe("drape bands", () => {
+  it("threads get sparser away from the fork", () => {
+    expect(drapeThreads(20)).toEqual([1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 18]);
+  });
+
+  it("bands end on a thread within the revealed nodes, the outer edge when complete", () => {
+    expect(drapeStop(20, 1)).toBe(-1);
+    expect(drapeStop(20, 2)).toBe(1);
+    expect(drapeStop(20, 8)).toBe(6);
+    expect(drapeStop(20, 9)).toBe(8);
+    expect(drapeStop(20, 19)).toBe(18);
+    expect(drapeStop(20, 20)).toBe(19);
   });
 });
 
