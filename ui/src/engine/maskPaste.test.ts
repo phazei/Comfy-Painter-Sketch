@@ -86,7 +86,7 @@ describe("routing", () => {
     const { ed, id } = setup();
     const count = ed.doc.layers.length;
     const result = paste(ed, red(2, 1), 2, 1, { x: 4, y: 4 });
-    expect(result?.intoMask).toBe(true);
+    expect(result?.floating).toBe(true);
     expect(ed.doc.layers.length).toBe(count);
     expect(ed.float.layerId).toBe(layerMaskKey(id));
     ed.float.commit();
@@ -94,7 +94,7 @@ describe("routing", () => {
     // Mask targeted but the view off: a normal paste.
     ed.layerMask.endView();
     const plain = paste(ed, red(2, 1), 2, 1, { x: 10, y: 10 });
-    expect(plain?.intoMask).toBeUndefined();
+    expect(plain?.floating).toBeUndefined();
     expect(ed.doc.layers.length).toBe(count + 1);
     expect(maskA(ed, id, 10, 10)).toBe(0);
   });
@@ -136,8 +136,10 @@ describe("float on the lmask", () => {
     const at = pasteTopLeft({ width: 2, height: 2 }, ctx);
     expect(at).toEqual({ x: 12, y: 11 });
     paste(ed, red(2, 2), 2, 2, at);
-    expect(ed.selection.current).toBeNull();
+    // The float's outline replaces the selection while it floats; the commit drops it.
+    expect([coverageAt(ed.selection.current, 12, 11), coverageAt(ed.selection.current, 10, 10)]).toEqual([255, 0]);
     expect(ed.float.commit()).toBe(true);
+    expect(ed.selection.current).toBeNull();
     expect([maskA(ed, id, 12, 11), maskA(ed, id, 13, 12), maskA(ed, id, 14, 11)]).toEqual([54, 54, 0]);
     ed.undo(); // one step: mask + selection back
     expect(maskA(ed, id, 12, 11)).toBe(0);
@@ -182,7 +184,7 @@ describe("oversized paste into the lmask", () => {
     const { ed, id, notes } = setup(4);
     const count = ed.doc.layers.length;
     const result = paste(ed, red(20, 4), 20, 4, { x: -8, y: 0 });
-    expect(result).toMatchObject({ transform: true, intoMask: true });
+    expect(result).toMatchObject({ transform: true, floating: true });
     expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
     expect(ed.float.transform.active).toBe(true);
     expect(ed.float.layerId).toBe(layerMaskKey(id));

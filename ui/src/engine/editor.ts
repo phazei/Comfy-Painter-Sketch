@@ -137,7 +137,7 @@ export class Editor extends EditorBase {
     this.selectionMove = new SelectionMoveOps(this.s);
     this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r), this.float);
     this.resolution = new ResolutionOps(this.s);
-    this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
+    this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo(), (px, r) => this.clipboard.insertIntoCurrent(px, r));
     this.imageMask = new ImageMaskOps(this.s);
     this.shapes = new ShapeFloatOps(this.s, this.float);
     this.layerMask = new LayerMaskOps(

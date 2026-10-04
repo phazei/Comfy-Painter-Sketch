@@ -12,6 +12,10 @@
  * - Paste: "System clipboard" (the Ctrl+V order: system clipboard, else our
  *   own copy, else the clipspace) or "Clipspace" (icon `pasteClipspace`).
  *   An empty source shows a stage note (the handler's business).
+ *   Below a divider, the toggle "Insert into current layer" (sticky per
+ *   editor; picking it doesn't paste): pastes float on the current layer
+ *   instead of making a new one. Simple mode always pastes that way
+ *   (EditorHost), whatever the toggle says.
  *
  * Buttons never keep DOM focus (the keyboard scope redirects presses).
  */
@@ -35,6 +39,9 @@ export interface ClipGroupActions {
   /** Paste from a source (its current mode or a menu pick). */
   paste(request: PasteRequest): void;
 }
+
+/** Tooltip of the Paste menu's "Insert into current layer" toggle. */
+const INTO_CURRENT_TITLE = "On: pastes, drops and Images float on the current layer (move, then Enter commits, Esc cancels) instead of making a new layer. Always on in Simple mode";
 
 /** Optional parts. */
 export interface ClipGroupOptions {
@@ -64,11 +71,13 @@ const PASTE_MODES: Readonly<Record<PasteRequest, { icon: string; label: string }
 /**
  * Tooltip of the Paste button in a mode.
  * @param mode - Current source.
+ * @param intoCurrent - Pastes go into the current layer (toggle on).
  * @returns Title text.
  */
-export function pasteButtonTitle(mode: PasteRequest): string {
+export function pasteButtonTitle(mode: PasteRequest, intoCurrent = false): string {
   const source = mode === "clipspace" ? "from the ComfyUI clipspace" : "from the system clipboard (else our copy, else clipspace), Ctrl+V";
-  return `Paste as new layer ${source}. Ctrl+Shift+V pastes our copy in place. Hold for sources`;
+  const target = intoCurrent ? "into the current layer" : "as new layer";
+  return `Paste ${target} ${source}. Ctrl+Shift+V pastes our copy in place. Hold for sources`;
 }
 
 /**
@@ -86,6 +95,7 @@ export class ClipGroup {
   private menu: PopoverHandle | null = null;
   private copyMode: CopyMode = "copy";
   private pasteMode: PasteRequest = "system";
+  private into = false;
 
   /**
    * @param container - Shell slot (`shell.top.clip`).
@@ -136,6 +146,11 @@ export class ClipGroup {
     this.divider.hidden = false;
   }
 
+  /** The "Insert into current layer" toggle is on. */
+  get intoCurrent(): boolean {
+    return this.into;
+  }
+
   /** Close the menu and remove the press listeners. */
   dispose(): void {
     for (const press of this.presses) press.dispose();
@@ -155,7 +170,7 @@ export class ClipGroup {
   private renderPaste(): void {
     setIcon(this.pasteButton, PASTE_MODES[this.pasteMode].icon, ICON);
     this.pasteButton.appendChild(this.pasteCaret);
-    const title = pasteButtonTitle(this.pasteMode);
+    const title = pasteButtonTitle(this.pasteMode, this.into);
     this.pasteButton.title = title;
     this.pasteButton.setAttribute("aria-label", title);
   }
@@ -198,17 +213,31 @@ export class ClipGroup {
         placement: "below",
         width: MENU_WIDTH,
         footer: MENU_FOOTER,
-        entries: (Object.keys(PASTE_MODES) as PasteRequest[]).map((mode) => ({
-          label: PASTE_MODES[mode].label,
-          icon: PASTE_MODES[mode].icon,
-          current: mode === this.pasteMode,
-          // The click is still a user gesture for `navigator.clipboard.read()`.
-          onPick: () => {
-            this.pasteMode = mode;
-            this.renderPaste();
-            this.actions.paste(mode);
+        entries: [
+          ...(Object.keys(PASTE_MODES) as PasteRequest[]).map((mode) => ({
+            label: PASTE_MODES[mode].label,
+            icon: PASTE_MODES[mode].icon,
+            current: mode === this.pasteMode,
+            // The click is still a user gesture for `navigator.clipboard.read()`.
+            onPick: () => {
+              this.pasteMode = mode;
+              this.renderPaste();
+              this.actions.paste(mode);
+            },
+          })),
+          "divider" as const,
+          {
+            label: "Insert into current layer",
+            icon: "mergeDown",
+            checked: this.into,
+            title: INTO_CURRENT_TITLE,
+            // A setting, not a paste.
+            onPick: () => {
+              this.into = !this.into;
+              this.renderPaste();
+            },
           },
-        })),
+        ],
         onClose: () => this.untrack(this.pasteButton),
       }),
     );

@@ -106,6 +106,11 @@ export class FloatOps {
     return this.f?.shape === true;
   }
 
+  /** Whether the float is a paste into an existing layer / mask (its selection is only its outline). */
+  get pasted(): boolean {
+    return this.f?.selPrior !== undefined;
+  }
+
   /** Layer the float belongs to, or `null`. */
   get layerId(): string | null {
     return this.f?.layerId ?? null;
@@ -305,6 +310,8 @@ export class FloatOps {
       return false;
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
+    // A paste drops the selection (Photoshop): its outline only showed it was floating.
+    if (f.selPrior !== undefined) s.selection.set(null);
     this.f = null;
     // Growth while floating was for display: back to the bounds before it;
     // the patch grows them for where the float lands.
@@ -339,7 +346,7 @@ export class FloatOps {
     s.store.write(f.layerId, hole.x, hole.y, f.original);
     if (f.boundsBase) s.restoreBounds(f.boundsBase);
     this.bump(f);
-    if (!f.shape) s.selection.set(f.selBefore);
+    if (!f.shape) s.selection.set(f.selPrior !== undefined ? f.selPrior : f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
     s.events.emit("history", undefined);

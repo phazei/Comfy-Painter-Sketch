@@ -1952,6 +1952,327 @@ function pasteContext(e, original) {
 function contains(outer, inner) {
   return inner.x >= outer.x - EPS && inner.y >= outer.y - EPS && inner.x + inner.width <= outer.x + outer.width + EPS && inner.y + inner.height <= outer.y + outer.height + EPS;
 }
+const DEFAULT_GROWTH = { chunk: 256, marginFactor: 1, maxSide: 16384 };
+function boundsCap(frame, limits = DEFAULT_GROWTH) {
+  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
+  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
+  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
+  return {
+    x: -Math.floor((width - frame.width) / 2),
+    y: -Math.floor((height - frame.height) / 2),
+    width,
+    height
+  };
+}
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH, within) {
+  const cap = within ? intersectRect(boundsCap(frame, limits), within) : boundsCap(frame, limits);
+  const target = intersectRect(roundOutRect(need), cap);
+  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
+  const chunk = Math.max(1, limits.chunk);
+  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
+  const left = grow(bounds.x - target.x);
+  const top = grow(bounds.y - target.y);
+  const right = grow(target.x + target.width - (bounds.x + bounds.width));
+  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
+  const grown = {
+    x: bounds.x - left,
+    y: bounds.y - top,
+    width: bounds.width + left + right,
+    height: bounds.height + top + bottom
+  };
+  return unionRect(intersectRect(grown, cap), bounds);
+}
+function clean$1(n) {
+  return n === 0 ? 0 : n;
+}
+function dragDelta(start, current) {
+  return { x: clean$1(Math.round(current.x - start.x)), y: clean$1(Math.round(current.y - start.y)) };
+}
+function nudgeStep(imagePx, mapScale) {
+  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
+  return Math.max(1, Math.round(imagePx / mapScale));
+}
+function alphaBounds(data, width, height) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * 4;
+    let first = -1;
+    for (let x = 0; x < width; x++) {
+      if (data[row + x * 4 + 3]) {
+        first = x;
+        break;
+      }
+    }
+    if (first < 0) continue;
+    let last = first;
+    for (let x = width - 1; x > first; x--) {
+      if (data[row + x * 4 + 3]) {
+        last = x;
+        break;
+      }
+    }
+    if (first < minX) minX = first;
+    if (last > maxX) maxX = last;
+    if (minY === height) minY = y;
+    maxY = y;
+  }
+  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
+  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+function offsetRect(r, dx, dy) {
+  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
+}
+function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
+  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
+  const target = offsetRect(content, dx, dy);
+  const grown = growBounds(bounds, target, frame, limits);
+  const kind = containsRect(grown, target) ? "translate" : "patch";
+  return { kind, bounds: grown, target, region: unionRect(content, target) };
+}
+function translateStep(entry, forward) {
+  const moved = offsetRect(entry.content, entry.dx, entry.dy);
+  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean$1(-entry.dx), dy: clean$1(-entry.dy) };
+}
+function mergeTranslate(entry, dx, dy) {
+  entry.dx = clean$1(entry.dx + dx);
+  entry.dy = clean$1(entry.dy + dy);
+}
+const POW_CURVE = 2;
+function stepDecimals(step) {
+  if (!Number.isFinite(step) || step <= 0) return 0;
+  for (let d = 0; d <= 6; d++) if (Math.abs(Math.round(step * 10 ** d) - step * 10 ** d) < 1e-9) return d;
+  return 6;
+}
+function clampDisplay(desc, display) {
+  if (!Number.isFinite(display)) return desc.min;
+  const step = desc.step > 0 ? desc.step : 1;
+  const snapped = desc.min + Math.round((display - desc.min) / step) * step;
+  const clamped = Math.min(desc.max, Math.max(desc.min, snapped));
+  return Number(clamped.toFixed(stepDecimals(step)));
+}
+function toDisplay(desc, value) {
+  return clampDisplay(desc, value * (desc.scale ?? 1));
+}
+function fromDisplay(desc, display) {
+  return clampDisplay(desc, display) / (desc.scale ?? 1);
+}
+function formatDisplay(desc, display) {
+  return clampDisplay(desc, display).toFixed(stepDecimals(desc.step));
+}
+function sliderToDisplay(desc, t) {
+  const u = Math.min(1, Math.max(0, t));
+  const k = desc.curve === "pow" ? Math.pow(u, POW_CURVE) : u;
+  return clampDisplay(desc, desc.min + k * (desc.max - desc.min));
+}
+function displayToSlider(desc, display) {
+  const range = desc.max - desc.min;
+  if (range <= 0) return 0;
+  const k = (clampDisplay(desc, display) - desc.min) / range;
+  return desc.curve === "pow" ? Math.pow(k, 1 / POW_CURVE) : k;
+}
+function coerceOption(desc, value) {
+  switch (desc.kind) {
+    case "number":
+      return typeof value === "number" ? fromDisplay(desc, value * (desc.scale ?? 1)) : void 0;
+    case "toggle":
+    case "button":
+      return typeof value === "boolean" ? value : void 0;
+    case "select":
+      return typeof value === "string" && desc.choices.some((c) => c.value === value) ? value : void 0;
+    case "text": {
+      if (typeof value !== "string") return void 0;
+      const clean2 = value.replace(/\s+/g, " ").trim();
+      return clean2 && clean2.length <= (desc.maxLength ?? 100) ? clean2 : void 0;
+    }
+    case "label":
+      return void 0;
+  }
+}
+function isOptionEnabled(desc, get) {
+  if (!desc.dependsOn?.length) return true;
+  return desc.dependsOn.some((key) => get(key) === true);
+}
+function layoutOptions(descriptors, groups = []) {
+  const collapsed = new Map(groups.map((g) => [g.id, g]));
+  const items = [];
+  const emitted = /* @__PURE__ */ new Map();
+  let lastGroup;
+  for (const desc of descriptors) {
+    const group = desc.group !== void 0 ? collapsed.get(desc.group) : void 0;
+    if (group) {
+      const members = emitted.get(group.id);
+      if (members) {
+        members.push(desc);
+        continue;
+      }
+    }
+    if (items.length > 0 && desc.group !== lastGroup) items.push({ kind: "separator" });
+    lastGroup = desc.group;
+    if (group) {
+      const members = [desc];
+      emitted.set(group.id, members);
+      items.push({ kind: "group", group, descriptors: members });
+    } else {
+      items.push({ kind: "control", desc });
+    }
+  }
+  return items;
+}
+function isGroupActive(group, get) {
+  return (group.activeWhen ?? []).some((key) => get(key) === true);
+}
+class OptionSet {
+  /**
+   * @param descriptors - Descriptors in display order.
+   * @param values - Values object; only descriptor keys are ever written.
+   * @param groups - Groups collapsed behind a button in the bar.
+   */
+  constructor(descriptors, values, groups = []) {
+    this.descriptors = descriptors;
+    this.values = values;
+    this.groups = groups;
+    for (const desc of descriptors) this.byKey.set(desc.key, desc);
+  }
+  descriptors;
+  values;
+  groups;
+  byKey = /* @__PURE__ */ new Map();
+  /** @inheritdoc */
+  get(key) {
+    return this.byKey.has(key) ? this.values[key] : void 0;
+  }
+  /** @inheritdoc */
+  set(key, value) {
+    const desc = this.byKey.get(key);
+    if (!desc) return false;
+    const next = coerceOption(desc, value);
+    if (next === void 0 || next === this.values[key]) return false;
+    this.values[key] = next;
+    return true;
+  }
+}
+const DESCRIPTORS$4 = [
+  { kind: "toggle", key: "autoSelect", label: "Auto-select", title: "Pick the layer under the pointer (hold Ctrl for a one-off pick)" }
+];
+const ARROWS$4 = {
+  ArrowLeft: [-1, 0],
+  ArrowRight: [1, 0],
+  ArrowUp: [0, -1],
+  ArrowDown: [0, 1]
+};
+const MOVE_LAYER_TOOL_ID = "move-layer";
+class MoveLayerTool {
+  id = MOVE_LAYER_TOOL_ID;
+  label = "Move layer";
+  shortcut = "v";
+  icon = "move";
+  /** Ctrl is this tool's own auto-select modifier; it never substitutes itself. */
+  ctrlMove = false;
+  values = { autoSelect: false };
+  options = new OptionSet(DESCRIPTORS$4, this.values);
+  /** Pointer-down position (document coords) while dragging. */
+  start = null;
+  /** The current drag moves a floating selection. */
+  floating = false;
+  /** Action the stage runs after ending this press (text rasterize confirm). */
+  deferred = null;
+  /** @inheritdoc */
+  takeDeferred() {
+    const action = this.deferred;
+    this.deferred = null;
+    return action;
+  }
+  /** @inheritdoc */
+  onPointerDown(editor, samples) {
+    const first = samples[0];
+    if (!first) return;
+    this.deferred = null;
+    const float = editor.float;
+    if (!float.active && editor.selectionMove.hit(first.x, first.y)) {
+      const check = float.check();
+      if (check === "confirm") this.deferred = () => float.prepareLift();
+      if (check !== "ok" || !float.lift(first.altKey)) return;
+    }
+    if (float.active) {
+      if (!float.beginDrag()) return;
+      this.floating = true;
+      this.start = { x: first.x, y: first.y };
+      return;
+    }
+    const pick2 = (first.ctrlKey || this.values.autoSelect === true) && !editor.selection.active;
+    if (pick2 && !this.autoSelect(editor, first)) return;
+    if (!editor.layerMove.begin()) return;
+    this.start = { x: first.x, y: first.y };
+  }
+  /** @inheritdoc */
+  onPointerMove(editor, samples) {
+    const last = samples[samples.length - 1];
+    if (last) this.previewTo(editor, last);
+  }
+  /** @inheritdoc */
+  onPointerUp(editor, sample) {
+    if (!this.start) return;
+    this.previewTo(editor, sample);
+    this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.endDrag();
+      return;
+    }
+    editor.layerMove.commit();
+  }
+  /** @inheritdoc */
+  onCancel(editor) {
+    if (!this.start) return;
+    this.start = null;
+    if (this.floating) {
+      this.floating = false;
+      editor.float.cancelDrag();
+      return;
+    }
+    editor.layerMove.cancel();
+  }
+  /** @inheritdoc */
+  onKey(editor, event) {
+    const dir = ARROWS$4[event.key];
+    if (!dir) return false;
+    if (this.start) return true;
+    const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
+    editor.layerMove.nudge(dir[0] * step, dir[1] * step);
+    return true;
+  }
+  /** @inheritdoc */
+  cursor() {
+    return { kind: "icon", icon: "move" };
+  }
+  /**
+   * Pick the layer under the pointer and make it the move target.
+   * @returns `false` if nothing was hit (the drag moves nothing).
+   */
+  autoSelect(editor, at) {
+    if (editor.paintTarget === "mask") {
+      const maskId = editor.layerOps.pickMaskAt(at.x, at.y);
+      return maskId !== null && editor.selectMask(maskId);
+    }
+    const id = editor.layerOps.pickAt(at.x, at.y);
+    if (!id) return false;
+    editor.layerOps.setActiveLayer(id);
+    return true;
+  }
+  /** Samples are document coords (through `Editor.frameMap`); the delta is rounded to whole px. */
+  previewTo(editor, sample) {
+    if (!this.start) return;
+    const d = dragDelta(this.start, sample);
+    if (this.floating) editor.float.dragTo(d.x, d.y);
+    else editor.layerMove.preview(d.x, d.y);
+  }
+}
+function createMoveLayerTool() {
+  return new MoveLayerTool();
+}
 function choosePasteSource(f) {
   if (f.systemImage) return f.systemIsOurs && f.internal ? "internal" : "system";
   if (f.internal) return "internal";
@@ -2139,13 +2460,16 @@ class ClipboardActions {
   /**
    * @param getSession - Current session.
    * @param stage - Stage element (drop points).
+   * @param pasteInto - Where pastes and drops go (new layer, or the current layer: Paste menu toggle / Simple mode).
    */
-  constructor(getSession, stage) {
+  constructor(getSession, stage, pasteInto = () => "new") {
     this.getSession = getSession;
     this.stage = stage;
+    this.pasteInto = pasteInto;
   }
   getSession;
   stage;
+  pasteInto;
   armed = null;
   onPaste = (event) => this.handlePaste(event);
   /** Whether an internal copy exists (Ctrl+Shift+V pastes it in place). */
@@ -2202,7 +2526,8 @@ class ClipboardActions {
     await this.pasteFacts(editor, await readSystemImage(), SYSTEM_EMPTY_NOTE);
   }
   /**
-   * Dropped images: one layer each, in order, centred at the drop point.
+   * Dropped images: one layer each, in order, centred at the drop point
+   * (into the current layer: each float lands as the next one comes).
    * @param images - Image files / blobs (decoded here) or decoded bitmaps.
    * @param clientPoint - Drop point (client px).
    * @returns `true` if at least one image decoded.
@@ -2284,8 +2609,9 @@ class ClipboardActions {
       );
       at = { topLeft: pasteTopLeft(size, ctx) };
     }
-    editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
+    const result = editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at, this.pasteInto());
     image.release();
+    if (result?.floating && !result.transform) this.getSession()?.tools.setActive(MOVE_LAYER_TOOL_ID, false);
   }
   toStage(client) {
     const rect = this.stage.getBoundingClientRect();
@@ -2346,7 +2672,7 @@ function cappedSourceSize(size, max = MAX_SOURCE_SIDE) {
   const k = max / long;
   return { width: Math.max(1, Math.round(size.width * k)), height: Math.max(1, Math.round(size.height * k)) };
 }
-async function insertSourceUrl(editor, url, current, name) {
+async function insertSourceUrl(editor, url, current, name, into = "new") {
   const bitmap = await decodeUrl(url);
   if (!bitmap) {
     log.warn("Could not load the image source:", url);
@@ -2369,7 +2695,7 @@ async function insertSourceUrl(editor, url, current, name) {
     if (size.width !== bitmap.width) {
       editor.events.emit("note", `Image reduced to ${size.width} x ${size.height} px (max ${MAX_SOURCE_SIDE} px per side).`);
     }
-    return editor.insert.insert(pixels, name);
+    return editor.insert.insert(pixels, name, into);
   } finally {
     bitmap.close();
   }
@@ -3954,36 +4280,6 @@ function applyLayerChange(layers2, change, forward) {
     }
   }
 }
-const DEFAULT_GROWTH = { chunk: 256, marginFactor: 1, maxSide: 16384 };
-function boundsCap(frame, limits = DEFAULT_GROWTH) {
-  const margin = Math.round(Math.min(frame.width, frame.height) * limits.marginFactor);
-  const width = Math.max(frame.width, Math.min(frame.width + 2 * margin, limits.maxSide));
-  const height = Math.max(frame.height, Math.min(frame.height + 2 * margin, limits.maxSide));
-  return {
-    x: -Math.floor((width - frame.width) / 2),
-    y: -Math.floor((height - frame.height) / 2),
-    width,
-    height
-  };
-}
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH, within) {
-  const cap = within ? intersectRect(boundsCap(frame, limits), within) : boundsCap(frame, limits);
-  const target = intersectRect(roundOutRect(need), cap);
-  if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
-  const chunk = Math.max(1, limits.chunk);
-  const grow = (distance) => distance > 0 ? Math.ceil(distance / chunk) * chunk : 0;
-  const left = grow(bounds.x - target.x);
-  const top = grow(bounds.y - target.y);
-  const right = grow(target.x + target.width - (bounds.x + bounds.width));
-  const bottom = grow(target.y + target.height - (bounds.y + bounds.height));
-  const grown = {
-    x: bounds.x - left,
-    y: bounds.y - top,
-    width: bounds.width + left + right,
-    height: bounds.height + top + bottom
-  };
-  return unionRect(intersectRect(grown, cap), bounds);
-}
 function createSurface(width, height) {
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(width));
@@ -5356,7 +5652,8 @@ class EditChip {
   }
   /**
    * Simple mode: Hide / Show for what the chip edits (the Layers panel's eye
-   * is out of reach there). Read-only mask rows have no eye.
+   * is out of reach there), plus Unlock for a locked paint layer. Read-only
+   * mask rows have no eye.
    */
   addVisibility(editor, entries) {
     const toggle = (visible, what, set) => {
@@ -5374,6 +5671,9 @@ class EditChip {
     const item = mask ?? findPaintLayer(editor.doc);
     if (!item || item.id === IMAGE_MASK_ID) return;
     toggle(item.visible, mask ? "mask" : "layer", (v) => editor.layerOps.setVisible(item.id, v));
+    if (!mask && item.locked) {
+      entries.push({ label: "Unlock layer", icon: "unlock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(item.id, false)) });
+    }
   }
   /** "Rasterize text": end the text edit, confirm, then rasterize (one undo step). */
   rasterize(editor, id) {
@@ -5867,6 +6167,7 @@ function barButton(icon, title, size, onClick) {
   button2.addEventListener("click", onClick);
   return button2;
 }
+const INTO_CURRENT_TITLE = "On: pastes, drops and Images float on the current layer (move, then Enter commits, Esc cancels) instead of making a new layer. Always on in Simple mode";
 const MENU_FOOTER = "Your pick becomes the button's default";
 const MENU_WIDTH = 204;
 const ICON = 18;
@@ -5878,9 +6179,10 @@ const PASTE_MODES = {
   system: { icon: "paste", label: "System clipboard" },
   clipspace: { icon: "pasteClipspace", label: "Clipspace" }
 };
-function pasteButtonTitle(mode) {
+function pasteButtonTitle(mode, intoCurrent = false) {
   const source = mode === "clipspace" ? "from the ComfyUI clipspace" : "from the system clipboard (else our copy, else clipspace), Ctrl+V";
-  return `Paste as new layer ${source}. Ctrl+Shift+V pastes our copy in place. Hold for sources`;
+  const target = intoCurrent ? "into the current layer" : "as new layer";
+  return `Paste ${target} ${source}. Ctrl+Shift+V pastes our copy in place. Hold for sources`;
 }
 class ClipGroup {
   /**
@@ -5930,6 +6232,7 @@ class ClipGroup {
   menu = null;
   copyMode = "copy";
   pasteMode = "system";
+  into = false;
   /**
    * Put the Images button first (with the divider after it).
    * @param button - The Images button (`ImagesPanel.button`).
@@ -5937,6 +6240,10 @@ class ClipGroup {
   setImagesButton(button2) {
     this.element.prepend(button2);
     this.divider.hidden = false;
+  }
+  /** The "Insert into current layer" toggle is on. */
+  get intoCurrent() {
+    return this.into;
   }
   /** Close the menu and remove the press listeners. */
   dispose() {
@@ -5954,7 +6261,7 @@ class ClipGroup {
   renderPaste() {
     setIcon(this.pasteButton, PASTE_MODES[this.pasteMode].icon, ICON);
     this.pasteButton.appendChild(this.pasteCaret);
-    const title = pasteButtonTitle(this.pasteMode);
+    const title = pasteButtonTitle(this.pasteMode, this.into);
     this.pasteButton.title = title;
     this.pasteButton.setAttribute("aria-label", title);
   }
@@ -5994,17 +6301,31 @@ class ClipGroup {
         placement: "below",
         width: MENU_WIDTH,
         footer: MENU_FOOTER,
-        entries: Object.keys(PASTE_MODES).map((mode) => ({
-          label: PASTE_MODES[mode].label,
-          icon: PASTE_MODES[mode].icon,
-          current: mode === this.pasteMode,
-          // The click is still a user gesture for `navigator.clipboard.read()`.
-          onPick: () => {
-            this.pasteMode = mode;
-            this.renderPaste();
-            this.actions.paste(mode);
+        entries: [
+          ...Object.keys(PASTE_MODES).map((mode) => ({
+            label: PASTE_MODES[mode].label,
+            icon: PASTE_MODES[mode].icon,
+            current: mode === this.pasteMode,
+            // The click is still a user gesture for `navigator.clipboard.read()`.
+            onPick: () => {
+              this.pasteMode = mode;
+              this.renderPaste();
+              this.actions.paste(mode);
+            }
+          })),
+          "divider",
+          {
+            label: "Insert into current layer",
+            icon: "mergeDown",
+            checked: this.into,
+            title: INTO_CURRENT_TITLE,
+            // A setting, not a paste.
+            onPick: () => {
+              this.into = !this.into;
+              this.renderPaste();
+            }
           }
-        })),
+        ],
         onClose: () => this.untrack(this.pasteButton)
       })
     );
@@ -6141,7 +6462,7 @@ const HELP_SECTIONS = [
     rows: [
       { keys: "Ctrl C / Ctrl ⇧ C", action: "Copy / copy merged" },
       { keys: "Ctrl X", action: "Cut" },
-      { keys: "Ctrl V", action: "Paste as a new layer" },
+      { keys: "Ctrl V", action: "Paste as a new layer (Simple: into the current layer)" },
       { keys: "Ctrl ⇧ V", action: "Paste in place" },
       { keys: "Hold / right-click", action: "Paste button: choose the source" }
     ]
@@ -6406,7 +6727,7 @@ class ImagesPanel {
         item.className = "cps-images-item";
         item.setAttribute("role", "option");
         const label = entry.name ? `${entry.name} -- ` : i === 0 ? "Newest -- " : "";
-        item.title = `${label}Add as a new layer`;
+        item.title = `${label}Insert as a new layer, or into the current layer (Simple mode, or "Insert into current layer" in the Paste menu)`;
         const img = document.createElement("img");
         img.className = "cps-images-thumb";
         img.alt = "";
@@ -7304,120 +7625,6 @@ function findDropTarget(rows, clientY) {
     best = { targetId: id, above: false };
   }
   return best;
-}
-const POW_CURVE = 2;
-function stepDecimals(step) {
-  if (!Number.isFinite(step) || step <= 0) return 0;
-  for (let d = 0; d <= 6; d++) if (Math.abs(Math.round(step * 10 ** d) - step * 10 ** d) < 1e-9) return d;
-  return 6;
-}
-function clampDisplay(desc, display) {
-  if (!Number.isFinite(display)) return desc.min;
-  const step = desc.step > 0 ? desc.step : 1;
-  const snapped = desc.min + Math.round((display - desc.min) / step) * step;
-  const clamped = Math.min(desc.max, Math.max(desc.min, snapped));
-  return Number(clamped.toFixed(stepDecimals(step)));
-}
-function toDisplay(desc, value) {
-  return clampDisplay(desc, value * (desc.scale ?? 1));
-}
-function fromDisplay(desc, display) {
-  return clampDisplay(desc, display) / (desc.scale ?? 1);
-}
-function formatDisplay(desc, display) {
-  return clampDisplay(desc, display).toFixed(stepDecimals(desc.step));
-}
-function sliderToDisplay(desc, t) {
-  const u = Math.min(1, Math.max(0, t));
-  const k = desc.curve === "pow" ? Math.pow(u, POW_CURVE) : u;
-  return clampDisplay(desc, desc.min + k * (desc.max - desc.min));
-}
-function displayToSlider(desc, display) {
-  const range = desc.max - desc.min;
-  if (range <= 0) return 0;
-  const k = (clampDisplay(desc, display) - desc.min) / range;
-  return desc.curve === "pow" ? Math.pow(k, 1 / POW_CURVE) : k;
-}
-function coerceOption(desc, value) {
-  switch (desc.kind) {
-    case "number":
-      return typeof value === "number" ? fromDisplay(desc, value * (desc.scale ?? 1)) : void 0;
-    case "toggle":
-    case "button":
-      return typeof value === "boolean" ? value : void 0;
-    case "select":
-      return typeof value === "string" && desc.choices.some((c) => c.value === value) ? value : void 0;
-    case "text": {
-      if (typeof value !== "string") return void 0;
-      const clean2 = value.replace(/\s+/g, " ").trim();
-      return clean2 && clean2.length <= (desc.maxLength ?? 100) ? clean2 : void 0;
-    }
-    case "label":
-      return void 0;
-  }
-}
-function isOptionEnabled(desc, get) {
-  if (!desc.dependsOn?.length) return true;
-  return desc.dependsOn.some((key) => get(key) === true);
-}
-function layoutOptions(descriptors, groups = []) {
-  const collapsed = new Map(groups.map((g) => [g.id, g]));
-  const items = [];
-  const emitted = /* @__PURE__ */ new Map();
-  let lastGroup;
-  for (const desc of descriptors) {
-    const group = desc.group !== void 0 ? collapsed.get(desc.group) : void 0;
-    if (group) {
-      const members = emitted.get(group.id);
-      if (members) {
-        members.push(desc);
-        continue;
-      }
-    }
-    if (items.length > 0 && desc.group !== lastGroup) items.push({ kind: "separator" });
-    lastGroup = desc.group;
-    if (group) {
-      const members = [desc];
-      emitted.set(group.id, members);
-      items.push({ kind: "group", group, descriptors: members });
-    } else {
-      items.push({ kind: "control", desc });
-    }
-  }
-  return items;
-}
-function isGroupActive(group, get) {
-  return (group.activeWhen ?? []).some((key) => get(key) === true);
-}
-class OptionSet {
-  /**
-   * @param descriptors - Descriptors in display order.
-   * @param values - Values object; only descriptor keys are ever written.
-   * @param groups - Groups collapsed behind a button in the bar.
-   */
-  constructor(descriptors, values, groups = []) {
-    this.descriptors = descriptors;
-    this.values = values;
-    this.groups = groups;
-    for (const desc of descriptors) this.byKey.set(desc.key, desc);
-  }
-  descriptors;
-  values;
-  groups;
-  byKey = /* @__PURE__ */ new Map();
-  /** @inheritdoc */
-  get(key) {
-    return this.byKey.has(key) ? this.values[key] : void 0;
-  }
-  /** @inheritdoc */
-  set(key, value) {
-    const desc = this.byKey.get(key);
-    if (!desc) return false;
-    const next = coerceOption(desc, value);
-    if (next === void 0 || next === this.values[key]) return false;
-    this.values[key] = next;
-    return true;
-  }
 }
 const MAX_PX_PER_STEP = 8;
 const MIN_PX_PER_STEP = 1;
@@ -8756,7 +8963,7 @@ class OptionsStrip {
   sync() {
     const editor = this.ctx.getSession()?.editor ?? null;
     const mode = this.mode();
-    const selection = mode === "normal" && editor?.selection.active === true;
+    const selection = mode === "normal" && editor?.selection.active === true && !editor.float.pasted;
     const text = mode === "normal" && editor?.text.editing != null;
     const tool = this.ctx.getSession()?.tools.active;
     const selectHint = mode === "normal" && !selection && tool?.combinesSelection === true ? tool.id === "wand" ? WAND_HINT : SELECT_HINT : "";
@@ -9824,7 +10031,7 @@ function snapAngle(from, to, stepDeg = 15) {
   if (length === 0) return { ...to };
   const step = stepDeg * Math.PI / 180;
   const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-  return { x: from.x + clean$1(Math.cos(angle)) * length, y: from.y + clean$1(Math.sin(angle)) * length };
+  return { x: from.x + clean(Math.cos(angle)) * length, y: from.y + clean(Math.sin(angle)) * length };
 }
 function boxFromDrag(start, current, square, fromCenter) {
   let dx = current.x - start.x;
@@ -9928,7 +10135,7 @@ function pointsRect(points) {
 function padRect(r, pad) {
   return { x: r.x - pad, y: r.y - pad, width: r.width + pad * 2, height: r.height + pad * 2 };
 }
-function clean$1(v) {
+function clean(v) {
   return Math.abs(v) < 1e-12 ? 0 : v;
 }
 class SelectionModifiers {
@@ -10841,7 +11048,7 @@ class HostSync {
   confirmClear() {
     const editor = this.getSession()?.editor;
     if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint, regions and output options? This can be undone.")) return;
+    if (!window.confirm("Clear all paint, layer masks, regions and output options? Text layers become empty paint layers. This can be undone.")) return;
     this.cancelDrag();
     editor.clear();
   }
@@ -11788,65 +11995,7 @@ function handleClipboardShortcut(event, actions, cancelDrag) {
   }
   return false;
 }
-function clean(n) {
-  return n === 0 ? 0 : n;
-}
-function dragDelta(start, current) {
-  return { x: clean(Math.round(current.x - start.x)), y: clean(Math.round(current.y - start.y)) };
-}
-function nudgeStep(imagePx, mapScale) {
-  if (!(mapScale > 0) || !Number.isFinite(mapScale)) return Math.max(1, Math.round(imagePx));
-  return Math.max(1, Math.round(imagePx / mapScale));
-}
-function alphaBounds(data, width, height) {
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width * 4;
-    let first = -1;
-    for (let x = 0; x < width; x++) {
-      if (data[row + x * 4 + 3]) {
-        first = x;
-        break;
-      }
-    }
-    if (first < 0) continue;
-    let last = first;
-    for (let x = width - 1; x > first; x--) {
-      if (data[row + x * 4 + 3]) {
-        last = x;
-        break;
-      }
-    }
-    if (first < minX) minX = first;
-    if (last > maxX) maxX = last;
-    if (minY === height) minY = y;
-    maxY = y;
-  }
-  if (maxX < 0) return { x: 0, y: 0, width: 0, height: 0 };
-  return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-function offsetRect(r, dx, dy) {
-  return { x: r.x + dx, y: r.y + dy, width: r.width, height: r.height };
-}
-function planTranslate(bounds, content, dx, dy, frame, limits = DEFAULT_GROWTH) {
-  if (dx === 0 && dy === 0 || isEmptyRect(content)) return { kind: "none" };
-  const target = offsetRect(content, dx, dy);
-  const grown = growBounds(bounds, target, frame, limits);
-  const kind = containsRect(grown, target) ? "translate" : "patch";
-  return { kind, bounds: grown, target, region: unionRect(content, target) };
-}
-function translateStep(entry, forward) {
-  const moved = offsetRect(entry.content, entry.dx, entry.dy);
-  return forward ? { from: { ...entry.content }, to: moved, dx: entry.dx, dy: entry.dy } : { from: moved, to: { ...entry.content }, dx: clean(-entry.dx), dy: clean(-entry.dy) };
-}
-function mergeTranslate(entry, dx, dy) {
-  entry.dx = clean(entry.dx + dx);
-  entry.dy = clean(entry.dy + dy);
-}
-const ARROWS$4 = {
+const ARROWS$3 = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
   ArrowUp: [0, -1],
@@ -11875,7 +12024,7 @@ function handleFloatShortcut(event, editor, effects) {
     editor.float.cancel();
     return true;
   }
-  const dir = ARROWS$4[event.key];
+  const dir = ARROWS$3[event.key];
   if (dir) {
     if (editor.float.transform.active) return false;
     const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
@@ -11916,14 +12065,14 @@ function handleSelectionShortcut(event, editor, cancelDrag) {
   if (key === "f7" && shift && !alt) return run$1(cancelDrag, () => sel.invert());
   return false;
 }
-const ARROWS$3 = {
+const ARROWS$2 = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
   ArrowUp: [0, -1],
   ArrowDown: [0, 1]
 };
 function handleOutlineNudge(event, tool, editor, dragging = false) {
-  const dir = ARROWS$3[event.key];
+  const dir = ARROWS$2[event.key];
   if (!dir || !tool.combinesSelection || !editor.selection.active || (tool.pending?.() ?? false)) return false;
   if (dragging) return true;
   const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
@@ -14546,7 +14695,7 @@ class EditorHost {
     this.chrome.hold(this.shell.sidePanel.element);
     this.root.classList.add(CHROME_HIDDEN_CLASS);
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
-    this.clipboard = new ClipboardActions(() => this.session, this.stage);
+    this.clipboard = new ClipboardActions(() => this.session, this.stage, () => this.pasteInto());
     this.removeDrop = installDropImport(this.stage, this.clipboard, (text) => this.view.showNote(text));
     this.sync = new HostSync({
       shell: this.shell,
@@ -14559,7 +14708,7 @@ class EditorHost {
       pickMode: (mode) => this.pickMode(mode),
       pickSource: (entry) => {
         const editor = this.session?.editor;
-        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
+        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name, this.pasteInto());
       }
     });
     this.shell.events.on("help", () => this.sync.help.toggle());
@@ -14829,6 +14978,10 @@ class EditorHost {
     this.handleResize();
   }
   // ── Mode ────────────────────────────────────────────────────────────────
+  /** Where pastes, drops and Images-panel inserts go: Simple mode always the current layer (no Merge Down there), else the Paste menu toggle. */
+  pasteInto() {
+    return this.mode === "simple" || this.sync.clip.intoCurrent ? "current" : "new";
+  }
   /** A toggle was clicked: apply and tell the owner (it saves the mode on the node). */
   pickMode(mode) {
     if (mode === this.mode) return;
@@ -16902,26 +17055,32 @@ class SourceInsertOps {
    * @param float - Float commands (the session runs on a float).
    * @param paintTargetOff - Turns Quick Mask off.
    * @param undo - Undo one history step (`PaintOps.undo`).
+   * @param intoCurrent - `ClipboardOps.insertIntoCurrent` (insert into the current layer).
    */
-  constructor(s, layers2, float, paintTargetOff, undo) {
+  constructor(s, layers2, float, paintTargetOff, undo, intoCurrent = () => null) {
     this.s = s;
     this.layers = layers2;
     this.float = float;
     this.paintTargetOff = paintTargetOff;
     this.undo = undo;
+    this.intoCurrent = intoCurrent;
   }
   s;
   layers;
   float;
   paintTargetOff;
   undo;
+  intoCurrent;
   /**
    * New layer holding `pixels` in a Free Transform session (see module doc).
    * @param pixels - Full-resolution source pixels (straight alpha).
    * @param name - Layer name (source file name); default "Image N" (next free N).
+   * @param into - `current`: no new layer; the session runs on a float on the
+   *   current layer (`ClipboardOps.insertIntoCurrent`), same start placement.
    * @returns `true` if the session runs.
    */
-  insert(pixels, name) {
+  insert(pixels, name, into = "new") {
+    if (into === "current") return this.insertIntoCurrent(pixels);
     return this.start(
       pixels,
       name?.trim() || imageLayerName(this.s.doc.layers),
@@ -16940,6 +17099,18 @@ class SourceInsertOps {
     const sx = rect.width / pixels.width;
     const sy = rect.height / pixels.height;
     return this.start(pixels, name, () => ({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, sx, sy, angle: 0 }));
+  }
+  /** {@link insert} into the current layer: the same start parameters, as a document rect. */
+  insertIntoCurrent(pixels) {
+    const s = this.s;
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return false;
+    const map = documentMap(s.doc, s.imageSize);
+    const place2 = pasteContext({ selection: s.selection.current, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
+    const area = imageRectToDoc(map, frameRect(s.imageSize));
+    const p = insertParams({ width: pixels.width, height: pixels.height }, area, 1 / map.scale, place2);
+    const w = pixels.width * p.sx;
+    const h = pixels.height * p.sy;
+    return this.intoCurrent(pixels, { x: p.cx - w / 2, y: p.cy - h / 2, width: w, height: h }) !== null;
   }
   /** Shared body of {@link insert} / {@link insertPlaced}. */
   start(pixels, name, paramsFor) {
@@ -17015,6 +17186,7 @@ function holeAt(bounds, p) {
 }
 const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
 const PASTE_TRANSFORM_NOTE = "Paste is larger than the image -- placed in Free Transform. Scale or place it, then commit (Esc cancels).";
+const NO_PASTE_LAYER_NOTE = "No layer to paste into.";
 class ClipboardOps {
   /**
    * @param s - Shared editor state.
@@ -17090,15 +17262,17 @@ class ClipboardOps {
     return clip;
   }
   /**
-   * Ctrl+V / drop: a new paint layer holding `source` -- or, in the
-   * lmask-only view, an lmask float on the viewed lmask ({@link pasteIntoMask}).
+   * Ctrl+V / drop: a new paint layer holding `source` -- or a float on an
+   * existing surface ({@link pasteFloating}): the viewed lmask in the
+   * lmask-only view, the current edit surface with `into: "current"`.
    * @param source - Decoded image (ImageBitmap, canvas, ...).
    * @param size - Its pixel size.
    * @param docPerSource - Document px per source px (`1 / imageScale` for image px).
    * @param at - Centre point or top-left, document coords.
+   * @param into - New layer (default) or the current layer.
    * @returns What happened, or `null` (loading / nothing fits / blocked).
    */
-  paste(source, size, docPerSource, at) {
+  paste(source, size, docPerSource, at, into = "new") {
     const s = this.s;
     if (s.loading || size.width <= 0 || size.height <= 0) return null;
     s.settleFloat();
@@ -17109,7 +17283,9 @@ class ClipboardOps {
     const oversized = cropped || !containsRect(image, full);
     const start = oversized ? fitRect(full, image) : full;
     const viewed = targetedMaskLayer(s);
-    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, oversized ? null : rect, start);
+    const fitted = oversized ? null : rect;
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteSource({ layer: viewed, key: layerMaskKey(viewed.id), gray: true }, source, size, full, fitted, start);
+    if (into === "current") return this.pasteIntoCurrent(source, size, full, fitted, start);
     if (oversized) return this.pasteInTransform(source, size, start);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
@@ -17142,50 +17318,96 @@ class ClipboardOps {
     return { layerId: id, name, transform: true, resampled: start.width !== size.width || start.height !== size.height };
   }
   /**
-   * A paste in the lmask-only view: the image as lmask values
-   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or --
-   * larger than the image area (`rect` null) -- the full image in a Free
-   * Transform session starting at `start` (fitted inside the image, cropped
-   * at the cap on commit), like an oversized paste. The float always lands on
-   * commit (it has no lift position); the
-   * selection is dropped now and joins the commit's step (cancel brings it back).
+   * An image-source insert (`sourceInsert.ts`) into the current layer: the
+   * full `pixels` floating on the current edit surface in a Free Transform
+   * session starting at `start` (the insert's own placement), like an
+   * oversized paste into the current layer, without its note.
+   * @param pixels - Full source pixels (straight alpha; converted in place for masks).
+   * @param start - Document rect the session starts at.
+   * @returns What happened, or `null` (loading / refused, note shown).
    */
-  pasteIntoMask(layer, source, size, full, rect, start) {
+  insertIntoCurrent(pixels, start) {
     const s = this.s;
-    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
-    const key = layerMaskKey(layer.id);
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return null;
+    s.settleFloat();
+    s.commitTextEdit();
+    if (s.stroke.active) s.cancelStroke();
+    const target = this.currentTarget();
+    if (!target) return null;
+    const resampled = start.width !== pixels.width || start.height !== pixels.height;
+    return this.pasteFloating(target, () => pixels, null, start, resampled, false);
+  }
+  /**
+   * The current edit surface: under Quick Mask the current mask (made if
+   * there is none, as the brush does), else the active paint-like layer's
+   * pixels or its targeted lmask. `gray` = a mask surface.
+   */
+  currentTarget() {
+    const s = this.s;
+    const layer = s.target === "mask" ? s.ensureMask() : this.editLayer();
+    if (!layer) {
+      s.events.emit("note", NO_PASTE_LAYER_NOTE);
+      return null;
+    }
+    const key = selectedSurfaceKey(s, layer);
+    return { layer, key, gray: layer.kind === "mask" || key !== layer.id };
+  }
+  /** Paste into the current layer ({@link currentTarget}). */
+  pasteIntoCurrent(source, size, full, rect, start) {
+    const target = this.currentTarget();
+    return target ? this.pasteSource(target, source, size, full, rect, start) : null;
+  }
+  /** A pasted `source` floating on `target` (see {@link pasteFloating}). */
+  pasteSource(target, source, size, full, rect, start) {
     const resampled = full.width !== size.width || full.height !== size.height;
-    const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
-    imageToMaskGray(pixels.data);
-    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, start);
+    const pixels = () => rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
+    return this.pasteFloating(target, pixels, rect, start, resampled, true);
+  }
+  /**
+   * Pixels floating on an existing surface (the gate runs first, then
+   * `pixelsFor`): at `rect`, or -- `rect` null (larger than the image area,
+   * or an image-source insert) -- the full pixels in a Free Transform session
+   * starting at `start` (cropped at the cap on commit). `gray` (masks,
+   * lmasks): the image as mask values (`imageToMaskGray`), replacing what it
+   * lands on; else pixels composited over. The float always lands on commit
+   * (it has no lift position). The selection is replaced by the float's
+   * outline (none in Free Transform); commit drops it in the commit's step,
+   * cancel brings the old one back ({@link FloatState.selPrior}).
+   */
+  pasteFloating(target, pixelsFor, rect, start, resampled, note) {
+    const s = this.s;
+    const { layer, key, gray } = target;
+    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
+    const pixels = pixelsFor();
+    if (gray) imageToMaskGray(pixels.data);
+    const f = rect ? this.floatAt(key, pixels, rect, gray) : this.floatPlaced(key, pixels, start, gray);
     if (!f) return null;
-    const sel = s.selection.current;
     f.inserted = true;
-    f.onEnd = (landed) => {
-      if (landed) recordSelectionMove(s, sel, s.selection.current, true);
-      else s.selection.set(sel);
-    };
-    s.selection.set(null);
+    const outline2 = rect ? rectSelection(rect) : null;
+    f.selPrior = s.selection.current;
+    f.selBefore = outline2;
+    f.selBase = outline2;
     if (!this.float.adoptInserted(f)) return null;
+    s.selection.set(outline2);
     s.runtime.bump(key);
     if (!rect) {
       this.float.transform.enter();
-      s.events.emit("note", PASTE_TRANSFORM_NOTE);
+      if (note) s.events.emit("note", PASTE_TRANSFORM_NOTE);
     }
     s.events.emit("render", void 0);
-    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, intoMask: true };
+    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, floating: true };
   }
-  /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
-  maskFloatAt(key, pixels, rect) {
+  /** Float of `pixels` on `key` at `rect` (inside the cap; the bounds grow to it). */
+  floatAt(key, pixels, rect, gray) {
     const s = this.s;
     const boundsBase = { ...s.store.bounds };
     s.ensureBounds(rect, true);
     const read = s.store.read(key, rect);
     if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
-    return { ...maskFloat(key, pixels, { ...rect }, read.data, null), boundsBase };
+    return { ...pastedFloat(key, pixels, { ...rect }, read.data, null, gray), boundsBase };
   }
-  /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
-  maskFloatPlaced(key, pixels, full) {
+  /** Float of the full `pixels` on `key` through a Free Transform matrix placing them at `full`. */
+  floatPlaced(key, pixels, full, gray) {
     const s = this.s;
     const { width: w, height: h } = pixels;
     const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
@@ -17195,7 +17417,7 @@ class ClipboardOps {
     const hole = holeAt(s.store.bounds, params);
     const read = s.store.read(key, hole);
     if (!read) return null;
-    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params, boundsBase };
+    return { ...pastedFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m, gray), holeRect: read.rect, params, boundsBase };
   }
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
   editLayer() {
@@ -17341,24 +17563,15 @@ function drawSource(source, rect, full, resampled) {
   releaseSurface(surface);
   return data;
 }
-function maskFloat(key, pixels, area, original, xf) {
-  const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
-  return {
-    layerId: key,
-    area,
-    original,
-    pixels,
-    surface: shown.value,
-    cover: shown.cover,
-    dx: 0,
-    dy: 0,
-    selBefore: null,
-    selBase: null,
-    xf,
-    baked: null,
-    dragBase: null,
-    preview: null
-  };
+function pastedFloat(key, pixels, area, original, xf, gray) {
+  const base = { layerId: key, area, original, pixels, dx: 0, dy: 0, selBefore: null, selBase: null, xf, baked: null, dragBase: null, preview: null };
+  if (gray) {
+    const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
+    return { ...base, surface: shown.value, cover: shown.cover };
+  }
+  const surface = createSurface(pixels.width, pixels.height);
+  surface.ctx.putImageData(pixels, 0, 0);
+  return { ...base, surface };
 }
 function topPaintIndex(layers2) {
   for (let i = layers2.length - 1; i >= 0; i--) if (isPaintLike(layers2[i])) return i + 1;
@@ -20949,7 +21162,7 @@ function writeFloatPatch(s, f, m) {
     const beforeData = new ImageData(before, r.width, r.height);
     const bytes = before.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
-    if (!f.shape) recordSelectionMove(s, f.selBefore, s.selection.current, true);
+    if (!f.shape) recordSelectionMove(s, f.selPrior !== void 0 ? f.selPrior : f.selBefore, s.selection.current, true);
     if (f.carry) writeCarryPatch(s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
   }
   s.runtime.touch(f.layerId);
@@ -21547,6 +21760,10 @@ class FloatOps {
   get shape() {
     return this.f?.shape === true;
   }
+  /** Whether the float is a paste into an existing layer / mask (its selection is only its outline). */
+  get pasted() {
+    return this.f?.selPrior !== void 0;
+  }
   /** Layer the float belongs to, or `null`. */
   get layerId() {
     return this.f?.layerId ?? null;
@@ -21725,6 +21942,7 @@ class FloatOps {
       return false;
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
+    if (f.selPrior !== void 0) s.selection.set(null);
     this.f = null;
     if (f.boundsBase) s.restoreBounds(f.boundsBase);
     const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
@@ -21754,7 +21972,7 @@ class FloatOps {
     s.store.write(f.layerId, hole.x, hole.y, f.original);
     if (f.boundsBase) s.restoreBounds(f.boundsBase);
     this.bump(f);
-    if (!f.shape) s.selection.set(f.selBefore);
+    if (!f.shape) s.selection.set(f.selPrior !== void 0 ? f.selPrior : f.selBefore);
     releaseFloat(f);
     f.onEnd?.(false);
     s.events.emit("history", void 0);
@@ -23619,7 +23837,7 @@ class Editor extends EditorBase {
     this.selectionMove = new SelectionMoveOps(this.s);
     this.clipboard = new ClipboardOps(this.s, this.layerOps, () => this.maskOps.setPaintTarget("paint"), (px, n, r) => this.insert.insertPlaced(px, n, r), this.float);
     this.resolution = new ResolutionOps(this.s);
-    this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo());
+    this.insert = new SourceInsertOps(this.s, this.layerOps, this.float, () => this.maskOps.setPaintTarget("paint"), () => this.paint.undo(), (px, r) => this.clipboard.insertIntoCurrent(px, r));
     this.imageMask = new ImageMaskOps(this.s);
     this.shapes = new ShapeFloatOps(this.s, this.float);
     this.layerMask = new LayerMaskOps(
@@ -24111,7 +24329,7 @@ const SAMPLE_CHOICES = [
   { value: "all", label: "All layers" },
   { value: "background", label: "Background" }
 ];
-const DESCRIPTORS$4 = [
+const DESCRIPTORS$3 = [
   { kind: "number", key: "tolerance", label: "Tol", title: "Tolerance (0-255 per channel)", min: 0, max: 255, step: 1 },
   { kind: "number", key: "opacity", label: "Opac", title: "Opacity (1..9, 0)", min: 1, max: 100, step: 1, unit: "%", scale: 100 },
   { kind: "toggle", key: "contiguous", label: "Contiguous", title: "Only fill connected pixels", group: "mode" },
@@ -24133,7 +24351,7 @@ class FillTool {
    */
   constructor(sample = "background") {
     this.values = { tolerance: 32, opacity: 1, contiguous: true, antiAlias: true, sample };
-    this.options = new OptionSet(DESCRIPTORS$4, this.values);
+    this.options = new OptionSet(DESCRIPTORS$3, this.values);
   }
   /** @inheritdoc */
   onPointerDown(editor, samples) {
@@ -24167,7 +24385,7 @@ class FillTool {
 function createFillTool(sample) {
   return new FillTool(sample);
 }
-const DESCRIPTORS$3 = [
+const DESCRIPTORS$2 = [
   { kind: "select", key: "sample", label: "Sample", title: "Pixels to pick from", choices: SAMPLE_CHOICES },
   {
     kind: "select",
@@ -24189,7 +24407,7 @@ class EyedropperTool {
   constructor(values = { sample: "all", size: "1" }, isTemporary = false) {
     this.values = values;
     this.isTemporary = isTemporary;
-    this.options = new OptionSet(DESCRIPTORS$3, this.values);
+    this.options = new OptionSet(DESCRIPTORS$2, this.values);
   }
   values;
   isTemporary;
@@ -24397,7 +24615,7 @@ class LassoTool {
 function createLassoTool() {
   return new LassoTool();
 }
-const DESCRIPTORS$2 = [
+const DESCRIPTORS$1 = [
   { kind: "number", key: "tolerance", label: "Tol", title: "Tolerance (0-255 per channel)", min: 0, max: 255, step: 1 },
   { kind: "toggle", key: "contiguous", label: "Contiguous", title: "Only select connected pixels", group: "mode" },
   { kind: "toggle", key: "antiAlias", label: "Anti-alias", title: "Soften the selection edge", group: "mode" },
@@ -24416,7 +24634,7 @@ class MagicWandTool {
    */
   constructor(sample = "background") {
     this.values = { tolerance: 32, contiguous: true, antiAlias: true, sample };
-    this.options = new OptionSet(DESCRIPTORS$2, this.values);
+    this.options = new OptionSet(DESCRIPTORS$1, this.values);
   }
   combinesSelection = true;
   /** @inheritdoc */
@@ -24453,13 +24671,13 @@ function createMagicWandTool(sample) {
   return new MagicWandTool(sample);
 }
 const OFFSET_LIMIT$1 = 16384;
-const DESCRIPTORS$1 = [
+const DESCRIPTORS = [
   { kind: "number", key: "x", label: "X", title: "Horizontal offset (image px; arrows nudge)", min: -OFFSET_LIMIT$1, max: OFFSET_LIMIT$1, step: 1, unit: "px" },
   { kind: "number", key: "y", label: "Y", title: "Vertical offset (image px; arrows nudge)", min: -OFFSET_LIMIT$1, max: OFFSET_LIMIT$1, step: 1, unit: "px" },
   { kind: "number", key: "scale", label: "Scale", title: "Drawing scale (wheel while dragging)", min: 5, max: 1e3, step: 0.1, unit: "%", scale: 100, curve: "pow" },
   { kind: "button", key: "reset", label: "Reset position", title: "Put the drawing back where it was painted", group: "reset" }
 ];
-const ARROWS$2 = {
+const ARROWS$1 = {
   ArrowLeft: [-1, 0],
   ArrowRight: [1, 0],
   ArrowUp: [0, -1],
@@ -24473,7 +24691,7 @@ class MoveOptions {
     this.editor = editor;
   }
   editor;
-  descriptors = DESCRIPTORS$1;
+  descriptors = DESCRIPTORS;
   /** @inheritdoc */
   get(key) {
     const placement = this.editor.placement;
@@ -24565,7 +24783,7 @@ class MoveTool {
   }
   /** @inheritdoc */
   onKey(editor, event) {
-    const dir = ARROWS$2[event.key];
+    const dir = ARROWS$1[event.key];
     if (!dir) return false;
     if (this.drag) return true;
     const step = event.shiftKey ? 10 : 1;
@@ -24592,124 +24810,6 @@ class MoveTool {
 }
 function createMoveTool(editor) {
   return new MoveTool(editor);
-}
-const DESCRIPTORS = [
-  { kind: "toggle", key: "autoSelect", label: "Auto-select", title: "Pick the layer under the pointer (hold Ctrl for a one-off pick)" }
-];
-const ARROWS$1 = {
-  ArrowLeft: [-1, 0],
-  ArrowRight: [1, 0],
-  ArrowUp: [0, -1],
-  ArrowDown: [0, 1]
-};
-class MoveLayerTool {
-  id = "move-layer";
-  label = "Move layer";
-  shortcut = "v";
-  icon = "move";
-  /** Ctrl is this tool's own auto-select modifier; it never substitutes itself. */
-  ctrlMove = false;
-  values = { autoSelect: false };
-  options = new OptionSet(DESCRIPTORS, this.values);
-  /** Pointer-down position (document coords) while dragging. */
-  start = null;
-  /** The current drag moves a floating selection. */
-  floating = false;
-  /** Action the stage runs after ending this press (text rasterize confirm). */
-  deferred = null;
-  /** @inheritdoc */
-  takeDeferred() {
-    const action = this.deferred;
-    this.deferred = null;
-    return action;
-  }
-  /** @inheritdoc */
-  onPointerDown(editor, samples) {
-    const first = samples[0];
-    if (!first) return;
-    this.deferred = null;
-    const float = editor.float;
-    if (!float.active && editor.selectionMove.hit(first.x, first.y)) {
-      const check = float.check();
-      if (check === "confirm") this.deferred = () => float.prepareLift();
-      if (check !== "ok" || !float.lift(first.altKey)) return;
-    }
-    if (float.active) {
-      if (!float.beginDrag()) return;
-      this.floating = true;
-      this.start = { x: first.x, y: first.y };
-      return;
-    }
-    const pick2 = (first.ctrlKey || this.values.autoSelect === true) && !editor.selection.active;
-    if (pick2 && !this.autoSelect(editor, first)) return;
-    if (!editor.layerMove.begin()) return;
-    this.start = { x: first.x, y: first.y };
-  }
-  /** @inheritdoc */
-  onPointerMove(editor, samples) {
-    const last = samples[samples.length - 1];
-    if (last) this.previewTo(editor, last);
-  }
-  /** @inheritdoc */
-  onPointerUp(editor, sample) {
-    if (!this.start) return;
-    this.previewTo(editor, sample);
-    this.start = null;
-    if (this.floating) {
-      this.floating = false;
-      editor.float.endDrag();
-      return;
-    }
-    editor.layerMove.commit();
-  }
-  /** @inheritdoc */
-  onCancel(editor) {
-    if (!this.start) return;
-    this.start = null;
-    if (this.floating) {
-      this.floating = false;
-      editor.float.cancelDrag();
-      return;
-    }
-    editor.layerMove.cancel();
-  }
-  /** @inheritdoc */
-  onKey(editor, event) {
-    const dir = ARROWS$1[event.key];
-    if (!dir) return false;
-    if (this.start) return true;
-    const step = nudgeStep(event.shiftKey ? 10 : 1, editor.frameMap.scale);
-    editor.layerMove.nudge(dir[0] * step, dir[1] * step);
-    return true;
-  }
-  /** @inheritdoc */
-  cursor() {
-    return { kind: "icon", icon: "move" };
-  }
-  /**
-   * Pick the layer under the pointer and make it the move target.
-   * @returns `false` if nothing was hit (the drag moves nothing).
-   */
-  autoSelect(editor, at) {
-    if (editor.paintTarget === "mask") {
-      const maskId = editor.layerOps.pickMaskAt(at.x, at.y);
-      return maskId !== null && editor.selectMask(maskId);
-    }
-    const id = editor.layerOps.pickAt(at.x, at.y);
-    if (!id) return false;
-    editor.layerOps.setActiveLayer(id);
-    return true;
-  }
-  /** Samples are document coords (through `Editor.frameMap`); the delta is rounded to whole px. */
-  previewTo(editor, sample) {
-    if (!this.start) return;
-    const d = dragDelta(this.start, sample);
-    if (this.floating) editor.float.dragTo(d.x, d.y);
-    else editor.layerMove.preview(d.x, d.y);
-  }
-}
-function createMoveLayerTool() {
-  return new MoveLayerTool();
 }
 const WIDTH_OPTION = {
   kind: "number",
@@ -25606,10 +25706,12 @@ class ToolRegistry {
   /**
    * Activate a tool.
    * @param id - Tool id.
+   * @param settle - Run the before-switch hook (commits a float); `false`
+   *   when the switch is part of making the float (a paste picks Move layer).
    */
-  setActive(id) {
+  setActive(id, settle = true) {
     if (!this.tools.has(id) || id === this.activeId) return;
-    this.beforeSwitch?.();
+    if (settle) this.beforeSwitch?.();
     this.activeId = id;
     this.groups.noteActive(id);
     this.events.emit("change", void 0);

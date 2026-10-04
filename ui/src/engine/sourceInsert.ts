@@ -25,6 +25,7 @@ import { createPaintLayer } from "../document/create";
 import { frameRect } from "../geometry/rect";
 import type { Rect, Size } from "../geometry/rect";
 import { imageLayerName } from "./clipboardMath";
+import type { PasteInto, PasteResult } from "./clipboardOps";
 import type { EditorState } from "./editorState";
 import type { FloatOps } from "./floatOps";
 import type { FloatState } from "./floatLift";
@@ -77,6 +78,7 @@ export class SourceInsertOps {
    * @param float - Float commands (the session runs on a float).
    * @param paintTargetOff - Turns Quick Mask off.
    * @param undo - Undo one history step (`PaintOps.undo`).
+   * @param intoCurrent - `ClipboardOps.insertIntoCurrent` (insert into the current layer).
    */
   constructor(
     private readonly s: EditorState,
@@ -84,15 +86,19 @@ export class SourceInsertOps {
     private readonly float: FloatOps,
     private readonly paintTargetOff: () => void,
     private readonly undo: () => void,
+    private readonly intoCurrent: (pixels: ImageData, start: Rect) => PasteResult | null = () => null,
   ) {}
 
   /**
    * New layer holding `pixels` in a Free Transform session (see module doc).
    * @param pixels - Full-resolution source pixels (straight alpha).
    * @param name - Layer name (source file name); default "Image N" (next free N).
+   * @param into - `current`: no new layer; the session runs on a float on the
+   *   current layer (`ClipboardOps.insertIntoCurrent`), same start placement.
    * @returns `true` if the session runs.
    */
-  insert(pixels: ImageData, name?: string): boolean {
+  insert(pixels: ImageData, name?: string, into: PasteInto = "new"): boolean {
+    if (into === "current") return this.insertIntoCurrent(pixels);
     return this.start(pixels, name?.trim() || imageLayerName(this.s.doc.layers), (place, area, docPerImage) =>
       insertParams({ width: pixels.width, height: pixels.height }, area, docPerImage, place),
     ) !== null;
@@ -110,6 +116,19 @@ export class SourceInsertOps {
     const sx = rect.width / pixels.width;
     const sy = rect.height / pixels.height;
     return this.start(pixels, name, () => ({ cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2, sx, sy, angle: 0 }));
+  }
+
+  /** {@link insert} into the current layer: the same start parameters, as a document rect. */
+  private insertIntoCurrent(pixels: ImageData): boolean {
+    const s = this.s;
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return false;
+    const map = documentMap(s.doc, s.imageSize);
+    const place = pasteContext({ selection: s.selection.current, view: s.view.current, stage: s.view.stageSize, map, imageSize: s.imageSize }, null);
+    const area = imageRectToDoc(map, frameRect(s.imageSize));
+    const p = insertParams({ width: pixels.width, height: pixels.height }, area, 1 / map.scale, place);
+    const w = pixels.width * p.sx;
+    const h = pixels.height * p.sy;
+    return this.intoCurrent(pixels, { x: p.cx - w / 2, y: p.cy - h / 2, width: w, height: h }) !== null;
   }
 
   /** Shared body of {@link insert} / {@link insertPlaced}. */

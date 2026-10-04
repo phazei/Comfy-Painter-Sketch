@@ -33,6 +33,12 @@
  *   placement (move, then commit / cancel like any lmask float; the dropped
  *   selection is part of its step), or -- past the paint area -- in a Free
  *   Transform session on that float.
+ * - Paste into the current layer (`into: "current"`; the Paste menu toggle,
+ *   always in Simple mode): the same float, on the current edit surface
+ *   instead of a new layer -- a paint layer's pixels (composited over on
+ *   commit), its targeted lmask, or under Quick Mask the current mask
+ *   (both as gray, replacing). The gate refuses with its usual note
+ *   (Background, Image Mask, locked, hidden); no layer is ever created.
  *
  * Every command settles a floating selection first.
  */
@@ -61,7 +67,7 @@ import type { LayerOps } from "./layerOps";
 import { layerContentRect } from "./layerTranslate";
 import { LOCKED_LAYER_NOTE } from "./editorTypes";
 import { editBlockNote, preparePixelEdit } from "./rasterize";
-import { coverageFor, eraseCoverage, selectionExtent } from "./selection";
+import { coverageFor, eraseCoverage, rectSelection, selectionExtent } from "./selection";
 import { recordSelectionMove } from "./selectionFollow";
 import { shownOnStage } from "./solo";
 import { holeAt } from "./sourceInsert";
@@ -88,13 +94,26 @@ export interface ClipImage {
 /** Where a paste lands. */
 export type PastePlacement = { centre: Point } | { topLeft: Point };
 
+/** Where a paste goes outside the lmask-only view: a new layer, or a float on the current layer. */
+export type PasteInto = "new" | "current";
+
+/** Note when a paste into the current layer finds no layer. */
+export const NO_PASTE_LAYER_NOTE = "No layer to paste into.";
+
+/** Surface a paste floats on: `key` (the layer, or its lmask) of `layer`; `gray` = mask values. */
+interface FloatTarget {
+  layer: Layer;
+  key: string;
+  gray: boolean;
+}
+
 /** What {@link ClipboardOps.paste} did. */
 export interface PasteResult {
-  /** The new layer (or, pasted into the lmask-only view, the layer owning the lmask). */
+  /** The new layer, or the existing layer the paste floats on (its own pixels, lmask or mask). */
   layerId: string;
   name: string;
-  /** Pasted into the viewed lmask as an lmask float, no new layer. */
-  intoMask?: true;
+  /** Floats on an existing layer / lmask / mask (no new layer); commit or cancel ends it. */
+  floating?: true;
   /** The paste reached past the paint-area cap: it runs in a Free Transform session (nothing cropped yet). */
   transform: boolean;
   /** The pixels were resampled once (source px != document px). */
@@ -180,15 +199,17 @@ export class ClipboardOps {
   }
 
   /**
-   * Ctrl+V / drop: a new paint layer holding `source` -- or, in the
-   * lmask-only view, an lmask float on the viewed lmask ({@link pasteIntoMask}).
+   * Ctrl+V / drop: a new paint layer holding `source` -- or a float on an
+   * existing surface ({@link pasteFloating}): the viewed lmask in the
+   * lmask-only view, the current edit surface with `into: "current"`.
    * @param source - Decoded image (ImageBitmap, canvas, ...).
    * @param size - Its pixel size.
    * @param docPerSource - Document px per source px (`1 / imageScale` for image px).
    * @param at - Centre point or top-left, document coords.
+   * @param into - New layer (default) or the current layer.
    * @returns What happened, or `null` (loading / nothing fits / blocked).
    */
-  paste(source: CanvasImageSource, size: Size, docPerSource: number, at: PastePlacement): PasteResult | null {
+  paste(source: CanvasImageSource, size: Size, docPerSource: number, at: PastePlacement, into: PasteInto = "new"): PasteResult | null {
     const s = this.s;
     if (s.loading || size.width <= 0 || size.height <= 0) return null;
     s.settleFloat();
@@ -203,7 +224,9 @@ export class ClipboardOps {
     // It starts fitted inside the image (full resolution kept until the commit).
     const start = oversized ? fitRect(full, image) : full;
     const viewed = targetedMaskLayer(s);
-    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, oversized ? null : rect, start);
+    const fitted = oversized ? null : rect;
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteSource({ layer: viewed, key: layerMaskKey(viewed.id), gray: true }, source, size, full, fitted, start);
+    if (into === "current") return this.pasteIntoCurrent(source, size, full, fitted, start);
     if (oversized) return this.pasteInTransform(source, size, start);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
@@ -241,53 +264,105 @@ export class ClipboardOps {
   }
 
   /**
-   * A paste in the lmask-only view: the image as lmask values
-   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or --
-   * larger than the image area (`rect` null) -- the full image in a Free
-   * Transform session starting at `start` (fitted inside the image, cropped
-   * at the cap on commit), like an oversized paste. The float always lands on
-   * commit (it has no lift position); the
-   * selection is dropped now and joins the commit's step (cancel brings it back).
+   * An image-source insert (`sourceInsert.ts`) into the current layer: the
+   * full `pixels` floating on the current edit surface in a Free Transform
+   * session starting at `start` (the insert's own placement), like an
+   * oversized paste into the current layer, without its note.
+   * @param pixels - Full source pixels (straight alpha; converted in place for masks).
+   * @param start - Document rect the session starts at.
+   * @returns What happened, or `null` (loading / refused, note shown).
    */
-  private pasteIntoMask(layer: Layer, source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null, start: Rect): PasteResult | null {
+  insertIntoCurrent(pixels: ImageData, start: Rect): PasteResult | null {
     const s = this.s;
-    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
-    const key = layerMaskKey(layer.id);
+    if (s.loading || pixels.width <= 0 || pixels.height <= 0) return null;
+    s.settleFloat();
+    s.commitTextEdit();
+    if (s.stroke.active) s.cancelStroke();
+    const target = this.currentTarget();
+    if (!target) return null;
+    const resampled = start.width !== pixels.width || start.height !== pixels.height;
+    return this.pasteFloating(target, () => pixels, null, start, resampled, false);
+  }
+
+  /**
+   * The current edit surface: under Quick Mask the current mask (made if
+   * there is none, as the brush does), else the active paint-like layer's
+   * pixels or its targeted lmask. `gray` = a mask surface.
+   */
+  private currentTarget(): FloatTarget | null {
+    const s = this.s;
+    const layer = s.target === "mask" ? s.ensureMask() : this.editLayer();
+    if (!layer) {
+      s.events.emit("note", NO_PASTE_LAYER_NOTE);
+      return null;
+    }
+    const key = selectedSurfaceKey(s, layer);
+    return { layer, key, gray: layer.kind === "mask" || key !== layer.id };
+  }
+
+  /** Paste into the current layer ({@link currentTarget}). */
+  private pasteIntoCurrent(source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null, start: Rect): PasteResult | null {
+    const target = this.currentTarget();
+    return target ? this.pasteSource(target, source, size, full, rect, start) : null;
+  }
+
+  /** A pasted `source` floating on `target` (see {@link pasteFloating}). */
+  private pasteSource(target: FloatTarget, source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null, start: Rect): PasteResult | null {
     const resampled = full.width !== size.width || full.height !== size.height;
-    const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
-    imageToMaskGray(pixels.data);
-    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, start);
+    const pixels = (): ImageData => (rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false));
+    return this.pasteFloating(target, pixels, rect, start, resampled, true);
+  }
+
+  /**
+   * Pixels floating on an existing surface (the gate runs first, then
+   * `pixelsFor`): at `rect`, or -- `rect` null (larger than the image area,
+   * or an image-source insert) -- the full pixels in a Free Transform session
+   * starting at `start` (cropped at the cap on commit). `gray` (masks,
+   * lmasks): the image as mask values (`imageToMaskGray`), replacing what it
+   * lands on; else pixels composited over. The float always lands on commit
+   * (it has no lift position). The selection is replaced by the float's
+   * outline (none in Free Transform); commit drops it in the commit's step,
+   * cancel brings the old one back ({@link FloatState.selPrior}).
+   */
+  private pasteFloating(target: FloatTarget, pixelsFor: () => ImageData, rect: Rect | null, start: Rect, resampled: boolean, note: boolean): PasteResult | null {
+    const s = this.s;
+    const { layer, key, gray } = target;
+    if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
+    const pixels = pixelsFor();
+    if (gray) imageToMaskGray(pixels.data);
+    const f = rect ? this.floatAt(key, pixels, rect, gray) : this.floatPlaced(key, pixels, start, gray);
     if (!f) return null;
-    const sel = s.selection.current;
     f.inserted = true;
-    f.onEnd = (landed) => {
-      if (landed) recordSelectionMove(s, sel, s.selection.current, true);
-      else s.selection.set(sel);
-    };
-    s.selection.set(null);
+    // Its outline shows it floats (and moves / transforms with it, like a lift).
+    const outline = rect ? rectSelection(rect) : null;
+    f.selPrior = s.selection.current;
+    f.selBefore = outline;
+    f.selBase = outline;
     if (!this.float.adoptInserted(f)) return null;
+    // After the adopt: selection listeners already see a pasted float (`FloatOps.pasted`).
+    s.selection.set(outline);
     // The float shows at once (lmask-only view / masked composite caches follow the revision).
     s.runtime.bump(key);
     if (!rect) {
       this.float.transform.enter();
-      s.events.emit("note", PASTE_TRANSFORM_NOTE);
+      if (note) s.events.emit("note", PASTE_TRANSFORM_NOTE);
     }
     s.events.emit("render", undefined);
-    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, intoMask: true };
+    return { layerId: layer.id, name: layer.name, transform: !rect, resampled, floating: true };
   }
 
-  /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
-  private maskFloatAt(key: string, pixels: ImageData, rect: Rect): FloatState | null {
+  /** Float of `pixels` on `key` at `rect` (inside the cap; the bounds grow to it). */
+  private floatAt(key: string, pixels: ImageData, rect: Rect, gray: boolean): FloatState | null {
     const s = this.s;
     const boundsBase = { ...s.store.bounds };
     s.ensureBounds(rect, true);
     const read = s.store.read(key, rect);
     if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
-    return { ...maskFloat(key, pixels, { ...rect }, read.data, null), boundsBase };
+    return { ...pastedFloat(key, pixels, { ...rect }, read.data, null, gray), boundsBase };
   }
 
-  /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
-  private maskFloatPlaced(key: string, pixels: ImageData, full: Rect): FloatState | null {
+  /** Float of the full `pixels` on `key` through a Free Transform matrix placing them at `full`. */
+  private floatPlaced(key: string, pixels: ImageData, full: Rect, gray: boolean): FloatState | null {
     const s = this.s;
     const { width: w, height: h } = pixels;
     const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
@@ -297,7 +372,7 @@ export class ClipboardOps {
     const hole = holeAt(s.store.bounds, params);
     const read = s.store.read(key, hole);
     if (!read) return null;
-    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params, boundsBase };
+    return { ...pastedFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m, gray), holeRect: read.rect, params, boundsBase };
   }
 
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
@@ -461,13 +536,19 @@ function drawSource(source: CanvasImageSource, rect: Rect, full: Rect, resampled
   return data;
 }
 
-/** An lmask float of gray pixels (value in RGB, coverage in alpha) over `area`, nothing lifted. */
-function maskFloat(key: string, pixels: ImageData, area: Rect, original: ImageData, xf: FloatState["xf"]): FloatState {
-  const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
-  return {
-    layerId: key, area, original, pixels, surface: shown.value, cover: shown.cover,
-    dx: 0, dy: 0, selBefore: null, selBase: null, xf, baked: null, dragBase: null, preview: null,
-  };
+/**
+ * A pasted float over `area`, nothing lifted: `gray` = mask values (value in
+ * RGB, coverage in alpha; lands replacing), else straight-alpha pixels.
+ */
+function pastedFloat(key: string, pixels: ImageData, area: Rect, original: ImageData, xf: FloatState["xf"], gray: boolean): FloatState {
+  const base = { layerId: key, area, original, pixels, dx: 0, dy: 0, selBefore: null, selBase: null, xf, baked: null, dragBase: null, preview: null };
+  if (gray) {
+    const shown = maskFloatSurfaces(pixels.data, pixels.width, pixels.height);
+    return { ...base, surface: shown.value, cover: shown.cover };
+  }
+  const surface = createSurface(pixels.width, pixels.height);
+  surface.ctx.putImageData(pixels, 0, 0);
+  return { ...base, surface };
 }
 
 /** Index above the top-most paint-like layer (paste while a mask is current). */

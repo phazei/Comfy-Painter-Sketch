@@ -75,7 +75,7 @@ export function writeFloatPatch(s: EditorState, f: Readonly<FloatState>, m: Affi
     const bytes = before.byteLength + after.data.data.byteLength;
     s.history.push({ kind: "patch", layerId: f.layerId, x: r.x, y: r.y, before: beforeData, after: after.data, bytes });
     // A shape float never moved the selection.
-    if (!f.shape) recordSelectionMove(s, f.selBefore, s.selection.current, true);
+    if (!f.shape) recordSelectionMove(s, f.selPrior !== undefined ? f.selPrior : f.selBefore, s.selection.current, true);
     // The carried lmask lands with the layer, same step.
     if (f.carry) writeCarryPatch(s, f.carry, carryMatrix(f.carry, liftMatrix(f), m));
   }

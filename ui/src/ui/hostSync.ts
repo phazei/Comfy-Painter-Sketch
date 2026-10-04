@@ -426,7 +426,7 @@ export class HostSync {
   private confirmClear(): void {
     const editor = this.getSession()?.editor;
     if (!editor || editor.loading) return;
-    if (!window.confirm("Clear all paint, regions and output options? This can be undone.")) return;
+    if (!window.confirm("Clear all paint, layer masks, regions and output options? Text layers become empty paint layers. This can be undone.")) return;
     this.cancelDrag();
     editor.clear();
   }

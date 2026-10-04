@@ -261,7 +261,8 @@ export class EditChip {
 
   /**
    * Simple mode: Hide / Show for what the chip edits (the Layers panel's eye
-   * is out of reach there). Read-only mask rows have no eye.
+   * is out of reach there), plus Unlock for a locked paint layer. Read-only
+   * mask rows have no eye.
    */
   private addVisibility(editor: Editor, entries: MenuEntry[]): void {
     const toggle = (visible: boolean, what: string, set: (v: boolean) => void): void => {
@@ -279,6 +280,10 @@ export class EditChip {
     const item = mask ?? findPaintLayer(editor.doc);
     if (!item || item.id === IMAGE_MASK_ID) return;
     toggle(item.visible, mask ? "mask" : "layer", (v) => editor.layerOps.setVisible(item.id, v));
+    // A paint layer locked in Advanced: Unlock only (the cmask menu has its own).
+    if (!mask && item.locked) {
+      entries.push({ label: "Unlock layer", icon: "unlock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(item.id, false)) });
+    }
   }
 
   /** "Rasterize text": end the text edit, confirm, then rasterize (one undo step). */

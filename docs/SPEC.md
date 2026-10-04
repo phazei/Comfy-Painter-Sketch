@@ -653,8 +653,9 @@ hides:
   runs; the image size moves onto the stage under the image area.
 
 The edit chip and Quick Mask manage one layer, its lmask and the cmasks. In
-Simple mode the chip menu adds Hide / Show for what it edits, and a cmask's
-Lock entry shows only as Unlock.
+Simple mode the chip menu adds Hide / Show for what it edits; Lock shows only
+as Unlock, while locked (cmask and paint layer). Pastes, drops and Images inserts always go
+into the current layer (section 17 "Paste"): Merge Down is out of reach there.
 
 **Tool dock** (`toolDock.ts`, `toolGroupSlot.ts`): `Brush, Eraser, Fill |
 Select group, Move layer | Shapes group, Text | swatches`. Rail tools not named
@@ -1119,8 +1120,8 @@ ones. New pixel-editing paths must call this gate.
   row is hidden, solo-hidden or locked, or there is nothing below ("Nothing to
   merge down into."); never into Background or the Image Mask row. An enabled
   upper lmask is applied first ("Layer mask applied."); the lower lmask stays.
-- **Clear** (history pill, confirm "Clear all paint, regions and output options? This
-  can be undone."): empties every layer, removes lmasks, converts text to paint,
+- **Clear** (history pill, confirm "Clear all paint, layer masks, regions and output
+  options? Text layers become empty paint layers. This can be undone."): empties every layer, removes lmasks, converts text to paint,
   resets the frame to the minimum frame of the current image, resets placement,
   regions and Main options, ends solos and drops the selection (the frame can
   change, so its coordinates would be meaningless; undo restores it). Any float
@@ -1205,7 +1206,8 @@ replace what they land on; the vacated area reveals.
 
 **Clipboard.** Pixels targeted: copy = the masked result, cut clears pixels
 only. lmask targeted: copy = opaque grayscale, cut reveals. Paste makes a new
-paint layer, except in the lmask-only view (section 17).
+paint layer, except in the lmask-only view or when pasting into the current
+layer (targeted lmask: gray float on it; section 17).
 
 **Persistence and undo.** Add, delete, invert, Apply, strokes and fills are
 undoable; enable, target, view and swatches are not. PNG upload like a cmask.
@@ -1852,7 +1854,10 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`, `floatMath.ts`,
   nodes); without one, like Ctrl+V (Chrome fires no `paste` for Ctrl+Shift+V,
   so the async clipboard is read instead).
 - Paste button menu "Paste from": System clipboard / Clipspace (the pick sticks;
-  the icon swaps). Paste in place has no button (Ctrl+Shift+V only).
+  the icon swaps). Paste in place has no button (Ctrl+Shift+V only). Below a
+  divider, the toggle **Insert into current layer** (sticky per editor; picking
+  it doesn't paste; always on in Simple mode). It also covers drops and Images
+  panel inserts (section 20).
 - A paste is a new paint layer "Pasted" / "Pasted N" above the active paint layer
   (above the top paint layer under Quick Mask); one undo step; Quick Mask
   off; the selection is dropped in the same step; takes over solo. Foreign images
@@ -1877,7 +1882,20 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`, `floatMath.ts`,
 - **lmask-only view**: every paste and drop goes into the viewed lmask as an
   lmask float (value = Rec.709 luminance x alpha, so transparent = shown; our own
   lmask copies keep exact values; the lmask's invert is ignored so copies
-  round-trip), normal placement; oversized -> Free Transform on that float.
+  round-trip), normal placement, shown and ended like the next item;
+  oversized -> Free Transform on that float.
+- **Into the current layer** (toggle / Simple mode; the lmask-only view still
+  wins): no new layer. Every paste and drop floats on the current edit surface
+  at the normal placement: a paint layer's pixels (composited over on commit),
+  its targeted lmask, or under Quick Mask the current mask (made if none, like
+  the brush; Quick Mask stays on). Masks and lmasks take the gray value as
+  above, replacing what they land on. The float's outline replaces the
+  selection (the strip's To mask / Invert stay hidden for it) and the tool
+  switches to Move layer (without settling it), so it reads as a float; move, then commit (one undo step; the outline is dropped)
+  or cancel (nothing happened, the old selection is back). Oversized -> Free
+  Transform on that float (no outline, tool unchanged). A text layer asks to rasterize; Background, Image Mask,
+  locked or hidden targets refuse with their usual note; without any layer:
+  "No layer to paste into."
 
 **Drop** (`ui/dropImport.ts`): image files (one layer per file, at the drop
 point, same clamp) and images dragged from web pages (`<img src>` / uri-list,
@@ -2022,7 +2040,9 @@ Files: `tools/moveLayer.ts`, `tools/move.ts`, `engine/moveOps.ts`,
   session at scale 1 or fitted to the image area, placed by the paste rule. The
   commit resamples once from the full source. Commit = one undo step; cancel
   (Esc, x, Ctrl+Z) removes the layer and leaves no step. A live session or float
-  is settled first. Failure: "Could not load the image."
+  is settled first. Failure: "Could not load the image." With **Insert into
+  current layer** on (or in Simple mode) no layer is added: the same session runs
+  on a float on the current layer (section 17 "Into the current layer").
 
 Files: `widget/sourceHistory.ts`, `layerSourceWatch.ts`, `imageSource.ts`,
 `ui/imagesPanel.ts`, `sourceInsertAction.ts`, `engine/sourceInsert.ts`,
@@ -2202,7 +2222,7 @@ cause shows the raw error text as the reason.
 | Text | Trigger |
 |---|---|
 | Rasterize text layer? It will no longer be editable as text. | Pixel edit, merge, lift, flip or non-uniform transform on a text layer. |
-| Clear all paint, regions and output options? This can be undone. | Clear. |
+| Clear all paint, layer masks, regions and output options? Text layers become empty paint layers. This can be undone. | Clear. |
 | Resample all layers to the current image resolution? This clears the undo history. [+ Some paint far outside the image exceeds the 16384 px paint-area limit and will be cropped.] | Match image resolution. |
 | Upload failed; save anyway without the latest paint? | Ctrl+S after a failed flush. |
 | PainterSketch is still uploading paint (slow or unreachable server). Reload anyway and lose the unsaved paint? / PainterSketch could not upload some paint. Reload anyway and lose the unsaved paint? | Reload keys with pending uploads. |
@@ -2231,6 +2251,7 @@ cause shows the raw error text as the reason.
 | The layer has no pixels. | Ctrl+click an empty row. |
 | Nothing to copy. | Copy/cut found nothing. |
 | Nothing to paste. / The clipboard has no image -- nothing to paste. / Clipspace has no image -- nothing to paste. | Paste with no source (Ctrl+V / System / Clipspace). |
+| No layer to paste into. | Paste into the current layer with no layer at all. |
 | Paste is larger than the image -- placed in Free Transform. Scale or place it, then commit (Esc cancels). | Paste or drop larger than the image area. |
 | The dropped item is not an image. | Non-image drop. |
 | Could not load the image. | Images panel insert failed. |
@@ -2365,7 +2386,7 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 |---|---|
 | Ctrl+C / Ctrl+Shift+C | Copy / copy merged |
 | Ctrl+X | Cut |
-| Ctrl+V | Paste as a new layer (into the lmask in lmask-only view) |
+| Ctrl+V | Paste as a new layer (into the lmask in lmask-only view; into the current layer with the Paste menu toggle or in Simple mode) |
 | Ctrl+Shift+V | Paste our copy in place |
 | Long-press / right-click / caret on Copy | Choose Copy / Copy merged (sticks as the button's mode) |
 | Long-press / right-click / caret on Paste | Choose System clipboard / Clipspace (sticks as the button's mode) |

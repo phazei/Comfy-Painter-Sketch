@@ -185,7 +185,7 @@ export class ImagesPanel {
         item.className = "cps-images-item";
         item.setAttribute("role", "option");
         const label = entry.name ? `${entry.name} -- ` : i === 0 ? "Newest -- " : "";
-        item.title = `${label}Add as a new layer`;
+        item.title = `${label}Insert as a new layer, or into the current layer (Simple mode, or "Insert into current layer" in the Paste menu)`;
         const img = document.createElement("img");
         img.className = "cps-images-thumb";
         img.alt = "";

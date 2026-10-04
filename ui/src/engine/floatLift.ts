@@ -68,6 +68,13 @@ export interface FloatState {
   selBefore: Selection | null;
   /** Selection at offset (0, 0): `selBefore`, or its transformed copy. */
   selBase: Selection | null;
+  /**
+   * A pasted float (`clipboardOps.ts`): the selection before the paste
+   * (`selBefore` is then the float's own outline, or `null` in Free
+   * Transform). Cancel restores it; commit drops the outline and records
+   * the change from it, in the commit's step.
+   */
+  selPrior?: Selection | null;
   /** Float-local -> document matrix before the offset; `null` = plain lift position. */
   xf: Affine | null;
   /**

@@ -45,11 +45,14 @@ const ARROWS: Readonly<Record<string, readonly [number, number]>> = {
   ArrowDown: [0, 1],
 };
 
+/** Tool id of {@link MoveLayerTool} (a paste into the current layer switches to it). */
+export const MOVE_LAYER_TOOL_ID = "move-layer";
+
 /**
  * The layer Move tool.
  */
 export class MoveLayerTool implements Tool {
-  readonly id = "move-layer";
+  readonly id = MOVE_LAYER_TOOL_ID;
   readonly label = "Move layer";
   readonly shortcut = "v";
   readonly icon = "move";

@@ -39,6 +39,7 @@ import type { EditorSession } from "../widget/sessions";
 import type { SourceHistory } from "../widget/sourceHistory";
 import { REGION_TOOL_ID } from "../tools/region";
 import { ChromeVisibility } from "./chromeVisibility";
+import type { PasteInto } from "../engine/clipboardOps";
 import { ClipboardActions } from "./clipboardActions";
 import { insertSourceUrl } from "./sourceInsertAction";
 import { openColorPicker } from "./colorPicker";
@@ -156,7 +157,7 @@ export class EditorHost {
     this.view = new StageView(this.stage, () => this.session, () => this.input?.activeTool ?? null);
 
     // ── Clipboard (keys, clipboard pill, image drops on the stage) ────────
-    this.clipboard = new ClipboardActions(() => this.session, this.stage);
+    this.clipboard = new ClipboardActions(() => this.session, this.stage, () => this.pasteInto());
     this.removeDrop = installDropImport(this.stage, this.clipboard, (text) => this.view.showNote(text));
 
     // ── Chrome sync (bars, Images tray, help, side panels) ────────────────
@@ -173,7 +174,7 @@ export class EditorHost {
       pickMode: (mode) => this.pickMode(mode),
       pickSource: (entry) => {
         const editor = this.session?.editor;
-        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
+        if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name, this.pasteInto());
       },
     });
     this.shell.events.on("help", () => this.sync.help.toggle());
@@ -431,6 +432,11 @@ export class EditorHost {
   }
 
   // ── Mode ────────────────────────────────────────────────────────────────
+
+  /** Where pastes, drops and Images-panel inserts go: Simple mode always the current layer (no Merge Down there), else the Paste menu toggle. */
+  private pasteInto(): PasteInto {
+    return this.mode === "simple" || this.sync.clip.intoCurrent ? "current" : "new";
+  }
 
   /** A toggle was clicked: apply and tell the owner (it saves the mode on the node). */
   private pickMode(mode: EditorMode): void {

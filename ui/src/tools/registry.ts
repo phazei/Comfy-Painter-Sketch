@@ -112,10 +112,12 @@ export class ToolRegistry {
   /**
    * Activate a tool.
    * @param id - Tool id.
+   * @param settle - Run the before-switch hook (commits a float); `false`
+   *   when the switch is part of making the float (a paste picks Move layer).
    */
-  setActive(id: string): void {
+  setActive(id: string, settle = true): void {
     if (!this.tools.has(id) || id === this.activeId) return;
-    this.beforeSwitch?.();
+    if (settle) this.beforeSwitch?.();
     this.activeId = id;
     this.groups.noteActive(id);
     this.events.emit("change", undefined);

@@ -145,7 +145,7 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
     rows: [
       { keys: "Ctrl C / Ctrl ⇧ C", action: "Copy / copy merged" },
       { keys: "Ctrl X", action: "Cut" },
-      { keys: "Ctrl V", action: "Paste as a new layer" },
+      { keys: "Ctrl V", action: "Paste as a new layer (Simple: into the current layer)" },
       { keys: "Ctrl ⇧ V", action: "Paste in place" },
       { keys: "Hold / right-click", action: "Paste button: choose the source" },
     ],

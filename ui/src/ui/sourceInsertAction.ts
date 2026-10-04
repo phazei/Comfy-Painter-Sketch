@@ -8,6 +8,7 @@
  * its display canvas, in memory for the whole session) with a note.
  */
 
+import type { PasteInto } from "../engine/clipboardOps";
 import type { Editor } from "../engine/editor";
 import type { Size } from "../geometry/rect";
 import { log } from "../log";
@@ -39,9 +40,10 @@ export function cappedSourceSize(size: Size, max: number = MAX_SOURCE_SIDE): Siz
  * @param url - Source URL.
  * @param current - Returns the editor shown now (the session may change while loading).
  * @param name - Layer name (source file name), else "Image N".
+ * @param into - `current`: float on the current layer instead (Paste menu toggle / Simple mode, like pastes and drops).
  * @returns `true` if a session started.
  */
-export async function insertSourceUrl(editor: Editor, url: string, current: () => Editor | null, name?: string): Promise<boolean> {
+export async function insertSourceUrl(editor: Editor, url: string, current: () => Editor | null, name?: string, into: PasteInto = "new"): Promise<boolean> {
   const bitmap = await decodeUrl(url);
   if (!bitmap) {
     log.warn("Could not load the image source:", url);
@@ -64,7 +66,7 @@ export async function insertSourceUrl(editor: Editor, url: string, current: () =
     if (size.width !== bitmap.width) {
       editor.events.emit("note", `Image reduced to ${size.width} x ${size.height} px (max ${MAX_SOURCE_SIDE} px per side).`);
     }
-    return editor.insert.insert(pixels, name);
+    return editor.insert.insert(pixels, name, into);
   } finally {
     bitmap.close();
   }

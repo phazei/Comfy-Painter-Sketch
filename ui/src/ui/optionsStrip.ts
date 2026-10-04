@@ -13,7 +13,7 @@
  *    tool's X / Y / Scale / Reset, Done.
  * 4. Otherwise: while a selection exists, "To mask" (adds the selection to
  *    the current cmask, or hides it on a targeted lmask; one undo step) and
- *    "Invert" lead; then the tool's options; while a text edit is open, a
+ *    "Invert" lead (not for a pasted float's outline); then the tool's options; while a text edit is open, a
  *    trailing Done commits it.
  *
  * Size / Hardness / Width live on the sliders pill and are left out here
@@ -123,7 +123,8 @@ export class OptionsStrip {
   sync(): void {
     const editor = this.ctx.getSession()?.editor ?? null;
     const mode = this.mode();
-    const selection = mode === "normal" && editor?.selection.active === true;
+    // A pasted float's outline is no selection to act on: no To mask / Invert.
+    const selection = mode === "normal" && editor?.selection.active === true && !editor.float.pasted;
     const text = mode === "normal" && editor?.text.editing != null;
     const tool = this.ctx.getSession()?.tools.active;
     // Selection tools with nothing selected: say what a drag / click does.

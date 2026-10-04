@@ -20,7 +20,8 @@
  * placed by `engine/pastePlacement.ts` (drops: at the drop point, clamped), a new "Pasted" layer, one
  * undo step each (the selection is dropped in it). In the lmask-only view
  * every source (and drop) goes into the viewed lmask instead, as an lmask
- * float (`ClipboardOps.paste`). Sources:
+ * float (`ClipboardOps.paste`). With `pasteInto` = `current` (Paste menu toggle,
+ * Simple mode) they float on the current layer instead. Sources:
  * - Ctrl+V / Paste button "System": `pasteChoice.ts` (system image, else
  *   the internal copy, else clipspace).
  * - Ctrl+Shift+V: the internal copy in place, handled on keydown (the
@@ -29,13 +30,14 @@
  */
 
 import { pasteRect } from "../engine/clipboardMath";
-import type { ClipImage, PastePlacement } from "../engine/clipboardOps";
+import type { ClipImage, PasteInto, PastePlacement } from "../engine/clipboardOps";
 import type { Editor } from "../engine/editor";
 import { imageToDoc } from "../engine/frameMap";
 import { stageToDoc } from "../engine/viewport";
 import { clampIntoArea, imageAreaDoc, pasteContext, pasteTopLeft } from "../engine/pastePlacement";
 import type { Point } from "../geometry/rect";
 import { log } from "../log";
+import { MOVE_LAYER_TOOL_ID } from "../tools/moveLayer";
 import type { EditorSession } from "../widget/sessions";
 import { choosePasteSource, signaturesMatch } from "./pasteChoice";
 import type { ImageSignature, PasteFacts } from "./pasteChoice";
@@ -92,10 +94,12 @@ export class ClipboardActions {
   /**
    * @param getSession - Current session.
    * @param stage - Stage element (drop points).
+   * @param pasteInto - Where pastes and drops go (new layer, or the current layer: Paste menu toggle / Simple mode).
    */
   constructor(
     private readonly getSession: () => EditorSession | null,
     private readonly stage: HTMLElement,
+    private readonly pasteInto: () => PasteInto = () => "new",
   ) {}
 
   /** Whether an internal copy exists (Ctrl+Shift+V pastes it in place). */
@@ -158,7 +162,8 @@ export class ClipboardActions {
   }
 
   /**
-   * Dropped images: one layer each, in order, centred at the drop point.
+   * Dropped images: one layer each, in order, centred at the drop point
+   * (into the current layer: each float lands as the next one comes).
    * @param images - Image files / blobs (decoded here) or decoded bitmaps.
    * @param clientPoint - Drop point (client px).
    * @returns `true` if at least one image decoded.
@@ -248,8 +253,10 @@ export class ClipboardActions {
       at = { topLeft: pasteTopLeft(size, ctx) };
     }
     // Past the paint area the engine starts Free Transform and notes it (ClipboardOps.paste).
-    editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at);
+    const result = editor.clipboard.paste(image.source, { width: image.width, height: image.height }, docPerSource, at, this.pasteInto());
     image.release();
+    // A float on an existing layer (outlined): Move layer drags it. The switch must not settle it.
+    if (result?.floating && !result.transform) this.getSession()?.tools.setActive(MOVE_LAYER_TOOL_ID, false);
   }
 
   private toStage(client: Point): Point {
