@@ -45,4 +45,10 @@ describe("growBounds", () => {
       height: 500,
     });
   });
+
+  it("stops chunks at a tighter limit (painting: the image area)", () => {
+    const within = { x: -40, y: 0, width: 1040, height: 500 };
+    expect(growBounds(initial, { x: -10, y: 10, width: 5, height: 5 }, frame, undefined, within)).toEqual(within);
+    expect(growBounds(initial, { x: -300, y: 10, width: 5, height: 5 }, frame, undefined, within)).toEqual(initial);
+  });
 });

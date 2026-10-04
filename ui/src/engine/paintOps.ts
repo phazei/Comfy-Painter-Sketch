@@ -30,6 +30,7 @@ import { applyTranslateEntry } from "./layerTranslate";
 import { preparePixelEdit } from "./rasterize";
 import { applyTextEntry } from "./textLayer";
 import type { StrokeStyle } from "./stroke";
+import { paintLimit } from "./imageArea";
 import { applyOutputs } from "./regionHistory";
 import { selectionExtent } from "./selection";
 
@@ -44,6 +45,9 @@ function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {
  * Paint target, stroke and history operations over a shared {@link EditorState}.
  */
 export class PaintOps {
+  /** Paint limit of the current stroke (`imageArea.ts`), set at its start. */
+  private limit: Rect = { x: 0, y: 0, width: 0, height: 0 };
+
   /**
    * @param s - Shared editor state.
    * @param frames - Frame operations (Clear snapshots for undo).
@@ -92,13 +96,17 @@ export class PaintOps {
    * Start a stroke on the paint target (mask strokes paint white coverage).
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
-   * @returns `false` if painting is not possible (loading, locked, hidden).
+   * @returns `false` if painting is not possible (loading, locked, hidden, or
+   *   the image area lies outside the draw area).
    */
   beginStroke(style: StrokeStyle, maxDiameter: number): boolean {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer) return false;
+    // Paint lands only on the image area inside the draw area (`imageArea.ts`).
+    const limit = paintLimit(s);
+    if (isEmptyRect(limit)) return false;
     // A rasterize prompt silently ends this press (see rasterize.ts); the next stroke joins it.
     // Shapes can't paint a layer mask (the gate refuses them there).
     if (preparePixelEdit(s, layer, style.shape ? "other" : "paint") !== "proceed") return false;
@@ -108,9 +116,10 @@ export class PaintOps {
       ? maskStrokeStyle(style, s.layerMasks.fgWhite)
       : layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     const surfaceId = onMask ? layerMaskKey(layer.id) : layer.id;
+    this.limit = limit;
     s.strokeLayerId = surfaceId;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter);
+    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter, limit);
     s.events.emit("history", undefined);
     return true;
   }
@@ -181,15 +190,17 @@ export class PaintOps {
   }
 
   /**
-   * Grow bounds for a stroke's need rect, limited to where the selection can
-   * let paint through: a normal selection's bbox; an inverted one
-   * (`outside` > 0) covers everything outside its rect, so no limit.
+   * Grow bounds for a stroke's need rect, limited to the stroke's paint limit
+   * (image area inside the draw area) and to where the selection can let
+   * paint through: a normal selection's bbox; an inverted one (`outside` > 0)
+   * covers everything outside its rect, so no extra limit.
    */
   private growFor(need: Rect): void {
     const s = this.s;
     const sel = s.selection.current;
-    const area = sel && !sel.outside ? intersectRect(need, sel.rect) : need;
-    if (!isEmptyRect(area)) s.ensureBounds(area, true);
+    const allowed = intersectRect(need, this.limit);
+    const area = sel && !sel.outside ? intersectRect(allowed, sel.rect) : allowed;
+    if (!isEmptyRect(area)) s.ensureBounds(area, true, this.limit);
   }
 
   // ── Undo / redo ─────────────────────────────────────────────────────────

@@ -3934,8 +3934,8 @@ function boundsCap(frame, limits = DEFAULT_GROWTH) {
     height
   };
 }
-function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH) {
-  const cap = boundsCap(frame, limits);
+function growBounds(bounds, need, frame, limits = DEFAULT_GROWTH, within) {
+  const cap = within ? intersectRect(boundsCap(frame, limits), within) : boundsCap(frame, limits);
   const target = intersectRect(roundOutRect(need), cap);
   if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
   const chunk = Math.max(1, limits.chunk);
@@ -18266,6 +18266,8 @@ class StrokeBuffer {
   bounds = EMPTY;
   style = null;
   strokeRect = EMPTY;
+  /** Document rect the stroke may change (`null` = the bounds); see `imageArea.ts`. */
+  limit = null;
   pendingPreview = EMPTY;
   refreshed = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
@@ -18303,7 +18305,12 @@ class StrokeBuffer {
   }
   /** Document rect touched by the current stroke (integer). */
   get touched() {
-    return intersectRect(roundOutRect(this.strokeRect), this.bounds);
+    return this.clamp(this.strokeRect);
+  }
+  /** Integer rect inside the bounds and the stroke's limit. */
+  clamp(rect) {
+    const r = intersectRect(roundOutRect(rect), this.bounds);
+    return this.limit ? intersectRect(r, this.limit) : r;
   }
   /**
    * Start a stroke over `layer`.
@@ -18312,10 +18319,13 @@ class StrokeBuffer {
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, px
    *   (sets the stamp profile's 1 px minimum fade).
+   * @param limit - Document rect the stroke may change (preview and commit
+   *   are cut to it; painting stays inside the image area). Default: the bounds.
    */
-  begin(layer, bounds, style, maxDiameter = 1) {
+  begin(layer, bounds, style, maxDiameter = 1, limit) {
     this.ensureSize(bounds);
     this.style = style;
+    this.limit = limit ? { ...limit } : null;
     this.profile = stampProfile(style.hardness, Math.max(1, maxDiameter / 2));
     this.lastDab = null;
     this.strokeRect = EMPTY;
@@ -18389,7 +18399,7 @@ class StrokeBuffer {
    */
   updatePreview(layer) {
     const { buffer, preview } = this.surfaces();
-    const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
+    const r = this.clamp(this.pendingPreview);
     this.pendingPreview = EMPTY;
     this.refreshed = r;
     this.flushMask();
@@ -18778,11 +18788,12 @@ class EditorState {
    * the old bounds would be restored at the wrong origin.
    * @param need - Document rect that must be covered.
    * @param chunked - Stroke growth (256 px chunks, capped).
+   * @param within - Chunked growth stops here too (painting: `paintLimit`).
    */
-  ensureBounds(need, chunked) {
+  ensureBounds(need, chunked, within) {
     const current = this.store.bounds;
     if (containsRect(current, need)) return;
-    const next = chunked ? growBounds(current, need, this.doc.frame) : unionRect(current, need);
+    const next = chunked ? growBounds(current, need, this.doc.frame, void 0, within) : unionRect(current, need);
     if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
       this.store.rebase(next);
       this.stroke.rebase(next);
@@ -19956,6 +19967,12 @@ function sameBytes$3(a, b) {
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
 }
+function imageAreaInDoc(s) {
+  return roundOutRect(imageRectToDoc(documentMap(s.doc, s.imageSize), frameRect(s.imageSize)));
+}
+function paintLimit(s) {
+  return intersectRect(imageAreaInDoc(s), boundsCap(s.doc.frame));
+}
 function sameBytes$2(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
@@ -19972,6 +19989,8 @@ class PaintOps {
   }
   s;
   frames;
+  /** Paint limit of the current stroke (`imageArea.ts`), set at its start. */
+  limit = { x: 0, y: 0, width: 0, height: 0 };
   // ── Quick Mask / paint target ───────────────────────────────────────────
   /**
    * Switch the paint target. Targeting the mask adds a default mask layer to
@@ -20007,20 +20026,24 @@ class PaintOps {
    * Start a stroke on the paint target (mask strokes paint white coverage).
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, document px.
-   * @returns `false` if painting is not possible (loading, locked, hidden).
+   * @returns `false` if painting is not possible (loading, locked, hidden, or
+   *   the image area lies outside the draw area).
    */
   beginStroke(style, maxDiameter) {
     const s = this.s;
     if (s.loading || s.stroke.active) return false;
     const layer = s.target === "mask" ? s.ensureMask() : targetLayer(s.doc, "paint");
     if (!layer) return false;
+    const limit = paintLimit(s);
+    if (isEmptyRect(limit)) return false;
     if (preparePixelEdit(s, layer, style.shape ? "other" : "paint") !== "proceed") return false;
     const onMask = targetedMaskLayer(s)?.id === layer.id;
     const strokeStyle = onMask ? maskStrokeStyle(style, s.layerMasks.fgWhite) : layer.kind === "mask" ? { ...style, color: MASK_STROKE_COLOR } : style;
     const surfaceId = onMask ? layerMaskKey(layer.id) : layer.id;
+    this.limit = limit;
     s.strokeLayerId = surfaceId;
     s.strokeDiameter = Math.max(1, maxDiameter);
-    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter);
+    s.stroke.begin(s.store.ensure(surfaceId), s.store.bounds, strokeStyle, s.strokeDiameter, limit);
     s.events.emit("history", void 0);
     return true;
   }
@@ -20085,15 +20108,17 @@ class PaintOps {
     s.afterEdit();
   }
   /**
-   * Grow bounds for a stroke's need rect, limited to where the selection can
-   * let paint through: a normal selection's bbox; an inverted one
-   * (`outside` > 0) covers everything outside its rect, so no limit.
+   * Grow bounds for a stroke's need rect, limited to the stroke's paint limit
+   * (image area inside the draw area) and to where the selection can let
+   * paint through: a normal selection's bbox; an inverted one (`outside` > 0)
+   * covers everything outside its rect, so no extra limit.
    */
   growFor(need) {
     const s = this.s;
     const sel = s.selection.current;
-    const area = sel && !sel.outside ? intersectRect(need, sel.rect) : need;
-    if (!isEmptyRect(area)) s.ensureBounds(area, true);
+    const allowed = intersectRect(need, this.limit);
+    const area = sel && !sel.outside ? intersectRect(allowed, sel.rect) : allowed;
+    if (!isEmptyRect(area)) s.ensureBounds(area, true, this.limit);
   }
   // ── Undo / redo ─────────────────────────────────────────────────────────
   /** Undo the last operation (no-op while stroking; cancels a Move drag preview). */
@@ -21919,34 +21944,34 @@ class PixelOps {
     const onMask = targetedMaskLayer(s)?.id === layer.id;
     const px = Math.floor(req.point.x);
     const py = Math.floor(req.point.y);
-    const image = this.imageRectInDoc();
-    if (!inside(image, px, py) && !inside(s.store.bounds, px, py)) return false;
-    s.ensureBounds(image, true);
-    const bounds = s.store.bounds;
-    if (!inside(bounds, px, py)) return false;
+    const limit = paintLimit(s);
+    if (!inside(limit, px, py)) return false;
+    s.ensureBounds(limit, true, limit);
+    const area = intersectRect(limit, s.store.bounds);
+    if (!inside(area, px, py)) return false;
     const target = sampleTarget(req.sample, layer, this.viewedMask());
-    const source = this.sampleArea(bounds, target);
+    const source = this.sampleArea(area, target);
     if (!source) return false;
-    const own = !req.antiAlias || onMask ? void 0 : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
-    const { coverage, bbox, under } = floodFill(source, bounds.width, bounds.height, {
-      x: px - bounds.x,
-      y: py - bounds.y,
+    const own = !req.antiAlias || onMask ? void 0 : target.kind === "layer" ? source : this.sampleArea(area, { kind: "layer", layer });
+    const { coverage, bbox, under } = floodFill(source, area.width, area.height, {
+      x: px - area.x,
+      y: py - area.y,
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
       // Confined to (and scaled by) the selection.
-      clip: s.selection.coverage(bounds),
+      clip: s.selection.coverage(area),
       under: own ?? void 0
     });
     if (isEmptyRect(bbox)) return false;
-    const docRect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
-    if (onMask) return this.fillMask(layer, docRect, bbox, coverage, bounds.width, req.opacity);
+    const docRect = { x: area.x + bbox.x, y: area.y + bbox.y, width: bbox.width, height: bbox.height };
+    if (onMask) return this.fillMask(layer, docRect, bbox, coverage, area.width, req.opacity);
     const before = s.store.read(layer.id, docRect);
     if (!before) return false;
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     const color = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
-    blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
-    if (under) blendCoverageBehind(next.data, bbox, under, bounds.width, color, req.opacity);
+    blendCoverage(next.data, bbox, coverage, area.width, color, req.opacity);
+    if (under) blendCoverageBehind(next.data, bbox, under, area.width, color, req.opacity);
     s.store.write(layer.id, docRect.x, docRect.y, next);
     const after = s.store.read(layer.id, docRect);
     if (!after || sameBytes$1(before.data.data, after.data.data)) return false;
@@ -22114,10 +22139,7 @@ class PixelOps {
   }
   /** The current image's rect in document coords (rounded out). */
   imageRectInDoc() {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
+    return imageAreaInDoc(this.s);
   }
   /** The layer whose mask the lmask-only view shows (it is then the targeted mask), or `null`. */
   viewedMask() {
@@ -22432,7 +22454,7 @@ class SelectionOps {
       return paintMaskArea(this.s, layer, 1, true, slot === "fg" ? fgWhite : !fgWhite);
     }
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1), true);
   }
   /**
    * "Selection to mask": with a layer mask targeted, hide the selection
@@ -22449,7 +22471,7 @@ class SelectionOps {
     const layer = s.ensureMask();
     if (!this.canEdit(layer)) return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1));
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1), true);
   }
   // ── Internals ───────────────────────────────────────────────────────────
   change(next) {
@@ -22493,14 +22515,21 @@ class SelectionOps {
   /**
    * Run a coverage pixel op over the selection extent of a layer and record
    * one patch. Bounds first grow (chunked, capped) to cover a normal
-   * selection; an inverted one covers the whole bounds.
+   * selection; an inverted one covers the whole bounds. `paints` (fills):
+   * only the image area inside the draw area (`imageArea.ts`), and growth
+   * stops there; clearing reaches everything selected.
    */
-  editPixels(layer, op) {
+  editPixels(layer, op, paints = false) {
     const s = this.s;
     const sel = s.selection.current;
     if (!sel) return false;
-    if (!sel.outside) s.ensureBounds(sel.rect, true);
-    const area = selectionExtent(sel, s.store.bounds);
+    const limit = paints ? paintLimit(s) : null;
+    if (!sel.outside) {
+      if (limit) s.ensureBounds(intersectRect(sel.rect, limit), true, limit);
+      else s.ensureBounds(sel.rect, true);
+    }
+    const extent = selectionExtent(sel, s.store.bounds);
+    const area = limit ? intersectRect(extent, limit) : extent;
     if (isEmptyRect(area)) return false;
     const before = s.store.read(layer.id, area);
     if (!before) return false;
@@ -22518,17 +22547,9 @@ class SelectionOps {
     s.afterEdit();
     return true;
   }
-  /**
-   * The current image rect `{0,0,W,H}` converted to document coords (rounded
-   * out to integer pixels). Mirrors `pixelOps.imageRectInDoc` -- the single
-   * authoritative way to find "where the image is" in doc coords. Uses
-   * {@link documentMap} so it includes the Move-tool placement.
-   */
+  /** The image area in document coords (`imageArea.ts`). */
   imageRectInDoc() {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, frameRect(size)));
+    return imageAreaInDoc(this.s);
   }
 }
 function missingFontNote(font) {
@@ -26288,7 +26309,7 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const barsCss = '/*\n * Shared primitives of the floating UI (design handoff): the bar pill, the\n * 32 px bar button, dividers, the corner caret, menus, the light "commit"\n * button and the segmented control. Component files (dock, strip, bottom\n * bar, panel) build on these. Tokens live on .cps-root (editor.css).\n */\n\n/* ── Pills (bars) ──────────────────────────────────────────────────────── */\n\n.cps-pill {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 4px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  white-space: nowrap;\n}\n\n/* Vertical divider inside a pill / bar. */\n.cps-vdiv {\n  flex: none;\n  width: 1px;\n  height: 20px;\n  margin: 0 3px;\n  background: var(--cps-line-2);\n}\n\n.cps-vdiv.cps-vdiv-short {\n  height: 16px;\n}\n\n/* ── Buttons ───────────────────────────────────────────────────────────── */\n\n.cps-bar-button,\n.cps-icon-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  padding: 0;\n  border: 0;\n  border-radius: var(--cps-r-btn);\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bar-button {\n  width: var(--cps-bar-btn);\n  height: var(--cps-bar-btn);\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n  border-radius: 6px;\n}\n\n.cps-bar-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bar-button.cps-active,\n.cps-icon-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* Hovering a selected button keeps (slightly deepens) its accent; the plain\n   hover rule above is more specific and would otherwise replace it. */\n.cps-bar-button.cps-active:hover:not(:disabled),\n.cps-icon-button.cps-active:hover:not(:disabled) {\n  background: var(--cps-acc-35);\n}\n\n.cps-bar-button:disabled,\n.cps-icon-button:disabled {\n  color: var(--cps-fg-disabled);\n  cursor: default;\n}\n\n/* Modal states (transform, region mode, align) dim the whole group. */\n.cps-dimmed > .cps-bar-button,\n.cps-dimmed > .cps-bar-button.cps-active {\n  background: transparent;\n  color: var(--cps-fg-disabled);\n}\n\n/* Light "commit" button (Commit, Done, Match resolution). */\n.cps-light-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 10px;\n  border: 0;\n  border-radius: 6px;\n  background: var(--cps-light-btn-bg);\n  color: var(--cps-light-btn-fg);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-light-button:hover {\n  background: var(--cps-fg-strong);\n}\n\n/* Text button in a bar (Apply, Cancel, Done). */\n.cps-text-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 5px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-text-button:hover {\n  background: var(--cps-hover);\n}\n\n.cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Corner caret (button has a menu) ──────────────────────────────────── */\n\n.cps-corner {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 12px;\n  height: 12px;\n  display: flex;\n  align-items: flex-end;\n  justify-content: flex-end;\n  padding: 3px;\n  cursor: pointer;\n}\n\n.cps-corner-mark {\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid var(--cps-fg-muted);\n  pointer-events: none;\n}\n\n/* ── Menus (ui/menu.ts) ────────────────────────────────────────────────── */\n\n.cps-popover.cps-pop-menu {\n  padding: 5px;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-menu-bg);\n  box-shadow: var(--cps-shadow-menu);\n}\n\n.cps-menu {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 170px;\n  font-size: 12.5px;\n  color: var(--cps-fg);\n}\n\n.cps-menu-title {\n  padding: 6px 8px 4px;\n  font-size: 11px;\n  letter-spacing: 0.04em;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n}\n\n.cps-menu-divider {\n  height: 1px;\n  margin: 4px 6px;\n  background: var(--cps-line-1);\n}\n\n.cps-menu-footer {\n  padding: 5px 8px 4px;\n  border-top: 1px solid var(--cps-line-1);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 9px;\n  padding: 6px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-menu-item:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-menu-item.cps-current {\n  background: var(--cps-acc-20);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-80);\n}\n\n.cps-menu-item:disabled {\n  cursor: default;\n}\n\n.cps-menu-label {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-menu-icon,\n.cps-menu-check {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-value);\n}\n\n.cps-menu-swatch {\n  flex: none;\n  width: 16px;\n  height: 16px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-menu-key {\n  flex: none;\n  font-family: var(--cps-mono);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Segmented control ─────────────────────────────────────────────────── */\n\n.cps-segmented {\n  display: flex;\n  gap: 2px;\n  padding: 2px;\n  border-radius: var(--cps-r-seg);\n  background: var(--cps-field-bg);\n}\n\n.cps-segmented > button {\n  flex: 1 1 0;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 5px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: center;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-segmented > button:hover {\n  color: var(--cps-fg);\n}\n\n.cps-segmented > button.cps-active {\n  background: var(--cps-chip-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Generic dim ───────────────────────────────────────────────────────── */\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Mono value text (resolution, strip values, slot numbers). */\n.cps-mono {\n  font-family: var(--cps-mono);\n  font-variant-numeric: tabular-nums;\n}\n';
-const bottomBarCss = "/*\n * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button\n * (quickMaskButton.ts), lmask options, status pill, the resolution notice\n * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design\n * handoff sections 6 and 9. Builds on bars.css primitives; tokens on\n * .cps-root (editor.css).\n */\n\n/* ── Bars ──────────────────────────────────────────────────────────────── */\n\n/* The two pills: left group left, right group right. */\n.cps-bottom-bars {\n  display: flex;\n  align-items: flex-end;\n  justify-content: space-between;\n  gap: 8px;\n}\n\n.cps-bottom-bar {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-bb-lmask {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n/* 30 x 26 icon button. */\n.cps-bb-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  width: 30px;\n  height: 26px;\n  padding: 0;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bb-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bb-button.cps-bb-muted {\n  color: var(--cps-fg-muted);\n}\n\n.cps-bb-button.cps-bb-muted:hover {\n  color: var(--cps-fg);\n}\n\n.cps-bottom-bar .cps-text-button {\n  color: inherit;\n}\n\n.cps-bb-text-icon,\n.cps-bb-align-icon {\n  display: flex;\n}\n\n.cps-bottom-bar .cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Status pill ───────────────────────────────────────────────────────── */\n\n.cps-bb-pill {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  flex: none;\n  margin-right: 2px;\n  padding: 4px 6px 4px 9px;\n  border: 0;\n  border-radius: 999px;\n  background: var(--cps-acc-30);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-bb-pill:hover {\n  background: var(--cps-acc-45);\n}\n\n.cps-bb-pill-close {\n  display: flex;\n}\n\n/* ── Edit chip ─────────────────────────────────────────────────────────── */\n\n.cps-chip {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  min-width: 0;\n  padding: 4px 6px 4px 5px;\n  border: 0;\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-chip:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-chip:disabled {\n  cursor: default;\n  opacity: 0.6;\n}\n\n.cps-chip-swatch {\n  flex: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 4px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-chip-swatch.cps-ring2 {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-chip-name {\n  max-width: 160px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-chip-part {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-chip-part:empty {\n  display: none;\n}\n\n.cps-chip-chevron {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Quick Mask button ─────────────────────────────────────────────────── */\n\n.cps-qm-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  flex: none;\n  padding: 5px 14px 5px 9px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-qm-button:hover {\n  background: var(--cps-hover-strong);\n}\n\n.cps-qm-icon {\n  display: flex;\n}\n\n.cps-qm-button.cps-on {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);\n  color: var(--cps-fg-strong);\n}\n\n.cps-qm-button.cps-on:hover {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);\n}\n\n.cps-qm-button.cps-on .cps-qm-icon {\n  color: var(--cps-qm-color, #ff4d4d);\n}\n\n/* ── Align / resolution ────────────────────────────────────────────────── */\n\n.cps-bottom-bar .cps-bb-align {\n  padding: 5px 9px;\n}\n\n.cps-bottom-bar .cps-bb-align:hover {\n  filter: brightness(1.2);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn {\n  background: var(--cps-warn-bg-2);\n  color: var(--cps-warn-fg);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {\n  color: var(--cps-warn-icon);\n}\n\n/* Active wins over the amber warning. */\n.cps-bottom-bar .cps-bb-align.cps-active {\n  background: var(--cps-align-bg);\n  color: var(--cps-align-fg);\n}\n\n.cps-bb-resolution {\n  padding: 5px 9px;\n  font-size: 11.5px;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-bb-resolution:empty {\n  display: none;\n}\n\n/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */\n\n.cps-notice-pill {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding: 6px 6px 6px 12px;\n  border: 1px solid var(--cps-warn-border);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-warn-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-warn-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-notice-icon {\n  display: flex;\n  color: var(--cps-warn-icon);\n}\n\n.cps-notice-pill .cps-notice-match {\n  background: var(--cps-warn-fg);\n  color: #2a2010;\n}\n\n.cps-notice-pill .cps-notice-match:hover {\n  background: #fff;\n}\n\n.cps-notice-pill .cps-notice-hide {\n  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);\n}\n\n.cps-notice-pill .cps-notice-hide:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-warn-fg);\n}\n\n/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */\n\n.cps-help-backdrop {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: inherit;\n  background: rgba(0, 0, 0, 0.6);\n}\n\n/* Wide card; only the section area scrolls (vertically), never sideways. */\n.cps-help-card {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  box-sizing: border-box;\n  width: calc(100% - 2 * var(--cps-edge));\n  max-width: 1120px;\n  max-height: calc(100% - 2 * var(--cps-edge));\n  padding: 12px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-2);\n  border-radius: 12px;\n  background: var(--cps-panel-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n  cursor: default;\n}\n\n.cps-help-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n}\n\n.cps-help-title {\n  font-size: 13px;\n  font-weight: 600;\n}\n\n.cps-help-close {\n  color: var(--cps-fg-muted);\n}\n\n.cps-help-close:hover {\n  color: var(--cps-fg);\n}\n\n/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so\n   wide editors show everything without scrolling and cards never get a ragged\n   grid gap. */\n.cps-help-grid {\n  columns: 360px;\n  column-gap: 8px;\n}\n\n/* The one scroller under the header: Essentials band + section columns. */\n.cps-help-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n/* Essentials: accent-tinted band across the full width, items in a grid. */\n.cps-help-quick {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border: 1px solid var(--cps-acc-35);\n  border-radius: 8px;\n  background: var(--cps-acc-09);\n}\n\n.cps-help-quick-items {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));\n  gap: 4px 12px;\n  padding: 0 4px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n.cps-help-quick-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 3px 0;\n}\n\n.cps-help-quick-item .cps-help-keys {\n  flex: none;\n}\n\n.cps-help-section {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  break-inside: avoid;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border-radius: 8px;\n  background: var(--cps-card-bg);\n}\n\n/* Accent title over a rule, so each card's start stands out. */\n.cps-help-section-title {\n  margin: 0 4px 2px;\n  padding-bottom: 6px;\n  border-bottom: 1px solid var(--cps-line-2);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--cps-accent);\n}\n\n.cps-help-rows {\n  display: grid;\n  /* Keys take what they need up to half the card, then wrap; the action\n     always keeps at least half. Rows share these columns (subgrid). */\n  grid-template-columns: fit-content(50%) minmax(0, 1fr);\n  column-gap: 12px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n/* One row = one band (zebra + hover), so the eye can follow it across. */\n.cps-help-row {\n  display: grid;\n  grid-column: 1 / -1;\n  grid-template-columns: subgrid;\n  align-items: center;\n  padding: 4px 6px;\n  border-radius: 5px;\n}\n\n.cps-help-row:nth-child(even) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);\n}\n\n.cps-help-row:hover {\n  background: var(--cps-acc-18);\n}\n\n.cps-help-keys {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 3px 4px;\n}\n\n/* A key chip: one key or key combination. */\n.cps-help-kbd {\n  padding: 1px 6px;\n  border: 1px solid var(--cps-line-2);\n  border-bottom-color: rgba(0, 0, 0, 0.45);\n  border-radius: 4px;\n  background: var(--cps-field-bg);\n  font-family: var(--cps-mono);\n  font-size: 10.5px;\n  line-height: 1.5;\n  color: var(--cps-fg);\n  white-space: nowrap;\n}\n\n.cps-help-or {\n  font-size: 10.5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-help-action {\n  min-width: 0;\n  color: var(--cps-fg-value);\n}\n";
+const bottomBarCss = "/*\n * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button\n * (quickMaskButton.ts), lmask options, status pill, the resolution notice\n * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design\n * handoff sections 6 and 9. Builds on bars.css primitives; tokens on\n * .cps-root (editor.css).\n */\n\n/* ── Bars ──────────────────────────────────────────────────────────────── */\n\n/* The two pills: left group left, right group right. */\n.cps-bottom-bars {\n  display: flex;\n  align-items: flex-end;\n  justify-content: space-between;\n  gap: 8px;\n}\n\n/* The gap between the pills belongs to the stage (paint, cursor); only the pills catch the pointer. */\n.cps-slot > .cps-bottom-bars {\n  pointer-events: none;\n}\n\n.cps-bottom-bars > * {\n  pointer-events: auto;\n}\n\n.cps-bottom-bar {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-bb-lmask {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n/* 30 x 26 icon button. */\n.cps-bb-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  width: 30px;\n  height: 26px;\n  padding: 0;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bb-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bb-button.cps-bb-muted {\n  color: var(--cps-fg-muted);\n}\n\n.cps-bb-button.cps-bb-muted:hover {\n  color: var(--cps-fg);\n}\n\n.cps-bottom-bar .cps-text-button {\n  color: inherit;\n}\n\n.cps-bb-text-icon,\n.cps-bb-align-icon {\n  display: flex;\n}\n\n.cps-bottom-bar .cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Status pill ───────────────────────────────────────────────────────── */\n\n.cps-bb-pill {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  flex: none;\n  margin-right: 2px;\n  padding: 4px 6px 4px 9px;\n  border: 0;\n  border-radius: 999px;\n  background: var(--cps-acc-30);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-bb-pill:hover {\n  background: var(--cps-acc-45);\n}\n\n.cps-bb-pill-close {\n  display: flex;\n}\n\n/* ── Edit chip ─────────────────────────────────────────────────────────── */\n\n.cps-chip {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  min-width: 0;\n  padding: 4px 6px 4px 5px;\n  border: 0;\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-chip:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-chip:disabled {\n  cursor: default;\n  opacity: 0.6;\n}\n\n.cps-chip-swatch {\n  flex: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 4px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-chip-swatch.cps-ring2 {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-chip-name {\n  max-width: 160px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-chip-part {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-chip-part:empty {\n  display: none;\n}\n\n.cps-chip-chevron {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Quick Mask button ─────────────────────────────────────────────────── */\n\n.cps-qm-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  flex: none;\n  padding: 5px 14px 5px 9px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-qm-button:hover {\n  background: var(--cps-hover-strong);\n}\n\n.cps-qm-icon {\n  display: flex;\n}\n\n.cps-qm-button.cps-on {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);\n  color: var(--cps-fg-strong);\n}\n\n.cps-qm-button.cps-on:hover {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);\n}\n\n.cps-qm-button.cps-on .cps-qm-icon {\n  color: var(--cps-qm-color, #ff4d4d);\n}\n\n/* ── Align / resolution ────────────────────────────────────────────────── */\n\n.cps-bottom-bar .cps-bb-align {\n  padding: 5px 9px;\n}\n\n.cps-bottom-bar .cps-bb-align:hover {\n  filter: brightness(1.2);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn {\n  background: var(--cps-warn-bg-2);\n  color: var(--cps-warn-fg);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {\n  color: var(--cps-warn-icon);\n}\n\n/* Active wins over the amber warning. */\n.cps-bottom-bar .cps-bb-align.cps-active {\n  background: var(--cps-align-bg);\n  color: var(--cps-align-fg);\n}\n\n.cps-bb-resolution {\n  padding: 5px 9px;\n  font-size: 11.5px;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-bb-resolution:empty {\n  display: none;\n}\n\n/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */\n\n.cps-notice-pill {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding: 6px 6px 6px 12px;\n  border: 1px solid var(--cps-warn-border);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-warn-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-warn-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-notice-icon {\n  display: flex;\n  color: var(--cps-warn-icon);\n}\n\n.cps-notice-pill .cps-notice-match {\n  background: var(--cps-warn-fg);\n  color: #2a2010;\n}\n\n.cps-notice-pill .cps-notice-match:hover {\n  background: #fff;\n}\n\n.cps-notice-pill .cps-notice-hide {\n  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);\n}\n\n.cps-notice-pill .cps-notice-hide:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-warn-fg);\n}\n\n/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */\n\n.cps-help-backdrop {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: inherit;\n  background: rgba(0, 0, 0, 0.6);\n}\n\n/* Wide card; only the section area scrolls (vertically), never sideways. */\n.cps-help-card {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  box-sizing: border-box;\n  width: calc(100% - 2 * var(--cps-edge));\n  max-width: 1120px;\n  max-height: calc(100% - 2 * var(--cps-edge));\n  padding: 12px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-2);\n  border-radius: 12px;\n  background: var(--cps-panel-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n  cursor: default;\n}\n\n.cps-help-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n}\n\n.cps-help-title {\n  font-size: 13px;\n  font-weight: 600;\n}\n\n.cps-help-close {\n  color: var(--cps-fg-muted);\n}\n\n.cps-help-close:hover {\n  color: var(--cps-fg);\n}\n\n/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so\n   wide editors show everything without scrolling and cards never get a ragged\n   grid gap. */\n.cps-help-grid {\n  columns: 360px;\n  column-gap: 8px;\n}\n\n/* The one scroller under the header: Essentials band + section columns. */\n.cps-help-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n/* Essentials: accent-tinted band across the full width, items in a grid. */\n.cps-help-quick {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border: 1px solid var(--cps-acc-35);\n  border-radius: 8px;\n  background: var(--cps-acc-09);\n}\n\n.cps-help-quick-items {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));\n  gap: 4px 12px;\n  padding: 0 4px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n.cps-help-quick-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 3px 0;\n}\n\n.cps-help-quick-item .cps-help-keys {\n  flex: none;\n}\n\n.cps-help-section {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  break-inside: avoid;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border-radius: 8px;\n  background: var(--cps-card-bg);\n}\n\n/* Accent title over a rule, so each card's start stands out. */\n.cps-help-section-title {\n  margin: 0 4px 2px;\n  padding-bottom: 6px;\n  border-bottom: 1px solid var(--cps-line-2);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--cps-accent);\n}\n\n.cps-help-rows {\n  display: grid;\n  /* Keys take what they need up to half the card, then wrap; the action\n     always keeps at least half. Rows share these columns (subgrid). */\n  grid-template-columns: fit-content(50%) minmax(0, 1fr);\n  column-gap: 12px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n/* One row = one band (zebra + hover), so the eye can follow it across. */\n.cps-help-row {\n  display: grid;\n  grid-column: 1 / -1;\n  grid-template-columns: subgrid;\n  align-items: center;\n  padding: 4px 6px;\n  border-radius: 5px;\n}\n\n.cps-help-row:nth-child(even) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);\n}\n\n.cps-help-row:hover {\n  background: var(--cps-acc-18);\n}\n\n.cps-help-keys {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 3px 4px;\n}\n\n/* A key chip: one key or key combination. */\n.cps-help-kbd {\n  padding: 1px 6px;\n  border: 1px solid var(--cps-line-2);\n  border-bottom-color: rgba(0, 0, 0, 0.45);\n  border-radius: 4px;\n  background: var(--cps-field-bg);\n  font-family: var(--cps-mono);\n  font-size: 10.5px;\n  line-height: 1.5;\n  color: var(--cps-fg);\n  white-space: nowrap;\n}\n\n.cps-help-or {\n  font-size: 10.5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-help-action {\n  min-width: 0;\n  color: var(--cps-fg-value);\n}\n";
 const colorPickerCss = `/*
  * PainterSketch colour picker popover (SPEC "Colour"; ui/colorPicker.ts,
  * colorWheel.ts, colorFields.ts). Scoped under .cps-* to avoid collisions

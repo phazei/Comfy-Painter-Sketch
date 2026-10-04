@@ -59,10 +59,12 @@ export function boundsCap(frame: Size, limits: GrowthLimits = DEFAULT_GROWTH): R
  * @param need - Area that should be paintable (any rect, fractional ok).
  * @param frame - Frame size (defines the cap).
  * @param limits - Growth limits.
+ * @param within - Tighter limit inside the cap (painting: the image area,
+ *   `imageArea.ts`); chunks stop at it.
  * @returns New bounds (equal to `bounds` when no growth is needed/possible).
  */
-export function growBounds(bounds: Rect, need: Rect, frame: Size, limits: GrowthLimits = DEFAULT_GROWTH): Rect {
-  const cap = boundsCap(frame, limits);
+export function growBounds(bounds: Rect, need: Rect, frame: Size, limits: GrowthLimits = DEFAULT_GROWTH, within?: Rect): Rect {
+  const cap = within ? intersectRect(boundsCap(frame, limits), within) : boundsCap(frame, limits);
   const target = intersectRect(roundOutRect(need), cap);
   if (target.width <= 0 || target.height <= 0 || containsRect(bounds, target)) return { ...bounds };
 

@@ -178,11 +178,12 @@ export class EditorState {
    * the old bounds would be restored at the wrong origin.
    * @param need - Document rect that must be covered.
    * @param chunked - Stroke growth (256 px chunks, capped).
+   * @param within - Chunked growth stops here too (painting: `paintLimit`).
    */
-  ensureBounds(need: Rect, chunked: boolean): void {
+  ensureBounds(need: Rect, chunked: boolean, within?: Rect): void {
     const current = this.store.bounds;
     if (containsRect(current, need)) return;
-    const next = chunked ? growBounds(current, need, this.doc.frame) : unionRect(current, need);
+    const next = chunked ? growBounds(current, need, this.doc.frame, undefined, within) : unionRect(current, need);
     if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
       this.store.rebase(next);
       this.stroke.rebase(next);

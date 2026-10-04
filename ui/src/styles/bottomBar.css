@@ -16,6 +16,15 @@
   gap: 8px;
 }
 
+/* The gap between the pills belongs to the stage (paint, cursor); only the pills catch the pointer. */
+.cps-slot > .cps-bottom-bars {
+  pointer-events: none;
+}
+
+.cps-bottom-bars > * {
+  pointer-events: auto;
+}
+
 .cps-bottom-bar {
   display: flex;
   align-items: center;

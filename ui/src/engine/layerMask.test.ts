@@ -347,7 +347,8 @@ describe("bounds growth", () => {
       const { ed, id } = setup();
       ed.layerMask.add(id, fill);
       ed.layerMask.setTarget(id, "layer");
-      stroke(ed, BRUSH, [[-8, 8]]);
+      // Growth as from a move / paste (strokes stay inside the image area).
+      (ed as unknown as { s: { ensureBounds: (r: { x: number; y: number; width: number; height: number }, c: boolean) => void } }).s.ensureBounds({ x: -8, y: 8, width: 1, height: 1 }, true);
       expect(ed.bounds.x).toBeLessThan(0);
       expect(maskA(ed, id, -8, 8)).toBe(fill === "hide" ? 255 : 0);
       expect(maskA(ed, id, 8, 8)).toBe(fill === "hide" ? 255 : 0);

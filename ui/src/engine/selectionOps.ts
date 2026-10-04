@@ -23,12 +23,12 @@
 import { IMAGE_MASK_ID } from "../document/imageMask";
 import { targetLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
+import { intersectRect, isEmptyRect, unionRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
 import { boundsCap } from "./bounds";
 import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
-import { documentMap, imageRectToDoc } from "./frameMap";
+import { imageAreaInDoc, paintLimit } from "./imageArea";
 import { imageMaskSelection } from "./imageMaskOps";
 import { targetedMaskLayer } from "./layerMask";
 import { paintMaskArea } from "./layerMaskOps";
@@ -215,7 +215,7 @@ export class SelectionOps {
       return paintMaskArea(this.s, layer, 1, true, slot === "fg" ? fgWhite : !fgWhite);
     }
     const rgb = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : color);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1));
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, rgb, 1), true);
   }
 
   /**
@@ -233,7 +233,7 @@ export class SelectionOps {
     const layer = s.ensureMask();
     if (!this.canEdit(layer)) return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
-    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1));
+    return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1), true);
   }
 
   // ── Internals ───────────────────────────────────────────────────────────
@@ -284,17 +284,25 @@ export class SelectionOps {
   /**
    * Run a coverage pixel op over the selection extent of a layer and record
    * one patch. Bounds first grow (chunked, capped) to cover a normal
-   * selection; an inverted one covers the whole bounds.
+   * selection; an inverted one covers the whole bounds. `paints` (fills):
+   * only the image area inside the draw area (`imageArea.ts`), and growth
+   * stops there; clearing reaches everything selected.
    */
   private editPixels(
     layer: Layer,
     op: (px: Uint8ClampedArray, rect: Rect, coverage: Uint8Array, stride: number) => void,
+    paints = false,
   ): boolean {
     const s = this.s;
     const sel = s.selection.current;
     if (!sel) return false;
-    if (!sel.outside) s.ensureBounds(sel.rect, true);
-    const area = selectionExtent(sel, s.store.bounds);
+    const limit = paints ? paintLimit(s) : null;
+    if (!sel.outside) {
+      if (limit) s.ensureBounds(intersectRect(sel.rect, limit), true, limit);
+      else s.ensureBounds(sel.rect, true);
+    }
+    const extent = selectionExtent(sel, s.store.bounds);
+    const area = limit ? intersectRect(extent, limit) : extent;
     if (isEmptyRect(area)) return false;
     const before = s.store.read(layer.id, area);
     if (!before) return false;
@@ -314,16 +322,8 @@ export class SelectionOps {
     return true;
   }
 
-  /**
-   * The current image rect `{0,0,W,H}` converted to document coords (rounded
-   * out to integer pixels). Mirrors `pixelOps.imageRectInDoc` -- the single
-   * authoritative way to find "where the image is" in doc coords. Uses
-   * {@link documentMap} so it includes the Move-tool placement.
-   */
+  /** The image area in document coords (`imageArea.ts`). */
   private imageRectInDoc(): Rect {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, frameRect(size)));
+    return imageAreaInDoc(this.s);
   }
 }

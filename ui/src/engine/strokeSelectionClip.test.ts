@@ -1,6 +1,7 @@
 /**
- * Strokes under a selection: bounds grow only where the selection can let
- * paint through, and a stroke that changes no pixel is no undo step and
+ * Strokes under a selection and at the image edge: paint lands only on the
+ * image area (and where the selection lets it through), the layers never
+ * grow from strokes, and a stroke that changes no pixel is no undo step and
  * leaves the layer clean. The test environment has no canvas: a minimal fake
  * stores RGBA bytes (drawImage copies 1:1), `ImageData` is polyfilled.
  */
@@ -135,21 +136,34 @@ describe("strokes clipped by a selection", () => {
     expect(ed.dirty).toBe(false);
   });
 
-  it("partly inside: growth limited to the selection extent", () => {
+  it("partly inside: painted, no growth past the image area", () => {
     const ed = setup(rectSelection({ x: 0, y: 0, width: 100, height: 64 }));
     const steps = depth(ed);
-    stroke(ed, [[90, 32], [600, 32], [-400, 32]]);
-    const b = ed.bounds;
-    expect(b.x).toBe(0);
-    expect(b.x + b.width).toBeGreaterThanOrEqual(100);
-    expect(b.x + b.width).toBeLessThan(600);
+    stroke(ed, [[50, 32], [600, 32], [-400, 32]]);
+    expect(ed.bounds).toEqual({ x: 0, y: 0, width: 64, height: 64 });
     expect(depth(ed)).toBe(steps + 1);
   });
 
-  it("inverted selection: everything outside its rect is paintable, so bounds grow there", () => {
-    const ed = setup(invertSelection(rectSelection({ x: 0, y: 0, width: 64, height: 64 })));
-    // (The 3x-frame cap limits growth to x = -64.)
+  it("inverted selection: paint outside its rect but inside the image lands; nothing grows", () => {
+    const ed = setup(invertSelection(rectSelection({ x: 0, y: 0, width: 32, height: 64 })));
+    const steps = depth(ed);
     stroke(ed, [[-40, 32]]);
-    expect(ed.bounds.x).toBeLessThanOrEqual(-45);
+    expect(depth(ed)).toBe(steps);
+    stroke(ed, [[48, 32]]);
+    expect(depth(ed)).toBe(steps + 1);
+    expect(ed.bounds).toEqual({ x: 0, y: 0, width: 64, height: 64 });
+  });
+});
+
+describe("strokes limited to the image area", () => {
+  it("a stroke off the image paints nothing there and never grows the layers", () => {
+    const ed = setup(null);
+    const steps = depth(ed);
+    stroke(ed, [[-100, 32], [-80, 32]]);
+    expect(depth(ed)).toBe(steps);
+    expect(ed.dirty).toBe(false);
+    stroke(ed, [[60, 32], [200, 32]]);
+    expect(ed.bounds).toEqual({ x: 0, y: 0, width: 64, height: 64 });
+    expect(depth(ed)).toBe(steps + 1);
   });
 });

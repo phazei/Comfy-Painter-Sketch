@@ -5,11 +5,11 @@
  * {@link Editor.pixelOps}.
  *
  * Fill: the target layer follows Quick Mask (on the mask the fill
- * writes white coverage, like mask strokes). The fill area is the layer
- * bounds, first grown (chunked, capped, like painting) to cover the visible
- * image in document coords -- so a click anywhere on the image works even
- * when its aspect differs from `doc.frame`. Clicks outside both the image
- * and the bounds do nothing. One dirty-rect undo patch covering
+ * writes white coverage, like mask strokes). The fill area is the image area
+ * inside the draw area (`imageArea.ts` `paintLimit`), the bounds first grown
+ * to cover it -- so a click anywhere on the image works even when its aspect
+ * differs from `doc.frame`. Clicks outside it do nothing, and nothing is
+ * filled outside it. One dirty-rect undo patch covering
  * the coverage bbox. With anti-alias the fill also goes behind the target
  * layer's own soft edges next to it (`fillUnder.ts`), so filling around a
  * stroke leaves no halo. On a targeted layer mask the flooded region
@@ -35,7 +35,7 @@ import { IMAGE_MASK_ID } from "../document/imageMask";
 import { layerMaskKey } from "../document/layerMask";
 import { targetLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import { isEmptyRect, rectEquals, roundOutRect, unionRect } from "../geometry/rect";
+import { intersectRect, isEmptyRect, rectEquals, unionRect } from "../geometry/rect";
 import type { Point, Rect } from "../geometry/rect";
 import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
 import type { DocCompositeInput, SceneSource } from "./docComposite";
@@ -45,10 +45,11 @@ import { hiddenNote, preparePixelEdit } from "./rasterize";
 import { unionMaskCoverage } from "./clipboardMath";
 import { floodFill } from "./floodFill";
 import { coverageInDoc } from "./imageMask";
+import { imageAreaInDoc, paintLimit } from "./imageArea";
 import { imageMaskApplies } from "./imageMaskOps";
 import { MASK_WHITE, targetedMaskLayer } from "./layerMask";
 import { shownOnStage } from "./solo";
-import { documentMap, imageRectToDoc } from "./frameMap";
+import { documentMap } from "./frameMap";
 import { averageColor, blendCoverage, blendCoverageBehind, hexToRgb, rgbToHex } from "./pixelColor";
 import { eraseCoverage } from "./selection";
 import type { Selection } from "./selection";
@@ -190,37 +191,39 @@ export class PixelOps {
     const onMask = targetedMaskLayer(s)?.id === layer.id;
     const px = Math.floor(req.point.x);
     const py = Math.floor(req.point.y);
-    const image = this.imageRectInDoc();
-    if (!inside(image, px, py) && !inside(s.store.bounds, px, py)) return false;
-    s.ensureBounds(image, true);
-    const bounds = s.store.bounds;
-    if (!inside(bounds, px, py)) return false;
+    // The fill covers the image area inside the draw area only (`imageArea.ts`):
+    // a click outside it does nothing, and the layers grow to it at most.
+    const limit = paintLimit(s);
+    if (!inside(limit, px, py)) return false;
+    s.ensureBounds(limit, true, limit);
+    const area = intersectRect(limit, s.store.bounds);
+    if (!inside(area, px, py)) return false;
 
     const target = sampleTarget(req.sample, layer, this.viewedMask());
-    const source = this.sampleArea(bounds, target);
+    const source = this.sampleArea(area, target);
     if (!source) return false;
     // The target layer's own pixels, so the fill can go behind its soft edges (anti-alias only; not on a mask).
-    const own = !req.antiAlias || onMask ? undefined : target.kind === "layer" ? source : this.sampleArea(bounds, { kind: "layer", layer });
-    const { coverage, bbox, under } = floodFill(source, bounds.width, bounds.height, {
-      x: px - bounds.x,
-      y: py - bounds.y,
+    const own = !req.antiAlias || onMask ? undefined : target.kind === "layer" ? source : this.sampleArea(area, { kind: "layer", layer });
+    const { coverage, bbox, under } = floodFill(source, area.width, area.height, {
+      x: px - area.x,
+      y: py - area.y,
       tolerance: req.tolerance,
       contiguous: req.contiguous,
       antiAlias: req.antiAlias,
       // Confined to (and scaled by) the selection.
-      clip: s.selection.coverage(bounds),
+      clip: s.selection.coverage(area),
       under: own ?? undefined,
     });
     if (isEmptyRect(bbox)) return false;
 
-    const docRect: Rect = { x: bounds.x + bbox.x, y: bounds.y + bbox.y, width: bbox.width, height: bbox.height };
-    if (onMask) return this.fillMask(layer, docRect, bbox, coverage, bounds.width, req.opacity);
+    const docRect: Rect = { x: area.x + bbox.x, y: area.y + bbox.y, width: bbox.width, height: bbox.height };
+    if (onMask) return this.fillMask(layer, docRect, bbox, coverage, area.width, req.opacity);
     const before = s.store.read(layer.id, docRect);
     if (!before) return false;
     const next = new ImageData(new Uint8ClampedArray(before.data.data), before.data.width, before.data.height);
     const color = hexToRgb(layer.kind === "mask" ? MASK_STROKE_COLOR : req.color);
-    blendCoverage(next.data, bbox, coverage, bounds.width, color, req.opacity);
-    if (under) blendCoverageBehind(next.data, bbox, under, bounds.width, color, req.opacity);
+    blendCoverage(next.data, bbox, coverage, area.width, color, req.opacity);
+    if (under) blendCoverageBehind(next.data, bbox, under, area.width, color, req.opacity);
     s.store.write(layer.id, docRect.x, docRect.y, next);
     // Re-read so the patch holds exactly what the canvas stores (premultiplied round trip).
     const after = s.store.read(layer.id, docRect);
@@ -402,10 +405,7 @@ export class PixelOps {
 
   /** The current image's rect in document coords (rounded out). */
   private imageRectInDoc(): Rect {
-    const s = this.s;
-    const map = documentMap(s.doc, s.imageSize);
-    const size = s.imageSize;
-    return roundOutRect(imageRectToDoc(map, { x: 0, y: 0, width: size.width, height: size.height }));
+    return imageAreaInDoc(this.s);
   }
 
   /** The layer whose mask the lmask-only view shows (it is then the targeted mask), or `null`. */

@@ -60,6 +60,8 @@ export class StrokeBuffer {
   private bounds: Rect = EMPTY;
   private style: StrokeStyle | null = null;
   private strokeRect: Rect = EMPTY;
+  /** Document rect the stroke may change (`null` = the bounds); see `imageArea.ts`. */
+  private limit: Rect | null = null;
   private pendingPreview: Rect = EMPTY;
   private refreshed: Rect = EMPTY;
   /** Selection clip (alpha = coverage, sized to the bounds) or `null` = unclipped. */
@@ -102,7 +104,13 @@ export class StrokeBuffer {
 
   /** Document rect touched by the current stroke (integer). */
   get touched(): Rect {
-    return intersectRect(roundOutRect(this.strokeRect), this.bounds);
+    return this.clamp(this.strokeRect);
+  }
+
+  /** Integer rect inside the bounds and the stroke's limit. */
+  private clamp(rect: Rect): Rect {
+    const r = intersectRect(roundOutRect(rect), this.bounds);
+    return this.limit ? intersectRect(r, this.limit) : r;
   }
 
   /**
@@ -112,10 +120,13 @@ export class StrokeBuffer {
    * @param style - Stroke appearance.
    * @param maxDiameter - Largest dab diameter this stroke can produce, px
    *   (sets the stamp profile's 1 px minimum fade).
+   * @param limit - Document rect the stroke may change (preview and commit
+   *   are cut to it; painting stays inside the image area). Default: the bounds.
    */
-  begin(layer: Surface, bounds: Rect, style: StrokeStyle, maxDiameter = 1): void {
+  begin(layer: Surface, bounds: Rect, style: StrokeStyle, maxDiameter = 1, limit?: Rect): void {
     this.ensureSize(bounds);
     this.style = style;
+    this.limit = limit ? { ...limit } : null;
     this.profile = stampProfile(style.hardness, Math.max(1, maxDiameter / 2));
     this.lastDab = null;
     this.strokeRect = EMPTY;
@@ -194,7 +205,7 @@ export class StrokeBuffer {
    */
   updatePreview(layer: Surface): Surface {
     const { buffer, preview } = this.surfaces();
-    const r = intersectRect(roundOutRect(this.pendingPreview), this.bounds);
+    const r = this.clamp(this.pendingPreview);
     this.pendingPreview = EMPTY;
     this.refreshed = r;
     this.flushMask();

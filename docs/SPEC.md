@@ -322,7 +322,16 @@ Files: `nodes/painter_sketch.py`, `composite.py`, `layers.py`,
   4096; never shrinks.
 - `bounds` starts as the frame and grows in 256 px chunks when edits reach
   outside, capped at the frame plus its short side on every side and 16384 per
-  axis. Existing larger bounds are kept.
+  axis (the *draw area*, inside the cobwebs). Existing larger bounds are kept.
+- **Painting stays on the image.** Brush, eraser, shapes, lines, the bucket
+  and selection fills (Alt/Ctrl+Backspace, selection to mask) change pixels
+  only on the *image area* (the background image's rect, what Ctrl+0 centres;
+  the `width x height` fill without an image) inside the draw area
+  (`engine/imageArea.ts` `paintLimit`). Paint past the image edge is not
+  drawn and never grows the layers; when the image area lies outside the draw
+  area nothing can be painted. Move, transforms, paste and text still grow
+  the bounds up to the cap (content placed or scaled there). Clearing a
+  selection (Delete) still reaches everything selected.
 - Layer pixel `(px, py)` sits at frame coordinate `(bounds.x + px, bounds.y + py)`.
 - Why: all editor conversions go through `documentMap(doc, imageSize)` /
   `editor.frameMap`. Never call `frameMap(doc.frame, ...)` directly or
@@ -1355,8 +1364,8 @@ Sizes in options are image px, converted at pointer-down. Modifier changes
 during a drag re-send the last sample with the new flags.
 
 **Selection clip**: brush, eraser, shapes and bucket are clipped to the
-selection coverage (soft coverage scales the result). Bounds growth is limited to
-a normal selection's bbox (an inverted selection: no limit).
+selection coverage (soft coverage scales the result), and all of them to the
+image area (see "Painting stays on the image").
 
 ### Brush (B) and Eraser (E)
 
@@ -1397,8 +1406,9 @@ a normal selection's bbox (an inverted selection: no limit).
 | Anti-alias | toggle | on |
 | Sample | Current layer / All layers / Background | setting `BucketSample`, `background` |
 
-- A click floods (section 14 for sampling and matching). The click must be
-  inside the image or the bounds; bounds first grow to cover the image area.
+- A click floods (section 14 for sampling and matching) over the image area
+  inside the draw area; a click outside it does nothing. Bounds first grow to
+  cover that area (never past it).
 - Clipped by the selection; one undo patch; no change = no step.
 - With anti-alias the fill also goes behind the target's own soft edges
   (`fillUnder.ts`; not on cmasks/lmasks), so filling around a stroke leaves no
@@ -1580,7 +1590,8 @@ the dirty rect. On pointer-up the buffer is composited at the stroke opacity
 (`source-over` / `destination-out`). The selection clip multiplies the buffer
 (`destination-in`) right before compositing, so soft coverage never compounds.
 The undo patch is the touched rect. Shapes reuse the buffer but replace its
-content each move. Bounds grow (chunked, capped) to cover dab reach + 2 px.
+content each move. Bounds grow (chunked) to cover dab reach + 2 px, never past
+the image area; preview and commit are cut to it (`StrokeBuffer` `limit`).
 
 **Cursor ring** (`ringDiameter`): `size x min(1, core + fade x 0.77)`. 0.77 is
 measured in PS at hardness 0 (80 px -> 60 px ring, 300 px -> 230 px; the tip is
@@ -1620,8 +1631,8 @@ the seed, compared premultiplied (nearly transparent pixels match transparent;
 two transparent pixels always match). Contiguous = 4-neighbour scanline fill;
 otherwise every matching pixel. Anti-alias adds a 1 px soft fringe outside the
 hard result (3x3 box). The seed is `floor(point)`; a seed outside the area gives
-nothing. Area: bucket = bounds grown to the image area; wand = image area union
-bounds (no growth).
+nothing. Area: bucket = the image area inside the draw area (bounds grown to
+it); wand = image area union bounds (no growth).
 
 **Magic wand (W)** options: Tol 32, Contiguous on, Anti-alias on, Sample
 (setting `WandSample`, `background`). The result combines with the selection by
