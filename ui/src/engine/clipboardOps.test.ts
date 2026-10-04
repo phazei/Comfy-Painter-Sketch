@@ -173,7 +173,7 @@ describe("paste placement", () => {
   });
 });
 
-describe("oversized paste (past the paint-area cap)", () => {
+describe("oversized paste (larger than the image area)", () => {
   // Frame 4 x 4: cap = 12 x 12 at (-4, -4).
   const setup = (): { ed: EditorClass; notes: string[]; count: number } => {
     const ed = new Editor(createEmptyDocument({ width: 4, height: 4 }), "widgets");
@@ -194,14 +194,22 @@ describe("oversized paste (past the paint-area cap)", () => {
     expect(notes).toEqual([]);
   });
 
-  it("starts Free Transform on the full image at native size, uncropped, with the note", () => {
+  it("larger than the image but inside the draw area: Free Transform too", () => {
+    const { ed, notes } = setup();
+    const result = paste(ed, 6, 3);
+    expect(result?.transform).toBe(true);
+    expect(ed.float.transform.active).toBe(true);
+    expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
+  });
+
+  it("starts Free Transform on the full image, fitted inside the image, with the note", () => {
     const { ed, notes, count } = setup();
     const result = paste(ed, 20, 4);
     expect(result?.transform).toBe(true);
     expect(result?.name).toMatch(/^Pasted/);
     expect(ed.doc.layers.length).toBe(count + 1);
     expect(ed.float.transform.active).toBe(true);
-    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 1, sy: 1, angle: 0 });
+    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 0.2, sy: 0.2, angle: 0 });
     expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
   });
 
@@ -211,7 +219,7 @@ describe("oversized paste (past the paint-area cap)", () => {
     const at = clampIntoArea({ x: 3 - 10, y: 1 - 2 }, size, imageAreaDoc(ed.imageSize, ed.frameMap));
     const result = ed.clipboard.paste(solid(20, 4) as unknown as CanvasImageSource, size, 1, { topLeft: at });
     expect(result?.transform).toBe(true);
-    expect(ed.float.transform.params).toEqual({ cx: at.x + 10, cy: at.y + 2, sx: 1, sy: 1, angle: 0 });
+    expect(ed.float.transform.params).toEqual({ cx: at.x + 10, cy: at.y + 2, sx: 0.2, sy: 0.2, angle: 0 });
     expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
     ed.float.cancel();
     expect(ed.canUndo).toBe(false);

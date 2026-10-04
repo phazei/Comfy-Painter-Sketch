@@ -186,8 +186,12 @@ describe("oversized paste into the lmask", () => {
     expect(notes).toEqual([PASTE_TRANSFORM_NOTE]);
     expect(ed.float.transform.active).toBe(true);
     expect(ed.float.layerId).toBe(layerMaskKey(id));
-    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 1, sy: 1, angle: 0 });
+    // Starts fitted inside the 4 x 4 image; back at native size it lands like before.
+    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 0.2, sy: 0.2, angle: 0 });
     expect(ed.doc.layers.length).toBe(count);
+    ed.float.transform.setField("w", 1);
+    ed.float.transform.setField("h", 1);
+    expect(ed.float.transform.params).toEqual({ cx: 2, cy: 2, sx: 1, sy: 1, angle: 0 });
     ed.float.transform.commit();
     expect(ed.float.active).toBe(false);
     expect([maskA(ed, id, -4, 0), maskA(ed, id, 7, 3), maskA(ed, id, 0, 3)]).toEqual([54, 54, 54]);

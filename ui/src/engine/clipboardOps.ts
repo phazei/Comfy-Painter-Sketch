@@ -42,10 +42,11 @@ import { isPaintLike, paintInsertIndex } from "../document/layerList";
 import { layerMaskKey } from "../document/layerMask";
 import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
-import { frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
+import { containsRect, frameRect, intersectRect, isEmptyRect, roundOutRect, unionRect } from "../geometry/rect";
+import { imageAreaInDoc } from "./imageArea";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { boundsCap } from "./bounds";
-import { applyCoverage, cropToCap, imageToMaskGray, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
+import { applyCoverage, cropToCap, fitRect, imageToMaskGray, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
 import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
 import { coverageInDoc } from "./imageMask";
 import { IMAGE_MASK_ID } from "../document/imageMask";
@@ -72,7 +73,7 @@ import { alphaBounds } from "./translateMath";
 export const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
 
 /** Note when a paste reaches past the paint area and starts in Free Transform. */
-export const PASTE_TRANSFORM_NOTE = "Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel.";
+export const PASTE_TRANSFORM_NOTE = "Paste is larger than the image -- placed in Free Transform. Scale or place it, then commit (Esc cancels).";
 
 /** Pixels on their way to a clipboard. */
 export interface ClipImage {
@@ -194,9 +195,16 @@ export class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    // Larger than the image area (placement clamps everything else inside it;
+    // paste in place may also reach out): Free Transform, so nothing lands
+    // outside the image, or is cropped, without a commit.
+    const image = imageAreaInDoc(s);
+    const oversized = cropped || !containsRect(image, full);
+    // It starts fitted inside the image (full resolution kept until the commit).
+    const start = oversized ? fitRect(full, image) : full;
     const viewed = targetedMaskLayer(s);
-    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, cropped ? null : rect);
-    if (cropped) return this.pasteInTransform(source, size, full);
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, oversized ? null : rect, start);
+    if (oversized) return this.pasteInTransform(source, size, start);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
     const data = drawSource(source, rect, full, resampled);
@@ -218,32 +226,37 @@ export class ClipboardOps {
 
   // ── Internals ───────────────────────────────────────────────────────────
 
-  /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
-  private pasteInTransform(source: CanvasImageSource, size: Size, full: Rect): PasteResult | null {
+  /**
+   * A paste larger than the image area: new layer in Free Transform on the
+   * full source, starting at `start` (fitted inside the image; resampled once
+   * on commit, cropped at the cap).
+   */
+  private pasteInTransform(source: CanvasImageSource, size: Size, start: Rect): PasteResult | null {
     const pixels = drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     const name = pastedLayerName(this.s.doc.layers);
-    const id = this.insertPlaced(pixels, name, full);
+    const id = this.insertPlaced(pixels, name, start);
     if (!id) return null;
     this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
-    return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
+    return { layerId: id, name, transform: true, resampled: start.width !== size.width || start.height !== size.height };
   }
 
   /**
    * A paste in the lmask-only view: the image as lmask values
-   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
-   * the paint area (`rect` null) -- the full image in a Free Transform
-   * session (native size at `full`, cropped on commit), like an oversized
-   * paste. The float always lands on commit (it has no lift position); the
+   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or --
+   * larger than the image area (`rect` null) -- the full image in a Free
+   * Transform session starting at `start` (fitted inside the image, cropped
+   * at the cap on commit), like an oversized paste. The float always lands on
+   * commit (it has no lift position); the
    * selection is dropped now and joins the commit's step (cancel brings it back).
    */
-  private pasteIntoMask(layer: Layer, source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null): PasteResult | null {
+  private pasteIntoMask(layer: Layer, source: CanvasImageSource, size: Size, full: Rect, rect: Rect | null, start: Rect): PasteResult | null {
     const s = this.s;
     if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
     const key = layerMaskKey(layer.id);
     const resampled = full.width !== size.width || full.height !== size.height;
     const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     imageToMaskGray(pixels.data);
-    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, full);
+    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, start);
     if (!f) return null;
     const sel = s.selection.current;
     f.inserted = true;
@@ -266,10 +279,11 @@ export class ClipboardOps {
   /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
   private maskFloatAt(key: string, pixels: ImageData, rect: Rect): FloatState | null {
     const s = this.s;
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(rect, true);
     const read = s.store.read(key, rect);
     if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
-    return maskFloat(key, pixels, { ...rect }, read.data, null);
+    return { ...maskFloat(key, pixels, { ...rect }, read.data, null), boundsBase };
   }
 
   /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
@@ -278,11 +292,12 @@ export class ClipboardOps {
     const { width: w, height: h } = pixels;
     const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
     const m = paramsMatrix(params, w, h);
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(transformedAabb(m, w, h), true);
     const hole = holeAt(s.store.bounds, params);
     const read = s.store.read(key, hole);
     if (!read) return null;
-    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params };
+    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params, boundsBase };
   }
 
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */

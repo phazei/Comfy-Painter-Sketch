@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { boundsCap } from "./bounds";
-import { applyCoverage, cropToCap, maskToGray, pastedLayerName, pasteRect } from "./clipboardMath";
+import { applyCoverage, cropToCap, fitRect, maskToGray, pastedLayerName, pasteRect } from "./clipboardMath";
 
 describe("applyCoverage", () => {
   it("weights alpha by coverage and zeroes RGB of emptied pixels", () => {
@@ -64,5 +64,18 @@ describe("pastedLayerName", () => {
   it("numbers repeats", () => {
     expect(pastedLayerName([{ name: "Layer 1" }])).toBe("Pasted");
     expect(pastedLayerName([{ name: "Pasted" }, { name: "Pasted 2" }])).toBe("Pasted 3");
+  });
+});
+
+describe("fitRect (oversized paste start)", () => {
+  const area = { x: 0, y: 0, width: 100, height: 50 };
+
+  it("scales about the centre to fit the area, aspect kept", () => {
+    expect(fitRect({ x: -50, y: 0, width: 200, height: 50 }, area)).toEqual({ x: 0, y: 12.5, width: 100, height: 25 });
+  });
+
+  it("never enlarges", () => {
+    const small = { x: 10, y: 10, width: 20, height: 10 };
+    expect(fitRect(small, area)).toEqual(small);
   });
 });

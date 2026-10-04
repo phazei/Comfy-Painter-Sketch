@@ -129,6 +129,22 @@ export function pasteRect(source: Size, docPerSource: number, at: { centre: Poin
 }
 
 /**
+ * Start rect of an oversized paste's Free Transform: `rect` scaled about its
+ * centre to the largest size that fits `area` (aspect kept; never enlarged),
+ * like an inserted layer source. Only the start: the session keeps the full
+ * source pixels until the commit.
+ * @param rect - Native paste rect, document coords.
+ * @param area - Image area, document coords.
+ * @returns Rect (fractional).
+ */
+export function fitRect(rect: Rect, area: Rect): Rect {
+  const k = rect.width > 0 && rect.height > 0 ? Math.min(1, area.width / rect.width, area.height / rect.height) : 1;
+  const width = rect.width * k;
+  const height = rect.height * k;
+  return { x: rect.x + (rect.width - width) / 2, y: rect.y + (rect.height - height) / 2, width, height };
+}
+
+/**
  * Part of a paste rect inside the paint-area cap.
  * @param rect - Paste rect.
  * @param cap - Largest allowed bounds (`boundsCap`).

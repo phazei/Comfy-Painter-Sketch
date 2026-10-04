@@ -138,6 +138,7 @@ export class SourceInsertOps {
     const { width: w, height: h } = pixels;
     const params = paramsFor(place, area, docPerImage);
     const m = paramsMatrix(params, w, h);
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(transformedAabb(m, w, h), true);
     const surface = createSurface(w, h);
     surface.ctx.putImageData(pixels, 0, 0);
@@ -152,6 +153,7 @@ export class SourceInsertOps {
       surface,
       dx: 0, dy: 0, selBefore: null, selBase: null, xf: m, baked: null, dragBase: null, preview: null,
       inserted: true,
+      boundsBase,
       onEnd: (landed) => this.ended(id, step, landed),
     };
     if (!this.float.adoptInserted(f)) return null;

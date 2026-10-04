@@ -83,6 +83,13 @@ export interface FloatState {
   /** An inserted image (`sourceInsert.ts`): has no lift position, so a commit always lands. */
   inserted?: boolean;
   /**
+   * Paint bounds before this float existed. The bounds grow while it moves /
+   * transforms only so it can be shown; commit and cancel go back to these,
+   * then the commit grows them for where the float actually lands.
+   * Set by creators that grow the bounds first; otherwise on adopt.
+   */
+  boundsBase?: Rect;
+  /**
    * A shape tool's result (`shapeFloat.ts`): independent of the selection
    * (commit and cancel leave it alone; the shape was clipped when drawn).
    */

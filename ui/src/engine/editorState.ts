@@ -184,20 +184,35 @@ export class EditorState {
     const current = this.store.bounds;
     if (containsRect(current, need)) return;
     const next = chunked ? growBounds(current, need, this.doc.frame, undefined, within) : unionRect(current, need);
-    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
-      this.store.rebase(next);
-      this.stroke.rebase(next);
-      this.doc.bounds = { ...next };
-      for (const layer of this.doc.layers) {
-        this.runtime.resized(layer.id);
-        // A mask's new area holds its `outside` value: always a new file (and a new cache).
-        // Its pixels are unchanged, so a valid kept original stays valid.
-        if (layer.layerMask) {
-          const key = layerMaskKey(layer.id);
-          const kept = this.kept.get(key, this.runtime.revision(key));
-          this.runtime.touch(key);
-          if (kept) kept.revision = this.runtime.revision(key);
-        }
+    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) this.setBounds(next);
+  }
+
+  /**
+   * Shrink the bounds back to `base` after a float grew them only to show
+   * itself (`FloatState.boundsBase`): nothing outside `base` holds pixels
+   * then. Ignored unless `base` lies inside the current bounds.
+   * @param base - Bounds before the float.
+   */
+  restoreBounds(base: Rect): void {
+    const current = this.store.bounds;
+    if (!containsRect(current, base) || (base.width === current.width && base.height === current.height)) return;
+    this.setBounds(base);
+  }
+
+  /** Re-base every surface to `next` and mark every layer for re-upload. */
+  private setBounds(next: Rect): void {
+    this.store.rebase(next);
+    this.stroke.rebase(next);
+    this.doc.bounds = { ...next };
+    for (const layer of this.doc.layers) {
+      this.runtime.resized(layer.id);
+      // A mask's new area holds its `outside` value: always a new file (and a new cache).
+      // Its pixels are unchanged, so a valid kept original stays valid.
+      if (layer.layerMask) {
+        const key = layerMaskKey(layer.id);
+        const kept = this.kept.get(key, this.runtime.revision(key));
+        this.runtime.touch(key);
+        if (kept) kept.revision = this.runtime.revision(key);
       }
     }
   }

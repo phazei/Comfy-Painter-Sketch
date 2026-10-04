@@ -122,3 +122,30 @@ describe("insert", () => {
     expect(ed.selection.current).toBeNull();
   });
 });
+
+describe("bounds while floating", () => {
+  const FRAME = { x: 0, y: 0, width: 32, height: 32 };
+
+  it("an oversized paste grows the bounds only for display: scaled down inside, the commit leaves them as before", () => {
+    const ed = editor();
+    expect(ed.insert.insertPlaced(solid(64, 64), "Pasted", { x: -16, y: -16, width: 64, height: 64 })).not.toBeNull();
+    expect(ed.bounds.width).toBeGreaterThan(32);
+    expect(ed.float.transform.setField("w", 0.25)).toBe(true);
+    expect(ed.float.transform.commit()).toBe(true);
+    expect(ed.bounds).toEqual(FRAME);
+  });
+
+  it("cancel goes back to the bounds before the paste", () => {
+    const ed = editor();
+    ed.insert.insertPlaced(solid(64, 64), "Pasted", { x: -16, y: -16, width: 64, height: 64 });
+    ed.float.cancel();
+    expect(ed.bounds).toEqual(FRAME);
+  });
+
+  it("a commit that lands outside still grows them", () => {
+    const ed = editor();
+    ed.insert.insertPlaced(solid(64, 64), "Pasted", { x: -16, y: -16, width: 64, height: 64 });
+    expect(ed.float.transform.commit()).toBe(true);
+    expect(ed.bounds.x).toBeLessThan(0);
+  });
+});

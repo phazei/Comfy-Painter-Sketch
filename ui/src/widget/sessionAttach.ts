@@ -50,9 +50,11 @@ export function sessionForManifest(doc: PainterDocument, owner: object, handoff:
       return createSession(doc, "document");
     case "fork-copy":
     case "fork-restore": {
-      // Duplicate docId while the original is live (copy/paste): fork.
+      // Duplicate docId while the original is live (copy/paste): fork. While
+      // the original is still loading its files its pixels are incomplete
+      // (and it can't have unsaved strokes yet): load the copy from the files.
       const docId = createId();
-      return choice === "fork-copy"
+      return choice === "fork-copy" && !existing.restoring
         ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId))
         : createSession({ ...doc, docId }, "document");
     }

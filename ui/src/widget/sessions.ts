@@ -48,6 +48,8 @@ export interface EditorSession {
   alive: boolean;
   /** Resolves when layer files have been restored. */
   ready: Promise<void>;
+  /** Layer / Image Mask files are still loading (`ready` pending): its pixels are incomplete. */
+  restoring: boolean;
 }
 
 const sessions = new Map<string, EditorSession>();
@@ -80,6 +82,7 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
     owner: null,
     alive: true,
     ready: Promise.resolve(),
+    restoring: false,
   };
   ed.events.on("change", () => {
     const signature = fileSignature(ed.doc);
@@ -90,7 +93,12 @@ export function createSession(doc: PainterDocument, source: FrameSource, editor?
   });
   if (!editor) {
     const alive = (): boolean => session.alive;
-    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)]).then(() => undefined);
+    session.restoring = true;
+    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)])
+      .then(() => undefined)
+      .finally(() => {
+        session.restoring = false;
+      });
   }
   sessions.set(doc.docId, session);
   return session;

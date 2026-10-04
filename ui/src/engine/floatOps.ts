@@ -10,8 +10,10 @@
  * display (`EditorState.floatPreview` -> `layerDisplay.ts`), so it follows the
  * layer's opacity, visibility and mask tint. The selection outline moves
  * with it. Offsets are whole document px; nothing is resampled. Bounds grow
- * (chunked, capped) while it moves, like painting, so what is shown is
- * exactly what lands; pixels beyond the paint-area cap are cropped.
+ * (chunked, capped) while it moves so it can be shown; commit and cancel
+ * return them to where they were before the float (`boundsBase`), and the
+ * commit grows them only for where it lands (an oversized paste scaled down
+ * inside the image never grows the layers). Pixels beyond the cap are cropped.
  *
  * No history entry exists while floating:
  * - {@link FloatOps.commit} records ONE patch over (source area U destination)
@@ -184,6 +186,7 @@ export class FloatOps {
 
   private adopt(f: FloatState | null): boolean {
     if (!f) return false;
+    f.boundsBase ??= { ...this.s.store.bounds };
     this.f = f;
     this.s.events.emit("history", undefined);
     this.s.events.emit("render", undefined);
@@ -303,6 +306,9 @@ export class FloatOps {
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
+    // Growth while floating was for display: back to the bounds before it;
+    // the patch grows them for where the float lands.
+    if (f.boundsBase) s.restoreBounds(f.boundsBase);
     // Kept original: only when the float is ALL the layer will hold (never an lmask float).
     const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
     writeFloatPatch(s, f, m);
@@ -331,6 +337,7 @@ export class FloatOps {
     this.f = null;
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
+    if (f.boundsBase) s.restoreBounds(f.boundsBase);
     this.bump(f);
     if (!f.shape) s.selection.set(f.selBefore);
     releaseFloat(f);

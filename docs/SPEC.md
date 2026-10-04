@@ -452,7 +452,9 @@ files; a detached or same-owner session that matches (or was handed off, below)
 -> reuse; a non-matching one -> restore (warning toast if that discards dirty
 pixels); a session another live node shows (copy/paste of the node) -> fork
 under a new `docId`: a copy of the live editor when the manifest matches
-(`fork-copy`), else a restore from files (`fork-restore`).
+(`fork-copy`), else a restore from files (`fork-restore`). While the
+original is still loading its files (`session.restoring`) the copy always
+restores from files: cloning then would copy blank layers.
 
 **Graph undo handoff** (`widget/handoff.ts`). Graph undo/redo removes and
 re-creates every node with the same id in one task. `onRemoved` offers the
@@ -1743,8 +1745,11 @@ Files: `engine/selection.ts`, `selectionOps.ts`, `selectionState.ts`,
 A float is transient editor state (never a layer, never saved), drawn above its
 own layer inside that layer's display (so opacity, visibility and cmask tint
 apply). It moves in whole doc px; nothing is resampled until a transform. The
-outline moves with it; bounds grow so what you see is what lands (past the cap
-is cropped on commit).
+outline moves with it; bounds grow while it floats so it can be shown (past the
+cap is cropped on commit). Commit and cancel return the bounds to what they
+were before the float (`FloatState.boundsBase`, `EditorState.restoreBounds`);
+the commit then grows them only for where the float lands. An oversized paste
+scaled down inside the image never grows the layers.
 
 **Starting a float**
 
@@ -1841,10 +1846,14 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`, `floatMath.ts`,
   4. Otherwise: the view centre.
   Then clamp into the image area (centred on an axis where the item is larger)
   and snap to whole doc px.
-- **Oversized**: a paste reaching past the paint-area cap opens at native size in
-  a Free Transform session with "Paste is larger than the paint area -- placed in
-  Free Transform. Commit to crop, Esc to cancel." Why: nothing is cropped
-  silently.
+- **Oversized**: a paste larger than the image area (after the clamp; a paste
+  in place reaching outside it counts too) opens in a Free Transform session
+  starting fitted inside the image area (scaled about its placed centre,
+  aspect kept, never enlarged; `fitRect`, like a `layer_source` insert). The
+  session keeps the full source pixels: scaling back up loses nothing, the
+  commit resamples once. Note: "Paste is larger than the image -- placed in Free
+  Transform. Scale or place it, then commit (Esc cancels)." Why: nothing lands
+  outside the image, or is cropped at the cap, without a commit.
 - **lmask-only view**: every paste and drop goes into the viewed lmask as an
   lmask float (value = Rec.709 luminance x alpha, so transparent = shown; our own
   lmask copies keep exact values; the lmask's invert is ignored so copies
@@ -2201,7 +2210,7 @@ cause shows the raw error text as the reason.
 | The layer has no pixels. | Ctrl+click an empty row. |
 | Nothing to copy. | Copy/cut found nothing. |
 | Nothing to paste. / The clipboard has no image -- nothing to paste. / Clipspace has no image -- nothing to paste. | Paste with no source (Ctrl+V / System / Clipspace). |
-| Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel. | Oversized paste or drop. |
+| Paste is larger than the image -- placed in Free Transform. Scale or place it, then commit (Esc cancels). | Paste or drop larger than the image area. |
 | The dropped item is not an image. | Non-image drop. |
 | Could not load the image. | Images panel insert failed. |
 | Image reduced to W x H px (max 8192 px per side). | Large source. |

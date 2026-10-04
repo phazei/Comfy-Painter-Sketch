@@ -1550,6 +1550,12 @@ function pasteRect(source, docPerSource, at) {
   if ("topLeft" in at) return { x: Math.round(at.topLeft.x), y: Math.round(at.topLeft.y), width, height };
   return { x: Math.round(at.centre.x - width / 2), y: Math.round(at.centre.y - height / 2), width, height };
 }
+function fitRect(rect, area) {
+  const k = rect.width > 0 && rect.height > 0 ? Math.min(1, area.width / rect.width, area.height / rect.height) : 1;
+  const width = rect.width * k;
+  const height = rect.height * k;
+  return { x: rect.x + (rect.width - width) / 2, y: rect.y + (rect.height - height) / 2, width, height };
+}
 function cropToCap(rect, cap) {
   const kept = intersectRect(rect, cap);
   if (isEmptyRect(kept)) return { rect: null, cropped: true };
@@ -15880,6 +15886,12 @@ class LayerSourceWatch {
     this.armed = true;
   }
 }
+function imageAreaInDoc(s) {
+  return roundOutRect(imageRectToDoc(documentMap(s.doc, s.imageSize), frameRect(s.imageSize)));
+}
+function paintLimit(s) {
+  return intersectRect(imageAreaInDoc(s), boundsCap(s.doc.frame));
+}
 const INSIDE_COVERAGE = 128;
 function liftPixels(src, coverage, cut) {
   const float = new Uint8ClampedArray(src);
@@ -16633,6 +16645,7 @@ class SourceInsertOps {
     const { width: w, height: h } = pixels;
     const params = paramsFor(place2, area, docPerImage);
     const m = paramsMatrix(params, w, h);
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(transformedAabb(m, w, h), true);
     const surface = createSurface(w, h);
     surface.ctx.putImageData(pixels, 0, 0);
@@ -16654,6 +16667,7 @@ class SourceInsertOps {
       dragBase: null,
       preview: null,
       inserted: true,
+      boundsBase,
       onEnd: (landed) => this.ended(id, step, landed)
     };
     if (!this.float.adoptInserted(f)) return null;
@@ -16679,7 +16693,7 @@ function holeAt(bounds, p) {
   return { x: clamp2(p.cx, bounds.x, bounds.width), y: clamp2(p.cy, bounds.y, bounds.height), width: 1, height: 1 };
 }
 const NOTHING_TO_COPY_NOTE = "Nothing to copy.";
-const PASTE_TRANSFORM_NOTE = "Paste is larger than the paint area -- placed in Free Transform. Commit to crop, Esc to cancel.";
+const PASTE_TRANSFORM_NOTE = "Paste is larger than the image -- placed in Free Transform. Scale or place it, then commit (Esc cancels).";
 class ClipboardOps {
   /**
    * @param s - Shared editor state.
@@ -16770,9 +16784,12 @@ class ClipboardOps {
     if (s.stroke.active) s.cancelStroke();
     const full = pasteRect(size, docPerSource, at);
     const { rect, cropped } = cropToCap(full, unionRect(boundsCap(s.doc.frame), s.store.bounds));
+    const image = imageAreaInDoc(s);
+    const oversized = cropped || !containsRect(image, full);
+    const start = oversized ? fitRect(full, image) : full;
     const viewed = targetedMaskLayer(s);
-    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, cropped ? null : rect);
-    if (cropped) return this.pasteInTransform(source, size, full);
+    if (viewed && s.layerMasks.view === viewed.id) return this.pasteIntoMask(viewed, source, size, full, oversized ? null : rect, start);
+    if (oversized) return this.pasteInTransform(source, size, start);
     if (!rect) return null;
     const resampled = full.width !== size.width || full.height !== size.height;
     const data = drawSource(source, rect, full, resampled);
@@ -16790,31 +16807,36 @@ class ClipboardOps {
     return { layerId: id, name: layer.name, transform: false, resampled };
   }
   // ── Internals ───────────────────────────────────────────────────────────
-  /** A paste reaching past the paint-area cap: new layer in Free Transform on the full image (crop on commit). */
-  pasteInTransform(source, size, full) {
+  /**
+   * A paste larger than the image area: new layer in Free Transform on the
+   * full source, starting at `start` (fitted inside the image; resampled once
+   * on commit, cropped at the cap).
+   */
+  pasteInTransform(source, size, start) {
     const pixels = drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     const name = pastedLayerName(this.s.doc.layers);
-    const id = this.insertPlaced(pixels, name, full);
+    const id = this.insertPlaced(pixels, name, start);
     if (!id) return null;
     this.s.events.emit("note", PASTE_TRANSFORM_NOTE);
-    return { layerId: id, name, transform: true, resampled: full.width !== size.width || full.height !== size.height };
+    return { layerId: id, name, transform: true, resampled: start.width !== size.width || start.height !== size.height };
   }
   /**
    * A paste in the lmask-only view: the image as lmask values
-   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or -- past
-   * the paint area (`rect` null) -- the full image in a Free Transform
-   * session (native size at `full`, cropped on commit), like an oversized
-   * paste. The float always lands on commit (it has no lift position); the
+   * (`imageToMaskGray`) floating on the viewed lmask at `rect`, or --
+   * larger than the image area (`rect` null) -- the full image in a Free
+   * Transform session starting at `start` (fitted inside the image, cropped
+   * at the cap on commit), like an oversized paste. The float always lands on
+   * commit (it has no lift position); the
    * selection is dropped now and joins the commit's step (cancel brings it back).
    */
-  pasteIntoMask(layer, source, size, full, rect) {
+  pasteIntoMask(layer, source, size, full, rect, start) {
     const s = this.s;
     if (preparePixelEdit(s, layer, "paint") === "blocked" || this.float.active || this.float.transform.active) return null;
     const key = layerMaskKey(layer.id);
     const resampled = full.width !== size.width || full.height !== size.height;
     const pixels = rect ? drawSource(source, rect, full, resampled) : drawSource(source, { x: 0, y: 0, ...size }, { x: 0, y: 0, ...size }, false);
     imageToMaskGray(pixels.data);
-    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, full);
+    const f = rect ? this.maskFloatAt(key, pixels, rect) : this.maskFloatPlaced(key, pixels, start);
     if (!f) return null;
     const sel = s.selection.current;
     f.inserted = true;
@@ -16835,10 +16857,11 @@ class ClipboardOps {
   /** lmask float of gray `pixels` at `rect` (inside the cap; the bounds grow to it). */
   maskFloatAt(key, pixels, rect) {
     const s = this.s;
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(rect, true);
     const read = s.store.read(key, rect);
     if (!read || read.rect.width !== rect.width || read.rect.height !== rect.height) return null;
-    return maskFloat(key, pixels, { ...rect }, read.data, null);
+    return { ...maskFloat(key, pixels, { ...rect }, read.data, null), boundsBase };
   }
   /** lmask float of the full gray `pixels` through a Free Transform matrix placing them at `full`. */
   maskFloatPlaced(key, pixels, full) {
@@ -16846,11 +16869,12 @@ class ClipboardOps {
     const { width: w, height: h } = pixels;
     const params = { cx: full.x + full.width / 2, cy: full.y + full.height / 2, sx: full.width / w, sy: full.height / h, angle: 0 };
     const m = paramsMatrix(params, w, h);
+    const boundsBase = { ...s.store.bounds };
     s.ensureBounds(transformedAabb(m, w, h), true);
     const hole = holeAt(s.store.bounds, params);
     const read = s.store.read(key, hole);
     if (!read) return null;
-    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params };
+    return { ...maskFloat(key, pixels, { x: 0, y: 0, width: w, height: h }, read.data, m), holeRect: read.rect, params, boundsBase };
   }
   /** Layer copy/cut act on: the current mask under Quick Mask, else the active paint-like layer. */
   editLayer() {
@@ -18794,18 +18818,31 @@ class EditorState {
     const current = this.store.bounds;
     if (containsRect(current, need)) return;
     const next = chunked ? growBounds(current, need, this.doc.frame, void 0, within) : unionRect(current, need);
-    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) {
-      this.store.rebase(next);
-      this.stroke.rebase(next);
-      this.doc.bounds = { ...next };
-      for (const layer of this.doc.layers) {
-        this.runtime.resized(layer.id);
-        if (layer.layerMask) {
-          const key = layerMaskKey(layer.id);
-          const kept = this.kept.get(key, this.runtime.revision(key));
-          this.runtime.touch(key);
-          if (kept) kept.revision = this.runtime.revision(key);
-        }
+    if (containsRect(next, current) && (next.width !== current.width || next.height !== current.height)) this.setBounds(next);
+  }
+  /**
+   * Shrink the bounds back to `base` after a float grew them only to show
+   * itself (`FloatState.boundsBase`): nothing outside `base` holds pixels
+   * then. Ignored unless `base` lies inside the current bounds.
+   * @param base - Bounds before the float.
+   */
+  restoreBounds(base) {
+    const current = this.store.bounds;
+    if (!containsRect(current, base) || base.width === current.width && base.height === current.height) return;
+    this.setBounds(base);
+  }
+  /** Re-base every surface to `next` and mark every layer for re-upload. */
+  setBounds(next) {
+    this.store.rebase(next);
+    this.stroke.rebase(next);
+    this.doc.bounds = { ...next };
+    for (const layer of this.doc.layers) {
+      this.runtime.resized(layer.id);
+      if (layer.layerMask) {
+        const key = layerMaskKey(layer.id);
+        const kept = this.kept.get(key, this.runtime.revision(key));
+        this.runtime.touch(key);
+        if (kept) kept.revision = this.runtime.revision(key);
       }
     }
   }
@@ -19966,12 +20003,6 @@ function sameBytes$3(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
-}
-function imageAreaInDoc(s) {
-  return roundOutRect(imageRectToDoc(documentMap(s.doc, s.imageSize), frameRect(s.imageSize)));
-}
-function paintLimit(s) {
-  return intersectRect(imageAreaInDoc(s), boundsCap(s.doc.frame));
 }
 function sameBytes$2(a, b) {
   if (a.length !== b.length) return false;
@@ -21266,6 +21297,7 @@ class FloatOps {
   }
   adopt(f) {
     if (!f) return false;
+    f.boundsBase ??= { ...this.s.store.bounds };
     this.f = f;
     this.s.events.emit("history", void 0);
     this.s.events.emit("render", void 0);
@@ -21373,6 +21405,7 @@ class FloatOps {
     }
     if (f.xf && f.selBefore) s.selection.set(this.selectionAt(m));
     this.f = null;
+    if (f.boundsBase) s.restoreBounds(f.boundsBase);
     const keep = f.xf !== null && !f.cover && isEmptyRect(layerContentRect(s, f.layerId));
     writeFloatPatch(s, f, m);
     releaseFloat(f);
@@ -21398,6 +21431,7 @@ class FloatOps {
     this.f = null;
     const hole = holeOf(f);
     s.store.write(f.layerId, hole.x, hole.y, f.original);
+    if (f.boundsBase) s.restoreBounds(f.boundsBase);
     this.bump(f);
     if (!f.shape) s.selection.set(f.selBefore);
     releaseFloat(f);
@@ -25747,7 +25781,8 @@ function createSession(doc, source, editor) {
     recentSignatures: [fileSignature(ed.doc)],
     owner: null,
     alive: true,
-    ready: Promise.resolve()
+    ready: Promise.resolve(),
+    restoring: false
   };
   ed.events.on("change", () => {
     const signature = fileSignature(ed.doc);
@@ -25758,7 +25793,10 @@ function createSession(doc, source, editor) {
   });
   if (!editor) {
     const alive = () => session.alive;
-    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)]).then(() => void 0);
+    session.restoring = true;
+    session.ready = Promise.all([restoreLayers(ed, alive, knownFiles), restoreImageMask(ed, alive)]).then(() => void 0).finally(() => {
+      session.restoring = false;
+    });
   }
   sessions.set(doc.docId, session);
   return session;
@@ -25839,7 +25877,7 @@ function sessionForManifest(doc, owner, handoff) {
     case "fork-copy":
     case "fork-restore": {
       const docId = createId();
-      return choice === "fork-copy" ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
+      return choice === "fork-copy" && !existing.restoring ? createSession({ ...doc, docId }, "document", existing.editor.fork(docId)) : createSession({ ...doc, docId }, "document");
     }
   }
 }
