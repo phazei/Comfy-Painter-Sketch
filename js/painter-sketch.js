@@ -5189,8 +5189,8 @@ class LayerOps {
     if (!readyCheck(s) || !canAddMask(s.doc.layers)) return null;
     const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
     const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
-    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
-    s.currentMaskId = layer.id;
+    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.lastCmaskId)?.id);
+    s.setCurrentMask(layer.id);
     insertLayer(s, layer, index, null, false);
     this.soloNew(layer);
     return layer.id;
@@ -5254,7 +5254,8 @@ class LayerOps {
     s.runtime.remove(layerId);
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
-    if (s.currentMaskId === layerId) s.currentMaskId = maskAfterRemoval(s.doc.layers, index) ?? null;
+    if (s.currentMaskId === layerId) s.setCurrentMask(maskAfterRemoval(s.doc.layers, index) ?? null);
+    else if (s.lastCmaskId === layerId) s.lastCmaskId = maskAfterRemoval(s.doc.layers, index) ?? null;
     recordLayerChange(s, [{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }
@@ -5368,9 +5369,9 @@ function hiddenNote(s, layer) {
   if (!shownOnStage(layer, s.solo.current)) return SOLO_HIDDEN_NOTE;
   return null;
 }
-function preparePixelEdit(s, layer, kind = "paint") {
+function preparePixelEdit(s, layer, kind = "paint", explicit = false) {
   s.settleFloat();
-  const note = editBlockNote(s, layer, kind);
+  const note = explicit ? layerBlockNote(s, layer, kind) : editBlockNote(s, layer, kind);
   if (note) {
     s.events.emit("note", note);
     return "blocked";
@@ -5878,13 +5879,6 @@ class QuickMaskButton {
     if (!session || inRegionMode(session)) return;
     const editor = session.editor;
     this.ctx.beforeEdit();
-    if (editor.paintTarget === "mask" && editor.maskLayer?.id === IMAGE_MASK_ID) {
-      const top = topMostMask(session);
-      if (top) {
-        editor.selectMask(top);
-        return;
-      }
-    }
     editor.togglePaintTarget();
   }
   openMenu() {
@@ -5906,14 +5900,6 @@ class QuickMaskButton {
     }));
     openMenu(this.ctx.popovers, { anchor: this.element, title: "Quick Mask paints", entries, placement: "above", width: 210 });
   }
-}
-function topMostMask(session) {
-  const layers2 = session.editor.doc.layers;
-  for (let i = layers2.length - 1; i >= 0; i--) {
-    const layer = layers2[i];
-    if (layer?.kind === "mask") return layer.id;
-  }
-  return null;
 }
 const ALIGN_TOOL_ID$2 = "move";
 const ALIGN_TITLE = "Align drawing — reposition/scale all layers against the image";
@@ -9060,7 +9046,7 @@ class OptionsStrip {
       this.trail.append(separator(), done);
     }
   }
-  /** "To mask": the current cmask's colour swatch, or the selection-to-mask icon for a targeted lmask. */
+  /** "To mask": the target cmask's colour swatch (`cmaskLayer`), or the selection-to-mask icon for a targeted lmask. */
   syncToMask(editor) {
     const parts = this.toMask;
     if (!parts) return;
@@ -9074,7 +9060,7 @@ class OptionsStrip {
       return;
     }
     parts.swatch.replaceChildren();
-    const mask = editor.maskLayer;
+    const mask = editor.cmaskLayer;
     parts.swatch.style.backgroundColor = mask ? maskDisplayColor(mask) : readFirstMaskStyle().color;
   }
 }
@@ -19248,6 +19234,13 @@ class EditorState {
    */
   currentMaskId = null;
   /**
+   * Last real cmask (never the Image/Input Mask row): what "To mask" adds to
+   * and where "New mask" inserts. Selecting the read-only row changes
+   * `currentMaskId` but keeps this, so those commands never land on a row
+   * that refuses every edit. Write both through {@link setCurrentMask}.
+   */
+  lastCmaskId = null;
+  /**
    * A read-only SOURCE row is the selection (the Background row; UI state,
    * not saved, not in history). Wins over `target`: every pixel edit is
    * refused (`rasterize.ts` `editBlockNote`) and no lmask is targeted.
@@ -19387,7 +19380,27 @@ class EditorState {
    * @returns The mask layer.
    */
   ensureMask() {
-    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, this.currentMaskId);
+    return this.ensureMaskFor(this.currentMaskId);
+  }
+  /**
+   * The last real cmask ({@link lastCmaskId}; the Image/Input Mask row never
+   * counts), adding a default one like {@link ensureMask} when the document
+   * has none. "To mask" and "New mask" use this.
+   * @returns The cmask layer.
+   */
+  ensureCmask() {
+    return this.ensureMaskFor(this.lastCmaskId);
+  }
+  /**
+   * Set the current mask; a real cmask id also becomes {@link lastCmaskId}.
+   * @param id - Mask id, the Image/Input Mask id, or `null` (top-most).
+   */
+  setCurrentMask(id) {
+    this.currentMaskId = id;
+    if (id !== IMAGE_MASK_ID) this.lastCmaskId = id;
+  }
+  ensureMaskFor(id) {
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, id);
     if (created) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, false);
@@ -19737,7 +19750,7 @@ class ImageMaskOps {
     if (!s.doc.imageMask) return;
     delete s.doc.imageMask;
     s.imageMask.clear();
-    if (s.currentMaskId === IMAGE_MASK_ID) s.currentMaskId = null;
+    if (s.currentMaskId === IMAGE_MASK_ID) s.currentMaskId = s.lastCmaskId;
     this.changed();
   }
   /**
@@ -19780,7 +19793,7 @@ class ImageMaskOps {
     layer.visible = mask.visible;
     layer.invert = mask.invert === true;
     const first = s.doc.layers.findIndex((l) => l.kind === "mask");
-    s.currentMaskId = layer.id;
+    s.setCurrentMask(layer.id);
     insertLayer(s, layer, first >= 0 ? first : s.doc.layers.length, { x: rect.x, y: rect.y, data }, false);
     const solo = s.solo.current;
     if (solo.paint !== null || solo.mask !== null) s.solo.set({ ...solo, mask: layer.id });
@@ -20920,9 +20933,22 @@ class EditorMaskOps {
   setPaintTarget(target) {
     this.paint.setPaintTarget(target);
   }
-  /** Toggle between the paint layer and the current mask. */
+  /** The last real cmask (`lastCmaskId`; never the Image/Input Mask row), if any. */
+  get cmaskLayer() {
+    return findMaskLayer(this.s.doc, this.s.lastCmaskId);
+  }
+  /**
+   * Toggle between the paint layer and the current mask (`Q`, the Quick Mask
+   * button). A current Image/Input Mask row doesn't count as Quick Mask on:
+   * the toggle selects the last real cmask instead.
+   */
   togglePaintTarget() {
-    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+    const s = this.s;
+    if (s.currentMaskId === IMAGE_MASK_ID && s.doc.imageMask) {
+      this.selectMask(s.ensureCmask().id);
+      return;
+    }
+    this.paint.setPaintTarget(s.target === "mask" ? "paint" : "mask");
   }
   /**
    * Make a mask the current mask and turn Quick Mask on.
@@ -20934,7 +20960,7 @@ class EditorMaskOps {
     if (findAnyLayer(s.doc, layerId)?.kind !== "mask") return false;
     const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId || s.sourceSelected !== null;
     if (changed && s.stroke.active) s.cancelStroke();
-    s.currentMaskId = layerId;
+    s.setCurrentMask(layerId);
     if (s.target !== "mask") this.paint.setPaintTarget("mask");
     else if (changed) {
       s.sourceSelected = null;
@@ -22101,7 +22127,7 @@ function removeUpper(s, upper, lower, index) {
   s.runtime.remove(upper.id);
   releaseRemovedLayers(s);
   if (activeBefore === upper.id) s.doc.activeLayerId = lower.id;
-  if (upper.kind === "mask") s.currentMaskId = lower.id;
+  if (upper.kind === "mask") s.setCurrentMask(lower.id);
   const changes = [{ op: "remove", index, layer: { ...upper }, pixels }];
   return { kind: "layers", changes, activeBefore, activeAfter: s.doc.activeLayerId, bytes: changesBytes(changes) };
 }
@@ -23045,7 +23071,10 @@ class SelectionOps {
    * "Selection to mask": with a layer mask targeted, hide the selection
    * on that lmask (white, soft coverage kept, through the edit gate so the
    * lmask-only view exception applies); otherwise add the selection coverage
-   * to the current mask layer (a mask layer is added if missing).
+   * to the last real cmask (`ensureCmask`: never the read-only Image/Input
+   * Mask row, even while that row is current; a mask layer is added if
+   * missing). A selected Background row doesn't refuse it: the cmask is
+   * named explicitly, not "the current row".
    * @returns `true` if pixels changed.
    */
   toMask() {
@@ -23053,8 +23082,8 @@ class SelectionOps {
     if (!this.ready()) return false;
     const lmaskLayer = targetedMaskLayer(s);
     if (lmaskLayer) return this.canEdit(lmaskLayer) && paintMaskArea(s, lmaskLayer, 1, true, true);
-    const layer = s.ensureMask();
-    if (!this.canEdit(layer)) return false;
+    const layer = s.ensureCmask();
+    if (preparePixelEdit(s, layer, "paint", true) === "blocked") return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1), true);
   }
@@ -24029,6 +24058,10 @@ class Editor extends EditorBase {
   get maskLayer() {
     return this.maskOps.maskLayer;
   }
+  /** The last real cmask ("To mask" target; never the Image/Input Mask row), if any. */
+  get cmaskLayer() {
+    return this.maskOps.cmaskLayer;
+  }
   /**
    * What a pixel tool would edit now (cursor badges): a cmask / lmask, and refused by the edit gate.
    * @param kind - The tool's edit kind.
@@ -24045,7 +24078,7 @@ class Editor extends EditorBase {
     this.s.settleFloat();
     this.maskOps.setPaintTarget(target);
   }
-  /** Toggle between the paint layer and the current mask. */
+  /** Toggle between the paint layer and the current mask (a current Image/Input Mask row: select the last real cmask). */
   togglePaintTarget() {
     this.s.settleFloat();
     this.maskOps.togglePaintTarget();
@@ -24150,6 +24183,7 @@ class Editor extends EditorBase {
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;
+    copy.s.lastCmaskId = this.s.lastCmaskId;
     copy.s.imageMask.copyFrom(this.s.imageMask);
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;
@@ -27252,25 +27286,25 @@ const dockCss = `/*
   border-radius: 11px;
 }
 
-.cps-root.cps-is-fullscreen .cps-dropper-pill {\r
-  top: calc(100% + 7px);\r
-  bottom: auto;\r
-}\r
-\r
-/* Invisible bridge over the gap to the swatches: the pill is inside the\r
-   swatch box, so the pointer crossing it never "leaves" (no hide timer). */\r
-.cps-dropper-pill::after {\r
-  content: "";\r
-  position: absolute;\r
-  left: 0;\r
-  right: 0;\r
-  top: 100%;\r
-  height: 13px;\r
-}\r
-\r
-.cps-root.cps-is-fullscreen .cps-dropper-pill::after {\r
-  top: auto;\r
-  bottom: 100%;\r
+.cps-root.cps-is-fullscreen .cps-dropper-pill {
+  top: calc(100% + 7px);
+  bottom: auto;
+}
+
+/* Invisible bridge over the gap to the swatches: the pill is inside the
+   swatch box, so the pointer crossing it never "leaves" (no hide timer). */
+.cps-dropper-pill::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 13px;
+}
+
+.cps-root.cps-is-fullscreen .cps-dropper-pill::after {
+  top: auto;
+  bottom: 100%;
 }
 
 .cps-root.cps-quickmask .cps-dropper-pill {
@@ -27516,7 +27550,7 @@ const dockCss = `/*
 
 :root:not(.dark-theme) .cps-rc-front {
   fill: currentColor;
-}\r
+}
 `;
 const editorCss = `/*
  * PainterSketch editor styles: theme tokens, root, stage and the floating

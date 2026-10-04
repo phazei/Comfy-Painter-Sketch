@@ -166,7 +166,7 @@ export class ImageMaskOps {
     if (!s.doc.imageMask) return;
     delete s.doc.imageMask;
     s.imageMask.clear();
-    if (s.currentMaskId === IMAGE_MASK_ID) s.currentMaskId = null;
+    if (s.currentMaskId === IMAGE_MASK_ID) s.currentMaskId = s.lastCmaskId;
     this.changed();
   }
 
@@ -213,7 +213,7 @@ export class ImageMaskOps {
     layer.visible = mask.visible;
     layer.invert = mask.invert === true;
     const first = s.doc.layers.findIndex((l) => l.kind === "mask");
-    s.currentMaskId = layer.id;
+    s.setCurrentMask(layer.id);
     insertLayer(s, layer, first >= 0 ? first : s.doc.layers.length, { x: rect.x, y: rect.y, data }, false);
     const solo = s.solo.current;
     if (solo.paint !== null || solo.mask !== null) s.solo.set({ ...solo, mask: layer.id });

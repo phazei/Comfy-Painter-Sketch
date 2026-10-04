@@ -6,6 +6,7 @@
 
 import { DEFAULT_MASK_STYLE } from "../document/create";
 import type { MaskStyle } from "../document/create";
+import { IMAGE_MASK_ID } from "../document/imageMask";
 import { layerMaskKey, maskOwner } from "../document/layerMask";
 import { ensureMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
@@ -72,6 +73,13 @@ export class EditorState {
    * into (UI state, not saved). `null` or a deleted id = the top-most mask.
    */
   currentMaskId: string | null = null;
+  /**
+   * Last real cmask (never the Image/Input Mask row): what "To mask" adds to
+   * and where "New mask" inserts. Selecting the read-only row changes
+   * `currentMaskId` but keeps this, so those commands never land on a row
+   * that refuses every edit. Write both through {@link setCurrentMask}.
+   */
+  lastCmaskId: string | null = null;
   /**
    * A read-only SOURCE row is the selection (the Background row; UI state,
    * not saved, not in history). Wins over `target`: every pixel edit is
@@ -225,7 +233,30 @@ export class EditorState {
    * @returns The mask layer.
    */
   ensureMask(): Layer {
-    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, this.currentMaskId);
+    return this.ensureMaskFor(this.currentMaskId);
+  }
+
+  /**
+   * The last real cmask ({@link lastCmaskId}; the Image/Input Mask row never
+   * counts), adding a default one like {@link ensureMask} when the document
+   * has none. "To mask" and "New mask" use this.
+   * @returns The cmask layer.
+   */
+  ensureCmask(): Layer {
+    return this.ensureMaskFor(this.lastCmaskId);
+  }
+
+  /**
+   * Set the current mask; a real cmask id also becomes {@link lastCmaskId}.
+   * @param id - Mask id, the Image/Input Mask id, or `null` (top-most).
+   */
+  setCurrentMask(id: string | null): void {
+    this.currentMaskId = id;
+    if (id !== IMAGE_MASK_ID) this.lastCmaskId = id;
+  }
+
+  private ensureMaskFor(id: string | null): Layer {
+    const { layer, created } = ensureMaskLayer(this.doc, this.maskStyle, id);
     if (created) {
       this.store.ensure(layer.id);
       this.runtime.reset(layer.id, false);

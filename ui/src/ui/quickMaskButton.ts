@@ -7,7 +7,8 @@
  * makes it current and turns Quick Mask on. While on, the button is tinted
  * with the current mask's colour (`--cps-qm-color`). The Image / Input Mask
  * row being current doesn't count as on (the chip shows it as read-only);
- * a tap then switches to the top-most editable cmask. Hidden in region mode.
+ * a tap then switches to the last real cmask (`togglePaintTarget`). Hidden
+ * in region mode.
  */
 
 import { IMAGE_MASK_ID } from "../document/imageMask";
@@ -89,13 +90,7 @@ export class QuickMaskButton {
     if (!session || inRegionMode(session)) return;
     const editor = session.editor;
     this.ctx.beforeEdit();
-    if (editor.paintTarget === "mask" && editor.maskLayer?.id === IMAGE_MASK_ID) {
-      const top = topMostMask(session);
-      if (top) {
-        editor.selectMask(top);
-        return;
-      }
-    }
+    // A current Image / Input Mask row: the toggle selects the last real cmask.
     editor.togglePaintTarget();
   }
 
@@ -118,14 +113,4 @@ export class QuickMaskButton {
     }));
     openMenu(this.ctx.popovers, { anchor: this.element, title: "Quick Mask paints", entries, placement: "above", width: 210 });
   }
-}
-
-/** Id of the top-most ordinary cmask (layers are stored bottom first). */
-function topMostMask(session: EditorSession): string | null {
-  const layers = session.editor.doc.layers;
-  for (let i = layers.length - 1; i >= 0; i--) {
-    const layer = layers[i];
-    if (layer?.kind === "mask") return layer.id;
-  }
-  return null;
 }

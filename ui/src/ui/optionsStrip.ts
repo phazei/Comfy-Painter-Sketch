@@ -235,7 +235,7 @@ export class OptionsStrip {
     }
   }
 
-  /** "To mask": the current cmask's colour swatch, or the selection-to-mask icon for a targeted lmask. */
+  /** "To mask": the target cmask's colour swatch (`cmaskLayer`), or the selection-to-mask icon for a targeted lmask. */
   private syncToMask(editor: Editor): void {
     const parts = this.toMask;
     if (!parts) return;
@@ -249,7 +249,7 @@ export class OptionsStrip {
       return;
     }
     parts.swatch.replaceChildren();
-    const mask = editor.maskLayer;
+    const mask = editor.cmaskLayer;
     // No mask yet (old document): the colour the lazily added one will get.
     parts.swatch.style.backgroundColor = mask ? maskDisplayColor(mask) : readFirstMaskStyle().color;
   }

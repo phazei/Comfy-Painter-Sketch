@@ -7,7 +7,7 @@
  * operations over the shared editor state and paint operations.
  */
 
-import { findAnyLayer } from "../document/imageMask";
+import { findAnyLayer, IMAGE_MASK_ID } from "../document/imageMask";
 import { findMaskLayer, targetLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer } from "../document/types";
@@ -56,9 +56,23 @@ export class EditorMaskOps {
     this.paint.setPaintTarget(target);
   }
 
-  /** Toggle between the paint layer and the current mask. */
+  /** The last real cmask (`lastCmaskId`; never the Image/Input Mask row), if any. */
+  get cmaskLayer(): Readonly<Layer> | undefined {
+    return findMaskLayer(this.s.doc, this.s.lastCmaskId);
+  }
+
+  /**
+   * Toggle between the paint layer and the current mask (`Q`, the Quick Mask
+   * button). A current Image/Input Mask row doesn't count as Quick Mask on:
+   * the toggle selects the last real cmask instead.
+   */
   togglePaintTarget(): void {
-    this.paint.setPaintTarget(this.s.target === "mask" ? "paint" : "mask");
+    const s = this.s;
+    if (s.currentMaskId === IMAGE_MASK_ID && s.doc.imageMask) {
+      this.selectMask(s.ensureCmask().id);
+      return;
+    }
+    this.paint.setPaintTarget(s.target === "mask" ? "paint" : "mask");
   }
 
   /**
@@ -72,7 +86,7 @@ export class EditorMaskOps {
     if (findAnyLayer(s.doc, layerId)?.kind !== "mask") return false;
     const changed = findMaskLayer(s.doc, s.currentMaskId)?.id !== layerId || s.sourceSelected !== null;
     if (changed && s.stroke.active) s.cancelStroke();
-    s.currentMaskId = layerId;
+    s.setCurrentMask(layerId);
     if (s.target !== "mask") this.paint.setPaintTarget("mask");
     else if (changed) {
       s.sourceSelected = null;

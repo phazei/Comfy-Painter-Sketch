@@ -222,7 +222,10 @@ export class SelectionOps {
    * "Selection to mask": with a layer mask targeted, hide the selection
    * on that lmask (white, soft coverage kept, through the edit gate so the
    * lmask-only view exception applies); otherwise add the selection coverage
-   * to the current mask layer (a mask layer is added if missing).
+   * to the last real cmask (`ensureCmask`: never the read-only Image/Input
+   * Mask row, even while that row is current; a mask layer is added if
+   * missing). A selected Background row doesn't refuse it: the cmask is
+   * named explicitly, not "the current row".
    * @returns `true` if pixels changed.
    */
   toMask(): boolean {
@@ -230,8 +233,9 @@ export class SelectionOps {
     if (!this.ready()) return false;
     const lmaskLayer = targetedMaskLayer(s);
     if (lmaskLayer) return this.canEdit(lmaskLayer) && paintMaskArea(s, lmaskLayer, 1, true, true);
-    const layer = s.ensureMask();
-    if (!this.canEdit(layer)) return false;
+    const layer = s.ensureCmask();
+    // Names its target itself: a selected Background row doesn't refuse it.
+    if (preparePixelEdit(s, layer, "paint", true) === "blocked") return false;
     const white = hexToRgb(MASK_STROKE_COLOR);
     return this.editPixels(layer, (px, rect, cov, stride) => blendCoverage(px, rect, cov, stride, white, 1), true);
   }

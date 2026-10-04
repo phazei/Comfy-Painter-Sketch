@@ -341,6 +341,9 @@ export class Editor extends EditorBase {
   /** The mask layer Quick Mask edits, if the document has one. */
   get maskLayer(): Readonly<Layer> | undefined { return this.maskOps.maskLayer; }
 
+  /** The last real cmask ("To mask" target; never the Image/Input Mask row), if any. */
+  get cmaskLayer(): Readonly<Layer> | undefined { return this.maskOps.cmaskLayer; }
+
   /**
    * What a pixel tool would edit now (cursor badges): a cmask / lmask, and refused by the edit gate.
    * @param kind - The tool's edit kind.
@@ -354,7 +357,7 @@ export class Editor extends EditorBase {
    */
   setPaintTarget(target: PaintTarget): void { this.s.settleFloat(); this.maskOps.setPaintTarget(target); }
 
-  /** Toggle between the paint layer and the current mask. */
+  /** Toggle between the paint layer and the current mask (a current Image/Input Mask row: select the last real cmask). */
   togglePaintTarget(): void { this.s.settleFloat(); this.maskOps.togglePaintTarget(); }
 
   /**
@@ -439,6 +442,7 @@ export class Editor extends EditorBase {
     copy.s.runtime.copyFrom(this.s.runtime);
     copy.s.maskStyle = this.s.maskStyle;
     copy.s.currentMaskId = this.s.currentMaskId;
+    copy.s.lastCmaskId = this.s.lastCmaskId;
     copy.s.imageMask.copyFrom(this.s.imageMask);
     copy.setBackground(this.s.background, this.s.backgroundSize);
     return copy;

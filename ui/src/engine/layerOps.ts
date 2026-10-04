@@ -252,8 +252,8 @@ export class LayerOps {
     if (!readyCheck(s) || !canAddMask(s.doc.layers)) return null;
     const colors = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
     const layer = createMaskLayer(nextMaskName(s.doc.layers), nextMaskStyle(colors, s.maskStyle()));
-    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.currentMaskId)?.id);
-    s.currentMaskId = layer.id;
+    const index = maskInsertIndex(s.doc.layers, findMaskLayer(s.doc, s.lastCmaskId)?.id);
+    s.setCurrentMask(layer.id);
     insertLayer(s, layer, index, null, false);
     this.soloNew(layer);
     return layer.id;
@@ -320,7 +320,8 @@ export class LayerOps {
     s.runtime.remove(layerId);
     releaseRemovedLayers(s);
     if (activeBefore === layerId) s.doc.activeLayerId = activeAfterRemoval(s.doc.layers, index) ?? activeBefore;
-    if (s.currentMaskId === layerId) s.currentMaskId = maskAfterRemoval(s.doc.layers, index) ?? null;
+    if (s.currentMaskId === layerId) s.setCurrentMask(maskAfterRemoval(s.doc.layers, index) ?? null);
+    else if (s.lastCmaskId === layerId) s.lastCmaskId = maskAfterRemoval(s.doc.layers, index) ?? null;
     recordLayerChange(s, [{ op: "remove", index, layer: { ...layer }, pixels }], activeBefore);
     return true;
   }

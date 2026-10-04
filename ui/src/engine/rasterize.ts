@@ -117,14 +117,17 @@ export function hiddenNote(s: EditorState, layer: Layer): string | null {
  * @param s - Editor state.
  * @param layer - Layer about to be modified.
  * @param kind - What the edit is ({@link editBlockNote}).
+ * @param explicit - The edit names `layer` itself rather than "the current
+ *   row" ("To mask" on the target cmask): a selected Background row doesn't
+ *   refuse it ({@link layerBlockNote}).
  * @returns `"proceed"` (edit now), `"blocked"` (abort; note or Cancel shown),
  *   or `"rasterized"` (the layer is paint now; the next edit on it joins
  *   the rasterize undo step -- synchronous callers may proceed right away).
  */
-export function preparePixelEdit(s: EditorState, layer: Layer, kind: EditKind = "paint"): PixelEditPlan {
+export function preparePixelEdit(s: EditorState, layer: Layer, kind: EditKind = "paint", explicit = false): PixelEditPlan {
   // A floating selection lands before any other pixel edit.
   s.settleFloat();
-  const note = editBlockNote(s, layer, kind);
+  const note = explicit ? layerBlockNote(s, layer, kind) : editBlockNote(s, layer, kind);
   if (note) {
     s.events.emit("note", note);
     return "blocked";

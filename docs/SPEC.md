@@ -690,7 +690,7 @@ removed while empty. First match wins:
 3. **Align drawing**: X, Y, Scale, Reset (section 19), **Done** (turns it off).
 4. **Otherwise** the tool's options (Move layer always, selection tools while a
    selection exists, append Transform, Flip H, Flip V), then: with a selection,
-   "To mask" (current cmask, or the targeted lmask) and "Invert" (changes the
+   "To mask" (target cmask, or the targeted lmask) and "Invert" (changes the
    selection; no on-state); a selection tool with nothing selected shows a
    usage hint, so the strip is never empty; an open text edit adds **Done**
    (commit).
@@ -728,8 +728,8 @@ and in modal states; on short nodes tracks shrink to fit, down to a floor.
 - **Quick Mask button**: tap toggles (like Q); long-press, right-click or caret
   opens the cmask list (top-most first; a pick makes it current and turns Quick
   Mask on). Tinted with the current cmask's colour while on. A current
-  Image/Input Mask row or selected Background doesn't count as on: a tap
-  switches to the top-most cmask / turns Quick Mask on. Hidden in region mode.
+  Image/Input Mask row or selected Background doesn't count as on: a tap (or
+  `Q`) switches to the target cmask / turns Quick Mask on. Hidden in region mode.
 - **lmask options** (lmask targeted; not in region mode or Free Transform):
   Invert (tinted while inverted), Apply, Delete mask (section 9).
 - **Align** toggles Align drawing (section 19). While the resolution notice
@@ -934,8 +934,13 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 - Combine rule: each cmask's invert, then union (max), then the node's
   `invert_mask`. Colour and overlay opacity are display only; tints draw bottom
   to top above the paint, the Image Mask lowest.
-- **Current mask** (session only): the last selected cmask row; falls back to
-  the top-most cmask. A new mask becomes current.
+- **Current mask** (session only): the last selected cmask row (the Image/Input
+  Mask row included); falls back to the top-most cmask. A new mask becomes
+  current. **Target cmask** (session only): the last selected *real* cmask,
+  which "To mask" adds to and "New mask" inserts above; it is kept while the
+  Image/Input Mask row is current so those commands never land on a row that
+  refuses every edit. **Why:** selecting the read-only row used to steal the
+  "To mask" target and every later "To mask" failed with its refusal note.
 - **Quick Mask** (Q, the bottom bar button, or clicking a cmask row) toggles
   the paint target between the active paint layer and the current cmask. While
   on, the button shows the mask colour, the swatches grey out, the edit chip
@@ -957,9 +962,9 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 - **Image Mask** = the input image's alpha (coverage = 255 - alpha), uploaded
   as a PNG when the source changes. **Input Mask** = the `mask` input; replaces
   it while connected (no stored pixels).
-- Selecting it makes it the current cmask (Quick Mask on); every pixel edit and
-  Merge Down from it are refused with "<Image Mask | Input Mask> can't be
-  edited -- duplicate it to edit."
+- Selecting it makes it the current cmask (Quick Mask on) but not the target
+  cmask; every pixel edit and Merge Down from it are refused with "<Image Mask |
+  Input Mask> can't be edited -- duplicate it to edit."
 - A new row takes the next free palette colour. Eye, colour, opacity and invert
   survive source changes (colour/opacity/invert undoable, eye not).
 - **Duplicate** makes an ordinary cmask: coverage resampled into document
@@ -977,8 +982,9 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
   current cmask kept (active layer shows standby), no lmask targeted (lmask-only
   view ends). Every pixel edit, Move, Free Transform, flip, Merge Down, cut and
   Delete is refused with "Background can't be edited -- duplicate it to edit."
-  (the edit gate; ban cursor); Copy works (reading isn't editing, section 17).
-  Any other selection ends it (a row, Q, the chip's Back, a new or pasted
+  (the edit gate; ban cursor); Copy works (reading isn't editing, section 17)
+  and so does "To mask" (it names the target cmask, not the selected row;
+  section 15). Any other selection ends it (a row, Q, the chip's Back, a new or pasted
   layer, the Move tool's auto-select, clicking text with the Text tool).
 - **Duplicate** (row, footer, chip menu): what the background shows (the image,
   or the `background` colour without one; eye ignored) over the image rect in
@@ -1574,7 +1580,10 @@ pressed again. Alt is never the eyedropper in selection tools.
   both; lmask: the foreground / background mask swatch). Without a selection: a
   "Nothing is selected." note.
 - **To mask** (strip button): adds the selection coverage (soft kept) to the
-  current cmask, creating one if none; does not change the target. With an lmask
+  target cmask (section 8: the last real cmask, never the Image/Input Mask
+  row), creating one if none; does not change the paint target and is not
+  refused by a selected Background row (the cmask's own hidden/locked state
+  still is). With an lmask
   targeted it hides the selection on that lmask instead (white, soft kept,
   through the edit gate). One undo step.
 - Arrow keys with a selection tool active and a selection (no float) nudge the

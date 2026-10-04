@@ -131,7 +131,7 @@ function removeUpper(s: EditorState, upper: Layer, lower: Layer, index: number):
   s.runtime.remove(upper.id);
   releaseRemovedLayers(s);
   if (activeBefore === upper.id) s.doc.activeLayerId = lower.id;
-  if (upper.kind === "mask") s.currentMaskId = lower.id;
+  if (upper.kind === "mask") s.setCurrentMask(lower.id);
   const changes: LayersEntry["changes"] = [{ op: "remove", index, layer: { ...upper }, pixels }];
   return { kind: "layers", changes, activeBefore, activeAfter: s.doc.activeLayerId, bytes: changesBytes(changes) };
 }
