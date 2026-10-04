@@ -72,6 +72,7 @@ export class FloatOps {
     s.settleFloat = () => {
       this.commit();
     };
+    s.floatKey = () => this.f?.layerId ?? null;
     s.floatPreview = (layerId) => this.preview(layerId);
     this.transform = new TransformOps(s, this);
   }

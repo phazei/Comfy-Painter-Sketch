@@ -5113,7 +5113,7 @@ class LayerOps {
     const s = this.s;
     const layer = findLayer$1(s, layerId);
     if (!layer || layer.visible === visible) return;
-    s.settleFloat();
+    if (!visible && s.floatLayerId() === layerId) s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
     afterMetaChange(s);
@@ -5127,7 +5127,6 @@ class LayerOps {
   setBackgroundVisible(visible) {
     const s = this.s;
     if (s.doc.backgroundVisible !== false === visible) return;
-    s.settleFloat();
     if (visible) delete s.doc.backgroundVisible;
     else s.doc.backgroundVisible = false;
     afterMetaChange(s);
@@ -19279,6 +19278,8 @@ class EditorState {
    * before every other edit / history action -- the float's central hook.
    */
   settleFloat = () => void 0;
+  /** Store key of the floating selection (layer id or lmask key), or `null` (`floatOps.ts` installs it). */
+  floatKey = () => null;
   /** Commit an open text edit, if any (`textOps.ts` installs it; Free Transform calls it first). */
   commitTextEdit = () => void 0;
   /**
@@ -19394,6 +19395,16 @@ class EditorState {
       this.events.emit("mask", void 0);
     }
     return layer;
+  }
+  /**
+   * Id of the layer the floating selection belongs to (the owner of an
+   * lmask float), or `null` without a float. View changes (eyes, solo, lmask
+   * on/off) commit the float only when they touch this layer.
+   * @returns Layer id or `null`.
+   */
+  floatLayerId() {
+    const key = this.floatKey();
+    return key === null ? null : maskOwner(key) ?? key;
   }
   /** Abort the current stroke (its preview may be cached in a mask tint). */
   cancelStroke() {
@@ -20283,7 +20294,7 @@ class LayerMaskOps {
     const layer = this.find(layerId);
     const mask = layer?.layerMask;
     if (!layer || !mask || mask.enabled === enabled) return;
-    this.s.settleFloat();
+    if (this.s.floatLayerId() === layerId) this.s.settleFloat();
     layer.layerMask = { ...mask, enabled };
     this.changed(false);
   }
@@ -21728,6 +21739,7 @@ class FloatOps {
     s.settleFloat = () => {
       this.commit();
     };
+    s.floatKey = () => this.f?.layerId ?? null;
     s.floatPreview = (layerId) => this.preview(layerId);
     this.transform = new TransformOps(s, this);
   }
@@ -23996,12 +24008,17 @@ class Editor extends EditorBase {
   }
   /**
    * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
+   * A float is committed only when the new solo hides its layer.
    * @param layerId - Layer id, `IMAGE_MASK_ID`, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
    */
   toggleSolo(layerId) {
     const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" } : findAnyLayer(this.s.doc, layerId);
-    if (layer) this.s.settleFloat();
-    if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
+    if (!layer) return;
+    const next = toggleSolo(this.s.solo.current, layer);
+    const owner = this.s.floatLayerId();
+    const floatLayer = owner === null ? void 0 : findAnyLayer(this.s.doc, owner);
+    if (floatLayer && shownOnStage(floatLayer, this.s.solo.current) && !shownOnStage(floatLayer, next)) this.s.settleFloat();
+    this.s.solo.set(next);
   }
   // ── Quick Mask / paint target ───────────────────────────────────────────
   /** What brush/eraser strokes paint into (UI state, not saved). */
@@ -24057,7 +24074,7 @@ class Editor extends EditorBase {
    * @param visible - Visibility.
    */
   setMaskVisible(visible) {
-    this.s.settleFloat();
+    if (!visible && this.s.floatLayerId() === this.s.ensureMask().id) this.s.settleFloat();
     this.maskOps.setMaskVisible(visible);
   }
   /**

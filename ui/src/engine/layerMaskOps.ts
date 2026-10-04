@@ -267,7 +267,7 @@ export class LayerMaskOps {
     const layer = this.find(layerId);
     const mask = layer?.layerMask;
     if (!layer || !mask || mask.enabled === enabled) return;
-    this.s.settleFloat();
+    if (this.s.floatLayerId() === layerId) this.s.settleFloat(); // another layer's float stays
     layer.layerMask = { ...mask, enabled };
     this.changed(false);
   }

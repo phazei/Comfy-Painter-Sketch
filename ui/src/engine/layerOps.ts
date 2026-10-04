@@ -167,7 +167,8 @@ export class LayerOps {
     const s = this.s;
     const layer = findLayer(s, layerId);
     if (!layer || layer.visible === visible) return;
-    s.settleFloat();
+    // Other rows' eyes leave a float alone; hiding its own layer commits it (hidden = not editable).
+    if (!visible && s.floatLayerId() === layerId) s.settleFloat();
     if (s.stroke.active && s.strokeLayerId === layerId) s.cancelStroke();
     layer.visible = visible;
     afterMetaChange(s);
@@ -182,7 +183,6 @@ export class LayerOps {
   setBackgroundVisible(visible: boolean): void {
     const s = this.s;
     if ((s.doc.backgroundVisible !== false) === visible) return;
-    s.settleFloat();
     if (visible) delete s.doc.backgroundVisible;
     else s.doc.backgroundVisible = false;
     afterMetaChange(s);

@@ -60,7 +60,7 @@ import { PixelOps } from "./pixelOps";
 import { PlacementOps } from "./placementOps";
 import { SelectionOps } from "./selectionOps";
 import { TextOps } from "./textOps";
-import { BACKGROUND_SOLO_ID, toggleSolo } from "./solo";
+import { BACKGROUND_SOLO_ID, shownOnStage, toggleSolo } from "./solo";
 import { createSurface } from "./surface";
 import type { SoloIds } from "./solo";
 import { RegionOps } from "./regionOps";
@@ -319,12 +319,18 @@ export class Editor extends EditorBase {
 
   /**
    * Solo a paint/text layer or mask (replaces its group's solo), or end it if it is the active solo.
+   * A float is committed only when the new solo hides its layer.
    * @param layerId - Layer id, `IMAGE_MASK_ID`, or `BACKGROUND_SOLO_ID` for the Background row (unknown ids are ignored).
    */
   toggleSolo(layerId: string): void {
     const layer = layerId === BACKGROUND_SOLO_ID ? { id: layerId, kind: "paint" as const } : findAnyLayer(this.s.doc, layerId);
-    if (layer) this.s.settleFloat();
-    if (layer) this.s.solo.set(toggleSolo(this.s.solo.current, layer));
+    if (!layer) return;
+    const next = toggleSolo(this.s.solo.current, layer);
+    // View only: a float stays unless the new solo hides its own layer (hidden = not editable).
+    const owner = this.s.floatLayerId();
+    const floatLayer = owner === null ? undefined : findAnyLayer(this.s.doc, owner);
+    if (floatLayer && shownOnStage(floatLayer, this.s.solo.current) && !shownOnStage(floatLayer, next)) this.s.settleFloat();
+    this.s.solo.set(next);
   }
 
   // ── Quick Mask / paint target ───────────────────────────────────────────
@@ -369,7 +375,10 @@ export class Editor extends EditorBase {
    * also excluded from the `MASK` output (saved-file contract).
    * @param visible - Visibility.
    */
-  setMaskVisible(visible: boolean): void { this.s.settleFloat(); this.maskOps.setMaskVisible(visible); }
+  setMaskVisible(visible: boolean): void {
+    if (!visible && this.s.floatLayerId() === this.s.ensureMask().id) this.s.settleFloat();
+    this.maskOps.setMaskVisible(visible);
+  }
 
   /**
    * Where a lazily added mask layer (documents without one) gets its colour

@@ -1796,8 +1796,11 @@ vacated area reveals. cmask under Quick Mask: like paint. A whole-layer lift
 
 - Commit lands the float as one patch (source union destination) joined with the
   selection move into one step. Triggers: Enter, and any other edit, deselect or
-  selection change, tool switch, layer/target change, solo, queue and Ctrl+S. A
+  selection change, tool switch, layer/target change, queue and Ctrl+S. A
   float that never moved commits as a cancel (no step).
+- View changes (eyes, Background eye, solo, lmask on/off) leave the float
+  floating; only hiding the float's own layer (its eye, or a solo that hides
+  it) commits it, since a hidden layer is not editable.
 - Cancel (Esc or Ctrl+Z) restores the pre-lift pixels and selection with no
   history; Ctrl+Y is ignored while floating. Cancelling an inserted image or an
   oversized paste also removes its layer and brings the previous selection back.
@@ -2578,10 +2581,8 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
    Later rounds: Layers panel header Delete, selectable read-only Background
    row, help overlay (Essentials band, flowing columns, key chips), light-theme
    colours (`--cps-fg-strong`). Closed 2026-10-03.
-   - [ ] **Float on visibility change**: toggling a layer's visibility or Solo
-     while a selection exists (or the float's layer is hidden) lifts a float
-     unexpectedly. Pre-refresh bug; fix separately (bigger than a UI tweak).
-     Decide what happens when the float's own layer is hidden.
+   - [x] **Float on visibility change**: eyes, solo and lmask on/off no longer
+     commit a float; hiding the float's own layer does. Closed 2026-10-03.
 4. [x] **Simple mode**: done as described in section 7 "Simple mode" (per
    node in `node.properties`, default setting, Tab, header toggle; no Layers
    panel -- the edit chip and Quick Mask manage one layer, its lmask and the

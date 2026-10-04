@@ -271,6 +271,36 @@ describe("floating selection", () => {
     expect(alphaAt(ed, id, 5, 5)).toBe(255);
   });
 
+  it("view changes keep the float unless they hide its own layer", () => {
+    const ed = editor();
+    const id = paintId(ed);
+    const other = ed.layerOps.add();
+    if (!other) throw new Error("no layer");
+    ed.layerMask.add(other, "reveal");
+    ed.layerOps.setActiveLayer(id);
+    fill(ed, { x: 4, y: 4, width: 4, height: 4 }, "#ff0000");
+    ed.float.lift(false);
+    ed.float.nudge(10, 0);
+    // Another row's eye, the Background eye, its lmask on/off, soloing the float's own layer.
+    ed.layerOps.setVisible(other, false);
+    ed.layerOps.setVisible(other, true);
+    ed.layerOps.setBackgroundVisible(false);
+    ed.layerOps.setBackgroundVisible(true);
+    ed.layerMask.setEnabled(other, false);
+    ed.toggleSolo(id);
+    ed.toggleSolo(id);
+    expect(ed.float.active).toBe(true);
+    expect(alphaAt(ed, id, 15, 5)).toBe(0); // still floating, nothing landed
+    ed.toggleSolo(other); // hides the float's layer: commits
+    expect(ed.float.active).toBe(false);
+    expect(alphaAt(ed, id, 15, 5)).toBe(255);
+    ed.toggleSolo(other);
+    ed.float.lift(false);
+    ed.float.nudge(2, 0);
+    ed.layerOps.setVisible(id, false); // its own eye: commits
+    expect(ed.float.active).toBe(false);
+  });
+
   it("a float left where it was lifted commits as a no-op", () => {
     const ed = editor();
     fill(ed, { x: 4, y: 4, width: 4, height: 4 }, "#ff0000");

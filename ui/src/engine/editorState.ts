@@ -6,7 +6,7 @@
 
 import { DEFAULT_MASK_STYLE } from "../document/create";
 import type { MaskStyle } from "../document/create";
-import { layerMaskKey } from "../document/layerMask";
+import { layerMaskKey, maskOwner } from "../document/layerMask";
 import { ensureMaskLayer } from "../document/masks";
 import type { PaintTarget } from "../document/masks";
 import type { Layer, PainterDocument } from "../document/types";
@@ -103,6 +103,8 @@ export class EditorState {
    * before every other edit / history action -- the float's central hook.
    */
   settleFloat: () => void = () => undefined;
+  /** Store key of the floating selection (layer id or lmask key), or `null` (`floatOps.ts` installs it). */
+  floatKey: () => string | null = () => null;
   /** Commit an open text edit, if any (`textOps.ts` installs it; Free Transform calls it first). */
   commitTextEdit: () => void = () => undefined;
   /**
@@ -231,6 +233,17 @@ export class EditorState {
       this.events.emit("mask", undefined);
     }
     return layer;
+  }
+
+  /**
+   * Id of the layer the floating selection belongs to (the owner of an
+   * lmask float), or `null` without a float. View changes (eyes, solo, lmask
+   * on/off) commit the float only when they touch this layer.
+   * @returns Layer id or `null`.
+   */
+  floatLayerId(): string | null {
+    const key = this.floatKey();
+    return key === null ? null : (maskOwner(key) ?? key);
   }
 
   /** Abort the current stroke (its preview may be cached in a mask tint). */
