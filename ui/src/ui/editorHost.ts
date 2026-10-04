@@ -22,14 +22,22 @@
  * fullscreen is open; hover alone shows it after a delay. Hidden chrome is
  * a root class (`cps-chrome-hidden`, editor.css) plus the panel's `hidden`.
  *
+ * Mode (SPEC "Simple mode"): {@link EditorHost.setMode} applies Simple /
+ * Advanced (root class `cps-simple`, chrome via {@link HostSync.setMode}, the
+ * stage size label); the header toggle reports clicks via `onModeChange`.
+ * In Simple mode the side panel only shows in region mode (`O`).
+ *
  * The `fullscreen` event toggles {@link FullscreenMount}, which moves
  * `root` between the stable DOM widget element ({@link EditorHost.element})
  * and a body-level overlay. Entering re-fits; leaving re-fits if the view
  * was fitting.
  */
 
+import { DEFAULT_MODE } from "../defaults/modeDefaults";
+import type { EditorMode } from "../defaults/modeDefaults";
 import type { EditorSession } from "../widget/sessions";
 import type { SourceHistory } from "../widget/sourceHistory";
+import { REGION_TOOL_ID } from "../tools/region";
 import { ChromeVisibility } from "./chromeVisibility";
 import { ClipboardActions } from "./clipboardActions";
 import { insertSourceUrl } from "./sourceInsertAction";
@@ -38,6 +46,7 @@ import { installDropImport } from "./dropImport";
 import { FullscreenMount } from "./fullscreen";
 import { HostSync } from "./hostSync";
 import { KeyboardScope } from "./keyboard";
+import { ModeToggle } from "./modeToggle";
 import { EditorShell } from "./shell";
 import { handleShortcut } from "./shortcuts";
 import { StageInput } from "./stageInput";
@@ -63,6 +72,8 @@ export interface EditorHostEvents {
   onDisengage?: () => void;
   /** Ctrl/Cmd+S while the editor owns the keyboard (already prevented). */
   onSave?: () => void;
+  /** The user picked a mode (header / bottom bar toggle); already applied. */
+  onModeChange?: (mode: EditorMode) => void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -105,6 +116,10 @@ export class EditorHost {
   private keyboardEngaged = false;
   /** Timed show / hide of the bars and the side panel. */
   private readonly chrome: ChromeVisibility;
+  /** Simple / Advanced (see {@link EditorHost.setMode}). */
+  private mode: EditorMode = DEFAULT_MODE;
+  /** The toggle over the node's title bar. */
+  private readonly headerToggle: ModeToggle;
   /** In-node side panel height cap, CSS px (`null` = none). */
   private panelHeightCap: number | null = null;
 
@@ -132,7 +147,7 @@ export class EditorHost {
     this.element = this.fullscreen.container;
     this.chrome = new ChromeVisibility((shown) => {
       this.root.classList.toggle(CHROME_HIDDEN_CLASS, !shown);
-      this.shell.sidePanel.setVisible(shown);
+      this.syncPanelVisible();
       // Nothing to anchor a menu / picker to once the bars are gone.
       if (!shown) this.shell.popoverHost.close();
     });
@@ -155,12 +170,15 @@ export class EditorHost {
       releaseFocus: () => this.keyboard.reclaimFocus(),
       clipboard: this.clipboard,
       sources,
+      pickMode: (mode) => this.pickMode(mode),
       pickSource: (entry) => {
         const editor = this.session?.editor;
         if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
       },
     });
     this.shell.events.on("help", () => this.sync.help.toggle());
+    this.headerToggle = new ModeToggle("cps-mode-header", (mode) => this.pickMode(mode));
+    this.shell.headerSlot.appendChild(this.headerToggle.element);
 
     // ── Colour picker ─────────────────────────────────────────────────────
     // Stays open for eyedropper presses on the stage (the tool, or Alt) and
@@ -267,13 +285,14 @@ export class EditorHost {
         editor.events.on("transform", () => (this.sync.syncOptions(), this.view.requestOverlay())),
         editor.colors.events.on("change", () => this.sync.syncSwatches()),
         // Tool switch: chrome (dock, strip, sliders, Align, panel tab) + stage cursor/ring now.
-        tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay())),
+        tools.events.on("change", () => (this.sync.syncTools(), this.syncPanelVisible(), this.view.requestOverlay())),
       );
       this.sync.syncTools();
       this.sync.syncMask();
       this.sync.syncHistory();
       this.view.syncView();
     }
+    this.syncPanelVisible();
     this.view.requestRender();
   }
 
@@ -322,6 +341,36 @@ export class EditorHost {
     if (selected === this.nodeSelected) return;
     this.nodeSelected = selected;
     this.syncChromeVisibility();
+  }
+
+  /** Current mode. */
+  get editorMode(): EditorMode {
+    return this.mode;
+  }
+
+  /**
+   * Apply a mode (the node's saved one, or a toggle click).
+   * @param mode - Simple or Advanced.
+   */
+  setMode(mode: EditorMode): void {
+    if (this.disposed) return;
+    this.mode = mode;
+    const simple = mode === "simple";
+    this.root.classList.toggle("cps-simple", simple);
+    this.headerToggle.set(mode);
+    this.sync.setMode(mode);
+    this.view.showSize = simple;
+    this.view.requestOverlay();
+    this.syncPanelVisible();
+    this.shell.requestLayout();
+  }
+
+  /**
+   * Place the header toggle just under the node's title bar (`EditorShell.setHeaderAnchor`).
+   * @param top - Its top edge relative to the root (CSS px), or `null`.
+   */
+  setHeaderAnchor(top: number | null): void {
+    this.shell.setHeaderAnchor(top);
   }
 
   /**
@@ -381,6 +430,22 @@ export class EditorHost {
     this.handleResize();
   }
 
+  // ── Mode ────────────────────────────────────────────────────────────────
+
+  /** A toggle was clicked: apply and tell the owner (it saves the mode on the node). */
+  private pickMode(mode: EditorMode): void {
+    if (mode === this.mode) return;
+    this.setMode(mode);
+    this.events.onModeChange?.(mode);
+  }
+
+  /** The side panel shows with the chrome; in Simple mode only in region mode (`O`). */
+  private syncPanelVisible(): void {
+    if (this.disposed) return;
+    const regionMode = this.session?.tools.active.id === REGION_TOOL_ID;
+    this.shell.sidePanel.setVisible(this.chrome.visible && (this.mode === "advanced" || regionMode));
+  }
+
   // ── Chrome visibility ───────────────────────────────────────────────────
 
   /**
@@ -415,6 +480,7 @@ export class EditorHost {
       isToolDragging: () => this.input.activeTool !== null,
       fullscreen: () => this.shell.events.emit("fullscreen", undefined),
       toggleOutputs: () => this.sync.toggleOutputs(),
+      toggleMode: () => this.pickMode(this.mode === "simple" ? "advanced" : "simple"),
       closeHelp: () => this.sync.help.close(),
       toggleHelp: () => this.sync.help.toggle(),
       closePopover: () => {

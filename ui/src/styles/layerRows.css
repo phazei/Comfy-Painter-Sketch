@@ -349,9 +349,17 @@
   color: var(--cps-fg-disabled);
 }
 
-.cps-layer-button.cps-layer-solo.cps-active {
-  background: transparent;
-  color: var(--cps-fg-strong);
+/* Solo on: accent, so it stands out from the (also bright) selected row;
+   the soloed row's eye follows. */
+.cps-layer-button.cps-layer-solo.cps-active,
+.cps-icon-button.cps-layer-button.cps-layer-solo.cps-active:hover:not(:disabled) {
+  background: var(--cps-acc-09);
+  box-shadow: inset 0 0 0 1px var(--cps-acc-35);
+  color: var(--cps-accent);
+}
+
+.cps-layer-button.cps-layer-eye.cps-solo-on {
+  color: var(--cps-accent);
 }
 
 /* Mask colour swatch in the sub-line (colour set inline); inset 6 px from the thumbnail. */

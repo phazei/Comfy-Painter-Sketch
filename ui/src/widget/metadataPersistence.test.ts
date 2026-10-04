@@ -17,7 +17,7 @@ import { attachSession, createSession, fileSignature, findSession, releaseSessio
 vi.mock("@comfy/scripts/app.js", () => ({ app: {} }));
 vi.mock("../defaults/readDefaults", () => ({
   readFirstMaskStyle: () => ({ color: "#ff0000", opacity: 0.5 }),
-  readPressureDefaults: () => ({}), readSampleDefaults: () => ({}),
+  readPressureDefaults: () => ({}), readSampleDefaults: () => ({}), readDefaultMode: () => "simple",
 }));
 vi.mock("../engine/editor", () => {
   class Editor {
@@ -68,6 +68,8 @@ vi.mock("../ui/editorHost", () => ({
   EditorHost: class {
     element = { isConnected: false, remove: vi.fn() };
     setSession(): void {}
+    setMode(): void {}
+    setHeaderAnchor(): void {}
     dispose(): void {}
   },
 }));

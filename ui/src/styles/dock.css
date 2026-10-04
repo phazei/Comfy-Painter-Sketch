@@ -148,7 +148,7 @@
 .cps-dropper-pill {
   position: absolute;
   left: -4px;
-  bottom: calc(100% + 14px);
+  bottom: calc(100% + 7px);
   z-index: 6;
   padding: 4px;
   border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
@@ -156,8 +156,24 @@
 }
 
 .cps-root.cps-is-fullscreen .cps-dropper-pill {
-  top: calc(100% + 14px);
+  top: calc(100% + 7px);
   bottom: auto;
+}
+
+/* Invisible bridge over the gap to the swatches: the pill is inside the
+   swatch box, so the pointer crossing it never "leaves" (no hide timer). */
+.cps-dropper-pill::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 13px;
+}
+
+.cps-root.cps-is-fullscreen .cps-dropper-pill::after {
+  top: auto;
+  bottom: 100%;
 }
 
 .cps-root.cps-quickmask .cps-dropper-pill {
@@ -384,4 +400,23 @@
   width: 22px;
   height: 1px;
   background: var(--cps-line-2);
+}
+
+/* Default-colours icon (icons.ts resetColors): always "dark over light".
+   Dark theme: the icon colour is light (back), the bar colour dark (front);
+   ComfyUI's light theme (no `dark-theme` on <html>) swaps them. */
+.cps-rc-back {
+  fill: currentColor;
+}
+
+.cps-rc-front {
+  fill: var(--cps-bar-bg, #000);
+}
+
+:root:not(.dark-theme) .cps-rc-back {
+  fill: var(--cps-bar-bg, #fff);
+}
+
+:root:not(.dark-theme) .cps-rc-front {
+  fill: currentColor;
 }

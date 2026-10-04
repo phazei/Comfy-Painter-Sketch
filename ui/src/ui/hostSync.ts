@@ -27,8 +27,13 @@
  *
  * Modal states (Free Transform, region mode, Align drawing) dim the dock and
  * hide the sliders pill.
+ *
+ * Mode (SPEC "Simple mode"): {@link HostSync.setMode} hides the simple-mode
+ * tools in the dock and trims the bottom bar; the clipboard buttons hide by
+ * CSS (`.cps-simple`); the edit chip adds a visibility toggle.
  */
 
+import type { EditorMode } from "../defaults/modeDefaults";
 import type { Editor } from "../engine/editor";
 import { REGION_TOOL_ID } from "../tools/region";
 import type { ToolRegistry } from "../tools/registry";
@@ -72,6 +77,8 @@ export interface HostSyncContext {
   sources: SourceHistory | null;
   /** An Images tray thumbnail was clicked. */
   pickSource(entry: SourceEntry): void;
+  /** The bottom bar's (fullscreen) mode toggle was clicked. */
+  pickMode(mode: EditorMode): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -117,6 +124,7 @@ export class HostSync {
   private readonly shell: EditorShell;
   private readonly getSession: () => EditorSession | null;
   private readonly cancelDrag: () => void;
+  private mode: EditorMode = "advanced";
 
   /**
    * @param ctx - Host services.
@@ -201,6 +209,8 @@ export class HostSync {
       fullscreen: () => shell.events.emit("fullscreen", undefined),
       toggleHelp: () => shell.events.emit("help", undefined),
       requestLayout: () => shell.requestLayout(),
+      isSimple: () => this.mode === "simple",
+      pickMode: (mode) => ctx.pickMode(mode),
     });
     this.bottomThrottle = new RefreshThrottle(() => this.bottomBar.sync());
     this.resolution = new ResolutionNotice((on) => this.bottomBar.setResolutionWarning(on), () => this.cancelDrag());
@@ -242,6 +252,16 @@ export class HostSync {
     this.outputs.setEditor(editor);
     this.resolution.setEditor(editor);
     this.syncBottomBar();
+  }
+
+  /**
+   * Apply Simple / Advanced to the dock and the bottom bar.
+   * @param mode - Editor mode.
+   */
+  setMode(mode: EditorMode): void {
+    this.mode = mode;
+    this.dock.setSimple(mode === "simple");
+    this.bottomBar.setMode(mode);
   }
 
   /** Sync dock, strip, sliders, panel tab and bottom bar when the active tool changes. */

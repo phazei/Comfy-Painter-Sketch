@@ -660,6 +660,26 @@ function nextMaskStyle(usedColors, first) {
   const color = free ?? MASK_PALETTE[(usedColors.length - 1) % MASK_PALETTE.length] ?? DEFAULT_MASK_STYLE.color;
   return { color, opacity: first.opacity };
 }
+const DEFAULT_MODE = "simple";
+const MODE_SETTING_ID = "PainterSketch.DefaultMode";
+const MODE_PROPERTY = "PainterSketch mode";
+const MODE_SETTING = {
+  id: MODE_SETTING_ID,
+  category: ["PainterSketch", "Defaults", "Editor mode"],
+  name: "Default editor mode",
+  tooltip: "Simple hides the Layers / Outputs panel, the clipboard buttons and the bucket, shape and text tools (their shortcuts still work). Each node remembers its own mode (the toggle under its title, or Tab); this applies to nodes created afterwards.",
+  type: "combo",
+  options: [
+    { text: "Simple", value: "simple" },
+    { text: "Advanced", value: "advanced" }
+  ],
+  defaultValue: DEFAULT_MODE,
+  // First in the panel (its group sorts first, and it sorts first in the group).
+  sortOrder: 100
+};
+function parseMode$1(raw) {
+  return raw === "simple" || raw === "advanced" ? raw : null;
+}
 const PRESSURE_DEFAULTS = {
   pressureSize: true,
   pressureOpacity: false,
@@ -792,6 +812,7 @@ function normalizePaintQuality(raw) {
 const SETTINGS = [
   PAINT_QUALITY_SETTING,
   CLEANUP_SETTING,
+  MODE_SETTING,
   MASK_COLOR_SETTING,
   MASK_OPACITY_SETTING,
   ...PRESSURE_SETTINGS,
@@ -851,6 +872,9 @@ function readPressureDefaults() {
 }
 function readSampleDefaults() {
   return sampleDefaultsFrom(safeRead);
+}
+function readDefaultMode() {
+  return parseMode$1(safeRead(MODE_SETTING_ID)) ?? DEFAULT_MODE;
 }
 const MAX_BORDER_SIZE = 4096;
 const DEFAULT_OUTPUT_OPTIONS = Object.freeze({
@@ -1395,6 +1419,227 @@ function cloneDocument(doc) {
     }))
   };
 }
+const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
+function frameMap(frame, image, placement) {
+  const { width: fw, height: fh } = frame;
+  const { width: W2, height: H } = image;
+  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
+  const s = Math.min(W2 / fw, H / fh);
+  const offsetX = (W2 - fw * s) / 2;
+  const offsetY = (H - fh * s) / 2;
+  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
+  const k = placement.scale;
+  return {
+    scale: s * k,
+    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
+    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
+  };
+}
+function documentMap(doc, image) {
+  return frameMap(doc.frame, image, doc.placement);
+}
+function docToImage(map, p) {
+  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
+}
+function imageToDoc(map, p) {
+  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
+}
+function docRectToImage(map, r) {
+  return {
+    x: map.offsetX + r.x * map.scale,
+    y: map.offsetY + r.y * map.scale,
+    width: r.width * map.scale,
+    height: r.height * map.scale
+  };
+}
+function imageRectToDoc(map, r) {
+  return {
+    x: (r.x - map.offsetX) / map.scale,
+    y: (r.y - map.offsetY) / map.scale,
+    width: r.width / map.scale,
+    height: r.height / map.scale
+  };
+}
+function imageLengthToDoc(map, imageLength) {
+  return imageLength / map.scale;
+}
+function roundHalfEven(value) {
+  const floor = Math.floor(value);
+  const diff = value - floor;
+  if (diff > 0.5) return floor + 1;
+  if (diff < 0.5) return floor;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+function layerPlacement(map, bounds) {
+  return {
+    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
+    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
+    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
+    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
+  };
+}
+const REGION_HANDLES = [
+  { x: -1, y: -1 },
+  { x: 1, y: -1 },
+  { x: 1, y: 1 },
+  { x: -1, y: 1 },
+  { x: 0, y: -1 },
+  { x: 1, y: 0 },
+  { x: 0, y: 1 },
+  { x: -1, y: 0 }
+];
+function regionHandlePoint(rect, handle) {
+  return {
+    x: rect.x + (handle.x + 1) * rect.width / 2,
+    y: rect.y + (handle.y + 1) * rect.height / 2
+  };
+}
+function hitRegionHandle(rect, p, tolerance) {
+  const hit = REGION_HANDLES.find((handle) => {
+    const at = regionHandlePoint(rect, handle);
+    return Math.abs(p.x - at.x) <= tolerance && Math.abs(p.y - at.y) <= tolerance;
+  });
+  return hit ?? null;
+}
+function insideRegion(rect, p) {
+  return rectContainsPoint(rect, p);
+}
+function drawRegionRect(start, end, image) {
+  const x = Math.min(start.x, end.x);
+  const y = Math.min(start.y, end.y);
+  const rect = { x, y, width: Math.max(start.x, end.x) - x, height: Math.max(start.y, end.y) - y };
+  return clampRegionRect(rect, image);
+}
+function dragRegionRect(rect, delta, image, handle) {
+  const dx = roundRegionEdge(delta.x);
+  const dy = roundRegionEdge(delta.y);
+  if (!handle) return moveRect(rect, dx, dy, image);
+  let left = rect.x;
+  let top = rect.y;
+  let right = rect.x + rect.width;
+  let bottom = rect.y + rect.height;
+  if (handle.x < 0) left = Math.min(left + dx, right - 1);
+  if (handle.x > 0) right = Math.max(right + dx, left + 1);
+  if (handle.y < 0) top = Math.min(top + dy, bottom - 1);
+  if (handle.y > 0) bottom = Math.max(bottom + dy, top + 1);
+  return clampRegionRect({ x: left, y: top, width: right - left, height: bottom - top }, image);
+}
+function moveRect(rect, dx, dy, image) {
+  const area = regionArea(image);
+  const x = clampNumber(rect.x + dx, area.x, area.x + area.width - rect.width);
+  const y = clampNumber(rect.y + dy, area.y, area.y + area.height - rect.height);
+  return clampRegionRect({ x, y, width: rect.width, height: rect.height }, image);
+}
+function regionFieldBounds(rect, field, image) {
+  const area = regionArea(image);
+  const right = area.x + area.width;
+  const bottom = area.y + area.height;
+  if (field === "x") return { min: area.x, max: right - rect.width };
+  if (field === "y") return { min: area.y, max: bottom - rect.height };
+  if (field === "width") return { min: 1, max: right - rect.x };
+  return { min: 1, max: bottom - rect.y };
+}
+const REGION_TOOL_ID = "region";
+const CLICK_SLOP_PX$3 = 3;
+const HANDLE_HIT_PX = 6;
+const FULL_NOTE = "All 6 region slots are used. Delete a region to draw another.";
+function grabAt(editor, p) {
+  const ops = editor.regionOps;
+  const regions = editor.doc.regions.filter((region) => region.visible);
+  const selected = regions.find((region) => region.id === ops.selectedId);
+  if (selected) {
+    const tolerance = HANDLE_HIT_PX / editor.view.screenScale;
+    const handle = hitRegionHandle(selected.rect, p, tolerance);
+    if (handle) return { mode: "resize", id: selected.id, rect: { ...selected.rect }, handle };
+    if (insideRegion(selected.rect, p)) return { mode: "move", id: selected.id, rect: { ...selected.rect }, handle: null };
+  }
+  const top = [...regions].reverse().find((region) => insideRegion(region.rect, p));
+  return top ? { mode: "move", id: top.id, rect: { ...top.rect }, handle: null } : null;
+}
+function handleCursor(handle) {
+  const icon = handle.x === 0 ? "resize-ns" : handle.y === 0 ? "resize-ew" : handle.x === handle.y ? "resize-nwse" : "resize-nesw";
+  return { kind: "icon", icon };
+}
+function grabCursor(editor, grab) {
+  if (grab?.mode === "resize" && grab.handle) return handleCursor(grab.handle);
+  if (grab?.mode === "move") return { kind: "icon", icon: "move" };
+  return { kind: "icon", icon: "crosshair", ban: !editor.regionOps.canAdd() };
+}
+function createRegionTool() {
+  let drag = null;
+  const update = (editor, sample) => {
+    if (!drag) return;
+    const ops = editor.regionOps;
+    const p = docToImage(editor.frameMap, sample);
+    const delta = { x: p.x - drag.start.x, y: p.y - drag.start.y };
+    if (!drag.moved) {
+      if (Math.hypot(delta.x, delta.y) * editor.view.screenScale < CLICK_SLOP_PX$3) return;
+      drag.moved = true;
+      if (drag.mode === "draw" && !ops.canAdd()) {
+        editor.events.emit("note", FULL_NOTE);
+        return;
+      }
+      if (!ops.begin()) {
+        drag = null;
+        return;
+      }
+      drag.open = true;
+    }
+    if (drag.mode !== "draw" && drag.id && drag.rect) {
+      ops.setRect(drag.id, dragRegionRect(drag.rect, delta, editor.imageSize, drag.handle));
+      return;
+    }
+    if (!drag.open) return;
+    const rect = drawRegionRect(drag.start, p, editor.imageSize);
+    if (drag.id) ops.setRect(drag.id, rect);
+    else drag.id = ops.add(rect);
+  };
+  return {
+    id: REGION_TOOL_ID,
+    label: "Regions",
+    shortcut: "",
+    icon: "region",
+    options: null,
+    rail: false,
+    ctrlMove: false,
+    cursor: () => ({ kind: "icon", icon: "crosshair" }),
+    cursorAt(editor, at, mods) {
+      if (drag) return drag.mode === "draw" ? { kind: "icon", icon: "crosshair" } : grabCursor(editor, drag);
+      return grabCursor(editor, mods.shift ? null : grabAt(editor, docToImage(editor.frameMap, at)));
+    },
+    onKey(editor, event) {
+      if (event.key !== "Delete" && event.key !== "Backspace") return false;
+      const id = editor.regionOps.selectedId;
+      if (id && !drag && !event.repeat) editor.regionOps.remove(id);
+      return true;
+    },
+    onPointerDown(editor, samples) {
+      const sample = samples[0];
+      if (!sample) return;
+      const start = docToImage(editor.frameMap, sample);
+      const grab = sample.shiftKey ? null : grabAt(editor, start);
+      if (grab?.id) editor.regionOps.select(grab.id);
+      drag = { start, moved: false, open: false, ...grab ?? { mode: "draw", id: null, rect: null, handle: null } };
+    },
+    onPointerMove(editor, samples) {
+      const sample = samples.at(-1);
+      if (sample) update(editor, sample);
+    },
+    onPointerUp(editor, sample) {
+      if (!drag) return;
+      update(editor, sample);
+      const { moved, mode, open } = drag;
+      drag = null;
+      if (open) editor.regionOps.commit();
+      else if (!moved && mode === "draw") editor.regionOps.select(null);
+    },
+    onCancel(editor) {
+      if (drag?.open) editor.regionOps.cancel();
+      drag = null;
+    },
+    pending: () => drag !== null
+  };
+}
 const SHOW_DELAY_MS = 750;
 const HIDE_GRACE_MS = 250;
 class ChromeVisibility {
@@ -1573,65 +1818,6 @@ function imageLayerName(layers2) {
   let n = 1;
   while (taken.has(`Image ${n}`)) n++;
   return `Image ${n}`;
-}
-const IDENTITY_MAP = { scale: 1, offsetX: 0, offsetY: 0 };
-function frameMap(frame, image, placement) {
-  const { width: fw, height: fh } = frame;
-  const { width: W2, height: H } = image;
-  if (!(fw > 0 && fh > 0 && W2 > 0 && H > 0) || ![fw, fh, W2, H].every(Number.isFinite)) return { ...IDENTITY_MAP };
-  const s = Math.min(W2 / fw, H / fh);
-  const offsetX = (W2 - fw * s) / 2;
-  const offsetY = (H - fh * s) / 2;
-  if (!placement || isIdentityPlacement(placement)) return { scale: s, offsetX, offsetY };
-  const k = placement.scale;
-  return {
-    scale: s * k,
-    offsetX: offsetX + s * (fw / 2 * (1 - k) + placement.x),
-    offsetY: offsetY + s * (fh / 2 * (1 - k) + placement.y)
-  };
-}
-function documentMap(doc, image) {
-  return frameMap(doc.frame, image, doc.placement);
-}
-function docToImage(map, p) {
-  return { x: map.offsetX + p.x * map.scale, y: map.offsetY + p.y * map.scale };
-}
-function imageToDoc(map, p) {
-  return { x: (p.x - map.offsetX) / map.scale, y: (p.y - map.offsetY) / map.scale };
-}
-function docRectToImage(map, r) {
-  return {
-    x: map.offsetX + r.x * map.scale,
-    y: map.offsetY + r.y * map.scale,
-    width: r.width * map.scale,
-    height: r.height * map.scale
-  };
-}
-function imageRectToDoc(map, r) {
-  return {
-    x: (r.x - map.offsetX) / map.scale,
-    y: (r.y - map.offsetY) / map.scale,
-    width: r.width / map.scale,
-    height: r.height / map.scale
-  };
-}
-function imageLengthToDoc(map, imageLength) {
-  return imageLength / map.scale;
-}
-function roundHalfEven(value) {
-  const floor = Math.floor(value);
-  const diff = value - floor;
-  if (diff > 0.5) return floor + 1;
-  if (diff < 0.5) return floor;
-  return floor % 2 === 0 ? floor : floor + 1;
-}
-function layerPlacement(map, bounds) {
-  return {
-    x: roundHalfEven(map.offsetX + bounds.x * map.scale),
-    y: roundHalfEven(map.offsetY + bounds.y * map.scale),
-    width: Math.max(1, roundHalfEven(bounds.width * map.scale)),
-    height: Math.max(1, roundHalfEven(bounds.height * map.scale))
-  };
 }
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 64;
@@ -2782,8 +2968,8 @@ const CUSTOM$1 = {
   selectionToMask: `${SQUARE_DASHED}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
   // Selection subtract badge, pairing Lucide `square-dashed-plus` / `-x`.
   squareDashedMinus: `${SQUARE_DASHED}<path d='M8 12h8'/>`,
-  // FG/BG swap (Photoshop's curved double arrow; kept from the old set).
-  swap: "<path d='M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3'/>",
+  // FG/BG swap (the maintainer's): two diagonal arrows crossing at the centre.
+  swap: "<path d='M3.51 7.76 9.88 14.12'/><path d='M9.17 7.76H3.51v5.66'/><path d='M14.12 9.88 20.49 16.24'/><path d='M20.49 10.59v5.66h-5.66'/>",
   // Polygonal lasso: the lasso loop drawn as straight segments.
   polygonLasso: "<path d='M3.7 14.5 3 8l5-5 8 .5L21 8l-2 6-7 3.5-5-.6'/><path d='M7 22l-2-4'/><circle cx='5' cy='16' r='2'/>",
   // Precise cross (the user's): outer ticks and inward wedges, centre open.
@@ -2809,8 +2995,10 @@ const CUSTOM$1 = {
   colorWheel: "<circle cx='12' cy='12' r='9'/><path d='M12 3v6M14.6 13.5l5.2 3M9.4 13.5l-5.2 3'/><circle cx='12' cy='12' r='3' fill='currentColor'/>",
   // Colour variations (picker): a light and a dark circle side by side.
   colorVariations: "<circle cx='8' cy='12' r='5'/><circle cx='16' cy='12' r='5' fill='currentColor'/>",
-  // Default colours (D): a filled square over an outlined one.
-  resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>"
+  // Default colours (D): a dark foreground square over a light background
+  // square, in the icon's own colours. Which of icon / bar colour is the
+  // dark one depends on the theme: dock.css picks the fills.
+  resetColors: "<rect class='cps-rc-back' x='10' y='10' width='11' height='11' rx='2'/><rect class='cps-rc-front' x='3' y='3' width='11' height='11' rx='2'/>"
 };
 const ALIASES = {
   // Tools.
@@ -3517,168 +3705,6 @@ function buildOverlay() {
   overlay.addEventListener("dragover", noDrop);
   overlay.addEventListener("drop", noDrop);
   return overlay;
-}
-const REGION_HANDLES = [
-  { x: -1, y: -1 },
-  { x: 1, y: -1 },
-  { x: 1, y: 1 },
-  { x: -1, y: 1 },
-  { x: 0, y: -1 },
-  { x: 1, y: 0 },
-  { x: 0, y: 1 },
-  { x: -1, y: 0 }
-];
-function regionHandlePoint(rect, handle) {
-  return {
-    x: rect.x + (handle.x + 1) * rect.width / 2,
-    y: rect.y + (handle.y + 1) * rect.height / 2
-  };
-}
-function hitRegionHandle(rect, p, tolerance) {
-  const hit = REGION_HANDLES.find((handle) => {
-    const at = regionHandlePoint(rect, handle);
-    return Math.abs(p.x - at.x) <= tolerance && Math.abs(p.y - at.y) <= tolerance;
-  });
-  return hit ?? null;
-}
-function insideRegion(rect, p) {
-  return rectContainsPoint(rect, p);
-}
-function drawRegionRect(start, end, image) {
-  const x = Math.min(start.x, end.x);
-  const y = Math.min(start.y, end.y);
-  const rect = { x, y, width: Math.max(start.x, end.x) - x, height: Math.max(start.y, end.y) - y };
-  return clampRegionRect(rect, image);
-}
-function dragRegionRect(rect, delta, image, handle) {
-  const dx = roundRegionEdge(delta.x);
-  const dy = roundRegionEdge(delta.y);
-  if (!handle) return moveRect(rect, dx, dy, image);
-  let left = rect.x;
-  let top = rect.y;
-  let right = rect.x + rect.width;
-  let bottom = rect.y + rect.height;
-  if (handle.x < 0) left = Math.min(left + dx, right - 1);
-  if (handle.x > 0) right = Math.max(right + dx, left + 1);
-  if (handle.y < 0) top = Math.min(top + dy, bottom - 1);
-  if (handle.y > 0) bottom = Math.max(bottom + dy, top + 1);
-  return clampRegionRect({ x: left, y: top, width: right - left, height: bottom - top }, image);
-}
-function moveRect(rect, dx, dy, image) {
-  const area = regionArea(image);
-  const x = clampNumber(rect.x + dx, area.x, area.x + area.width - rect.width);
-  const y = clampNumber(rect.y + dy, area.y, area.y + area.height - rect.height);
-  return clampRegionRect({ x, y, width: rect.width, height: rect.height }, image);
-}
-function regionFieldBounds(rect, field, image) {
-  const area = regionArea(image);
-  const right = area.x + area.width;
-  const bottom = area.y + area.height;
-  if (field === "x") return { min: area.x, max: right - rect.width };
-  if (field === "y") return { min: area.y, max: bottom - rect.height };
-  if (field === "width") return { min: 1, max: right - rect.x };
-  return { min: 1, max: bottom - rect.y };
-}
-const REGION_TOOL_ID = "region";
-const CLICK_SLOP_PX$3 = 3;
-const HANDLE_HIT_PX = 6;
-const FULL_NOTE = "All 6 region slots are used. Delete a region to draw another.";
-function grabAt(editor, p) {
-  const ops = editor.regionOps;
-  const regions = editor.doc.regions.filter((region) => region.visible);
-  const selected = regions.find((region) => region.id === ops.selectedId);
-  if (selected) {
-    const tolerance = HANDLE_HIT_PX / editor.view.screenScale;
-    const handle = hitRegionHandle(selected.rect, p, tolerance);
-    if (handle) return { mode: "resize", id: selected.id, rect: { ...selected.rect }, handle };
-    if (insideRegion(selected.rect, p)) return { mode: "move", id: selected.id, rect: { ...selected.rect }, handle: null };
-  }
-  const top = [...regions].reverse().find((region) => insideRegion(region.rect, p));
-  return top ? { mode: "move", id: top.id, rect: { ...top.rect }, handle: null } : null;
-}
-function handleCursor(handle) {
-  const icon = handle.x === 0 ? "resize-ns" : handle.y === 0 ? "resize-ew" : handle.x === handle.y ? "resize-nwse" : "resize-nesw";
-  return { kind: "icon", icon };
-}
-function grabCursor(editor, grab) {
-  if (grab?.mode === "resize" && grab.handle) return handleCursor(grab.handle);
-  if (grab?.mode === "move") return { kind: "icon", icon: "move" };
-  return { kind: "icon", icon: "crosshair", ban: !editor.regionOps.canAdd() };
-}
-function createRegionTool() {
-  let drag = null;
-  const update = (editor, sample) => {
-    if (!drag) return;
-    const ops = editor.regionOps;
-    const p = docToImage(editor.frameMap, sample);
-    const delta = { x: p.x - drag.start.x, y: p.y - drag.start.y };
-    if (!drag.moved) {
-      if (Math.hypot(delta.x, delta.y) * editor.view.screenScale < CLICK_SLOP_PX$3) return;
-      drag.moved = true;
-      if (drag.mode === "draw" && !ops.canAdd()) {
-        editor.events.emit("note", FULL_NOTE);
-        return;
-      }
-      if (!ops.begin()) {
-        drag = null;
-        return;
-      }
-      drag.open = true;
-    }
-    if (drag.mode !== "draw" && drag.id && drag.rect) {
-      ops.setRect(drag.id, dragRegionRect(drag.rect, delta, editor.imageSize, drag.handle));
-      return;
-    }
-    if (!drag.open) return;
-    const rect = drawRegionRect(drag.start, p, editor.imageSize);
-    if (drag.id) ops.setRect(drag.id, rect);
-    else drag.id = ops.add(rect);
-  };
-  return {
-    id: REGION_TOOL_ID,
-    label: "Regions",
-    shortcut: "",
-    icon: "region",
-    options: null,
-    rail: false,
-    ctrlMove: false,
-    cursor: () => ({ kind: "icon", icon: "crosshair" }),
-    cursorAt(editor, at, mods) {
-      if (drag) return drag.mode === "draw" ? { kind: "icon", icon: "crosshair" } : grabCursor(editor, drag);
-      return grabCursor(editor, mods.shift ? null : grabAt(editor, docToImage(editor.frameMap, at)));
-    },
-    onKey(editor, event) {
-      if (event.key !== "Delete" && event.key !== "Backspace") return false;
-      const id = editor.regionOps.selectedId;
-      if (id && !drag && !event.repeat) editor.regionOps.remove(id);
-      return true;
-    },
-    onPointerDown(editor, samples) {
-      const sample = samples[0];
-      if (!sample) return;
-      const start = docToImage(editor.frameMap, sample);
-      const grab = sample.shiftKey ? null : grabAt(editor, start);
-      if (grab?.id) editor.regionOps.select(grab.id);
-      drag = { start, moved: false, open: false, ...grab ?? { mode: "draw", id: null, rect: null, handle: null } };
-    },
-    onPointerMove(editor, samples) {
-      const sample = samples.at(-1);
-      if (sample) update(editor, sample);
-    },
-    onPointerUp(editor, sample) {
-      if (!drag) return;
-      update(editor, sample);
-      const { moved, mode, open } = drag;
-      drag = null;
-      if (open) editor.regionOps.commit();
-      else if (!moved && mode === "draw") editor.regionOps.select(null);
-    },
-    onCancel(editor) {
-      if (drag?.open) editor.regionOps.cancel();
-      drag = null;
-    },
-    pending: () => drag !== null
-  };
 }
 function findMaskLayer(doc, currentMaskId) {
   if (currentMaskId === IMAGE_MASK_ID && doc.imageMask) return doc.imageMask;
@@ -5214,6 +5240,7 @@ class EditChip {
     const session = this.ctx.getSession();
     if (!session) return;
     const { title, entries } = this.menuFor(session);
+    if (this.ctx.isSimple?.() && !inRegionMode(session)) this.addVisibility(session.editor, entries);
     if (entries.length === 0) return;
     openMenu(popovers, { anchor: this.element, title, entries, placement: "above", width: 244 });
   }
@@ -5256,7 +5283,7 @@ class EditChip {
         ]
       };
     }
-    if (mask) return this.cmaskMenu(editor, mask, backName);
+    if (mask) return this.cmaskMenu(editor, mask, backName, this.ctx.isSimple?.() === true);
     if (!paint2) return { title: "", entries: [] };
     return this.layerMenu(editor, paint2);
   }
@@ -5277,16 +5304,18 @@ class EditChip {
     ];
     return { title: "Outputs", entries };
   }
-  cmaskMenu(editor, mask, backName) {
+  /** cmask menu; Simple mode shows Lock only to undo it (Unlock while locked). */
+  cmaskMenu(editor, mask, backName, simple) {
     const id = mask.id;
     const locked = mask.locked;
+    const lock = simple && !locked ? [] : [{ label: locked ? "Unlock" : "Lock", icon: locked ? "unlock" : "lock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(id, !locked)) }];
     return {
       title: mask.name,
       entries: [
         { label: "Invert mask", icon: "invert", checked: mask.invert === true, onPick: () => this.edit(editor, () => editor.layerOps.setMaskInvert(id, mask.invert !== true)) },
         // View only (no beforeEdit), like the row's solo button.
         { label: "View this mask alone", icon: "solo", checked: editor.solo.mask === id, onPick: () => editor.toggleSolo(id) },
-        { label: locked ? "Unlock" : "Lock", icon: locked ? "unlock" : "lock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(id, !locked)) },
+        ...lock,
         "divider",
         { label: `Back to ${backName}`, icon: "back", key: "Q", onPick: () => this.edit(editor, () => editor.setPaintTarget("paint")) }
       ]
@@ -5324,6 +5353,27 @@ class EditChip {
       });
     }
     return { title: `Edit on ${layer.name}`, entries };
+  }
+  /**
+   * Simple mode: Hide / Show for what the chip edits (the Layers panel's eye
+   * is out of reach there). Read-only mask rows have no eye.
+   */
+  addVisibility(editor, entries) {
+    const toggle = (visible, what, set) => {
+      entries.push("divider", {
+        label: visible ? `Hide ${what}` : `Show ${what}`,
+        icon: visible ? "eyeOff" : "eye",
+        onPick: () => this.edit(editor, () => set(!visible))
+      });
+    };
+    if (editor.backgroundSelected) {
+      toggle(editor.doc.backgroundVisible !== false, "background", (v) => editor.layerOps.setBackgroundVisible(v));
+      return;
+    }
+    const mask = editor.paintTarget === "mask" ? editor.maskLayer : void 0;
+    const item = mask ?? findPaintLayer(editor.doc);
+    if (!item || item.id === IMAGE_MASK_ID) return;
+    toggle(item.visible, mask ? "mask" : "layer", (v) => editor.layerOps.setVisible(item.id, v));
   }
   /** "Rasterize text": end the text edit, confirm, then rasterize (one undo step). */
   rasterize(editor, id) {
@@ -5363,6 +5413,46 @@ function span(className) {
   const element = document.createElement("span");
   element.className = className;
   return element;
+}
+const SEGMENTS = [
+  { mode: "simple", label: "Simple", title: "Simple: basic tools; shortcuts still work (Tab)" },
+  { mode: "advanced", label: "Advanced", title: "Advanced: all the things (Tab)" }
+];
+class ModeToggle {
+  /** `.cps-mode-toggle`. */
+  element;
+  buttons = /* @__PURE__ */ new Map();
+  /**
+   * @param className - Extra class (placement).
+   * @param pick - A segment was clicked.
+   */
+  constructor(className, pick2) {
+    this.element = document.createElement("div");
+    this.element.className = `cps-mode-toggle ${className}`;
+    this.element.setAttribute("role", "radiogroup");
+    this.element.setAttribute("aria-label", "Editor mode");
+    for (const { mode, label, title } of SEGMENTS) {
+      const button2 = document.createElement("button");
+      button2.type = "button";
+      button2.className = "cps-mode-seg";
+      button2.textContent = label;
+      button2.title = title;
+      button2.setAttribute("role", "radio");
+      button2.addEventListener("click", () => pick2(mode));
+      this.buttons.set(mode, button2);
+      this.element.appendChild(button2);
+    }
+  }
+  /**
+   * Show the current mode.
+   * @param mode - Current mode.
+   */
+  set(mode) {
+    for (const [m, button2] of this.buttons) {
+      button2.classList.toggle("cps-active", m === mode);
+      button2.setAttribute("aria-checked", String(m === mode));
+    }
+  }
 }
 const LONG_PRESS_MS = 380;
 function installLongPress(element, handlers) {
@@ -5578,10 +5668,12 @@ class BottomBar {
     this.resolution.className = "cps-bb-resolution cps-mono";
     this.resolution.title = "Image size";
     const fit = iconButton$1("fit", "Fit to view (Ctrl 0)", () => this.ctx.getSession()?.editor.view.fit());
+    fit.classList.add("cps-bb-fit");
     this.fullscreenButton = iconButton$1("fullscreen", "Fullscreen (F)", () => ctx.fullscreen());
     const help = iconButton$1("help", "Shortcuts (?)", () => ctx.toggleHelp());
     help.classList.add("cps-bb-muted");
-    right.append(this.align, vdiv(), this.resolution, vdiv(), fit, this.fullscreenButton, help);
+    this.modeToggle = new ModeToggle("cps-mode-bar", (mode) => ctx.pickMode(mode));
+    right.append(this.modeToggle.element, this.align, vdiv(), this.resolution, vdiv(), fit, this.fullscreenButton, help);
     this.element.append(left, right);
     container.appendChild(this.element);
   }
@@ -5598,6 +5690,7 @@ class BottomBar {
   alignIcon;
   resolution;
   fullscreenButton;
+  modeToggle;
   pillKind = null;
   resolutionWarning = false;
   fullscreenOn = false;
@@ -5636,6 +5729,14 @@ class BottomBar {
       this.layoutKey = key;
       this.ctx.requestLayout?.();
     }
+  }
+  /**
+   * Show the mode on the fullscreen toggle (the rest is CSS).
+   * @param mode - Editor mode.
+   */
+  setMode(mode) {
+    this.modeToggle.set(mode);
+    this.ctx.requestLayout?.();
   }
   /**
    * Show the fullscreen state on the Fullscreen button.
@@ -5938,6 +6039,7 @@ const QUICK_ROWS = [
   { keys: "Q", action: "Quick Mask" },
   { keys: "F", action: "Fullscreen" }
 ];
+const QUICK_ASIDE = { keys: "Tab", action: "Simple / Advanced" };
 const HELP_SECTIONS = [
   {
     title: "General",
@@ -5948,6 +6050,7 @@ const HELP_SECTIONS = [
       { keys: "Q", action: "Quick Mask" },
       { keys: "F", action: "Fullscreen" },
       { keys: "O", action: "Outputs tab (regions)" },
+      { keys: "Tab", action: "Simple / Advanced mode" },
       { keys: "?", action: "This help" },
       { keys: "Del / Backspace", action: "Clear the selection" },
       { keys: "Wheel", action: "Zoom about the cursor" },
@@ -6127,7 +6230,14 @@ function buildCard(close) {
   const body = el$2("div", "cps-help-body");
   const quick = el$2("section", "cps-help-quick");
   const quickTitle = el$2("div", "cps-help-section-title");
-  quickTitle.textContent = "Essentials";
+  const quickLabel = el$2("span", "");
+  quickLabel.textContent = "Essentials";
+  const aside = el$2("span", "cps-help-quick-aside");
+  const asideAction = el$2("span", "cps-help-action");
+  asideAction.textContent = QUICK_ASIDE.action;
+  aside.append(buildKeys(QUICK_ASIDE.keys), asideAction);
+  quickTitle.classList.add("cps-help-quick-title");
+  quickTitle.append(quickLabel, aside);
   const quickItems = el$2("div", "cps-help-quick-items");
   for (const row of QUICK_ROWS) {
     const item = el$2("div", "cps-help-quick-item");
@@ -10131,6 +10241,7 @@ const DOCK_SECTIONS = [
   [SELECT_GROUP.id, "move-layer"],
   ["shape", "text"]
 ];
+const SIMPLE_HIDDEN = /* @__PURE__ */ new Set(["bucket", "shape", "text"]);
 const SLOT_TITLES = {
   select: "Select (M / L / W) · hold or right-click for more",
   shape: "Shapes (U) · hold or right-click for more"
@@ -10180,6 +10291,8 @@ class ToolDock {
   swatches;
   toolButtons = /* @__PURE__ */ new Map();
   groupSlots = [];
+  sections = [];
+  simple = false;
   toolIds = "";
   activeId = "";
   swatchBox;
@@ -10221,6 +10334,7 @@ class ToolDock {
       button2.setAttribute("aria-pressed", String(id === activeId));
     }
     for (const slot of this.groupSlots) slot.setActive(activeId);
+    this.syncSimple();
     const dropper = activeId === EYEDROPPER_ID;
     this.dropperButton.classList.toggle("cps-active", dropper);
     this.dropperButton.setAttribute("aria-pressed", String(dropper));
@@ -10236,6 +10350,14 @@ class ToolDock {
     this.dropperPill.classList.toggle("cps-dimmed", on);
     this.element.classList.toggle("cps-modal", on);
   }
+  /**
+   * Simple mode: hide the advanced tools (each still shows while active).
+   * @param on - Simple mode.
+   */
+  setSimple(on) {
+    this.simple = on;
+    this.syncSimple();
+  }
   /** Close fly-outs, stop timers and listeners. */
   dispose() {
     for (const slot of this.groupSlots) slot.dispose();
@@ -10248,11 +10370,31 @@ class ToolDock {
     this.toolButtons.clear();
     for (const slot of this.groupSlots) slot.dispose();
     this.groupSlots = [];
-    const sections = dockSections(tools, groups);
-    sections.forEach((section, i) => {
-      if (i > 0) this.toolBox.appendChild(divider());
-      for (const entry of section) this.toolBox.appendChild(this.entryElement(entry));
+    this.sections = dockSections(tools, groups).map((section, i) => {
+      const line = i > 0 ? divider() : null;
+      if (line) this.toolBox.appendChild(line);
+      const items = section.map((entry) => {
+        const element = this.entryElement(entry);
+        this.toolBox.appendChild(element);
+        return entry.kind === "group" ? { key: entry.spec.id, element, toolIds: entry.tools.map((t) => t.id) } : { key: entry.tool.id, element, toolIds: [entry.tool.id] };
+      });
+      return { divider: line, items };
     });
+    this.syncSimple();
+  }
+  /** Simple-mode visibility of the entries, and of dividers between visible sections. */
+  syncSimple() {
+    let before = false;
+    for (const section of this.sections) {
+      let any = false;
+      for (const item of section.items) {
+        const hide = hiddenInDock(this.simple, item.key, item.toolIds, this.activeId);
+        item.element.hidden = hide;
+        any ||= !hide;
+      }
+      if (section.divider) section.divider.hidden = !(any && before);
+      before ||= any;
+    }
   }
   entryElement(entry) {
     if (entry.kind === "group") {
@@ -10380,6 +10522,9 @@ function dockSections(tools, groups) {
   const rest = order.filter((key) => !placed.has(key)).flatMap((key) => byKey.get(key) ?? []);
   return [...sections, rest].filter((s) => s.length > 0);
 }
+function hiddenInDock(simple, key, toolIds, activeId) {
+  return simple && SIMPLE_HIDDEN.has(key) && !toolIds.includes(activeId);
+}
 function divider() {
   const el2 = document.createElement("span");
   el2.className = "cps-vdiv";
@@ -10421,6 +10566,7 @@ class HostSync {
   shell;
   getSession;
   cancelDrag;
+  mode = "advanced";
   /**
    * @param ctx - Host services.
    */
@@ -10499,7 +10645,9 @@ class HostSync {
       toggleMoveDrawing: () => this.toggleMoveDrawing(),
       fullscreen: () => shell.events.emit("fullscreen", void 0),
       toggleHelp: () => shell.events.emit("help", void 0),
-      requestLayout: () => shell.requestLayout()
+      requestLayout: () => shell.requestLayout(),
+      isSimple: () => this.mode === "simple",
+      pickMode: (mode) => ctx.pickMode(mode)
     });
     this.bottomThrottle = new RefreshThrottle(() => this.bottomBar.sync());
     this.resolution = new ResolutionNotice((on) => this.bottomBar.setResolutionWarning(on), () => this.cancelDrag());
@@ -10537,6 +10685,15 @@ class HostSync {
     this.outputs.setEditor(editor);
     this.resolution.setEditor(editor);
     this.syncBottomBar();
+  }
+  /**
+   * Apply Simple / Advanced to the dock and the bottom bar.
+   * @param mode - Editor mode.
+   */
+  setMode(mode) {
+    this.mode = mode;
+    this.dock.setSimple(mode === "simple");
+    this.bottomBar.setMode(mode);
   }
   /** Sync dock, strip, sliders, panel tab and bottom bar when the active tool changes. */
   syncTools() {
@@ -11446,6 +11603,8 @@ class EditorShell {
   root;
   /** Canvas stage. */
   stage;
+  /** Centred just under the node's title bar, above the root (`setHeaderAnchor`); hidden in fullscreen. */
+  headerSlot;
   top;
   slidersSlot;
   noticeSlot;
@@ -11470,6 +11629,8 @@ class EditorShell {
     };
     this.top.dockColumn.append(this.top.dock, this.top.strip);
     this.top.element.append(this.top.history, this.top.dockColumn, this.top.clip);
+    this.headerSlot = div("cps-slot cps-slot-header");
+    this.headerSlot.hidden = true;
     this.slidersSlot = div("cps-slot cps-slot-sliders");
     this.noticeSlot = div("cps-slot cps-slot-notice");
     this.bottomSlot = div("cps-slot cps-slot-bottom");
@@ -11477,6 +11638,7 @@ class EditorShell {
     this.sidePanel = new SidePanel();
     this.root.append(
       this.stage,
+      this.headerSlot,
       this.top.element,
       this.slidersSlot,
       this.noticeSlot,
@@ -11518,6 +11680,16 @@ class EditorShell {
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? strip.clientWidth : 1;
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     strip.scrollLeft += delta * unit;
+  }
+  /**
+   * Place the header slot (centred horizontally on the root).
+   * @param top - Its top edge relative to the root's top, root CSS px
+   *   (negative = above the root, just under the node's title bar), or
+   *   `null` (unknown: hidden).
+   */
+  setHeaderAnchor(top) {
+    this.headerSlot.hidden = top === null;
+    if (top !== null) this.headerSlot.style.setProperty("--cps-header-top", `${Math.round(top)}px`);
   }
   /** Re-run the responsive layout on the next frame (bars changed size). */
   requestLayout() {
@@ -11785,6 +11957,7 @@ function handleShortcut(event, session, effects) {
     return false;
   }
   if (event.altKey || ctrl) return false;
+  if (event.key === "Tab" && !event.shiftKey && effects.toggleMode) return run(() => effects.toggleMode?.());
   if (tools.resolve(false).onKey?.(editor, event)) return true;
   if (handleOutlineNudge(event, tools.active, editor, effects.isToolDragging?.() ?? false)) return true;
   const options = tools.active.options;
@@ -13486,6 +13659,35 @@ function drawHandles(ctx, view, rect, pixelRatio, px) {
     ctx.strokeRect(at.x - ring, at.y - ring, 2 * ring, 2 * ring);
   }
 }
+const FONT_PX = 10;
+const GAP_PX = 4;
+function drawResolutionLabel(ctx, editor, pixelRatio) {
+  const { width, height } = editor.imageSize;
+  if (width <= 0 || height <= 0) return;
+  const px = pixelRatio / (editor.view.graphScale || 1);
+  const area = docRectToStage(editor.view.current, frameRect(editor.imageSize));
+  const text = `${width} x ${height}`;
+  const x = (area.x + area.width / 2) * pixelRatio;
+  const y = (area.y + area.height) * pixelRatio + GAP_PX * px;
+  ctx.save();
+  ctx.font = `${FONT_PX * px}px sans-serif`;
+  const half = ctx.measureText(text).width / 2;
+  const bottom = y + (FONT_PX + 2) * px;
+  if (y < 0 || bottom > ctx.canvas.height || x - half < 0 || x + half > ctx.canvas.width) {
+    ctx.restore();
+    return;
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.globalAlpha = 0.55;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3 * px;
+  ctx.strokeStyle = "#000000";
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
 const BADGE_MIN = 16;
 const BADGE_MAX = 24;
 const RING_GAP = 3;
@@ -13877,6 +14079,8 @@ class StageView {
   webClick;
   /** Maximum paint area in stage CSS px at the last render. */
   capCss = null;
+  /** Draw the image size under the image area (Simple mode; the bottom bar shows it otherwise). */
+  showSize = false;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered = null;
   /** Whether the stage is attached and has a non-zero layout size. */
@@ -14155,6 +14359,7 @@ class StageView {
     if (session && !regionMode) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, regionMode);
     if (session) drawTransformOverlay(ctx, session.editor, pr);
+    if (session && this.showSize) drawResolutionLabel(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {
@@ -14335,7 +14540,7 @@ class EditorHost {
     this.element = this.fullscreen.container;
     this.chrome = new ChromeVisibility((shown) => {
       this.root.classList.toggle(CHROME_HIDDEN_CLASS, !shown);
-      this.shell.sidePanel.setVisible(shown);
+      this.syncPanelVisible();
       if (!shown) this.shell.popoverHost.close();
     });
     this.chrome.hold(this.shell.sidePanel.element);
@@ -14351,12 +14556,15 @@ class EditorHost {
       releaseFocus: () => this.keyboard.reclaimFocus(),
       clipboard: this.clipboard,
       sources,
+      pickMode: (mode) => this.pickMode(mode),
       pickSource: (entry) => {
         const editor = this.session?.editor;
         if (editor) void insertSourceUrl(editor, entry.url, () => this.session?.editor ?? null, entry.name);
       }
     });
     this.shell.events.on("help", () => this.sync.help.toggle());
+    this.headerToggle = new ModeToggle("cps-mode-header", (mode) => this.pickMode(mode));
+    this.shell.headerSlot.appendChild(this.headerToggle.element);
     this.shell.events.on("pick-color", (request) => {
       const colors = this.session?.editor.colors;
       if (!colors) return;
@@ -14442,6 +14650,10 @@ class EditorHost {
   keyboardEngaged = false;
   /** Timed show / hide of the bars and the side panel. */
   chrome;
+  /** Simple / Advanced (see {@link EditorHost.setMode}). */
+  mode = DEFAULT_MODE;
+  /** The toggle over the node's title bar. */
+  headerToggle;
   /** In-node side panel height cap, CSS px (`null` = none). */
   panelHeightCap = null;
   session = null;
@@ -14489,13 +14701,14 @@ class EditorHost {
         editor.events.on("transform", () => (this.sync.syncOptions(), this.view.requestOverlay())),
         editor.colors.events.on("change", () => this.sync.syncSwatches()),
         // Tool switch: chrome (dock, strip, sliders, Align, panel tab) + stage cursor/ring now.
-        tools.events.on("change", () => (this.sync.syncTools(), this.view.requestOverlay()))
+        tools.events.on("change", () => (this.sync.syncTools(), this.syncPanelVisible(), this.view.requestOverlay()))
       );
       this.sync.syncTools();
       this.sync.syncMask();
       this.sync.syncHistory();
       this.view.syncView();
     }
+    this.syncPanelVisible();
     this.view.requestRender();
   }
   /**
@@ -14537,6 +14750,33 @@ class EditorHost {
     if (selected === this.nodeSelected) return;
     this.nodeSelected = selected;
     this.syncChromeVisibility();
+  }
+  /** Current mode. */
+  get editorMode() {
+    return this.mode;
+  }
+  /**
+   * Apply a mode (the node's saved one, or a toggle click).
+   * @param mode - Simple or Advanced.
+   */
+  setMode(mode) {
+    if (this.disposed) return;
+    this.mode = mode;
+    const simple = mode === "simple";
+    this.root.classList.toggle("cps-simple", simple);
+    this.headerToggle.set(mode);
+    this.sync.setMode(mode);
+    this.view.showSize = simple;
+    this.view.requestOverlay();
+    this.syncPanelVisible();
+    this.shell.requestLayout();
+  }
+  /**
+   * Place the header toggle just under the node's title bar (`EditorShell.setHeaderAnchor`).
+   * @param top - Its top edge relative to the root (CSS px), or `null`.
+   */
+  setHeaderAnchor(top) {
+    this.shell.setHeaderAnchor(top);
   }
   /**
    * In-node height cap of the side panel (graph units = root CSS px). Ignored
@@ -14588,6 +14828,19 @@ class EditorHost {
     this.shell.requestLayout();
     this.handleResize();
   }
+  // ── Mode ────────────────────────────────────────────────────────────────
+  /** A toggle was clicked: apply and tell the owner (it saves the mode on the node). */
+  pickMode(mode) {
+    if (mode === this.mode) return;
+    this.setMode(mode);
+    this.events.onModeChange?.(mode);
+  }
+  /** The side panel shows with the chrome; in Simple mode only in region mode (`O`). */
+  syncPanelVisible() {
+    if (this.disposed) return;
+    const regionMode = this.session?.tools.active.id === REGION_TOOL_ID;
+    this.shell.sidePanel.setVisible(this.chrome.visible && (this.mode === "advanced" || regionMode));
+  }
   // ── Chrome visibility ───────────────────────────────────────────────────
   /**
    * Shown while the node is selected, the keyboard scope is active or
@@ -14619,6 +14872,7 @@ class EditorHost {
       isToolDragging: () => this.input.activeTool !== null,
       fullscreen: () => this.shell.events.emit("fullscreen", void 0),
       toggleOutputs: () => this.sync.toggleOutputs(),
+      toggleMode: () => this.pickMode(this.mode === "simple" ? "advanced" : "simple"),
       closeHelp: () => this.sync.help.close(),
       toggleHelp: () => this.sync.help.toggle(),
       closePopover: () => {
@@ -26005,6 +26259,7 @@ class WorkflowSaver {
     }
   }
 }
+const HEADER_GAP = 4;
 const controllers = /* @__PURE__ */ new WeakMap();
 function getController(node) {
   return controllers.get(node);
@@ -26021,8 +26276,10 @@ class PainterSketchController {
       onBecameVisible: () => this.refresh(),
       isDetached: () => this.isOffViewedGraph(),
       onDisengage: () => this.session?.uploader.flushQuietly(),
-      onSave: () => void this.saver.save(this.session)
+      onSave: () => void this.saver.save(this.session),
+      onModeChange: (mode) => this.saveMode(mode)
     }, this.sources.history);
+    this.host.setMode(this.nodeMode());
     this.isolation = isolateEvents({
       root: this.host.root,
       stage: this.host.stage,
@@ -26131,8 +26388,16 @@ class PainterSketchController {
    * frame edits apply immediately (the poll catches programmatic changes).
    */
   handleNodeCreated() {
+    if (parseMode$1(this.node.properties?.[MODE_PROPERTY]) === null) this.writeMode(readDefaultMode());
+    this.host.setMode(this.nodeMode());
     this.frame.chainWidgetCallbacks(() => this.updateContent());
     this.updateContent();
+  }
+  /** `configure` applied the saved node: its mode. */
+  handleConfigured() {
+    if (this.disposed) return;
+    this.host.setMode(this.nodeMode());
+    this.syncHeaderAnchor();
   }
   /**
    * Node added to a graph (before `configure` applies saved values): claim a
@@ -26153,6 +26418,7 @@ class PainterSketchController {
   setWidget(widget) {
     this.widget = widget;
     this.syncPanelCap();
+    this.syncHeaderAnchor();
   }
   /**
    * The node was selected / deselected on the canvas.
@@ -26286,6 +26552,7 @@ class PainterSketchController {
     if (!this.host.isVisible()) return;
     this.host.refreshScale();
     this.syncPanelCap();
+    this.syncHeaderAnchor();
     this.refresh();
   }
   /**
@@ -26296,6 +26563,42 @@ class PainterSketchController {
   syncPanelCap() {
     const top = (this.widget?.y ?? 0) + WIDGET_MARGIN;
     this.host.setPanelHeightCap(Math.max(PANEL_MIN_CAP, this.node.size[1] - top));
+  }
+  // ── Mode + header toggle ────────────────────────────────────────────────
+  /** The node's saved mode, else the setting. */
+  nodeMode() {
+    return parseMode$1(this.node.properties?.[MODE_PROPERTY]) ?? readDefaultMode();
+  }
+  writeMode(mode) {
+    this.node.properties ??= {};
+    this.node.properties[MODE_PROPERTY] = mode;
+  }
+  /** A toggle click: remember it on the node and let the workflow draft see it. */
+  saveMode(mode) {
+    this.writeMode(mode);
+    requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
+  }
+  /**
+   * Put the header toggle centred just under the node's title bar (between
+   * the input and output slot labels). Nodes 2.0: measured from the Vue
+   * header element. LiteGraph: the node body's top is our widget's `y`
+   * (+ margin) above the root (graph units = root CSS px). Skipped while
+   * fullscreen (the toggle is in the bottom bar there).
+   */
+  syncHeaderAnchor() {
+    if (this.host.isFullscreen) return;
+    const root = this.host.root;
+    const header = this.host.element.closest("[data-node-id]")?.querySelector(".lg-node-header");
+    if (header) {
+      const r = root.getBoundingClientRect();
+      const h = header.getBoundingClientRect();
+      const scale = r.width / (root.offsetWidth || 1) || 1;
+      if (h.height === 0) return;
+      this.host.setHeaderAnchor((h.bottom - r.top) / scale + HEADER_GAP);
+      return;
+    }
+    if (!this.widget) return;
+    this.host.setHeaderAnchor(-((this.widget.y ?? 0) + WIDGET_MARGIN) + HEADER_GAP);
   }
   /** Push background + frame (and the Image Mask / Input Mask source) to the editor when anything relevant changed. */
   updateContent() {
@@ -26335,6 +26638,11 @@ function installNodeHooks(nodeType) {
   proto.onAdded = function(graph) {
     onAdded?.call(this, graph);
     getController(this)?.handleAdded();
+  };
+  const onConfigure = proto.onConfigure;
+  proto.onConfigure = function(...args) {
+    onConfigure?.apply(this, args);
+    getController(this)?.handleConfigured();
   };
   const onExecuted = proto.onExecuted;
   proto.onExecuted = function(output) {
@@ -26414,7 +26722,7 @@ function installPageGuards() {
   window.addEventListener("beforeunload", flushGraphSync);
 }
 const barsCss = '/*\n * Shared primitives of the floating UI (design handoff): the bar pill, the\n * 32 px bar button, dividers, the corner caret, menus, the light "commit"\n * button and the segmented control. Component files (dock, strip, bottom\n * bar, panel) build on these. Tokens live on .cps-root (editor.css).\n */\n\n/* ── Pills (bars) ──────────────────────────────────────────────────────── */\n\n.cps-pill {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 4px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  white-space: nowrap;\n}\n\n/* Vertical divider inside a pill / bar. */\n.cps-vdiv {\n  flex: none;\n  width: 1px;\n  height: 20px;\n  margin: 0 3px;\n  background: var(--cps-line-2);\n}\n\n.cps-vdiv.cps-vdiv-short {\n  height: 16px;\n}\n\n/* ── Buttons ───────────────────────────────────────────────────────────── */\n\n.cps-bar-button,\n.cps-icon-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  padding: 0;\n  border: 0;\n  border-radius: var(--cps-r-btn);\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bar-button {\n  width: var(--cps-bar-btn);\n  height: var(--cps-bar-btn);\n}\n\n.cps-icon-button {\n  width: 24px;\n  height: 22px;\n  border-radius: 6px;\n}\n\n.cps-bar-button:hover:not(:disabled),\n.cps-icon-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bar-button.cps-active,\n.cps-icon-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* Hovering a selected button keeps (slightly deepens) its accent; the plain\n   hover rule above is more specific and would otherwise replace it. */\n.cps-bar-button.cps-active:hover:not(:disabled),\n.cps-icon-button.cps-active:hover:not(:disabled) {\n  background: var(--cps-acc-35);\n}\n\n.cps-bar-button:disabled,\n.cps-icon-button:disabled {\n  color: var(--cps-fg-disabled);\n  cursor: default;\n}\n\n/* Modal states (transform, region mode, align) dim the whole group. */\n.cps-dimmed > .cps-bar-button,\n.cps-dimmed > .cps-bar-button.cps-active {\n  background: transparent;\n  color: var(--cps-fg-disabled);\n}\n\n/* Light "commit" button (Commit, Done, Match resolution). */\n.cps-light-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 10px;\n  border: 0;\n  border-radius: 6px;\n  background: var(--cps-light-btn-bg);\n  color: var(--cps-light-btn-fg);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-light-button:hover {\n  background: var(--cps-fg-strong);\n}\n\n/* Text button in a bar (Apply, Cancel, Done). */\n.cps-text-button {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 5px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-text-button:hover {\n  background: var(--cps-hover);\n}\n\n.cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Corner caret (button has a menu) ──────────────────────────────────── */\n\n.cps-corner {\n  position: absolute;\n  right: 0;\n  bottom: 0;\n  width: 12px;\n  height: 12px;\n  display: flex;\n  align-items: flex-end;\n  justify-content: flex-end;\n  padding: 3px;\n  cursor: pointer;\n}\n\n.cps-corner-mark {\n  width: 0;\n  height: 0;\n  border-left: 4px solid transparent;\n  border-bottom: 4px solid var(--cps-fg-muted);\n  pointer-events: none;\n}\n\n/* ── Menus (ui/menu.ts) ────────────────────────────────────────────────── */\n\n.cps-popover.cps-pop-menu {\n  padding: 5px;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-bar);\n  background: var(--cps-menu-bg);\n  box-shadow: var(--cps-shadow-menu);\n}\n\n.cps-menu {\n  display: flex;\n  flex-direction: column;\n  gap: 1px;\n  min-width: 170px;\n  font-size: 12.5px;\n  color: var(--cps-fg);\n}\n\n.cps-menu-title {\n  padding: 6px 8px 4px;\n  font-size: 11px;\n  letter-spacing: 0.04em;\n  color: var(--cps-fg-muted);\n  text-transform: uppercase;\n}\n\n.cps-menu-divider {\n  height: 1px;\n  margin: 4px 6px;\n  background: var(--cps-line-1);\n}\n\n.cps-menu-footer {\n  padding: 5px 8px 4px;\n  border-top: 1px solid var(--cps-line-1);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-menu-item {\n  display: flex;\n  align-items: center;\n  gap: 9px;\n  padding: 6px 8px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  text-align: left;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-menu-item:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-menu-item.cps-current {\n  background: var(--cps-acc-20);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-80);\n}\n\n.cps-menu-item:disabled {\n  cursor: default;\n}\n\n.cps-menu-label {\n  flex: 1 1 auto;\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-menu-icon,\n.cps-menu-check {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-value);\n}\n\n.cps-menu-swatch {\n  flex: none;\n  width: 16px;\n  height: 16px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-menu-key {\n  flex: none;\n  font-family: var(--cps-mono);\n  font-size: 11px;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Segmented control ─────────────────────────────────────────────────── */\n\n.cps-segmented {\n  display: flex;\n  gap: 2px;\n  padding: 2px;\n  border-radius: var(--cps-r-seg);\n  background: var(--cps-field-bg);\n}\n\n.cps-segmented > button {\n  flex: 1 1 0;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 5px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  text-align: center;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-segmented > button:hover {\n  color: var(--cps-fg);\n}\n\n.cps-segmented > button.cps-active {\n  background: var(--cps-chip-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Generic dim ───────────────────────────────────────────────────────── */\n\n.cps-dim {\n  opacity: 0.45;\n}\n\n/* Mono value text (resolution, strip values, slot numbers). */\n.cps-mono {\n  font-family: var(--cps-mono);\n  font-variant-numeric: tabular-nums;\n}\n';
-const bottomBarCss = "/*\n * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button\n * (quickMaskButton.ts), lmask options, status pill, the resolution notice\n * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design\n * handoff sections 6 and 9. Builds on bars.css primitives; tokens on\n * .cps-root (editor.css).\n */\n\n/* ── Bars ──────────────────────────────────────────────────────────────── */\n\n/* The two pills: left group left, right group right. */\n.cps-bottom-bars {\n  display: flex;\n  align-items: flex-end;\n  justify-content: space-between;\n  gap: 8px;\n}\n\n/* The gap between the pills belongs to the stage (paint, cursor); only the pills catch the pointer. */\n.cps-slot > .cps-bottom-bars {\n  pointer-events: none;\n}\n\n.cps-bottom-bars > * {\n  pointer-events: auto;\n}\n\n.cps-bottom-bar {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-bb-lmask {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n/* 30 x 26 icon button. */\n.cps-bb-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  width: 30px;\n  height: 26px;\n  padding: 0;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bb-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bb-button.cps-bb-muted {\n  color: var(--cps-fg-muted);\n}\n\n.cps-bb-button.cps-bb-muted:hover {\n  color: var(--cps-fg);\n}\n\n.cps-bottom-bar .cps-text-button {\n  color: inherit;\n}\n\n.cps-bb-text-icon,\n.cps-bb-align-icon {\n  display: flex;\n}\n\n.cps-bottom-bar .cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Status pill ───────────────────────────────────────────────────────── */\n\n.cps-bb-pill {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  flex: none;\n  margin-right: 2px;\n  padding: 4px 6px 4px 9px;\n  border: 0;\n  border-radius: 999px;\n  background: var(--cps-acc-30);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-bb-pill:hover {\n  background: var(--cps-acc-45);\n}\n\n.cps-bb-pill-close {\n  display: flex;\n}\n\n/* ── Edit chip ─────────────────────────────────────────────────────────── */\n\n.cps-chip {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  min-width: 0;\n  padding: 4px 6px 4px 5px;\n  border: 0;\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-chip:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-chip:disabled {\n  cursor: default;\n  opacity: 0.6;\n}\n\n.cps-chip-swatch {\n  flex: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 4px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-chip-swatch.cps-ring2 {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-chip-name {\n  max-width: 160px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-chip-part {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-chip-part:empty {\n  display: none;\n}\n\n.cps-chip-chevron {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Quick Mask button ─────────────────────────────────────────────────── */\n\n.cps-qm-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  flex: none;\n  padding: 5px 14px 5px 9px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-qm-button:hover {\n  background: var(--cps-hover-strong);\n}\n\n.cps-qm-icon {\n  display: flex;\n}\n\n.cps-qm-button.cps-on {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);\n  color: var(--cps-fg-strong);\n}\n\n.cps-qm-button.cps-on:hover {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);\n}\n\n.cps-qm-button.cps-on .cps-qm-icon {\n  color: var(--cps-qm-color, #ff4d4d);\n}\n\n/* ── Align / resolution ────────────────────────────────────────────────── */\n\n.cps-bottom-bar .cps-bb-align {\n  padding: 5px 9px;\n}\n\n.cps-bottom-bar .cps-bb-align:hover {\n  filter: brightness(1.2);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn {\n  background: var(--cps-warn-bg-2);\n  color: var(--cps-warn-fg);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {\n  color: var(--cps-warn-icon);\n}\n\n/* Active wins over the amber warning. */\n.cps-bottom-bar .cps-bb-align.cps-active {\n  background: var(--cps-align-bg);\n  color: var(--cps-align-fg);\n}\n\n.cps-bb-resolution {\n  padding: 5px 9px;\n  font-size: 11.5px;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-bb-resolution:empty {\n  display: none;\n}\n\n/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */\n\n.cps-notice-pill {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding: 6px 6px 6px 12px;\n  border: 1px solid var(--cps-warn-border);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-warn-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-warn-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-notice-icon {\n  display: flex;\n  color: var(--cps-warn-icon);\n}\n\n.cps-notice-pill .cps-notice-match {\n  background: var(--cps-warn-fg);\n  color: #2a2010;\n}\n\n.cps-notice-pill .cps-notice-match:hover {\n  background: #fff;\n}\n\n.cps-notice-pill .cps-notice-hide {\n  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);\n}\n\n.cps-notice-pill .cps-notice-hide:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-warn-fg);\n}\n\n/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */\n\n.cps-help-backdrop {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: inherit;\n  background: rgba(0, 0, 0, 0.6);\n}\n\n/* Wide card; only the section area scrolls (vertically), never sideways. */\n.cps-help-card {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  box-sizing: border-box;\n  width: calc(100% - 2 * var(--cps-edge));\n  max-width: 1120px;\n  max-height: calc(100% - 2 * var(--cps-edge));\n  padding: 12px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-2);\n  border-radius: 12px;\n  background: var(--cps-panel-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n  cursor: default;\n}\n\n.cps-help-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n}\n\n.cps-help-title {\n  font-size: 13px;\n  font-weight: 600;\n}\n\n.cps-help-close {\n  color: var(--cps-fg-muted);\n}\n\n.cps-help-close:hover {\n  color: var(--cps-fg);\n}\n\n/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so\n   wide editors show everything without scrolling and cards never get a ragged\n   grid gap. */\n.cps-help-grid {\n  columns: 360px;\n  column-gap: 8px;\n}\n\n/* The one scroller under the header: Essentials band + section columns. */\n.cps-help-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n/* Essentials: accent-tinted band across the full width, items in a grid. */\n.cps-help-quick {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border: 1px solid var(--cps-acc-35);\n  border-radius: 8px;\n  background: var(--cps-acc-09);\n}\n\n.cps-help-quick-items {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));\n  gap: 4px 12px;\n  padding: 0 4px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n.cps-help-quick-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 3px 0;\n}\n\n.cps-help-quick-item .cps-help-keys {\n  flex: none;\n}\n\n.cps-help-section {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  break-inside: avoid;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border-radius: 8px;\n  background: var(--cps-card-bg);\n}\n\n/* Accent title over a rule, so each card's start stands out. */\n.cps-help-section-title {\n  margin: 0 4px 2px;\n  padding-bottom: 6px;\n  border-bottom: 1px solid var(--cps-line-2);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--cps-accent);\n}\n\n.cps-help-rows {\n  display: grid;\n  /* Keys take what they need up to half the card, then wrap; the action\n     always keeps at least half. Rows share these columns (subgrid). */\n  grid-template-columns: fit-content(50%) minmax(0, 1fr);\n  column-gap: 12px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n/* One row = one band (zebra + hover), so the eye can follow it across. */\n.cps-help-row {\n  display: grid;\n  grid-column: 1 / -1;\n  grid-template-columns: subgrid;\n  align-items: center;\n  padding: 4px 6px;\n  border-radius: 5px;\n}\n\n.cps-help-row:nth-child(even) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);\n}\n\n.cps-help-row:hover {\n  background: var(--cps-acc-18);\n}\n\n.cps-help-keys {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 3px 4px;\n}\n\n/* A key chip: one key or key combination. */\n.cps-help-kbd {\n  padding: 1px 6px;\n  border: 1px solid var(--cps-line-2);\n  border-bottom-color: rgba(0, 0, 0, 0.45);\n  border-radius: 4px;\n  background: var(--cps-field-bg);\n  font-family: var(--cps-mono);\n  font-size: 10.5px;\n  line-height: 1.5;\n  color: var(--cps-fg);\n  white-space: nowrap;\n}\n\n.cps-help-or {\n  font-size: 10.5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-help-action {\n  min-width: 0;\n  color: var(--cps-fg-value);\n}\n";
+const bottomBarCss = "/*\n * Bottom bar (ui/bottomBar.ts), edit chip (editChip.ts), Quick Mask button\n * (quickMaskButton.ts), lmask options, status pill, the resolution notice\n * pill (resolutionNotice.ts) and the help overlay (helpOverlay.ts). Design\n * handoff sections 6 and 9. Builds on bars.css primitives; tokens on\n * .cps-root (editor.css).\n */\n\n/* ── Bars ──────────────────────────────────────────────────────────────── */\n\n/* The two pills: left group left, right group right. */\n.cps-bottom-bars {\n  display: flex;\n  align-items: flex-end;\n  justify-content: space-between;\n  gap: 8px;\n}\n\n/* The gap between the pills belongs to the stage (paint, cursor); only the pills catch the pointer. */\n.cps-slot > .cps-bottom-bars {\n  pointer-events: none;\n}\n\n.cps-bottom-bars > * {\n  pointer-events: auto;\n}\n\n.cps-bottom-bar {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg-icon);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-bb-lmask {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n/* 30 x 26 icon button. */\n.cps-bb-button {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex: none;\n  width: 30px;\n  height: 26px;\n  padding: 0;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: inherit;\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-bb-button:hover:not(:disabled) {\n  background: var(--cps-hover);\n}\n\n.cps-bb-button.cps-bb-muted {\n  color: var(--cps-fg-muted);\n}\n\n.cps-bb-button.cps-bb-muted:hover {\n  color: var(--cps-fg);\n}\n\n.cps-bottom-bar .cps-text-button {\n  color: inherit;\n}\n\n.cps-bb-text-icon,\n.cps-bb-align-icon {\n  display: flex;\n}\n\n.cps-bottom-bar .cps-text-button.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* ── Status pill ───────────────────────────────────────────────────────── */\n\n.cps-bb-pill {\n  display: flex;\n  align-items: center;\n  gap: 4px;\n  flex: none;\n  margin-right: 2px;\n  padding: 4px 6px 4px 9px;\n  border: 0;\n  border-radius: 999px;\n  background: var(--cps-acc-30);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-weight: 500;\n  cursor: pointer;\n}\n\n.cps-bb-pill:hover {\n  background: var(--cps-acc-45);\n}\n\n.cps-bb-pill-close {\n  display: flex;\n}\n\n/* ── Edit chip ─────────────────────────────────────────────────────────── */\n\n.cps-chip {\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  min-width: 0;\n  padding: 4px 6px 4px 5px;\n  border: 0;\n  border-radius: 7px;\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-chip:hover:not(:disabled) {\n  background: var(--cps-hover-strong);\n}\n\n.cps-chip:disabled {\n  cursor: default;\n  opacity: 0.6;\n}\n\n.cps-chip-swatch {\n  flex: none;\n  width: 18px;\n  height: 18px;\n  border-radius: 4px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-chip-swatch.cps-ring2 {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-chip-name {\n  max-width: 160px;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.cps-chip-part {\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n.cps-chip-part:empty {\n  display: none;\n}\n\n.cps-chip-chevron {\n  display: flex;\n  flex: none;\n  color: var(--cps-fg-muted);\n}\n\n/* ── Quick Mask button ─────────────────────────────────────────────────── */\n\n.cps-qm-button {\n  position: relative;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  flex: none;\n  padding: 5px 14px 5px 9px;\n  border: 0;\n  border-radius: 7px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-qm-button:hover {\n  background: var(--cps-hover-strong);\n}\n\n.cps-qm-icon {\n  display: flex;\n}\n\n.cps-qm-button.cps-on {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 20%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 60%, transparent);\n  color: var(--cps-fg-strong);\n}\n\n.cps-qm-button.cps-on:hover {\n  background: color-mix(in srgb, var(--cps-qm-color, #ff4d4d) 30%, transparent);\n}\n\n.cps-qm-button.cps-on .cps-qm-icon {\n  color: var(--cps-qm-color, #ff4d4d);\n}\n\n/* ── Align / resolution ────────────────────────────────────────────────── */\n\n.cps-bottom-bar .cps-bb-align {\n  padding: 5px 9px;\n}\n\n.cps-bottom-bar .cps-bb-align:hover {\n  filter: brightness(1.2);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn {\n  background: var(--cps-warn-bg-2);\n  color: var(--cps-warn-fg);\n}\n\n.cps-bottom-bar .cps-bb-align.cps-warn .cps-bb-align-icon {\n  color: var(--cps-warn-icon);\n}\n\n/* Active wins over the amber warning. */\n.cps-bottom-bar .cps-bb-align.cps-active {\n  background: var(--cps-align-bg);\n  color: var(--cps-align-fg);\n}\n\n.cps-bb-resolution {\n  padding: 5px 9px;\n  font-size: 11.5px;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-bb-resolution:empty {\n  display: none;\n}\n\n/* ── Resolution notice pill (shell.noticeSlot) ─────────────────────────── */\n\n.cps-notice-pill {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n  padding: 6px 6px 6px 12px;\n  border: 1px solid var(--cps-warn-border);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-warn-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-warn-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-notice-icon {\n  display: flex;\n  color: var(--cps-warn-icon);\n}\n\n.cps-notice-pill .cps-notice-match {\n  background: var(--cps-warn-fg);\n  color: #2a2010;\n}\n\n.cps-notice-pill .cps-notice-match:hover {\n  background: #fff;\n}\n\n.cps-notice-pill .cps-notice-hide {\n  color: color-mix(in srgb, var(--cps-warn-fg) 85%, #000);\n}\n\n.cps-notice-pill .cps-notice-hide:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-warn-fg);\n}\n\n/* ── Help overlay (shell.overlaySlot) ──────────────────────────────────── */\n\n.cps-help-backdrop {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: inherit;\n  background: rgba(0, 0, 0, 0.6);\n}\n\n/* Wide card; only the section area scrolls (vertically), never sideways. */\n.cps-help-card {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  box-sizing: border-box;\n  width: calc(100% - 2 * var(--cps-edge));\n  max-width: 1120px;\n  max-height: calc(100% - 2 * var(--cps-edge));\n  padding: 12px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-2);\n  border-radius: 12px;\n  background: var(--cps-panel-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n  cursor: default;\n}\n\n.cps-help-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n}\n\n.cps-help-title {\n  font-size: 13px;\n  font-weight: 600;\n}\n\n.cps-help-close {\n  color: var(--cps-fg-muted);\n}\n\n.cps-help-close:hover {\n  color: var(--cps-fg);\n}\n\n/* Flowing columns (as many 360 px columns as fit, packed top to bottom), so\n   wide editors show everything without scrolling and cards never get a ragged\n   grid gap. */\n.cps-help-grid {\n  columns: 360px;\n  column-gap: 8px;\n}\n\n/* The one scroller under the header: Essentials band + section columns. */\n.cps-help-body {\n  flex: 1 1 auto;\n  min-height: 0;\n  overflow-x: hidden;\n  overflow-y: auto;\n}\n\n/* Essentials: accent-tinted band across the full width, items in a grid. */\n.cps-help-quick {\n  display: flex;\n  flex-direction: column;\n  gap: 8px;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border: 1px solid var(--cps-acc-35);\n  border-radius: 8px;\n  background: var(--cps-acc-09);\n}\n\n.cps-help-quick-items {\n  display: grid;\n  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));\n  gap: 4px 12px;\n  padding: 0 4px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n.cps-help-quick-item {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  min-width: 0;\n  padding: 3px 0;\n}\n\n/* Essentials title line: the mode key floated right, in normal type. */\n.cps-help-quick-title {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  gap: 12px;\n}\n\n.cps-help-quick-aside {\n  display: flex;\n  align-items: center;\n  gap: 8px;\n  font-size: 11.5px;\n  font-weight: 400;\n  letter-spacing: normal;\n  text-transform: none;\n  color: var(--cps-fg);\n}\n\n.cps-help-quick-item .cps-help-keys {\n  flex: none;\n}\n\n.cps-help-section {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n  break-inside: avoid;\n  margin-bottom: 8px;\n  padding: 10px 8px 8px;\n  border-radius: 8px;\n  background: var(--cps-card-bg);\n}\n\n/* Accent title over a rule, so each card's start stands out. */\n.cps-help-section-title {\n  margin: 0 4px 2px;\n  padding-bottom: 6px;\n  border-bottom: 1px solid var(--cps-line-2);\n  font-size: 11px;\n  font-weight: 700;\n  letter-spacing: 0.08em;\n  text-transform: uppercase;\n  color: var(--cps-accent);\n}\n\n.cps-help-rows {\n  display: grid;\n  /* Keys take what they need up to half the card, then wrap; the action\n     always keeps at least half. Rows share these columns (subgrid). */\n  grid-template-columns: fit-content(50%) minmax(0, 1fr);\n  column-gap: 12px;\n  font-size: 11.5px;\n  line-height: 1.3;\n}\n\n/* One row = one band (zebra + hover), so the eye can follow it across. */\n.cps-help-row {\n  display: grid;\n  grid-column: 1 / -1;\n  grid-template-columns: subgrid;\n  align-items: center;\n  padding: 4px 6px;\n  border-radius: 5px;\n}\n\n.cps-help-row:nth-child(even) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 3.5%, transparent);\n}\n\n.cps-help-row:hover {\n  background: var(--cps-acc-18);\n}\n\n.cps-help-keys {\n  display: flex;\n  flex-wrap: wrap;\n  align-items: center;\n  gap: 3px 4px;\n}\n\n/* A key chip: one key or key combination. */\n.cps-help-kbd {\n  padding: 1px 6px;\n  border: 1px solid var(--cps-line-2);\n  border-bottom-color: rgba(0, 0, 0, 0.45);\n  border-radius: 4px;\n  background: var(--cps-field-bg);\n  font-family: var(--cps-mono);\n  font-size: 10.5px;\n  line-height: 1.5;\n  color: var(--cps-fg);\n  white-space: nowrap;\n}\n\n.cps-help-or {\n  font-size: 10.5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-help-action {\n  min-width: 0;\n  color: var(--cps-fg-value);\n}\n";
 const colorPickerCss = `/*
  * PainterSketch colour picker popover (SPEC "Colour"; ui/colorPicker.ts,
  * colorWheel.ts, colorFields.ts). Scoped under .cps-* to avoid collisions
@@ -26668,7 +26976,429 @@ const colorPickerCss = `/*
 }
 `;
 const controlsCss = '/*\n * PainterSketch options strip, generic option controls and popovers\n * (ui/optionsStrip.ts, ui/optionControls.ts, ui/optionGroup.ts,\n * ui/textOptionControl.ts; design handoff "Options strip"). Tokens live on\n * .cps-root (editor.css); shared primitives in bars.css.\n */\n\n/* ── Strip ─────────────────────────────────────────────────────────────── */\n\n.cps-strip {\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 2px;\n  padding: 3px 4px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-bottom);\n  background: var(--cps-strip-bg);\n  box-shadow: var(--cps-shadow-bar);\n  color: var(--cps-fg);\n  font-size: 12px;\n  white-space: nowrap;\n}\n\n.cps-strip-part {\n  display: flex;\n  flex-wrap: nowrap;\n  align-items: center;\n  gap: 2px;\n}\n\n.cps-strip-part:empty {\n  display: none;\n}\n\n.cps-bar-sep {\n  flex: none;\n  width: 1px;\n  height: 16px;\n  margin: 0 3px;\n  background: var(--cps-line-2);\n}\n\n/* Static caption option. */\n.cps-bar-label {\n  flex: none;\n  padding: 4px 6px;\n  color: var(--cps-fg-muted);\n}\n\n/* State label ("Regions", "Align drawing") and hint. */\n.cps-strip-state {\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 8px;\n  color: var(--cps-fg-strong);\n}\n\n.cps-strip-hint {\n  padding: 4px 8px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-strip-icon {\n  display: flex;\n  flex: none;\n}\n\n/* "To mask": current cmask colour swatch (or the selection-to-mask icon). */\n.cps-strip-swatch {\n  flex: none;\n  width: 11px;\n  height: 11px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);\n}\n\n.cps-strip-swatch.cps-strip-swatch-icon {\n  display: flex;\n  width: auto;\n  height: auto;\n  border-radius: 0;\n  box-shadow: none;\n}\n\n.cps-strip .cps-light-button,\n.cps-strip .cps-text-button {\n  padding: 4px 8px;\n}\n\n/* ── Number (opt): muted label (scrubs) + mono value (slider popover) ───── */\n\n.cps-num {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding: 0 0 0 8px;\n  border-radius: var(--cps-r-field);\n}\n\n.cps-num:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n}\n\n.cps-num-label {\n  color: var(--cps-fg-muted);\n  cursor: ew-resize;\n  touch-action: none;\n}\n\n.cps-num-label:hover,\n.cps-num-label.cps-scrubbing {\n  color: var(--cps-fg);\n}\n\n.cps-num-value {\n  min-width: 2.6em;\n  padding: 4px 8px 4px 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg);\n  font-family: var(--cps-mono);\n  font-size: 11.5px;\n  font-variant-numeric: tabular-nums;\n  text-align: left;\n  cursor: pointer;\n}\n\n/* ── Toggle / command button ───────────────────────────────────────────── */\n\n.cps-toggle {\n  flex: none;\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 4px 8px;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-toggle:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-toggle.cps-active {\n  background: var(--cps-acc-28);\n  color: var(--cps-fg-strong);\n}\n\n/* Command buttons (btn): a faint fill. */\n.cps-toggle.cps-command {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-toggle.cps-command:hover {\n  background: var(--cps-line-2);\n}\n\n/* Icon toggles / commands (B, I, align, flips, Transform, link). */\n.cps-toggle.cps-icon-command {\n  justify-content: center;\n  min-width: 26px;\n  padding: 4px 5px;\n}\n\n/* Just the icon\'s width: it sits between W and H. Same specificity as\n   `.cps-toggle.cps-icon-command` so it wins (comes later). */\n.cps-toggle.cps-link-toggle {\n  min-width: 0;\n  padding: 4px 1px;\n}\n\n.cps-link-toggle .cps-icon {\n  transform: rotate(-45deg);\n}\n\n.cps-icon-choices {\n  display: flex;\n  gap: 2px;\n}\n\n/* ── Select (dropdown chip) ────────────────────────────────────────────── */\n\n.cps-select {\n  flex: none;\n  display: inline-flex;\n  align-items: center;\n  gap: 5px;\n  padding: 3px 4px 3px 8px;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg);\n  font: inherit;\n  cursor: pointer;\n}\n\n.cps-select:hover,\n.cps-select.cps-menu-open {\n  background: color-mix(in srgb, var(--cps-fg-strong) 5%, transparent);\n}\n\n.cps-select-label {\n  color: var(--cps-fg-muted);\n}\n\n.cps-dd {\n  display: inline-flex;\n  align-items: center;\n  gap: 4px;\n  padding: 1px 4px 1px 8px;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n}\n\n.cps-dd-chevron {\n  display: flex;\n  color: var(--cps-fg-muted);\n}\n\n/* Dropdown menu (strip): tighter than the bar menus. */\n.cps-popover.cps-pop-menu.cps-pop-dd {\n  padding: 4px;\n  border-radius: 8px;\n}\n\n.cps-pop-dd .cps-menu {\n  min-width: 110px;\n}\n\n.cps-pop-dd .cps-menu-item {\n  padding: 6px 10px;\n  border-radius: 6px;\n}\n\n.cps-pop-dd .cps-menu-item.cps-current {\n  background: var(--cps-acc-35);\n  box-shadow: none;\n  color: var(--cps-fg-strong);\n}\n\n.cps-pop-dd .cps-menu-check {\n  display: none;\n}\n\n/* ── Text option (font): native menu styled as a chip ──────────────────── */\n\n.cps-text-option {\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 5px;\n  padding: 0 4px 0 8px;\n}\n\n.cps-text-option select,\n.cps-text-field {\n  height: 22px;\n  max-width: 11em;\n  padding: 0 6px;\n  border: 0;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n  font: inherit;\n  outline: none;\n}\n\n.cps-text-option select:hover {\n  box-shadow: inset 0 0 0 1px var(--cps-fg-muted);\n}\n\n.cps-text-field {\n  width: 10em;\n  user-select: text;\n}\n\n.cps-text-field:focus {\n  box-shadow: inset 0 0 0 1px var(--cps-accent);\n}\n\n/* ── Collapsed option group (pen pressure) ─────────────────────────────── */\n\n.cps-option-group {\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  width: 28px;\n  height: 24px;\n  padding: 0;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-option-group:hover {\n  background: var(--cps-hover);\n}\n\n.cps-option-group.cps-on {\n  background: var(--cps-acc-18);\n  color: color-mix(in srgb, var(--cps-accent) 35%, var(--cps-fg-strong));\n}\n\n.cps-option-group.cps-menu-open {\n  background: var(--cps-line-2);\n}\n\n.cps-popover.cps-pop-group {\n  width: 190px;\n  padding: 12px;\n}\n\n.cps-group-pop {\n  display: flex;\n  flex-direction: column;\n  gap: 10px;\n  font-size: 12.5px;\n}\n\n.cps-group-title {\n  color: var(--cps-fg);\n  font-weight: 600;\n}\n\n.cps-group-pills {\n  display: flex;\n  gap: 6px;\n}\n\n.cps-group-pills .cps-toggle {\n  padding: 4px 12px;\n  border-radius: 999px;\n  background: var(--cps-field-bg);\n}\n\n.cps-group-pills .cps-toggle.cps-active {\n  background: var(--cps-acc-30);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-80);\n  color: var(--cps-fg-strong);\n}\n\n.cps-group-row.cps-num {\n  justify-content: space-between;\n  padding: 0;\n}\n\n.cps-group-row.cps-num:hover {\n  background: transparent;\n}\n\n.cps-group-row .cps-num-value {\n  min-width: 0;\n  padding: 3px 8px;\n  border-radius: var(--cps-r-field);\n  background: var(--cps-field-bg);\n  text-align: right;\n}\n\n/* ── Popovers ──────────────────────────────────────────────────────────── */\n\n.cps-popover-host {\n  position: absolute;\n  inset: 0;\n  z-index: 10;\n  overflow: visible;\n  pointer-events: none;\n}\n\n.cps-popover {\n  position: absolute;\n  left: 0;\n  top: 0;\n  pointer-events: auto;\n  padding: 8px;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-menu);\n  background: var(--cps-menu-bg);\n  box-shadow: var(--cps-shadow-menu);\n  color: var(--cps-fg);\n}\n\n/* Slider popover (number value click). */\n.cps-slider-pop {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n}\n\n.cps-slider {\n  width: 120px;\n  margin: 0;\n  accent-color: var(--cps-accent);\n}\n\n.cps-num-input {\n  width: 52px;\n  height: 22px;\n  padding: 0 6px;\n  border: 0;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: inset 0 0 0 1px var(--cps-line-2);\n  color: var(--cps-fg);\n  font-family: var(--cps-mono);\n  font-size: 11.5px;\n  font-variant-numeric: tabular-nums;\n  text-align: right;\n  user-select: text;\n  outline: none;\n}\n\n.cps-num-input:focus {\n  box-shadow: inset 0 0 0 1px var(--cps-accent);\n}\n\n.cps-num-unit {\n  min-width: 1.2em;\n  color: var(--cps-fg-muted);\n}\n';
-const dockCss = "/*\n * Top bars and the left sliders pill (design handoff sections 1-5): the\n * history pill (ui/historyPill.ts), the tool dock with its swatches and the\n * eyedropper reveal (ui/toolDock.ts, ui/swatches.ts), tool fly-outs\n * (ui/toolGroupSlot.ts), the images / clipboard pill and the Images tray\n * (ui/clipGroup.ts, ui/imagesPanel.ts), the sliders pill (ui/slidersPill.ts).\n * Builds on bars.css; tokens on .cps-root (editor.css).\n */\n\n/* ── Dock ──────────────────────────────────────────────────────────────── */\n\n.cps-dock {\n  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n}\n\n/* Keyboard indicator: the editor owns the shortcuts (set by ui/keyboard.ts). */\n.cps-root.cps-has-keys .cps-dock {\n  box-shadow: inset 0 2px 0 var(--cps-fg-strong), var(--cps-shadow-bar);\n}\n\n.cps-dock-tools {\n  display: flex;\n  align-items: center;\n  gap: 2px;\n}\n\n.cps-dock .cps-vdiv {\n  margin: 0 4px;\n}\n\n/* A press-and-hold menu is open on this button. */\n.cps-bar-button.cps-menu-open {\n  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n}\n\n/* Modal states: the dock's active tint goes too. */\n.cps-dimmed .cps-bar-button,\n.cps-dimmed .cps-bar-button.cps-active,\n.cps-dimmed .cps-bar-button.cps-active:hover:not(:disabled) {\n  background: transparent;\n  color: var(--cps-fg-disabled);\n}\n\n/* ── Tool fly-out (group slot menu) ────────────────────────────────────── */\n\n.cps-popover.cps-pop-menu.cps-pop-flyout {\n  border-radius: var(--cps-r-menu);\n}\n\n.cps-pop-flyout .cps-menu {\n  gap: 2px;\n  font-size: 13px;\n}\n\n.cps-pop-flyout .cps-menu-item {\n  gap: 10px;\n}\n\n.cps-pop-flyout .cps-menu-icon {\n  width: 20px;\n  justify-content: center;\n}\n\n/* Fly-outs mark the current member by the tint and ring only. */\n.cps-pop-flyout .cps-menu-check {\n  display: none;\n}\n\n/* ── Swatches ──────────────────────────────────────────────────────────── */\n\n.cps-dock-swatches {\n  position: relative;\n  display: flex;\n  align-items: center;\n}\n\n.cps-swatches {\n  display: flex;\n  align-items: center;\n  gap: 3px;\n}\n\n.cps-swatch-pair {\n  position: relative;\n  width: 32px;\n  height: 32px;\n  flex: none;\n}\n\n.cps-swatch {\n  position: absolute;\n  padding: 0;\n  border: 2px solid var(--cps-bar-bg);\n  border-radius: 50%;\n  cursor: pointer;\n}\n\n.cps-swatch-fg {\n  left: 3px;\n  top: 3px;\n  width: 21px;\n  height: 21px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 38%, transparent);\n  z-index: 1;\n}\n\n.cps-swatch-bg {\n  left: 13px;\n  top: 12px;\n  width: 19px;\n  height: 19px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);\n}\n\n.cps-swatch-icons {\n  display: flex;\n  flex-direction: column;\n  gap: 2px;\n  padding-right: 2px;\n}\n\n.cps-swatch-icon {\n  display: flex;\n  padding: 0;\n  border: 0;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  cursor: pointer;\n}\n\n.cps-swatch-icon:hover {\n  color: var(--cps-fg-strong);\n}\n\n/* Layer mask swatches: black / white only, no picker. */\n.cps-mask-swatches .cps-swatch {\n  cursor: default;\n}\n\n/* Quick Mask: masks only take coverage -- the swatches step back. */\n.cps-root.cps-quickmask .cps-swatches {\n  opacity: 0.35;\n  filter: grayscale(1);\n}\n\n/* ── Eyedropper reveal (above the dock; below it in fullscreen) ────────── */\n\n.cps-dropper-pill {\n  position: absolute;\n  left: -4px;\n  bottom: calc(100% + 14px);\n  z-index: 6;\n  padding: 4px;\n  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n  border-radius: 11px;\n}\n\n.cps-root.cps-is-fullscreen .cps-dropper-pill {\n  top: calc(100% + 14px);\n  bottom: auto;\n}\n\n.cps-root.cps-quickmask .cps-dropper-pill {\n  display: none;\n}\n\n/* ── History / clipboard pills ─────────────────────────────────────────── */\n\n.cps-history .cps-bar-button,\n.cps-clip .cps-bar-button {\n  color: var(--cps-fg-icon);\n}\n\n.cps-history .cps-bar-button:disabled {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-clip .cps-corner-mark {\n  border-bottom-color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n/* Images button count badge. */\n.cps-images-badge {\n  position: absolute;\n  top: 2px;\n  right: 1px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-width: 14px;\n  height: 14px;\n  padding: 0 3px;\n  border-radius: 7px;\n  background: var(--cps-accent);\n  color: #ffffff; /* on solid accent, both themes */\n  font-size: 9.5px;\n  font-weight: 600;\n  line-height: 1;\n  pointer-events: none;\n}\n\n.cps-images-button.cps-active {\n  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);\n  color: var(--cps-fg-icon);\n}\n\n/* No sources yet: the button is hidden, so its divider goes too. */\n.cps-images-button[hidden] + .cps-vdiv {\n  display: none;\n}\n\n/* ── Images tray (popover layer, right-aligned under the clip pill) ────── */\n\n.cps-images-tray {\n  position: absolute;\n  width: 118px;\n  padding: 8px;\n  overflow-x: hidden;\n  overflow-y: auto;\n  overscroll-behavior: contain;\n  border: 1px solid var(--cps-line-2);\n  border-radius: var(--cps-r-bar);\n  background: color-mix(in srgb, var(--cps-strip-bg) 95%, transparent);\n  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);\n  pointer-events: auto;\n}\n\n.cps-images-list {\n  display: flex;\n  flex-direction: column;\n  gap: 6px;\n}\n\n.cps-images-item {\n  position: relative;\n  flex: none;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  height: 66px;\n  padding: 0;\n  overflow: hidden;\n  border: 0;\n  border-radius: var(--cps-r-field);\n  background: var(--cps-field-bg);\n  cursor: pointer;\n}\n\n.cps-images-item:hover {\n  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cps-fg-strong) 50%, transparent);\n}\n\n.cps-images-item.cps-new {\n  box-shadow: inset 0 0 0 2px var(--cps-accent);\n}\n\n.cps-images-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  object-fit: contain;\n  pointer-events: none;\n}\n\n.cps-images-new {\n  position: absolute;\n  left: 4px;\n  bottom: 4px;\n  padding: 1px 5px;\n  border-radius: 4px;\n  background: var(--cps-accent);\n  color: #ffffff; /* on solid accent, both themes */\n  font-size: 9.5px;\n  font-weight: 600;\n  pointer-events: none;\n}\n\n/* ── Sliders pill ──────────────────────────────────────────────────────── */\n\n/* Shrinks to the slot's height on short nodes (.cps-slot-sliders): each slider\n   gives up height through its track (flex-basis = the roomy height, floor\n   --cps-vslider-min); the icon and value never shrink. */\n.cps-sliders {\n  --cps-vslider-min: 48px;\n  /* Icon 16 + value 14 + two 8 px gaps: what a slider needs besides its track. */\n  --cps-vslider-chrome: 46px;\n  box-sizing: border-box;\n  width: 40px;\n  max-height: 100%;\n  min-height: 0;\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 8px;\n  padding: 12px 0 10px;\n  overflow: hidden;\n  border: 1px solid var(--cps-line-1);\n  border-radius: var(--cps-r-panel);\n  background: var(--cps-bar-bg);\n  box-shadow: var(--cps-shadow-bar);\n}\n\n.cps-vslider {\n  flex: 1 1 auto;\n  min-height: calc(var(--cps-vslider-chrome) + var(--cps-vslider-min));\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 8px;\n}\n\n.cps-vslider-icon {\n  flex: none;\n  display: flex;\n  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));\n}\n\n.cps-vslider-hit {\n  position: relative;\n  display: flex;\n  justify-content: center;\n  flex: 1 1 96px;\n  min-height: var(--cps-vslider-min);\n  width: 24px;\n  cursor: ns-resize;\n  touch-action: none;\n}\n\n.cps-vslider-hardness .cps-vslider-hit {\n  flex-basis: 72px;\n}\n\n.cps-root.cps-is-fullscreen .cps-vslider-size .cps-vslider-hit {\n  flex-basis: 140px;\n}\n\n.cps-root.cps-is-fullscreen .cps-vslider-hardness .cps-vslider-hit {\n  flex-basis: 110px;\n}\n\n.cps-vslider-track {\n  position: relative;\n  width: 8px;\n  /* Stretches to the track hit area (a percentage height would not resolve in a shrunk flex item). */\n  align-self: stretch;\n  border-radius: 4px;\n  background: color-mix(in srgb, var(--cps-field-bg) 90%, #000);\n  pointer-events: none;\n}\n\n.cps-vslider-fill {\n  position: absolute;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  border-radius: 4px;\n  background: var(--cps-fg-muted);\n}\n\n.cps-vslider-thumb {\n  position: absolute;\n  left: -8px;\n  width: 24px;\n  height: 12px;\n  margin-bottom: -6px;\n  border-radius: 6px;\n  background: var(--cps-fg);\n  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);\n}\n\n.cps-vslider-hit:hover .cps-vslider-thumb,\n.cps-vslider-hit.cps-dragging .cps-vslider-thumb {\n  background: var(--cps-fg-strong);\n}\n\n.cps-vslider-value {\n  flex: none;\n  font-size: 10.5px;\n  line-height: 14px;\n  color: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));\n}\n\n.cps-sliders-div {\n  width: 22px;\n  height: 1px;\n  background: var(--cps-line-2);\n}\n";
+const dockCss = `/*
+ * Top bars and the left sliders pill (design handoff sections 1-5): the
+ * history pill (ui/historyPill.ts), the tool dock with its swatches and the
+ * eyedropper reveal (ui/toolDock.ts, ui/swatches.ts), tool fly-outs
+ * (ui/toolGroupSlot.ts), the images / clipboard pill and the Images tray
+ * (ui/clipGroup.ts, ui/imagesPanel.ts), the sliders pill (ui/slidersPill.ts).
+ * Builds on bars.css; tokens on .cps-root (editor.css).
+ */
+
+/* ── Dock ──────────────────────────────────────────────────────────────── */
+
+.cps-dock {
+  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
+}
+
+/* Keyboard indicator: the editor owns the shortcuts (set by ui/keyboard.ts). */
+.cps-root.cps-has-keys .cps-dock {
+  box-shadow: inset 0 2px 0 var(--cps-fg-strong), var(--cps-shadow-bar);
+}
+
+.cps-dock-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.cps-dock .cps-vdiv {
+  margin: 0 4px;
+}
+
+/* A press-and-hold menu is open on this button. */
+.cps-bar-button.cps-menu-open {
+  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
+}
+
+/* Modal states: the dock's active tint goes too. */
+.cps-dimmed .cps-bar-button,
+.cps-dimmed .cps-bar-button.cps-active,
+.cps-dimmed .cps-bar-button.cps-active:hover:not(:disabled) {
+  background: transparent;
+  color: var(--cps-fg-disabled);
+}
+
+/* ── Tool fly-out (group slot menu) ────────────────────────────────────── */
+
+.cps-popover.cps-pop-menu.cps-pop-flyout {
+  border-radius: var(--cps-r-menu);
+}
+
+.cps-pop-flyout .cps-menu {
+  gap: 2px;
+  font-size: 13px;
+}
+
+.cps-pop-flyout .cps-menu-item {
+  gap: 10px;
+}
+
+.cps-pop-flyout .cps-menu-icon {
+  width: 20px;
+  justify-content: center;
+}
+
+/* Fly-outs mark the current member by the tint and ring only. */
+.cps-pop-flyout .cps-menu-check {
+  display: none;
+}
+
+/* ── Swatches ──────────────────────────────────────────────────────────── */
+
+.cps-dock-swatches {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.cps-swatches {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.cps-swatch-pair {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+.cps-swatch {
+  position: absolute;
+  padding: 0;
+  border: 2px solid var(--cps-bar-bg);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.cps-swatch-fg {
+  left: 3px;
+  top: 3px;
+  width: 21px;
+  height: 21px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 38%, transparent);
+  z-index: 1;
+}
+
+.cps-swatch-bg {
+  left: 13px;
+  top: 12px;
+  width: 19px;
+  height: 19px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 25%, transparent);
+}
+
+.cps-swatch-icons {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 2px;
+}
+
+.cps-swatch-icon {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  cursor: pointer;
+}
+
+.cps-swatch-icon:hover {
+  color: var(--cps-fg-strong);
+}
+
+/* Layer mask swatches: black / white only, no picker. */
+.cps-mask-swatches .cps-swatch {
+  cursor: default;
+}
+
+/* Quick Mask: masks only take coverage -- the swatches step back. */
+.cps-root.cps-quickmask .cps-swatches {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
+/* ── Eyedropper reveal (above the dock; below it in fullscreen) ────────── */
+
+.cps-dropper-pill {
+  position: absolute;
+  left: -4px;
+  bottom: calc(100% + 7px);
+  z-index: 6;
+  padding: 4px;
+  border-color: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
+  border-radius: 11px;
+}
+
+.cps-root.cps-is-fullscreen .cps-dropper-pill {\r
+  top: calc(100% + 7px);\r
+  bottom: auto;\r
+}\r
+\r
+/* Invisible bridge over the gap to the swatches: the pill is inside the\r
+   swatch box, so the pointer crossing it never "leaves" (no hide timer). */\r
+.cps-dropper-pill::after {\r
+  content: "";\r
+  position: absolute;\r
+  left: 0;\r
+  right: 0;\r
+  top: 100%;\r
+  height: 13px;\r
+}\r
+\r
+.cps-root.cps-is-fullscreen .cps-dropper-pill::after {\r
+  top: auto;\r
+  bottom: 100%;\r
+}
+
+.cps-root.cps-quickmask .cps-dropper-pill {
+  display: none;
+}
+
+/* ── History / clipboard pills ─────────────────────────────────────────── */
+
+.cps-history .cps-bar-button,
+.cps-clip .cps-bar-button {
+  color: var(--cps-fg-icon);
+}
+
+.cps-history .cps-bar-button:disabled {
+  color: var(--cps-fg-disabled);
+}
+
+.cps-clip .cps-corner-mark {
+  border-bottom-color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
+}
+
+/* Images button count badge. */
+.cps-images-badge {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--cps-accent);
+  color: #ffffff; /* on solid accent, both themes */
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+}
+
+.cps-images-button.cps-active {
+  background: color-mix(in srgb, var(--cps-fg-strong) 9%, transparent);
+  color: var(--cps-fg-icon);
+}
+
+/* No sources yet: the button is hidden, so its divider goes too. */
+.cps-images-button[hidden] + .cps-vdiv {
+  display: none;
+}
+
+/* ── Images tray (popover layer, right-aligned under the clip pill) ────── */
+
+.cps-images-tray {
+  position: absolute;
+  width: 118px;
+  padding: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--cps-line-2);
+  border-radius: var(--cps-r-bar);
+  background: color-mix(in srgb, var(--cps-strip-bg) 95%, transparent);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+}
+
+.cps-images-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cps-images-item {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 66px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--cps-r-field);
+  background: var(--cps-field-bg);
+  cursor: pointer;
+}
+
+.cps-images-item:hover {
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--cps-fg-strong) 50%, transparent);
+}
+
+.cps-images-item.cps-new {
+  box-shadow: inset 0 0 0 2px var(--cps-accent);
+}
+
+.cps-images-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.cps-images-new {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--cps-accent);
+  color: #ffffff; /* on solid accent, both themes */
+  font-size: 9.5px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* ── Sliders pill ──────────────────────────────────────────────────────── */
+
+/* Shrinks to the slot's height on short nodes (.cps-slot-sliders): each slider
+   gives up height through its track (flex-basis = the roomy height, floor
+   --cps-vslider-min); the icon and value never shrink. */
+.cps-sliders {
+  --cps-vslider-min: 48px;
+  /* Icon 16 + value 14 + two 8 px gaps: what a slider needs besides its track. */
+  --cps-vslider-chrome: 46px;
+  box-sizing: border-box;
+  width: 40px;
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--cps-line-1);
+  border-radius: var(--cps-r-panel);
+  background: var(--cps-bar-bg);
+  box-shadow: var(--cps-shadow-bar);
+}
+
+.cps-vslider {
+  flex: 1 1 auto;
+  min-height: calc(var(--cps-vslider-chrome) + var(--cps-vslider-min));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.cps-vslider-icon {
+  flex: none;
+  display: flex;
+  color: color-mix(in srgb, var(--cps-fg) 75%, var(--cps-fg-muted));
+}
+
+.cps-vslider-hit {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  flex: 1 1 96px;
+  min-height: var(--cps-vslider-min);
+  width: 24px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.cps-vslider-hardness .cps-vslider-hit {
+  flex-basis: 72px;
+}
+
+.cps-root.cps-is-fullscreen .cps-vslider-size .cps-vslider-hit {
+  flex-basis: 140px;
+}
+
+.cps-root.cps-is-fullscreen .cps-vslider-hardness .cps-vslider-hit {
+  flex-basis: 110px;
+}
+
+.cps-vslider-track {
+  position: relative;
+  width: 8px;
+  /* Stretches to the track hit area (a percentage height would not resolve in a shrunk flex item). */
+  align-self: stretch;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--cps-field-bg) 90%, #000);
+  pointer-events: none;
+}
+
+.cps-vslider-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 4px;
+  background: var(--cps-fg-muted);
+}
+
+.cps-vslider-thumb {
+  position: absolute;
+  left: -8px;
+  width: 24px;
+  height: 12px;
+  margin-bottom: -6px;
+  border-radius: 6px;
+  background: var(--cps-fg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.cps-vslider-hit:hover .cps-vslider-thumb,
+.cps-vslider-hit.cps-dragging .cps-vslider-thumb {
+  background: var(--cps-fg-strong);
+}
+
+.cps-vslider-value {
+  flex: none;
+  font-size: 10.5px;
+  line-height: 14px;
+  color: color-mix(in srgb, var(--cps-fg) 85%, var(--cps-fg-muted));
+}
+
+.cps-sliders-div {
+  width: 22px;
+  height: 1px;
+  background: var(--cps-line-2);
+}
+
+/* Default-colours icon (icons.ts resetColors): always "dark over light".
+   Dark theme: the icon colour is light (back), the bar colour dark (front);
+   ComfyUI's light theme (no \`dark-theme\` on <html>) swaps them. */
+.cps-rc-back {
+  fill: currentColor;
+}
+
+.cps-rc-front {
+  fill: var(--cps-bar-bg, #000);
+}
+
+:root:not(.dark-theme) .cps-rc-back {
+  fill: var(--cps-bar-bg, #fff);
+}
+
+:root:not(.dark-theme) .cps-rc-front {
+  fill: currentColor;
+}\r
+`;
 const editorCss = `/*
  * PainterSketch editor styles: theme tokens, root, stage and the floating
  * slot layout (SPEC "Editor shell and focus"; design handoff "Design
@@ -27204,7 +27934,8 @@ const fullscreenCss = `/*
   outline-offset: 1px;
 }
 `;
-const layerRowsCss = '/*\n * PainterSketch layers panel rows (design handoff "Layers tab"): row layout and\n * states, 36 x 28 thumbnails and badges, the lmask slot (ui/layerMaskThumb.ts),\n * name / sub-line, inline rename and row buttons (ui/layerRow.ts). The panel\n * shell, header, sections and footer are in panel.css. Injected by\n * styles/inject.ts.\n */\n\n/* ── Rows ──────────────────────────────────────────────────────────────── */\n\n.cps-layer-row {\n  position: relative;\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  padding: 5px 6px 5px 0;\n  border-radius: 9px;\n  cursor: pointer;\n  user-select: none;\n  touch-action: none;\n}\n\n.cps-layer-row:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 4%, transparent);\n}\n\n.cps-layer-row.cps-standby {\n  background: var(--cps-acc-09);\n}\n\n.cps-layer-row.cps-selected,\n.cps-layer-row.cps-selected:hover {\n  background: var(--cps-acc-24);\n}\n\n/* Current mask bar (3 px, the mask\'s colour); a spacer on other rows. */\n.cps-layer-bar {\n  flex: none;\n  width: 3px;\n  align-self: stretch;\n  border-radius: 2px;\n}\n\n.cps-layer-row.cps-current-mask .cps-layer-bar {\n  background: var(--cps-mask-color, var(--cps-accent));\n}\n\n.cps-layer-row.cps-dragging {\n  opacity: 0.5;\n}\n\n.cps-layer-row.cps-drop-above::before,\n.cps-layer-row.cps-drop-below::after {\n  content: "";\n  position: absolute;\n  left: 0;\n  right: 0;\n  height: 2px;\n  background: var(--cps-accent);\n  pointer-events: none;\n}\n\n.cps-layer-row.cps-drop-above::before {\n  top: -1px;\n}\n\n.cps-layer-row.cps-drop-below::after {\n  bottom: -1px;\n}\n\n/* Hidden (eye off, or hidden by a solo) rows dim. */\n.cps-layer-row.cps-hidden-layer .cps-layer-thumb-box,\n.cps-layer-row.cps-hidden-layer .cps-layer-mask-slot,\n.cps-layer-row.cps-hidden-layer .cps-layer-text {\n  opacity: 0.55;\n}\n\n/* ── Thumbnails (36 x 28; ui/thumbnails.ts) ────────────────────────────── */\n\n.cps-layer-thumb-box {\n  position: relative;\n  flex: none;\n  width: 36px;\n  height: 28px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: 0 0 0 1px var(--cps-line-2);\n}\n\n.cps-layer-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  /* Transparency checkerboard: white / gray, not theme colours. Dark themes\n     get a darker gray: next to a dark panel the white glares and #ccc reads\n     as almost plain white. */\n  --cps-checker: #ccc;\n  background-color: #ffffff;\n  background-image:\n    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%),\n    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%);\n  background-position: 0 0, 4px 4px;\n  background-size: 8px 8px;\n}\n\n/* ComfyUI sets `dark-theme` on <html> for dark palettes. */\n.dark-theme .cps-layer-thumb {\n  --cps-checker: #a6a6a6;\n}\n\n.cps-layer-mask .cps-layer-thumb,\n.cps-layer-image-mask .cps-layer-thumb,\n.cps-layer-mask-thumb .cps-layer-thumb {\n  background: #000;\n}\n\n/* The targeted thumbnail (pixels or lmask) of the selected row. */\n.cps-layer-row.cps-selected .cps-layer-thumb-box.cps-target {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-layer-row.cps-standby .cps-layer-thumb-box.cps-target {\n  box-shadow: 0 0 0 1px var(--cps-fg-muted);\n}\n\n/* "T" (text layer) and lock (read-only row) badges, bottom right. */\n.cps-layer-badge {\n  position: absolute;\n  right: -4px;\n  bottom: -4px;\n  width: 14px;\n  height: 14px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: 4px;\n  background: var(--cps-chip-bg);\n  color: var(--cps-fg-icon);\n  font-size: 10px;\n  font-weight: 600;\n  line-height: 1;\n}\n\n/* Layer mask slot (ui/layerMaskThumb.ts): add icon, or the lmask thumbnail. */\n.cps-layer-mask-slot {\n  flex: none;\n  display: flex;\n  align-items: center;\n}\n\n.cps-icon-button.cps-layer-button.cps-layer-mask-add {\n  width: 20px;\n  height: 28px;\n  border-radius: 5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-layer-mask-thumb.cps-viewing {\n  outline: 2px dashed var(--cps-accent);\n  outline-offset: 2px;\n}\n\n/* Disabled lmask: red X over the thumbnail. */\n.cps-layer-mask-off {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: var(--cps-danger-strong);\n  pointer-events: none;\n}\n\n/* Modifier indicators (data-mod from ui/layerSelectHover.ts): what a click does now. */\n.cps-layer-mask-mods {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: none;\n  color: var(--cps-cursor-fg, #fff);\n  filter: drop-shadow(0 0 1px var(--cps-cursor-halo, #111)) drop-shadow(0 0 1px var(--cps-cursor-halo, #111));\n}\n\n.cps-layer-mask-mods .cps-mod-shift {\n  color: var(--cps-cursor-ban, #e5484d);\n}\n\n.cps-layer-mask-mods > span,\n.cps-layer-mask-add .cps-mod-alt,\n.cps-layer-mask-add[data-mod="alt"] .cps-mod-plain {\n  display: none;\n}\n\n.cps-layer-mask-thumb[data-mod="alt"] .cps-mod-alt,\n.cps-layer-mask-thumb[data-mod="shift"] .cps-mod-shift,\n.cps-layer-mask-add[data-mod="alt"] .cps-mod-alt {\n  display: block;\n}\n\n/* ── Name and sub-line ─────────────────────────────────────────────────── */\n\n.cps-layer-text {\n  flex: 1 1 auto;\n  min-width: 0;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n  gap: 3px;\n}\n\n.cps-layer-name {\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  font-size: 13px;\n}\n\n/* Row names (layerRow.ts LAYER_NAME_CLAMP_CLASS): up to 2 lines, then an\n   ellipsis; 2 x 13px x 1.05 = 27.3px fits the 28px thumbnail, so the row\n   height never changes. Rows with a sub-line keep the name to 1 line. The\n   one-line rename field lifts the clamp. */\n.cps-layer-name.cps-layer-name-clamp {\n  display: -webkit-box;\n  -webkit-box-orient: vertical;\n  -webkit-line-clamp: 2;\n  line-clamp: 2;\n  max-height: 2.1em;\n  line-height: 1.05;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n.cps-layer-row.cps-has-sub .cps-layer-name.cps-layer-name-clamp {\n  -webkit-line-clamp: 1;\n  line-clamp: 1;\n  max-height: 1.2em;\n  line-height: 1.2;\n}\n\n.cps-layer-name.cps-layer-name-clamp.cps-renaming {\n  display: block;\n  max-height: none;\n}\n\n.cps-layer-sub {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  overflow: hidden;\n  color: var(--cps-fg-hint);\n  font-size: 11px;\n  white-space: nowrap;\n}\n\n.cps-layer-row.cps-layer-mask .cps-layer-sub,\n.cps-layer-row.cps-layer-image-mask .cps-layer-sub {\n  color: var(--cps-fg-muted);\n}\n\n/* Input Mask waiting for a run. */\n.cps-layer-hint {\n  overflow: hidden;\n  color: var(--cps-fg-muted);\n  font-size: 11px;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n/* Inline rename (ui/inlineRename.ts; also output card titles). */\n.cps-layer-rename {\n  display: block;\n  width: 100%;\n  min-width: 0;\n  max-width: 100%;\n  padding: 1px 4px;\n  border: 1px solid var(--cps-accent);\n  border-radius: 4px;\n  outline: none;\n  background: var(--cps-field-bg);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-size: 13px;\n  user-select: text;\n}\n\n/* ── Row buttons ───────────────────────────────────────────────────────── */\n\n.cps-icon-button.cps-layer-button {\n  flex: none;\n  width: 24px;\n  height: 24px;\n  border-radius: 6px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-icon-button.cps-layer-button:hover:not(:disabled) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-layer-button.cps-layer-eye {\n  width: 20px;\n}\n\n.cps-layer-button.cps-layer-eye.cps-solo-dimmed {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-lock,\n.cps-layer-button.cps-layer-dup {\n  width: 22px;\n}\n\n.cps-layer-button.cps-layer-lock {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-lock.cps-on {\n  color: var(--cps-fg);\n}\n\n.cps-layer-button.cps-layer-dup {\n  color: var(--cps-fg-value);\n}\n\n.cps-layer-button.cps-layer-dup:disabled {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-invert {\n  color: var(--cps-fg-hint);\n}\n\n.cps-layer-button.cps-layer-invert.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n.cps-layer-button.cps-layer-solo {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-solo.cps-active {\n  background: transparent;\n  color: var(--cps-fg-strong);\n}\n\n/* Mask colour swatch in the sub-line (colour set inline); inset 6 px from the thumbnail. */\n.cps-icon-button.cps-layer-button.cps-layer-swatch {\n  margin-left: 6px;\n  width: 10px;\n  height: 10px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-icon-button.cps-layer-button.cps-layer-swatch:hover:not(:disabled) {\n  box-shadow: 0 0 0 1px var(--cps-fg);\n}\n\n';
+const modeCss = "/*\n * Simple / Advanced (SPEC \"Simple mode\"): the mode toggle (ui/modeToggle.ts)\n * and what `.cps-root.cps-simple` hides. The dock's tools and the side panel\n * are hidden by code (they depend on the active tool); the rest is here.\n */\n\n/* ── Mode toggle ──────────────────────────────────────────────────────────── */\n\n.cps-mode-toggle {\n  display: flex;\n  flex: none;\n  padding: 2px;\n  border-radius: var(--cps-r-seg);\n  background: var(--cps-field-bg);\n  font-family: var(--cps-font);\n  font-size: 11px;\n  font-weight: 500;\n  line-height: 1;\n}\n\n.cps-mode-seg {\n  padding: 4px 8px;\n  border: 0;\n  border-radius: 5px;\n  background: transparent;\n  color: var(--cps-fg-muted);\n  font: inherit;\n  cursor: pointer;\n  white-space: nowrap;\n}\n\n.cps-mode-seg:hover {\n  color: var(--cps-fg-strong);\n}\n\n.cps-mode-seg.cps-active {\n  background: var(--cps-segment-bg);\n  color: var(--cps-fg-strong);\n}\n\n/* In-node: centred just under the node's title bar, between the input and\n   output slot labels (shell.setHeaderAnchor sets the variable; the slot is\n   hidden until it has). A little larger than the bottom-bar version. */\n.cps-slot-header {\n  position: absolute;\n  top: var(--cps-header-top, 0px);\n  left: 50%;\n  z-index: 3;\n  transform: translateX(-50%);\n}\n\n.cps-mode-header {\n  padding: 3px;\n  border: 1px solid var(--cps-line-1);\n  border-radius: 9px;\n  font-size: 12.5px;\n}\n\n.cps-mode-header .cps-mode-seg {\n  padding: 5px 14px;\n  border-radius: var(--cps-r-seg);\n}\n\n/* Fullscreen has no node header: the toggle moves into the bottom bar. */\n.cps-root.cps-is-fullscreen .cps-slot-header,\n.cps-root:not(.cps-is-fullscreen) .cps-mode-bar {\n  display: none;\n}\n\n.cps-mode-bar {\n  margin-right: 4px;\n}\n\n/* ── Simple mode ──────────────────────────────────────────────────────────── */\n\n/* Clipboard pill: only the Images button (and only while there are images). */\n.cps-root.cps-simple .cps-clip > :not(.cps-images-button),\n.cps-root.cps-simple .cps-slot-clip:not(:has(.cps-images-button:not([hidden]))) {\n  display: none;\n}\n\n/* Bottom bar, right: Fit; Align only while it warns or runs (the size is on the stage). */\n.cps-root.cps-simple .cps-bb-right > :not(.cps-bb-fit, .cps-mode-bar, .cps-bb-align.cps-warn, .cps-bb-align.cps-active) {\n  display: none;\n}\n";
+const layerRowsCss = '/*\n * PainterSketch layers panel rows (design handoff "Layers tab"): row layout and\n * states, 36 x 28 thumbnails and badges, the lmask slot (ui/layerMaskThumb.ts),\n * name / sub-line, inline rename and row buttons (ui/layerRow.ts). The panel\n * shell, header, sections and footer are in panel.css. Injected by\n * styles/inject.ts.\n */\n\n/* ── Rows ──────────────────────────────────────────────────────────────── */\n\n.cps-layer-row {\n  position: relative;\n  flex: none;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  padding: 5px 6px 5px 0;\n  border-radius: 9px;\n  cursor: pointer;\n  user-select: none;\n  touch-action: none;\n}\n\n.cps-layer-row:hover {\n  background: color-mix(in srgb, var(--cps-fg-strong) 4%, transparent);\n}\n\n.cps-layer-row.cps-standby {\n  background: var(--cps-acc-09);\n}\n\n.cps-layer-row.cps-selected,\n.cps-layer-row.cps-selected:hover {\n  background: var(--cps-acc-24);\n}\n\n/* Current mask bar (3 px, the mask\'s colour); a spacer on other rows. */\n.cps-layer-bar {\n  flex: none;\n  width: 3px;\n  align-self: stretch;\n  border-radius: 2px;\n}\n\n.cps-layer-row.cps-current-mask .cps-layer-bar {\n  background: var(--cps-mask-color, var(--cps-accent));\n}\n\n.cps-layer-row.cps-dragging {\n  opacity: 0.5;\n}\n\n.cps-layer-row.cps-drop-above::before,\n.cps-layer-row.cps-drop-below::after {\n  content: "";\n  position: absolute;\n  left: 0;\n  right: 0;\n  height: 2px;\n  background: var(--cps-accent);\n  pointer-events: none;\n}\n\n.cps-layer-row.cps-drop-above::before {\n  top: -1px;\n}\n\n.cps-layer-row.cps-drop-below::after {\n  bottom: -1px;\n}\n\n/* Hidden (eye off, or hidden by a solo) rows dim. */\n.cps-layer-row.cps-hidden-layer .cps-layer-thumb-box,\n.cps-layer-row.cps-hidden-layer .cps-layer-mask-slot,\n.cps-layer-row.cps-hidden-layer .cps-layer-text {\n  opacity: 0.55;\n}\n\n/* ── Thumbnails (36 x 28; ui/thumbnails.ts) ────────────────────────────── */\n\n.cps-layer-thumb-box {\n  position: relative;\n  flex: none;\n  width: 36px;\n  height: 28px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: 5px;\n  background: var(--cps-field-bg);\n  box-shadow: 0 0 0 1px var(--cps-line-2);\n}\n\n.cps-layer-thumb {\n  display: block;\n  max-width: 100%;\n  max-height: 100%;\n  /* Transparency checkerboard: white / gray, not theme colours. Dark themes\n     get a darker gray: next to a dark panel the white glares and #ccc reads\n     as almost plain white. */\n  --cps-checker: #ccc;\n  background-color: #ffffff;\n  background-image:\n    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%),\n    linear-gradient(45deg, var(--cps-checker) 25%, transparent 25%, transparent 75%, var(--cps-checker) 75%);\n  background-position: 0 0, 4px 4px;\n  background-size: 8px 8px;\n}\n\n/* ComfyUI sets `dark-theme` on <html> for dark palettes. */\n.dark-theme .cps-layer-thumb {\n  --cps-checker: #a6a6a6;\n}\n\n.cps-layer-mask .cps-layer-thumb,\n.cps-layer-image-mask .cps-layer-thumb,\n.cps-layer-mask-thumb .cps-layer-thumb {\n  background: #000;\n}\n\n/* The targeted thumbnail (pixels or lmask) of the selected row. */\n.cps-layer-row.cps-selected .cps-layer-thumb-box.cps-target {\n  box-shadow: 0 0 0 2px var(--cps-ring);\n}\n\n.cps-layer-row.cps-standby .cps-layer-thumb-box.cps-target {\n  box-shadow: 0 0 0 1px var(--cps-fg-muted);\n}\n\n/* "T" (text layer) and lock (read-only row) badges, bottom right. */\n.cps-layer-badge {\n  position: absolute;\n  right: -4px;\n  bottom: -4px;\n  width: 14px;\n  height: 14px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  border-radius: 4px;\n  background: var(--cps-chip-bg);\n  color: var(--cps-fg-icon);\n  font-size: 10px;\n  font-weight: 600;\n  line-height: 1;\n}\n\n/* Layer mask slot (ui/layerMaskThumb.ts): add icon, or the lmask thumbnail. */\n.cps-layer-mask-slot {\n  flex: none;\n  display: flex;\n  align-items: center;\n}\n\n.cps-icon-button.cps-layer-button.cps-layer-mask-add {\n  width: 20px;\n  height: 28px;\n  border-radius: 5px;\n  color: var(--cps-fg-hint);\n}\n\n.cps-layer-mask-thumb.cps-viewing {\n  outline: 2px dashed var(--cps-accent);\n  outline-offset: 2px;\n}\n\n/* Disabled lmask: red X over the thumbnail. */\n.cps-layer-mask-off {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  color: var(--cps-danger-strong);\n  pointer-events: none;\n}\n\n/* Modifier indicators (data-mod from ui/layerSelectHover.ts): what a click does now. */\n.cps-layer-mask-mods {\n  position: absolute;\n  inset: 0;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  pointer-events: none;\n  color: var(--cps-cursor-fg, #fff);\n  filter: drop-shadow(0 0 1px var(--cps-cursor-halo, #111)) drop-shadow(0 0 1px var(--cps-cursor-halo, #111));\n}\n\n.cps-layer-mask-mods .cps-mod-shift {\n  color: var(--cps-cursor-ban, #e5484d);\n}\n\n.cps-layer-mask-mods > span,\n.cps-layer-mask-add .cps-mod-alt,\n.cps-layer-mask-add[data-mod="alt"] .cps-mod-plain {\n  display: none;\n}\n\n.cps-layer-mask-thumb[data-mod="alt"] .cps-mod-alt,\n.cps-layer-mask-thumb[data-mod="shift"] .cps-mod-shift,\n.cps-layer-mask-add[data-mod="alt"] .cps-mod-alt {\n  display: block;\n}\n\n/* ── Name and sub-line ─────────────────────────────────────────────────── */\n\n.cps-layer-text {\n  flex: 1 1 auto;\n  min-width: 0;\n  display: flex;\n  flex-direction: column;\n  justify-content: center;\n  gap: 3px;\n}\n\n.cps-layer-name {\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n  font-size: 13px;\n}\n\n/* Row names (layerRow.ts LAYER_NAME_CLAMP_CLASS): up to 2 lines, then an\n   ellipsis; 2 x 13px x 1.05 = 27.3px fits the 28px thumbnail, so the row\n   height never changes. Rows with a sub-line keep the name to 1 line. The\n   one-line rename field lifts the clamp. */\n.cps-layer-name.cps-layer-name-clamp {\n  display: -webkit-box;\n  -webkit-box-orient: vertical;\n  -webkit-line-clamp: 2;\n  line-clamp: 2;\n  max-height: 2.1em;\n  line-height: 1.05;\n  white-space: normal;\n  overflow-wrap: anywhere;\n}\n\n.cps-layer-row.cps-has-sub .cps-layer-name.cps-layer-name-clamp {\n  -webkit-line-clamp: 1;\n  line-clamp: 1;\n  max-height: 1.2em;\n  line-height: 1.2;\n}\n\n.cps-layer-name.cps-layer-name-clamp.cps-renaming {\n  display: block;\n  max-height: none;\n}\n\n.cps-layer-sub {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  min-width: 0;\n  overflow: hidden;\n  color: var(--cps-fg-hint);\n  font-size: 11px;\n  white-space: nowrap;\n}\n\n.cps-layer-row.cps-layer-mask .cps-layer-sub,\n.cps-layer-row.cps-layer-image-mask .cps-layer-sub {\n  color: var(--cps-fg-muted);\n}\n\n/* Input Mask waiting for a run. */\n.cps-layer-hint {\n  overflow: hidden;\n  color: var(--cps-fg-muted);\n  font-size: 11px;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n/* Inline rename (ui/inlineRename.ts; also output card titles). */\n.cps-layer-rename {\n  display: block;\n  width: 100%;\n  min-width: 0;\n  max-width: 100%;\n  padding: 1px 4px;\n  border: 1px solid var(--cps-accent);\n  border-radius: 4px;\n  outline: none;\n  background: var(--cps-field-bg);\n  color: var(--cps-fg-strong);\n  font: inherit;\n  font-size: 13px;\n  user-select: text;\n}\n\n/* ── Row buttons ───────────────────────────────────────────────────────── */\n\n.cps-icon-button.cps-layer-button {\n  flex: none;\n  width: 24px;\n  height: 24px;\n  border-radius: 6px;\n  color: var(--cps-fg-muted);\n}\n\n.cps-icon-button.cps-layer-button:hover:not(:disabled) {\n  background: color-mix(in srgb, var(--cps-fg-strong) 10%, transparent);\n  color: var(--cps-fg);\n}\n\n.cps-layer-button.cps-layer-eye {\n  width: 20px;\n}\n\n.cps-layer-button.cps-layer-eye.cps-solo-dimmed {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-lock,\n.cps-layer-button.cps-layer-dup {\n  width: 22px;\n}\n\n.cps-layer-button.cps-layer-lock {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-lock.cps-on {\n  color: var(--cps-fg);\n}\n\n.cps-layer-button.cps-layer-dup {\n  color: var(--cps-fg-value);\n}\n\n.cps-layer-button.cps-layer-dup:disabled {\n  color: var(--cps-fg-disabled);\n}\n\n.cps-layer-button.cps-layer-invert {\n  color: var(--cps-fg-hint);\n}\n\n.cps-layer-button.cps-layer-invert.cps-active {\n  background: var(--cps-active-bg);\n  color: var(--cps-fg-strong);\n}\n\n.cps-layer-button.cps-layer-solo {\n  color: var(--cps-fg-disabled);\n}\n\n/* Solo on: accent, so it stands out from the (also bright) selected row;\n   the soloed row\'s eye follows. */\n.cps-layer-button.cps-layer-solo.cps-active,\n.cps-icon-button.cps-layer-button.cps-layer-solo.cps-active:hover:not(:disabled) {\n  background: var(--cps-acc-09);\n  box-shadow: inset 0 0 0 1px var(--cps-acc-35);\n  color: var(--cps-accent);\n}\n\n.cps-layer-button.cps-layer-eye.cps-solo-on {\n  color: var(--cps-accent);\n}\n\n/* Mask colour swatch in the sub-line (colour set inline); inset 6 px from the thumbnail. */\n.cps-icon-button.cps-layer-button.cps-layer-swatch {\n  margin-left: 6px;\n  width: 10px;\n  height: 10px;\n  border-radius: 3px;\n  box-shadow: 0 0 0 1px color-mix(in srgb, var(--cps-fg-strong) 18%, transparent);\n}\n\n.cps-icon-button.cps-layer-button.cps-layer-swatch:hover:not(:disabled) {\n  box-shadow: 0 0 0 1px var(--cps-fg);\n}\n\n';
 const outputsCss = `/* Outputs tab content (ui/outputsPanel.ts, outputCard.ts, outputOptionsRow.ts,
    outputField.ts; design handoff "Outputs tab" / "Card"): Main card, slot
    grid, the selected region's card and the hint. The side panel chrome and
@@ -27868,7 +28599,8 @@ const SHEETS = [
   layerRowsCss,
   outputsCss,
   bottomBarCss,
-  fullscreenCss
+  fullscreenCss,
+  modeCss
 ];
 function injectStyles() {
   if (document.getElementById(STYLE_ELEMENT_ID)) return;

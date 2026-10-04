@@ -145,6 +145,8 @@ export interface LGraphNode {
   imgs?: HTMLImageElement[];
   /** Nodes 2.0: skip rendering execution output images under the node. */
   hideOutputImages?: boolean;
+  /** Serialized per-node bag (LiteGraph `properties`); saved with the workflow, never sent to the backend. */
+  properties?: Record<string, unknown>;
   /** Selected on the canvas (LiteGraph `Positionable.selected`). */
   selected?: boolean;
   constructor: { comfyClass?: string; nodeData?: { name?: string } };
@@ -167,6 +169,8 @@ export interface LGraphNode {
   onConnectionsChange?(this: LGraphNode, ...args: Parameters<ConnectionsChangeCallback>): void;
   onRemoved?(this: LGraphNode): void;
   onAdded?(this: LGraphNode, graph: LGraph): void;
+  /** `configure` applied saved data (widget values, properties). */
+  onConfigure?(this: LGraphNode, ...args: unknown[]): void;
   /** The node became selected on the canvas (both renderers go through `LGraphCanvas.select`). */
   onSelected?(this: LGraphNode): void;
   /** The node was deselected. */

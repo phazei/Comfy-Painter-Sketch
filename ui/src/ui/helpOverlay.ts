@@ -1,7 +1,7 @@
 /**
  * Shortcuts help overlay (design handoff section 9): a dim backdrop over the
  * editor with a centred card titled "Shortcuts": an "Essentials" band of the
- * most-used keys, then flowing columns of section cards, both generated from
+ * most-used keys (the mode key at the right of its title), then flowing columns of section cards, both generated from
  * the one shortcut list (`shortcutList.ts`).
  * Opened by the bottom bar's Help button or the `?` key; closed by Esc (the
  * host's Esc chain calls {@link HelpOverlay.close}), a backdrop click or the
@@ -10,7 +10,7 @@
  */
 
 import { setIcon } from "./icons";
-import { HELP_SECTIONS, QUICK_ROWS } from "./shortcutList";
+import { HELP_SECTIONS, QUICK_ASIDE, QUICK_ROWS } from "./shortcutList";
 
 /**
  * The help overlay of one editor.
@@ -97,7 +97,14 @@ function buildCard(close: () => void): HTMLDivElement {
   const body = el("div", "cps-help-body");
   const quick = el("section", "cps-help-quick");
   const quickTitle = el("div", "cps-help-section-title");
-  quickTitle.textContent = "Essentials";
+  const quickLabel = el("span", "");
+  quickLabel.textContent = "Essentials";
+  const aside = el("span", "cps-help-quick-aside");
+  const asideAction = el("span", "cps-help-action");
+  asideAction.textContent = QUICK_ASIDE.action;
+  aside.append(buildKeys(QUICK_ASIDE.keys), asideAction);
+  quickTitle.classList.add("cps-help-quick-title");
+  quickTitle.append(quickLabel, aside);
   const quickItems = el("div", "cps-help-quick-items");
   for (const row of QUICK_ROWS) {
     const item = el("div", "cps-help-quick-item");

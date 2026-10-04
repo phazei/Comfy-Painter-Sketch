@@ -2,7 +2,7 @@
  * Injects the editor stylesheets once per page as one `<style>`, in cascade
  * order: tokens + stage (editor), bar primitives (bars), option controls,
  * tool dock + sliders, colour picker, side panel, layer rows, outputs tab,
- * bottom bar, fullscreen. ComfyUI only auto-loads `.js` from
+ * bottom bar, fullscreen, Simple mode. ComfyUI only auto-loads `.js` from
  * `WEB_DIRECTORY`, so the CSS is bundled as strings (`?inline`).
  */
 
@@ -13,6 +13,7 @@ import controlsCss from "./controls.css?inline";
 import dockCss from "./dock.css?inline";
 import editorCss from "./editor.css?inline";
 import fullscreenCss from "./fullscreen.css?inline";
+import modeCss from "./mode.css?inline";
 import layerRowsCss from "./layerRows.css?inline";
 import outputsCss from "./outputs.css?inline";
 import panelCss from "./panel.css?inline";
@@ -31,6 +32,7 @@ const SHEETS: readonly string[] = [
   outputsCss,
   bottomBarCss,
   fullscreenCss,
+  modeCss,
 ];
 
 /**

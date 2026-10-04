@@ -20,6 +20,9 @@
  *   pointer leaves.
  * - Modal states (Free Transform, region mode, Align drawing) dim the dock
  *   ({@link ToolDock.setModal}).
+ * - Simple mode ({@link ToolDock.setSimple}) hides the bucket, the Shapes slot
+ *   and Text; one shows while it is the active tool (its shortcut picked it)
+ *   and hides again once another tool is picked.
  *
  * Buttons never keep DOM focus (the keyboard scope redirects presses).
  */
@@ -48,6 +51,15 @@ const DOCK_SECTIONS: readonly (readonly string[])[] = [
   [SELECT_GROUP.id, "move-layer"],
   ["shape", "text"],
 ];
+
+/** Dock entries (tool ids or slot ids) hidden in Simple mode unless active. */
+const SIMPLE_HIDDEN: ReadonlySet<string> = new Set(["bucket", "shape", "text"]);
+
+/** One rendered section: its leading divider and its entries. */
+interface SectionView {
+  divider: HTMLElement | null;
+  items: { key: string; element: HTMLElement; toolIds: readonly string[] }[];
+}
 
 /** Slot tooltips (handoff copy). */
 const SLOT_TITLES: Readonly<Record<string, string>> = {
@@ -86,6 +98,8 @@ export class ToolDock {
   readonly swatches: SwatchWidget;
   private readonly toolButtons = new Map<string, HTMLButtonElement>();
   private groupSlots: ToolGroupSlot[] = [];
+  private sections: SectionView[] = [];
+  private simple = false;
   private toolIds = "";
   private activeId = "";
   private readonly swatchBox: HTMLDivElement;
@@ -169,6 +183,7 @@ export class ToolDock {
       button.setAttribute("aria-pressed", String(id === activeId));
     }
     for (const slot of this.groupSlots) slot.setActive(activeId);
+    this.syncSimple();
     const dropper = activeId === EYEDROPPER_ID;
     this.dropperButton.classList.toggle("cps-active", dropper);
     this.dropperButton.setAttribute("aria-pressed", String(dropper));
@@ -186,6 +201,15 @@ export class ToolDock {
     this.element.classList.toggle("cps-modal", on);
   }
 
+  /**
+   * Simple mode: hide the advanced tools (each still shows while active).
+   * @param on - Simple mode.
+   */
+  setSimple(on: boolean): void {
+    this.simple = on;
+    this.syncSimple();
+  }
+
   /** Close fly-outs, stop timers and listeners. */
   dispose(): void {
     for (const slot of this.groupSlots) slot.dispose();
@@ -200,11 +224,34 @@ export class ToolDock {
     this.toolButtons.clear();
     for (const slot of this.groupSlots) slot.dispose();
     this.groupSlots = [];
-    const sections = dockSections(tools, groups);
-    sections.forEach((section, i) => {
-      if (i > 0) this.toolBox.appendChild(divider());
-      for (const entry of section) this.toolBox.appendChild(this.entryElement(entry));
+    this.sections = dockSections(tools, groups).map((section, i) => {
+      const line = i > 0 ? divider() : null;
+      if (line) this.toolBox.appendChild(line);
+      const items = section.map((entry) => {
+        const element = this.entryElement(entry);
+        this.toolBox.appendChild(element);
+        return entry.kind === "group"
+          ? { key: entry.spec.id, element, toolIds: entry.tools.map((t) => t.id) }
+          : { key: entry.tool.id, element, toolIds: [entry.tool.id] };
+      });
+      return { divider: line, items };
     });
+    this.syncSimple();
+  }
+
+  /** Simple-mode visibility of the entries, and of dividers between visible sections. */
+  private syncSimple(): void {
+    let before = false;
+    for (const section of this.sections) {
+      let any = false;
+      for (const item of section.items) {
+        const hide = hiddenInDock(this.simple, item.key, item.toolIds, this.activeId);
+        item.element.hidden = hide;
+        any ||= !hide;
+      }
+      if (section.divider) section.divider.hidden = !(any && before);
+      before ||= any;
+    }
   }
 
   private entryElement(entry: DockEntry): HTMLElement {
@@ -354,6 +401,19 @@ function dockSections(tools: readonly Tool[], groups?: ToolGroupView): DockEntry
   );
   const rest = order.filter((key) => !placed.has(key)).flatMap((key) => byKey.get(key) ?? []);
   return [...sections, rest].filter((s) => s.length > 0);
+}
+
+/**
+ * Whether a dock entry is hidden: in Simple mode the bucket, the Shapes slot
+ * and Text are, unless one of their tools is active.
+ * @param simple - Simple mode.
+ * @param key - Tool id or slot id.
+ * @param toolIds - Tools behind the entry.
+ * @param activeId - Active tool id.
+ * @returns `true` to hide.
+ */
+export function hiddenInDock(simple: boolean, key: string, toolIds: readonly string[], activeId: string): boolean {
+  return simple && SIMPLE_HIDDEN.has(key) && !toolIds.includes(activeId);
 }
 
 function divider(): HTMLSpanElement {

@@ -8,6 +8,8 @@
 import type { MaskStyle } from "../document/create";
 import { readSetting } from "../widget/comfyApi";
 import { firstMaskStyleFrom } from "./maskDefaults";
+import { DEFAULT_MODE, MODE_SETTING_ID, parseMode } from "./modeDefaults";
+import type { EditorMode } from "./modeDefaults";
 import type { PressureDefaults } from "./pressureDefaults";
 import { pressureDefaultsFrom } from "./pressureDefaults";
 import type { SampleDefaults } from "./sampleDefaults";
@@ -49,4 +51,12 @@ export function readPressureDefaults(): PressureDefaults {
  */
 export function readSampleDefaults(): SampleDefaults {
   return sampleDefaultsFrom(safeRead);
+}
+
+/**
+ * Mode of a new node from the user's settings.
+ * @returns Editor mode.
+ */
+export function readDefaultMode(): EditorMode {
+  return parseMode(safeRead(MODE_SETTING_ID)) ?? DEFAULT_MODE;
 }

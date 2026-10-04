@@ -547,8 +547,9 @@ current image (not the frame): `stage = content * scale + offset`.
   under the image area; background (image / colour / transparency when its eye
   is off); layers; cmask tints; a veil over off-image paint; the image outline
   (faint, stronger when paint extends past it); the paint-area border. The
-  image size is shown in the bottom bar (section 7), not on the stage. A plain
-  quick click on the cobweb regrows it (cosmetic).
+  image size is shown in the bottom bar (section 7); on the stage, centred
+  under the image area, only in Simple mode. A plain quick click on the cobweb
+  regrows it (cosmetic).
 - Stage notes: one at a time at the bottom of the stage, 5 s.
 
 **Node sizing.** `getMinHeight` 256 (graph units) plus CSS `min-height: 244px`
@@ -636,6 +637,24 @@ selecting the node or entering fullscreen shows them at once. A hide waits
 250 ms (so the pointer can cross the gap to the panel) and waits while the
 pointer is over the panel. Shortcuts work from the moment the scope is
 active; only the visuals wait. Hiding closes any open popover.
+
+**Simple mode** (`defaults/modeDefaults.ts`, `ui/modeToggle.ts`, `styles/mode.css`).
+Each node is Simple or Advanced, saved in `node.properties["PainterSketch mode"]`
+(never sent to the backend, so switching never re-runs the node); a new node
+takes the "Default editor mode" setting (section 22). A `Simple | Advanced`
+toggle sits centred just under the node's title bar (in the bottom bar in
+fullscreen); **Tab** toggles it. Every shortcut works in both modes. Simple
+hides:
+
+- Copy, Cut, Paste (the Images button stays while there are images);
+- the bucket, Shapes and Text in the dock, unless active (picked by shortcut);
+- the side panel, except in region mode (`O`);
+- the bottom bar's right pill down to **Fit**, plus **Align** while it warns or
+  runs; the image size moves onto the stage under the image area.
+
+The edit chip and Quick Mask manage one layer, its lmask and the cmasks. In
+Simple mode the chip menu adds Hide / Show for what it edits, and a cmask's
+Lock entry shows only as Unlock.
 
 **Tool dock** (`toolDock.ts`, `toolGroupSlot.ts`): `Brush, Eraser, Fill |
 Select group, Move layer | Shapes group, Text | swatches`. Rail tools not named
@@ -744,7 +763,8 @@ where the mismatch gets fixed, so the hidden notice comes back).
 toggles it; Esc, a backdrop click or × closes it. A dim backdrop over the
 editor with a centred card "Shortcuts" (up to 1120 px wide, editor edge
 inset) holding an "Essentials" band (`QUICK_ROWS`: a curated dozen of the
-most-used keys, repeated from the sections; accent-tinted, full width) above
+most-used keys, repeated from the sections; accent-tinted, full width; Tab
+at the right of its title) above
 section cards in flowing 360 px columns (as many as fit; only
 the section area scrolls, vertically; accent section titles, zebra/hover row
 bands, each " / " key alternative as a key chip) (General, Tools, Brush and options,
@@ -2112,6 +2132,7 @@ or a throw -> code default, logged once). Colour settings are stored without
 |---|---|---|---|---|
 | `PainterSketch.PaintQuality` | Paint layer quality | slider 50..100 | 99 | < 100: paint/text as lossy WebP at that quality; 100: PNG. cmasks/lmasks always PNG. Read per upload batch. |
 | `PainterSketch.Cleanup` | Clean up files | custom button | - | Stats line + cleanup (section 5). |
+| `PainterSketch.DefaultMode` | Default editor mode | combo | `simple` | Mode of nodes created afterwards (`simple` / `advanced`); each node then keeps its own (section 7). First in the panel (`sortOrder` 100). |
 | `PainterSketch.DefaultMaskColor` | Mask colour | color | `ff0000` | First cmask of a new document (and a lazily added one). |
 | `PainterSketch.DefaultMaskOpacity` | Mask overlay opacity (%) | slider 10..100 | 50 | Overlay opacity of new cmasks. |
 | `PainterSketch.PressureSize` | Pen pressure controls size | boolean | on | Initial brush/eraser toggle. |
@@ -2245,7 +2266,8 @@ into a text field pass through (except Ctrl+S). Ctrl = Cmd on macOS.
 | ? | Toggle the help overlay (also the bottom bar's Help button) |
 | Q | Toggle Quick Mask (does nothing in region mode) |
 | F | Toggle fullscreen |
-| O | Toggle the Outputs tab (region mode; a shrunk panel expands) |
+| O | Toggle the Outputs tab (region mode; a shrunk panel expands; also in Simple mode) |
+| Tab | Toggle Simple / Advanced mode (section 7; Shift / Ctrl / Alt+Tab are not bound) |
 | Delete / Backspace (Shift optional) | Clear the selection on the target; without a selection, or on key repeat, swallowed (never deletes graph nodes). Ctrl+Delete / Alt+Delete are not bound. In region mode it removes the selected region instead |
 | F5 / Ctrl+R / Cmd+R / Ctrl+Shift+R | Page-wide, only while uploads are pending: flush (3 s), confirm if that failed, then reload |
 
@@ -2539,15 +2561,10 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
      while a selection exists (or the float's layer is hidden) lifts a float
      unexpectedly. Pre-refresh bug; fix separately (bigger than a UI tweak).
      Decide what happens when the float's own layer is hidden.
-4. [ ] **Simple mode** (after the refresh). A per-node toggle saved in the
-   document + a setting for the default; no shortcut. A `SIMPLE` / `ADVANCED`
-   button in the node header area (a DOM element in the empty title strip, or a
-   header draw path; the user has a reference node for the Vue header). Keeps:
-   brush, eraser, bucket, eyedropper, Move layer, rectangular marquee; swatches
-   and picker; undo/redo, zoom/pan, fullscreen; layers panel with paint layers +
-   one cmask row (+ the Image/Input Mask row when present), no blend/opacity;
-   brush options size / hardness / opacity. Hidden tools' shortcuts still work
-   (their icon shows what got selected). Output options keep applying.
+4. [x] **Simple mode**: done as described in section 7 "Simple mode" (per
+   node in `node.properties`, default setting, Tab, header toggle; no Layers
+   panel -- the edit chip and Quick Mask manage one layer, its lmask and the
+   cmasks). Closed 2026-10-03.
 5. [ ] **README** (after the UI, with the user's screenshots; no install
    section): pitch, quick start, feature overview, I/O, condensed shortcuts,
    storage and cleanup, limitations, licence. Example workflow(s) = the node with

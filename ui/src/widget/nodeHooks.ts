@@ -35,6 +35,12 @@ export function installNodeHooks(nodeType: LGraphNodeConstructor): void {
     getController(this)?.handleAdded();
   };
 
+  const onConfigure = proto.onConfigure;
+  proto.onConfigure = function (this: LGraphNode, ...args): void {
+    onConfigure?.apply(this, args);
+    getController(this)?.handleConfigured();
+  };
+
   const onExecuted = proto.onExecuted;
   proto.onExecuted = function (this: LGraphNode, output): void {
     onExecuted?.call(this, output);

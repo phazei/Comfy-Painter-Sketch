@@ -1,0 +1,85 @@
+/*
+ * Simple / Advanced (SPEC "Simple mode"): the mode toggle (ui/modeToggle.ts)
+ * and what `.cps-root.cps-simple` hides. The dock's tools and the side panel
+ * are hidden by code (they depend on the active tool); the rest is here.
+ */
+
+/* ── Mode toggle ──────────────────────────────────────────────────────────── */
+
+.cps-mode-toggle {
+  display: flex;
+  flex: none;
+  padding: 2px;
+  border-radius: var(--cps-r-seg);
+  background: var(--cps-field-bg);
+  font-family: var(--cps-font);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.cps-mode-seg {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--cps-fg-muted);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cps-mode-seg:hover {
+  color: var(--cps-fg-strong);
+}
+
+.cps-mode-seg.cps-active {
+  background: var(--cps-segment-bg);
+  color: var(--cps-fg-strong);
+}
+
+/* In-node: centred just under the node's title bar, between the input and
+   output slot labels (shell.setHeaderAnchor sets the variable; the slot is
+   hidden until it has). A little larger than the bottom-bar version. */
+.cps-slot-header {
+  position: absolute;
+  top: var(--cps-header-top, 0px);
+  left: 50%;
+  z-index: 3;
+  transform: translateX(-50%);
+}
+
+.cps-mode-header {
+  padding: 3px;
+  border: 1px solid var(--cps-line-1);
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+.cps-mode-header .cps-mode-seg {
+  padding: 5px 14px;
+  border-radius: var(--cps-r-seg);
+}
+
+/* Fullscreen has no node header: the toggle moves into the bottom bar. */
+.cps-root.cps-is-fullscreen .cps-slot-header,
+.cps-root:not(.cps-is-fullscreen) .cps-mode-bar {
+  display: none;
+}
+
+.cps-mode-bar {
+  margin-right: 4px;
+}
+
+/* ── Simple mode ──────────────────────────────────────────────────────────── */
+
+/* Clipboard pill: only the Images button (and only while there are images). */
+.cps-root.cps-simple .cps-clip > :not(.cps-images-button),
+.cps-root.cps-simple .cps-slot-clip:not(:has(.cps-images-button:not([hidden]))) {
+  display: none;
+}
+
+/* Bottom bar, right: Fit; Align only while it warns or runs (the size is on the stage). */
+.cps-root.cps-simple .cps-bb-right > :not(.cps-bb-fit, .cps-mode-bar, .cps-bb-align.cps-warn, .cps-bb-align.cps-active) {
+  display: none;
+}

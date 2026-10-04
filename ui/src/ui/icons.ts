@@ -57,8 +57,8 @@ const CUSTOM: Readonly<Record<string, string>> = {
   selectionToMask: `${SQUARE_DASHED}<circle cx='12' cy='12' r='3' fill='currentColor'/>`,
   // Selection subtract badge, pairing Lucide `square-dashed-plus` / `-x`.
   squareDashedMinus: `${SQUARE_DASHED}<path d='M8 12h8'/>`,
-  // FG/BG swap (Photoshop's curved double arrow; kept from the old set).
-  swap: "<path d='M6 6h7a5 5 0 0 1 5 5v7M9 3 6 6l3 3M15 15l3 3 3-3'/>",
+  // FG/BG swap (the maintainer's): two diagonal arrows crossing at the centre.
+  swap: "<path d='M3.51 7.76 9.88 14.12'/><path d='M9.17 7.76H3.51v5.66'/><path d='M14.12 9.88 20.49 16.24'/><path d='M20.49 10.59v5.66h-5.66'/>",
   // Polygonal lasso: the lasso loop drawn as straight segments.
   polygonLasso: "<path d='M3.7 14.5 3 8l5-5 8 .5L21 8l-2 6-7 3.5-5-.6'/><path d='M7 22l-2-4'/><circle cx='5' cy='16' r='2'/>",
   // Precise cross (the user's): outer ticks and inward wedges, centre open.
@@ -88,8 +88,12 @@ const CUSTOM: Readonly<Record<string, string>> = {
     "<circle cx='12' cy='12' r='9'/><path d='M12 3v6M14.6 13.5l5.2 3M9.4 13.5l-5.2 3'/><circle cx='12' cy='12' r='3' fill='currentColor'/>",
   // Colour variations (picker): a light and a dark circle side by side.
   colorVariations: "<circle cx='8' cy='12' r='5'/><circle cx='16' cy='12' r='5' fill='currentColor'/>",
-  // Default colours (D): a filled square over an outlined one.
-  resetColors: "<rect x='3' y='3' width='11' height='11' rx='2' fill='currentColor'/><rect x='10' y='10' width='11' height='11' rx='2'/>",
+  // Default colours (D): a dark foreground square over a light background
+  // square, in the icon's own colours. Which of icon / bar colour is the
+  // dark one depends on the theme: dock.css picks the fills.
+  resetColors:
+    "<rect class='cps-rc-back' x='10' y='10' width='11' height='11' rx='2'/>" +
+    "<rect class='cps-rc-front' x='3' y='3' width='11' height='11' rx='2'/>",
 };
 
 /** Our icon names that are plain Lucide icons (name -> Lucide name). */

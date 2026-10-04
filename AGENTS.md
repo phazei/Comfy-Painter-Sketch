@@ -403,6 +403,9 @@ ComfyUI binds many keys (Ctrl+Z/Y, Ctrl+C/V, Delete, letters) to graph actions.
 - `node.id` is a **string** (frontend >= 1.46). Always compare with `String(node.id)`.
 - Store per-node document state in the widget value, not in custom `node.*`
   properties (the frontend's ECS direction discourages new instance properties).
+  Per-node UI preferences that must not re-run the node (the Simple / Advanced
+  mode) go in LiteGraph's serialized `node.properties` bag instead: saved with
+  the workflow, never part of the prompt.
 
 ### Getting the Input Image into the Editor
 The frontend never receives the input tensor. Two sources, in order:

@@ -77,6 +77,17 @@ describe("Esc chain, ? and Q", () => {
     expect(handleShortcut(key("q"), region.session, region.effects)).toBe(false);
     expect(region.log).toEqual([]);
   });
+
+  it("Tab toggles Simple / Advanced (not with Shift / Ctrl / Alt; unhandled without the effect)", () => {
+    const { session, effects, log } = setup({});
+    const withMode = { ...effects, toggleMode: () => log.push("mode") };
+    expect(handleShortcut(key("Tab"), session, withMode)).toBe(true);
+    expect(handleShortcut(key("Tab", { shiftKey: true }), session, withMode)).toBe(false);
+    expect(handleShortcut(key("Tab", { ctrlKey: true }), session, withMode)).toBe(false);
+    expect(handleShortcut(key("Tab", { altKey: true }), session, withMode)).toBe(false);
+    expect(handleShortcut(key("Tab"), session, effects)).toBe(false);
+    expect(log).toEqual(["mode"]);
+  });
 });
 
 describe("bracket steps", () => {

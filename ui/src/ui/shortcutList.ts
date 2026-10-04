@@ -40,6 +40,9 @@ export const QUICK_ROWS: readonly ShortcutRow[] = [
   { keys: "F", action: "Fullscreen" },
 ];
 
+/** Shown at the right end of the Essentials title line. */
+export const QUICK_ASIDE: ShortcutRow = { keys: "Tab", action: "Simple / Advanced" };
+
 /** Every section of the help overlay, in display order. */
 export const HELP_SECTIONS: readonly ShortcutSection[] = [
   {
@@ -51,6 +54,7 @@ export const HELP_SECTIONS: readonly ShortcutSection[] = [
       { keys: "Q", action: "Quick Mask" },
       { keys: "F", action: "Fullscreen" },
       { keys: "O", action: "Outputs tab (regions)" },
+      { keys: "Tab", action: "Simple / Advanced mode" },
       { keys: "?", action: "This help" },
       { keys: "Del / Backspace", action: "Clear the selection" },
       { keys: "Wheel", action: "Zoom about the cursor" },

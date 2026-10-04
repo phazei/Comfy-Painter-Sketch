@@ -19,12 +19,17 @@
  *   undo/redo) takes over its predecessor's element slot, session and
  *   background (`handoff.ts`), so nothing blanks or reloads.
  *
+ * - Mode (Simple / Advanced) lives in `node.properties` (`modeDefaults.ts`):
+ *   UI state, saved with the workflow, never sent to the backend.
+ *
  * Controllers live in a module-level `WeakMap` keyed by node, not on the node.
  */
 
 import { app } from "@comfy/scripts/app.js";
 
-import { readFirstMaskStyle } from "../defaults/readDefaults";
+import { MODE_PROPERTY, parseMode } from "../defaults/modeDefaults";
+import type { EditorMode } from "../defaults/modeDefaults";
+import { readDefaultMode, readFirstMaskStyle } from "../defaults/readDefaults";
 import { createEmptyDocument } from "../document/create";
 import { hasDocumentContent } from "../document/content";
 import { parseDocument } from "../document/parse";
@@ -53,6 +58,9 @@ import { attachSession, createSession, findSession } from "./sessions";
 import type { EditorSession } from "./sessions";
 import { notify } from "./toast";
 import { bindSessionUploads, flushForQueue, WorkflowSaver } from "./uploadScheduler";
+
+/** Gap between the node's title bar and the header toggle, CSS px. */
+const HEADER_GAP = 4;
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -116,7 +124,9 @@ export class PainterSketchController {
       isDetached: () => this.isOffViewedGraph(),
       onDisengage: () => this.session?.uploader.flushQuietly(),
       onSave: () => void this.saver.save(this.session),
+      onModeChange: (mode) => this.saveMode(mode),
     }, this.sources.history);
+    this.host.setMode(this.nodeMode());
     this.isolation = isolateEvents({
       root: this.host.root,
       stage: this.host.stage,
@@ -211,8 +221,18 @@ export class PainterSketchController {
    * frame edits apply immediately (the poll catches programmatic changes).
    */
   handleNodeCreated(): void {
+    // A new node takes the default mode once and keeps it (saved workflows overwrite it in `configure`).
+    if (parseMode(this.node.properties?.[MODE_PROPERTY]) === null) this.writeMode(readDefaultMode());
+    this.host.setMode(this.nodeMode());
     this.frame.chainWidgetCallbacks(() => this.updateContent());
     this.updateContent();
+  }
+
+  /** `configure` applied the saved node: its mode. */
+  handleConfigured(): void {
+    if (this.disposed) return;
+    this.host.setMode(this.nodeMode());
+    this.syncHeaderAnchor();
   }
 
   /**
@@ -235,6 +255,7 @@ export class PainterSketchController {
   setWidget(widget: IBaseWidget): void {
     this.widget = widget;
     this.syncPanelCap();
+    this.syncHeaderAnchor();
   }
 
   /**
@@ -386,6 +407,7 @@ export class PainterSketchController {
     if (!this.host.isVisible()) return;
     this.host.refreshScale();
     this.syncPanelCap();
+    this.syncHeaderAnchor();
     this.refresh();
   }
 
@@ -397,6 +419,47 @@ export class PainterSketchController {
   private syncPanelCap(): void {
     const top = (this.widget?.y ?? 0) + WIDGET_MARGIN;
     this.host.setPanelHeightCap(Math.max(PANEL_MIN_CAP, this.node.size[1] - top));
+  }
+
+  // ── Mode + header toggle ────────────────────────────────────────────────
+
+  /** The node's saved mode, else the setting. */
+  private nodeMode(): EditorMode {
+    return parseMode(this.node.properties?.[MODE_PROPERTY]) ?? readDefaultMode();
+  }
+
+  private writeMode(mode: EditorMode): void {
+    this.node.properties ??= {};
+    this.node.properties[MODE_PROPERTY] = mode;
+  }
+
+  /** A toggle click: remember it on the node and let the workflow draft see it. */
+  private saveMode(mode: EditorMode): void {
+    this.writeMode(mode);
+    requestGraphSync(this.node, EDIT_SYNC_DELAY_MS);
+  }
+
+  /**
+   * Put the header toggle centred just under the node's title bar (between
+   * the input and output slot labels). Nodes 2.0: measured from the Vue
+   * header element. LiteGraph: the node body's top is our widget's `y`
+   * (+ margin) above the root (graph units = root CSS px). Skipped while
+   * fullscreen (the toggle is in the bottom bar there).
+   */
+  private syncHeaderAnchor(): void {
+    if (this.host.isFullscreen) return;
+    const root = this.host.root;
+    const header = this.host.element.closest("[data-node-id]")?.querySelector(".lg-node-header");
+    if (header) {
+      const r = root.getBoundingClientRect();
+      const h = header.getBoundingClientRect();
+      const scale = r.width / (root.offsetWidth || 1) || 1;
+      if (h.height === 0) return;
+      this.host.setHeaderAnchor((h.bottom - r.top) / scale + HEADER_GAP);
+      return;
+    }
+    if (!this.widget) return;
+    this.host.setHeaderAnchor(-((this.widget.y ?? 0) + WIDGET_MARGIN) + HEADER_GAP);
   }
 
   /** Push background + frame (and the Image Mask / Input Mask source) to the editor when anything relevant changed. */

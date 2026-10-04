@@ -16,6 +16,9 @@
  * - Align toggles Align drawing (active while the hidden `move` tool is);
  *   amber while the resolution notice condition holds.
  * - Resolution (read-only image size), Fit, Fullscreen, Help.
+ * - Simple mode (`.cps-simple`, bottomBar.css): the right pill shows only Fit,
+ *   plus Align while it warns or runs; the size moves onto the stage. In
+ *   fullscreen the Simple / Advanced toggle sits here (no node header).
  *
  * Everything is re-read from the session in {@link BottomBar.sync}; the host
  * calls it on the editor / tool events listed in the integration notes.
@@ -25,7 +28,9 @@
 import type { EditorSession } from "../widget/sessions";
 import { EditChip, inRegionMode } from "./editChip";
 import type { EditChipContext } from "./editChip";
+import type { EditorMode } from "../defaults/modeDefaults";
 import { setIcon } from "./icons";
+import { ModeToggle } from "./modeToggle";
 import { QuickMaskButton } from "./quickMaskButton";
 
 /** Id of the hidden Align drawing tool (`tools/move.ts`). */
@@ -44,6 +49,8 @@ export interface BottomBarContext extends EditChipContext {
   toggleHelp(): void;
   /** Optional: the bar's content changed width (`shell.requestLayout`). */
   requestLayout?(): void;
+  /** The fullscreen mode toggle was clicked. */
+  pickMode(mode: EditorMode): void;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -66,6 +73,7 @@ export class BottomBar {
   private readonly alignIcon: HTMLSpanElement;
   private readonly resolution: HTMLSpanElement;
   private readonly fullscreenButton: HTMLButtonElement;
+  private readonly modeToggle: ModeToggle;
   private pillKind: "lmask" | "solo" | null = null;
   private resolutionWarning = false;
   private fullscreenOn = false;
@@ -126,11 +134,13 @@ export class BottomBar {
     this.resolution.title = "Image size";
 
     const fit = iconButton("fit", "Fit to view (Ctrl 0)", () => this.ctx.getSession()?.editor.view.fit());
+    fit.classList.add("cps-bb-fit");
     this.fullscreenButton = iconButton("fullscreen", "Fullscreen (F)", () => ctx.fullscreen());
     const help = iconButton("help", "Shortcuts (?)", () => ctx.toggleHelp());
     help.classList.add("cps-bb-muted");
 
-    right.append(this.align, vdiv(), this.resolution, vdiv(), fit, this.fullscreenButton, help);
+    this.modeToggle = new ModeToggle("cps-mode-bar", (mode) => ctx.pickMode(mode));
+    right.append(this.modeToggle.element, this.align, vdiv(), this.resolution, vdiv(), fit, this.fullscreenButton, help);
     this.element.append(left, right);
     container.appendChild(this.element);
   }
@@ -177,6 +187,15 @@ export class BottomBar {
       this.layoutKey = key;
       this.ctx.requestLayout?.();
     }
+  }
+
+  /**
+   * Show the mode on the fullscreen toggle (the rest is CSS).
+   * @param mode - Editor mode.
+   */
+  setMode(mode: EditorMode): void {
+    this.modeToggle.set(mode);
+    this.ctx.requestLayout?.();
   }
 
   /**

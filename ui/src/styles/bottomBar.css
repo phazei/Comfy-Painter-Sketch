@@ -380,6 +380,25 @@
   padding: 3px 0;
 }
 
+/* Essentials title line: the mode key floated right, in normal type. */
+.cps-help-quick-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cps-help-quick-aside {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--cps-fg);
+}
+
 .cps-help-quick-item .cps-help-keys {
   flex: none;
 }

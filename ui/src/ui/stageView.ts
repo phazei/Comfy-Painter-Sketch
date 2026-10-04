@@ -1,7 +1,7 @@
 /**
  * Stage rendering: display canvas (compositor output), overlay canvas (brush
  * ring + indicators via `ringCursor.ts`, loupe, selection marching ants via `marchingAnts.ts`, output regions
- * via `regionOverlay.ts`) and the transient note, inside the shell's stage element. Redraws
+ * via `regionOverlay.ts`, the Simple-mode image size via `resolutionLabel.ts`) and the transient note, inside the shell's stage element. Redraws
  * are rAF-coalesced. Owns this stage's cobweb backdrop (grown around the
  * maximum paint area; a plain click on it regrows it, `webClick.ts`). Backing-store size follows stage CSS size x device
  * pixel ratio x graph zoom (never cached: re-read on every sync).
@@ -26,6 +26,7 @@ import { moveCursorCss, moveCursorKind } from "./moveCursors";
 import type { MoveCursorKind } from "./moveCursors";
 import { MarchingAnts } from "./marchingAnts";
 import { drawRegionOverlay } from "./regionOverlay";
+import { drawResolutionLabel } from "./resolutionLabel";
 import { drawRingCursor } from "./ringCursor";
 import { drawTransformOverlay } from "./transformOverlay";
 import { WebClick } from "./webClick";
@@ -77,6 +78,8 @@ export class StageView {
   private readonly webClick: WebClick;
   /** Maximum paint area in stage CSS px at the last render. */
   private capCss: Rect | null = null;
+  /** Draw the image size under the image area (Simple mode; the bottom bar shows it otherwise). */
+  showSize = false;
   /** Called after every full render (DOM overlays that follow the view, e.g. the text editor). */
   onRendered: (() => void) | null = null;
 
@@ -401,6 +404,7 @@ export class StageView {
     if (session && !regionMode) this.ants.draw(ctx, session.editor, session.editor.view.current, pr, overlay?.kind === "selection" ? overlay.shape : null);
     if (session) drawRegionOverlay(ctx, session.editor, pr, regionMode);
     if (session) drawTransformOverlay(ctx, session.editor, pr);
+    if (session && this.showSize) drawResolutionLabel(ctx, session.editor, pr);
     const panning = this.stage.classList.contains("cps-panning") || this.stage.classList.contains("cps-pan-ready");
     if (!session || !tool || !hover || panning) return;
     if (overlay?.kind === "loupe") {

@@ -4,6 +4,7 @@
  *
  * ```
  * root (.cps-root)
+ * ├─ headerSlot       Simple / Advanced toggle, centred just under the node's title bar (in-node only)
  * ├─ stage            canvas area (fills the root)
  * ├─ top              .cps-float-top: history pill | dock column (dock + options strip) | images/clipboard pill
  * ├─ slidersSlot      left sliders pill (Size / Hardness)
@@ -83,6 +84,8 @@ export class EditorShell {
   readonly root: HTMLDivElement;
   /** Canvas stage. */
   readonly stage: HTMLDivElement;
+  /** Centred just under the node's title bar, above the root (`setHeaderAnchor`); hidden in fullscreen. */
+  readonly headerSlot: HTMLDivElement;
   readonly top: TopRegions;
   readonly slidersSlot: HTMLDivElement;
   readonly noticeSlot: HTMLDivElement;
@@ -110,6 +113,8 @@ export class EditorShell {
     this.top.dockColumn.append(this.top.dock, this.top.strip);
     this.top.element.append(this.top.history, this.top.dockColumn, this.top.clip);
 
+    this.headerSlot = div("cps-slot cps-slot-header");
+    this.headerSlot.hidden = true;
     this.slidersSlot = div("cps-slot cps-slot-sliders");
     this.noticeSlot = div("cps-slot cps-slot-notice");
     this.bottomSlot = div("cps-slot cps-slot-bottom");
@@ -118,6 +123,7 @@ export class EditorShell {
 
     this.root.append(
       this.stage,
+      this.headerSlot,
       this.top.element,
       this.slidersSlot,
       this.noticeSlot,
@@ -162,6 +168,17 @@ export class EditorShell {
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? strip.clientWidth : 1;
     const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     strip.scrollLeft += delta * unit;
+  }
+
+  /**
+   * Place the header slot (centred horizontally on the root).
+   * @param top - Its top edge relative to the root's top, root CSS px
+   *   (negative = above the root, just under the node's title bar), or
+   *   `null` (unknown: hidden).
+   */
+  setHeaderAnchor(top: number | null): void {
+    this.headerSlot.hidden = top === null;
+    if (top !== null) this.headerSlot.style.setProperty("--cps-header-top", `${Math.round(top)}px`);
   }
 
   /** Re-run the responsive layout on the next frame (bars changed size). */

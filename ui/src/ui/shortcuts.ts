@@ -14,6 +14,7 @@
  * | X / D | swap / reset FG-BG colours (with a layer mask targeted: the black / white mask swatches) |
  * | F | toggle fullscreen (shell `fullscreen` event) |
  * | O | Outputs tab / region mode (toggle) |
+ * | Tab | Simple / Advanced mode (toggle; Photoshop's Tab hides the panels) |
  * | Esc | the Esc chain ({@link handleEscape}): help, popover, text commit, float / transform, tool drag, deselect, fullscreen |
  * | tool keys | from the tool registry (B, E, ...; group keys pick the last-used tool) |
  * | Shift+group key | cycle the group (Shift+U shapes) |
@@ -50,6 +51,8 @@ export interface ShortcutEffects {
   fullscreen(): void;
   /** `O`: open the Outputs tab (region mode), or leave it. */
   toggleOutputs?(): void;
+  /** `Tab`: switch Simple / Advanced. Absent = Tab unhandled. */
+  toggleMode?(): void;
   /** Close an open popover. @returns `true` if one was open. */
   closePopover(): boolean;
   /** Close the help overlay. @returns `true` if it was open. */
@@ -99,6 +102,7 @@ export function handleShortcut(event: KeyboardEvent, session: EditorSession, eff
     return false;
   }
   if (event.altKey || ctrl) return false;
+  if (event.key === "Tab" && !event.shiftKey && effects.toggleMode) return run(() => effects.toggleMode?.());
   // Tool-specific keys first (Move: arrow nudges; a Free Transform session's tool wins).
   if (tools.resolve(false).onKey?.(editor, event)) return true;
   // Selection tools: arrows nudge the selection outline (a float nudge was handled above).

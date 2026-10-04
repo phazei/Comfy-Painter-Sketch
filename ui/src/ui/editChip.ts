@@ -8,12 +8,14 @@
  * | Region mode | Main / region · Outputs | outputs, Back to {layer} |
  * | Background selected | Background · Read-only | Duplicate to an editable layer, Back |
  * | Image / Input Mask current (Quick Mask) | {row} · Read-only | Duplicate to an editable mask, Back |
- * | Quick Mask | {cmask} · Mask | Invert, View alone, Lock, Back (Q) |
+ * | Quick Mask | {cmask} · Mask | Invert, View alone, Lock (Simple: only Unlock), Back (Q) |
  * | lmask targeted | {layer} · Mask | Pixels / Layer mask, View, Enable |
  * | Paint layer | {layer} · Pixels | same; no lmask: Add layer mask |
  * | Text layer | {layer} · Pixels | Rasterize text |
  *
  * Region mode wins so a mask or lmask selection never leaks into Outputs.
+ * Simple mode (no Layers panel) adds a Hide / Show entry for the current
+ * layer, cmask or the Background.
  * The menu is rebuilt from the live state on every open.
  */
 
@@ -50,6 +52,8 @@ export interface EditChipContext {
    * an editor facade method.
    */
   rasterizeText(layerId: string): void;
+  /** Simple mode: the menu adds a visibility toggle. */
+  isSimple?(): boolean;
 }
 
 /** Swatch backgrounds (CSS). */
@@ -136,6 +140,7 @@ export class EditChip {
     const session = this.ctx.getSession();
     if (!session) return;
     const { title, entries } = this.menuFor(session);
+    if (this.ctx.isSimple?.() && !inRegionMode(session)) this.addVisibility(session.editor, entries);
     if (entries.length === 0) return;
     openMenu(popovers, { anchor: this.element, title, entries, placement: "above", width: 244 });
   }
@@ -179,7 +184,7 @@ export class EditChip {
         ],
       };
     }
-    if (mask) return this.cmaskMenu(editor, mask, backName);
+    if (mask) return this.cmaskMenu(editor, mask, backName, this.ctx.isSimple?.() === true);
     if (!paint) return { title: "", entries: [] };
     return this.layerMenu(editor, paint);
   }
@@ -202,16 +207,18 @@ export class EditChip {
     return { title: "Outputs", entries };
   }
 
-  private cmaskMenu(editor: Editor, mask: Readonly<Layer>, backName: string): { title: string; entries: MenuEntry[] } {
+  /** cmask menu; Simple mode shows Lock only to undo it (Unlock while locked). */
+  private cmaskMenu(editor: Editor, mask: Readonly<Layer>, backName: string, simple: boolean): { title: string; entries: MenuEntry[] } {
     const id = mask.id;
     const locked = mask.locked;
+    const lock: MenuEntry[] = simple && !locked ? [] : [{ label: locked ? "Unlock" : "Lock", icon: locked ? "unlock" : "lock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(id, !locked)) }];
     return {
       title: mask.name,
       entries: [
         { label: "Invert mask", icon: "invert", checked: mask.invert === true, onPick: () => this.edit(editor, () => editor.layerOps.setMaskInvert(id, mask.invert !== true)) },
         // View only (no beforeEdit), like the row's solo button.
         { label: "View this mask alone", icon: "solo", checked: editor.solo.mask === id, onPick: () => editor.toggleSolo(id) },
-        { label: locked ? "Unlock" : "Lock", icon: locked ? "unlock" : "lock", onPick: () => this.edit(editor, () => editor.layerOps.setLocked(id, !locked)) },
+        ...lock,
         "divider",
         { label: `Back to ${backName}`, icon: "back", key: "Q", onPick: () => this.edit(editor, () => editor.setPaintTarget("paint")) },
       ],
@@ -250,6 +257,28 @@ export class EditChip {
       });
     }
     return { title: `Edit on ${layer.name}`, entries };
+  }
+
+  /**
+   * Simple mode: Hide / Show for what the chip edits (the Layers panel's eye
+   * is out of reach there). Read-only mask rows have no eye.
+   */
+  private addVisibility(editor: Editor, entries: MenuEntry[]): void {
+    const toggle = (visible: boolean, what: string, set: (v: boolean) => void): void => {
+      entries.push("divider", {
+        label: visible ? `Hide ${what}` : `Show ${what}`,
+        icon: visible ? "eyeOff" : "eye",
+        onPick: () => this.edit(editor, () => set(!visible)),
+      });
+    };
+    if (editor.backgroundSelected) {
+      toggle(editor.doc.backgroundVisible !== false, "background", (v) => editor.layerOps.setBackgroundVisible(v));
+      return;
+    }
+    const mask = editor.paintTarget === "mask" ? editor.maskLayer : undefined;
+    const item = mask ?? findPaintLayer(editor.doc);
+    if (!item || item.id === IMAGE_MASK_ID) return;
+    toggle(item.visible, mask ? "mask" : "layer", (v) => editor.layerOps.setVisible(item.id, v));
   }
 
   /** "Rasterize text": end the text edit, confirm, then rasterize (one undo step). */
