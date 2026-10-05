@@ -6,11 +6,13 @@
  *
  * - The lower row keeps its name and settings. Paint: the upper layer is
  *   drawn onto the lower one source-over with its opacity baked in. Masks:
- *   coverage = union (max) of both masks' effective coverage (each invert
- *   applied), stored under the lower mask's invert (`floatMath.mergeMaskCoverage`).
+ *   coverage = union (max) of both masks' raw coverage
+ *   (`floatMath.mergeMaskCoverage`); only masks of the same mode merge (both
+ *   normal or both Subtract; the result keeps it), mixed modes are refused
+ *   ({@link MIXED_MASK_MERGE_NOTE}).
  * - Text rows are rasterized first (the usual prompt, `rasterize.ts`).
  * - Refused with a note when either row is hidden (eye or solo) or locked,
- *   or nothing mergeable is below.
+ *   nothing mergeable is below, or the two masks' modes differ.
  * - ONE undo step: a group entry `[rasterize..., patch on lower, remove upper]`.
  *   A solo on the removed layer ends (the `layers` event prunes it).
  * - Layer masks: the upper layer's enabled lmask is applied to its
@@ -26,7 +28,7 @@ import { activeEditLayer } from "../document/masks";
 import type { Layer } from "../document/types";
 import { intersectRect, isEmptyRect } from "../geometry/rect";
 import type { Rect } from "../geometry/rect";
-import { imageMaskNote } from "./editorTypes";
+import { imageMaskNote, MIXED_MASK_MERGE_NOTE } from "./editorTypes";
 import type { HistoryEntry, LayersEntry } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { compositeOver, mergeMaskCoverage } from "./floatMath";
@@ -94,13 +96,14 @@ function mergePlan(s: EditorState): { upper: Layer; lower: Layer; index: number 
   const index = s.doc.layers.indexOf(upper);
   const lower = s.doc.layers[index - 1];
   if (!lower || isPaintLike(lower) !== isPaintLike(upper)) return MERGE_NOTHING_NOTE;
+  if (upper.kind === "mask" && (upper.subtract === true) !== (lower.subtract === true)) return MIXED_MASK_MERGE_NOTE;
   return editBlockNote(s, upper, "whole") ?? editBlockNote(s, lower, "whole") ?? { upper, lower, index };
 }
 
 /** Draw `upper` into `lower`; returns the patch entry, or `null` if nothing changed. */
 function mergePixels(s: EditorState, upper: Layer, lower: Layer): HistoryEntry | null {
   const bounds = s.store.bounds;
-  const rect: Rect = upper.kind === "mask" && upper.invert === true ? bounds : intersectRect(layerContentRect(s, upper.id), bounds);
+  const rect: Rect = intersectRect(layerContentRect(s, upper.id), bounds);
   if (isEmptyRect(rect)) return null;
   const up = s.store.read(upper.id, rect);
   const before = s.store.read(lower.id, rect);
@@ -108,7 +111,7 @@ function mergePixels(s: EditorState, upper: Layer, lower: Layer): HistoryEntry |
   const r = before.rect;
   const next = new Uint8ClampedArray(before.data.data);
   if (upper.kind === "mask") {
-    mergeMaskCoverage(up.data.data, upper.invert === true, next, lower.invert === true);
+    mergeMaskCoverage(up.data.data, next);
   } else {
     // What you see of the upper layer: its enabled lmask applied.
     const lm = upper.layerMask;

@@ -16,10 +16,10 @@ import type { Layer, PainterDocument } from "./types";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /** Layer fields changed by undoable property edits. */
-export type LayerProps = Partial<Pick<Layer, "name" | "opacity" | "color" | "invert">>;
+export type LayerProps = Partial<Pick<Layer, "name" | "opacity" | "color" | "subtract">>;
 
 /** Keys of {@link LayerProps}. */
-const PROP_KEYS = ["name", "opacity", "color", "invert"] as const;
+const PROP_KEYS = ["name", "opacity", "color", "subtract"] as const;
 
 /**
  * One reversible change to the layer list. `insert`/`remove` carry the layer
@@ -170,14 +170,16 @@ export function canDeleteLayer(layers: readonly Layer[], id: string): boolean {
 }
 
 /**
- * Whether a layer may be duplicated (paint-like only in v1).
+ * Whether a layer may be duplicated: paint-like always; a cmask below the
+ * cmask limit.
  * @param layers - Layer list.
  * @param id - Layer id.
  * @returns `true` if duplicable.
  */
 export function canDuplicateLayer(layers: readonly Layer[], id: string): boolean {
   const layer = layers.find((l) => l.id === id);
-  return !!layer && isPaintLike(layer);
+  if (!layer) return false;
+  return isPaintLike(layer) || canAddMask(layers);
 }
 
 /**
@@ -291,7 +293,7 @@ export function writeProps(layer: Layer, props: LayerProps): void {
     if (!(key in props)) continue;
     const value = props[key];
     if (value === undefined) {
-      if (key === "color" || key === "invert") delete layer[key];
+      if (key === "color" || key === "subtract") delete layer[key];
     } else {
       Object.assign(layer, { [key]: value });
     }

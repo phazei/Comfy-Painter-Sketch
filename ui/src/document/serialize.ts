@@ -48,7 +48,7 @@ function serializeLayer(layer: Layer): Record<string, unknown> {
     file: layer.file,
   };
   if (layer.color !== undefined) out["color"] = layer.color;
-  if (layer.invert !== undefined) out["invert"] = layer.invert;
+  if (layer.subtract) out["subtract"] = true;
   if (layer.kind === "text" && layer.textData !== undefined) out["textData"] = serializeTextData(layer.textData);
   // Only while the layer has one (older manifests stay byte-identical).
   if (layer.layerMask) out["layerMask"] = serializeLayerMask(layer.layerMask);

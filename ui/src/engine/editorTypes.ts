@@ -87,7 +87,7 @@ export interface LayerMaskEntry {
 
 /**
  * Structural layer operation (add/delete/duplicate/reorder/rename/opacity/
- * mask colour/invert): a list of reversible changes applied in order (undo
+ * mask colour/Subtract): a list of reversible changes applied in order (undo
  * reverts them in reverse) plus the active layer on either side.
  */
 export interface LayersEntry {
@@ -248,3 +248,6 @@ export const BACKGROUND_NOTE = imageMaskNote("Background");
 
 /** Note shown when a hidden mask layer blocks painting or is queued while hidden. */
 export const HIDDEN_MASK_NOTE = "The mask is hidden.";
+
+/** Note shown when Merge Down would merge a Subtract cmask with a normal one (refused). */
+export const MIXED_MASK_MERGE_NOTE = "Can't merge a Subtract mask with a normal one.";

@@ -37,8 +37,8 @@ export interface Layer {
   file: string | null;
   /** Mask display colour. */
   color?: string;
-  /** Mask layers: invert before union. */
-  invert?: boolean;
+  /** Mask layers: Subtract mode -- its coverage is removed from the cmask union (SPEC 'Layers' > 'cmasks...'). */
+  subtract?: boolean;
   /** Text layers only (`kind: "text"`): editable text, see `textData.ts`. */
   textData?: TextData;
   /** Paint layers only: the layer mask, see `layerMask.ts`. */

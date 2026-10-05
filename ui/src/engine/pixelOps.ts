@@ -21,11 +21,12 @@
  * lmasks applied) or "Background" (only the input image / background-colour
  * frame, as displayed), both via `docComposite.ts`. For the bucket and wand
  * "Current layer" is the current target: under Quick Mask the current mask
- * (incl. the Image / Input Mask row) as its effective coverage in gray
+ * (incl. the Image / Input Mask row) as its raw coverage in gray
  * ({@link coverageGray}); a hidden target refuses with the gate's hidden
- * note ({@link hiddenNote}). Under Quick Mask "All layers" is the union of
- * the visible masks' effective coverage in gray (Image / Input Mask row
- * included while shown), not the paint composite. In the lmask-only view
+ * note ({@link hiddenNote}). Under Quick Mask "All layers" is the visible
+ * cmasks combined like the MASK output (normal union minus subtract union,
+ * {@link combinedMaskCoverage}; Image / Input Mask row included while shown)
+ * in gray, not the paint composite. In the lmask-only view
  * the bucket and wand sample only the viewed mask's grayscale ({@link lmaskGray}).
  *
  * Eyedropper: always samples colours (also in Quick Mask).
@@ -42,7 +43,7 @@ import type { DocCompositeInput, SceneSource } from "./docComposite";
 import { MASK_STROKE_COLOR } from "./editorTypes";
 import type { EditorState } from "./editorState";
 import { hiddenNote, preparePixelEdit } from "./rasterize";
-import { unionMaskCoverage } from "./clipboardMath";
+import { subtractCoverage, unionCoverage, unionMaskCoverage } from "./clipboardMath";
 import { floodFill } from "./floodFill";
 import { coverageInDoc } from "./imageMask";
 import { imageAreaInDoc, paintLimit } from "./imageArea";
@@ -65,7 +66,7 @@ export type SampleSource = "layer" | "all" | "background";
 /**
  * Where a sample is read from once the layer is known ({@link sampleTarget}):
  * a paint / text layer's own pixels (never its layer mask), a mask layer
- * (cmask, incl. the Image Mask row) as its effective coverage in gray, the
+ * (cmask, incl. the Image Mask row) as its raw coverage in gray, the
  * scene, or a layer mask as the grayscale the lmask-only view shows.
  */
 export type SampleTarget =
@@ -77,10 +78,10 @@ export type SampleTarget =
 
 /**
  * Resolve a sample source: `"layer"` reads that layer's raw pixels (lmask
- * not applied, like Photoshop; a mask layer: its effective coverage as gray;
+ * not applied, like Photoshop; a mask layer: its raw coverage as gray;
  * falling back to everything visible when there is no layer), the others
  * render the scene (lmasks applied). With a mask layer (cmask) as the layer,
- * `"all"` reads the union of every visible mask's effective coverage as gray
+ * `"all"` reads the visible cmasks combined like the MASK output as gray
  * (`masks`) instead of the paint composite. In the lmask-only view the viewed
  * mask's grayscale wins over the option (what the stage shows). Pure; the
  * single decision shared by bucket, wand and eyedropper.
@@ -279,10 +280,10 @@ export class PixelOps {
    * bucket, over the paint bounds united with the image rect, without growing
    * the bounds (the wand edits no pixels). "Current layer" is the current
    * target: the paint layer's raw pixels, or under Quick Mask the current
-   * mask's effective coverage as gray (Image / Input Mask row included); a
+   * mask's raw coverage as gray (Image / Input Mask row included); a
    * hidden target (eye off or hidden by solo) refuses with the gate's
-   * hidden note. "All layers" under Quick Mask: the visible masks' union
-   * (no note). In the lmask-only view the viewed mask's grayscale,
+   * hidden note. "All layers" under Quick Mask: the visible cmasks combined
+   * like the MASK output (no note). In the lmask-only view the viewed mask's grayscale,
    * whatever the option (also for a hidden layer).
    * @param req - Click position, matching options and sample source.
    * @returns Selection in document coords, `null` (nothing matched / loading
@@ -335,7 +336,7 @@ export class PixelOps {
   /**
    * RGBA of a document area as the bucket / wand / eyedropper see it: the
    * visible composite, the background only, one layer's raw pixels
-   * (transparent outside the bounds), a mask layer's effective coverage or
+   * (transparent outside the bounds), a mask layer's raw coverage or
    * a layer mask as opaque gray ({@link coverageGray}, {@link lmaskGray}).
    * The one sampling path of all three tools.
    * @param scratch - Reusable canvas for scene reads (eyedropper drags).
@@ -362,45 +363,27 @@ export class PixelOps {
   }
 
   /**
-   * A mask layer's effective coverage (its invert applied) over `area` as
-   * opaque gray. Mask layers: stored alpha, 0 beyond the stored pixels
-   * before invert (like the overlay and Python). The Image / Input Mask row:
-   * its image-px coverage resampled into document coords, 0 outside the
-   * image (also when inverted), like its Ctrl+click selection.
+   * A cmask's raw coverage over `area` as opaque gray (its Subtract mode does
+   * not change it). Mask layers: stored alpha, 0 beyond the stored pixels
+   * (like the overlay and Python). The Image / Input Mask row: its image-px
+   * coverage resampled into document coords, 0 outside the image, like its
+   * Ctrl+click selection.
    */
   private maskCoverageGray(layer: Layer, area: Rect): Uint8ClampedArray {
     const s = this.s;
-    const invert = layer.invert === true;
-    if (layer.id !== IMAGE_MASK_ID) return lmaskGray(s.store.read(layer.id, area), area, invert, false);
+    if (layer.id !== IMAGE_MASK_ID) return lmaskGray(s.store.read(layer.id, area), area, false, false);
     const plane = s.imageMask.coverage;
     const size = s.imageMask.size;
     const n = area.width * area.height;
-    return coverageGray(plane ? coverageInDoc(plane, size, documentMap(s.doc, size), area, invert) : new Uint8Array(n));
+    return coverageGray(plane ? coverageInDoc(plane, size, documentMap(s.doc, size), area) : new Uint8Array(n));
   }
 
   /**
-   * "All layers" with a mask targeted: the union (max) of every mask shown
-   * on the stage (eye / solo, like the overlay), each after its own invert,
-   * as opaque gray. The Image / Input Mask row joins while it is shown and
-   * applies to the current image ({@link imageMaskApplies}); its coverage is
-   * 0 outside the image. Paint layers are not read.
+   * "All layers" with a mask targeted: the combined cmask coverage
+   * ({@link combinedMaskCoverage}) as opaque gray. Paint layers are not read.
    */
   private visibleMasksGray(area: Rect): Uint8ClampedArray {
-    const s = this.s;
-    const union = new Uint8Array(area.width * area.height);
-    for (const layer of s.doc.layers) {
-      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
-      const read = s.store.read(layer.id, area);
-      unionMaskCoverage(union, area, read?.rect ?? null, read?.data.data ?? new Uint8ClampedArray(0), layer.invert === true);
-    }
-    const image = s.doc.imageMask;
-    const plane = s.imageMask.coverage;
-    if (image && plane && shownOnStage(image, s.solo.current) && imageMaskApplies(s)) {
-      const size = s.imageMask.size;
-      const cov = coverageInDoc(plane, size, documentMap(s.doc, size), area, image.invert === true);
-      for (let i = 0; i < union.length; i++) if ((cov[i] as number) > (union[i] as number)) union[i] = cov[i] as number;
-    }
-    return coverageGray(union);
+    return coverageGray(combinedMaskCoverage(this.s, area));
   }
 
   /** The current image's rect in document coords (rounded out). */
@@ -418,6 +401,39 @@ export class PixelOps {
   private compositeInput(): DocCompositeInput {
     return visibleScene(this.s);
   }
+}
+
+/**
+ * The combined coverage of the cmasks shown on the stage (eye / solo, like
+ * the overlay), as the MASK output combines them (Python
+ * `combine_mask_layers`, without the node's `invert_mask`): `U` = union of
+ * the normal cmasks, `S` = union of the subtract ones, result `U * (1 - S)`
+ * ({@link subtractCoverage}). The Image / Input Mask row joins (in `U` or
+ * `S` by its own mode) while it is shown and applies to the current image
+ * ({@link imageMaskApplies}); its coverage is 0 outside the image, a mask
+ * layer's 0 beyond its stored pixels.
+ * @param s - Editor state.
+ * @param area - Integer document rect.
+ * @returns Coverage over `area`, row-major.
+ */
+export function combinedMaskCoverage(s: EditorState, area: Rect): Uint8Array {
+  const n = area.width * area.height;
+  const union = new Uint8Array(n);
+  let subtracted: Uint8Array | null = null;
+  const planeFor = (layer: Layer): Uint8Array => (layer.subtract === true ? (subtracted ??= new Uint8Array(n)) : union);
+  for (const layer of s.doc.layers) {
+    if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
+    const read = s.store.read(layer.id, area);
+    unionMaskCoverage(planeFor(layer), area, read?.rect ?? null, read?.data.data ?? new Uint8ClampedArray(0));
+  }
+  const image = s.doc.imageMask;
+  const plane = s.imageMask.coverage;
+  if (image && plane && shownOnStage(image, s.solo.current) && imageMaskApplies(s)) {
+    const size = s.imageMask.size;
+    unionCoverage(planeFor(image), coverageInDoc(plane, size, documentMap(s.doc, size), area));
+  }
+  if (subtracted) subtractCoverage(union, subtracted);
+  return union;
 }
 
 function sameBytes(a: Uint8ClampedArray, b: Uint8ClampedArray): boolean {

@@ -131,6 +131,26 @@ describe("the Input Mask row and the cmask target", () => {
     expect(ed.cmaskLayer?.id).toBe(added);
   });
 
+  it("Duplicate of a cmask: pixels, settings and Subtract kept, next palette colour, current + target, paint layer untouched", () => {
+    const { ed, paintId, mask1 } = setup();
+    ed.selectMask(mask1);
+    ed.selection.selectAll();
+    ed.selection.toMask();
+    ed.layerOps.setMaskSubtract(mask1, true);
+    ed.layerOps.setOpacity(mask1, 0.3);
+    const copy = ed.layerOps.duplicate(mask1) ?? "";
+    const layer = ed.doc.layers.find((l) => l.id === copy);
+    expect(layer).toMatchObject({ kind: "mask", name: "Mask 1 copy", subtract: true, opacity: 0.3 });
+    expect(layer?.color).not.toBe(ed.doc.layers.find((l) => l.id === mask1)?.color);
+    expect(alpha(ed, copy, 2, 2)).toBe(255);
+    expect(ed.doc.layers.findIndex((l) => l.id === copy)).toBe(ed.doc.layers.findIndex((l) => l.id === mask1) + 1);
+    expect(ed.maskLayer?.id).toBe(copy);
+    expect(ed.cmaskLayer?.id).toBe(copy);
+    expect(ed.doc.activeLayerId).toBe(paintId);
+    ed.undo();
+    expect(ed.doc.layers.some((l) => l.id === copy)).toBe(false);
+  });
+
   it("deleting the target cmask moves the target like the current mask; removing the row restores the cmask", () => {
     const { ed, mask1, mask2 } = setup();
     ed.selectMask(mask1);

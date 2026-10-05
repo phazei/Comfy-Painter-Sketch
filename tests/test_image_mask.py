@@ -8,7 +8,7 @@ Covers:
   - ``imageMask`` is optional (old manifests unchanged) and parsed leniently
   - the file's alpha loads as coverage; a file sized differently from the
     input image is skipped with a log line (stale)
-  - combine: union with mask layers, per-mask invert, node invert, regions
+  - combine: union with mask layers, subtract row, node invert, regions
     (off-image viewport), hidden -> ignored, no image connected -> ignored
   - fingerprint_inputs changes with the Image Mask file
 """
@@ -36,7 +36,7 @@ from nodes.painter_sketch import PainterSketch  # noqa: E402
 FILE = "painter-sketch/ps-test-00aa.png [input]"
 
 
-def _manifest(image_mask: dict | None = None, mask_invert: bool = False) -> dict:
+def _manifest(image_mask: dict | None = None, mask_subtract: bool = False) -> dict:
     """8x4 document with one empty paint layer and one empty mask layer."""
     doc = {
         "version": 1, "docId": "abcd1234",
@@ -47,7 +47,7 @@ def _manifest(image_mask: dict | None = None, mask_invert: bool = False) -> dict
             {"id": "p1", "name": "Layer 1", "kind": "paint", "visible": True, "locked": False,
              "opacity": 1, "blendMode": "normal", "file": None},
             {"id": "m1", "name": "Mask 1", "kind": "mask", "visible": True, "locked": False,
-             "opacity": 0.5, "blendMode": "normal", "file": None, "invert": mask_invert},
+             "opacity": 0.5, "blendMode": "normal", "file": None, "subtract": mask_subtract},
         ],
     }
     if image_mask is not None:
@@ -57,7 +57,7 @@ def _manifest(image_mask: dict | None = None, mask_invert: bool = False) -> dict
 
 def _image_mask(**overrides) -> dict:
     """A saved ``imageMask`` record for an 8x4 image."""
-    record = {"file": FILE, "visible": True, "color": "#00ff00", "opacity": 0.5, "invert": False,
+    record = {"file": FILE, "visible": True, "color": "#00ff00", "opacity": 0.5, "subtract": False,
               "sourceKey": "filename=a.png&subfolder=&type=input", "width": 8, "height": 4}
     record.update(overrides)
     return record
@@ -72,12 +72,12 @@ class TestParse(unittest.TestCase):
         self.assertIsNone(doc.image_mask)
 
     def test_round_trip_fields(self) -> None:
-        doc = parse_document(json.dumps(_manifest(_image_mask(invert=True, visible=False))))
-        self.assertEqual(doc.image_mask, ImageMask(file=FILE, visible=False, invert=True, width=8, height=4))
+        doc = parse_document(json.dumps(_manifest(_image_mask(subtract=True, visible=False))))
+        self.assertEqual(doc.image_mask, ImageMask(file=FILE, visible=False, subtract=True, width=8, height=4))
 
     def test_lenient_fields(self) -> None:
-        mask = parse_image_mask(_image_mask(file="  ", visible="no", invert=1))
-        self.assertEqual(mask, ImageMask(file=None, visible=True, invert=False, width=8, height=4))
+        mask = parse_image_mask(_image_mask(file="  ", visible="no", subtract=1))
+        self.assertEqual(mask, ImageMask(file=None, visible=True, subtract=False, width=8, height=4))
 
     def test_malformed_dropped_without_losing_the_document(self) -> None:
         for bad in ("x", _image_mask(width=0), _image_mask(height=True), _image_mask(sourceKey=None)):
@@ -106,7 +106,7 @@ class TestLoad(unittest.TestCase):
         self._tmp.cleanup()
 
     def _mask(self, **kw) -> ImageMask:
-        return ImageMask(**{"file": FILE, "visible": True, "invert": False, "width": 8, "height": 4, **kw})
+        return ImageMask(**{"file": FILE, "visible": True, "subtract": False, "width": 8, "height": 4, **kw})
 
     def test_alpha_is_coverage(self) -> None:
         coverage = load_image_mask(self._mask(), (8, 4))
@@ -171,10 +171,10 @@ class TestCombine(unittest.TestCase):
         self.coverage = torch.zeros(4, 8)
         self.coverage[0, 0] = 1.0
 
-    def _combine(self, invert: bool, invert_mask: bool = False, **kw) -> torch.Tensor:
+    def _combine(self, subtract: bool, invert_mask: bool = False, **kw) -> torch.Tensor:
         return combine_mask_layers(
             self.doc.layers, {}, Bounds(0, 0, 8, 4), Frame(8, 4), 8, 4, invert_mask,
-            image_mask=(self.coverage, invert), **kw,
+            image_mask=(self.coverage, subtract), **kw,
         )
 
     def test_union_with_mask_layers(self) -> None:
@@ -188,20 +188,38 @@ class TestCombine(unittest.TestCase):
         self.assertEqual(float(out[3, 7]), 1.0)
         self.assertEqual(float(out[2, 2]), 0.0)
 
-    def test_per_mask_invert_then_node_invert(self) -> None:
-        inverted = self._combine(True)
-        self.assertEqual(float(inverted[0, 0]), 0.0)
-        self.assertEqual(float(inverted[2, 2]), 1.0)
+    def test_node_invert(self) -> None:
         node = self._combine(False, invert_mask=True)
         self.assertEqual(float(node[0, 0]), 0.0)
         self.assertEqual(float(node[2, 2]), 1.0)
 
-    def test_viewport_outside_image_is_zero_before_invert(self) -> None:
+    def test_subtract_row_subtracts(self) -> None:
+        """The row in subtract mode removes its coverage from the other cmasks."""
+        full = torch.ones(4, 8, 4)
+        out = combine_mask_layers(
+            self.doc.layers, {"m1": full}, Bounds(0, 0, 8, 4), Frame(8, 4), 8, 4, False,
+            image_mask=(self.coverage, True),
+        )
+        self.assertEqual(float(out[0, 0]), 0.0)
+        self.assertEqual(float(out[2, 2]), 1.0)
+        # Only the (empty) normal mask layer: nothing to subtract from.
+        self.assertEqual(float(self._combine(True).max()), 0.0)
+        # invert_mask: everything masked except the subtracted coverage.
+        node = self._combine(True, invert_mask=True)
+        self.assertEqual(float(node[0, 0]), 0.0)
+        self.assertEqual(float(node[2, 2]), 1.0)
+
+    def test_viewport_outside_image_is_zero(self) -> None:
         out = self._combine(False, image_size=(8, 4), origin=(-1, 0))
         self.assertEqual(float(out[0, 1]), 1.0)
         self.assertEqual(float(out[0, 0]), 0.0)
-        inverted = self._combine(True, image_size=(8, 4), origin=(-1, 0))
-        self.assertEqual(float(inverted[0, 0]), 1.0)
+
+    def test_viewport_subtract_has_no_effect_outside_image(self) -> None:
+        """A subtract row is 0 off the image: invert_mask keeps the off-image px masked."""
+        out = self._combine(True, invert_mask=True, image_size=(8, 4), origin=(-1, 0))
+        self.assertEqual(float(out[0, 0]), 1.0)  # off-image
+        self.assertEqual(float(out[0, 1]), 0.0)  # image px (0, 0), subtracted
+        self.assertEqual(float(out[1, 1]), 1.0)
 
     def test_key_is_not_a_layer_id(self) -> None:
         self.assertNotIn(IMAGE_MASK_KEY, {layer.id for layer in self.doc.layers})

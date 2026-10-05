@@ -49,10 +49,13 @@ describe("mask limits", () => {
     expect(canAddMask(doc.layers)).toBe(false);
   });
 
-  it("deletes masks but never the last one, and never duplicates them", () => {
+  it("deletes masks but never the last one; duplicates them below the limit", () => {
     const doc = multiMaskDoc();
     expect(canDeleteLayer(doc.layers, "M2")).toBe(true);
-    expect(canDuplicateLayer(doc.layers, "M2")).toBe(false);
+    expect(canDuplicateLayer(doc.layers, "M2")).toBe(true);
+    const full = [...doc.layers];
+    while (maskLayerCount(full) < MAX_MASKS) full.push(createMaskLayer("x"));
+    expect(canDuplicateLayer(full, "M2")).toBe(false);
     doc.layers = doc.layers.filter((l) => l.id !== "M1" && l.id !== "M2");
     expect(canDeleteLayer(doc.layers, "M3")).toBe(false);
   });
@@ -102,7 +105,7 @@ describe("saved documents with several masks", () => {
   it("round-trip every mask", () => {
     const doc = multiMaskDoc();
     doc.layers[3]!.file = "painter-sketch/ps-doc00001-m2.png [input]";
-    doc.layers[4]!.invert = true;
+    doc.layers[4]!.subtract = true;
     doc.layers[4]!.visible = false;
     const parsed = parseDocument(stringifyDocument(doc));
     if (parsed.status !== "ok") throw new Error("parse failed");
@@ -110,7 +113,7 @@ describe("saved documents with several masks", () => {
     const masks = parsed.document.layers.filter((l) => l.kind === "mask");
     expect(masks.map((l) => l.id)).toEqual(["M1", "M2", "M3"]);
     expect(masks[1]?.file).toBe("painter-sketch/ps-doc00001-m2.png [input]");
-    expect(masks[2]).toMatchObject({ invert: true, visible: false });
+    expect(masks[2]).toMatchObject({ subtract: true, visible: false });
   });
 
   it("moves masks saved below paint layers back on top", () => {

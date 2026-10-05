@@ -23,7 +23,7 @@ describe("createEmptyDocument", () => {
       blendMode: "normal",
       file: null,
       color: "#ff0000",
-      invert: false,
+      subtract: false,
     });
     expect(doc.layers[1]?.id).not.toBe(doc.layers[0]?.id);
     expect(doc.activeLayerId).toBe(doc.layers[0]?.id);
@@ -38,12 +38,31 @@ describe("parseDocument", () => {
     const mask = doc.layers[1];
     if (mask) {
       mask.file = "painter-sketch/m.png [input]";
-      mask.invert = true;
+      mask.subtract = true;
       mask.color = "#00ff00";
     }
     doc.bounds = { x: -256, y: 0, width: 612, height: 50 };
     const parsed = parseDocument(stringifyDocument(doc));
     expect(parsed).toEqual({ status: "ok", repaired: false, document: doc });
+  });
+
+  it("writes a cmask's `subtract` only when true; reads it leniently, mask layers only", () => {
+    const doc = createEmptyDocument({ width: 10, height: 10 }, "docid0002");
+    const [paint, mask] = doc.layers;
+    if (!paint || !mask) throw new Error("layers");
+    const plain = JSON.parse(stringifyDocument(doc)) as { layers: Record<string, unknown>[] };
+    expect("subtract" in (plain.layers[1] ?? {})).toBe(false);
+    mask.subtract = true;
+    const saved = JSON.parse(stringifyDocument(doc)) as { layers: Record<string, unknown>[] };
+    expect(saved.layers[1]?.["subtract"]).toBe(true);
+    const back = parseDocument(saved);
+    expect(back.status === "ok" && back.document.layers[1]?.subtract).toBe(true);
+    // Non-boolean -> normal; a paint layer never gets the field.
+    const odd = { ...saved, layers: [{ ...saved.layers[0], subtract: true }, { ...saved.layers[1], subtract: "yes" }] };
+    const lenient = parseDocument(odd);
+    if (lenient.status !== "ok") throw new Error("not ok");
+    expect("subtract" in (lenient.document.layers[0] ?? {})).toBe(false);
+    expect(lenient.document.layers[1]?.subtract).toBe(false);
   });
 
   it("treats empty and nullish values as empty", () => {

@@ -55,7 +55,7 @@ export function rowModel(layer: Readonly<Layer>, flags: RowFlags): RowModel {
   };
   if (layer.kind === "mask") {
     model.color = maskDisplayColor(layer);
-    model.invert = layer.invert === true;
+    model.subtract = layer.subtract === true;
     model.current = flags.current;
   }
   if (layer.kind === "text") model.text = true;

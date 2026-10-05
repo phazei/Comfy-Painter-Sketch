@@ -2,7 +2,8 @@
  * Thumbnail refresh pass of the layers panel (`layersPanel.ts` runs it
  * through a `RefreshThrottle`): every row's thumbnail is redrawn only when
  * its cache key changes -- pixel revision, document geometry, image size,
- * Align-drawing placement and display state (invert).
+ * Align-drawing placement and, for an lmask, its invert. cmask thumbnails
+ * are raw coverage.
  */
 
 import type { Editor } from "../engine/editor";
@@ -58,10 +59,10 @@ export function refreshLayerThumbs(editor: Editor, rows: ReadonlyMap<string, Lay
   for (const layer of doc.layers) {
     const row = rows.get(layer.id);
     if (!row) continue;
+    // cmask thumbnails show raw coverage (Subtract is a badge, not a flip).
     const mask = layer.kind === "mask";
-    const invert = mask && layer.invert === true;
-    const key = `${editor.layerOps.revision(layer.id)}|${geometry}|${invert}`;
-    row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert });
+    const key = `${editor.layerOps.revision(layer.id)}|${geometry}`;
+    row.thumb.update(key, imageSize, { kind: "layer", canvas: editor.layerCanvas(layer.id), region, mask, invert: false });
     // The layer mask thumbnail (grayscale, invert applied), same framing and throttle.
     const lm = layer.layerMask;
     const maskCanvas = lm ? editor.layerMask.canvas(layer.id) : null;

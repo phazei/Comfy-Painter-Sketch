@@ -64,7 +64,7 @@ describe("mask defaults", () => {
     const style = { color: "#0000ff", opacity: 0.3 };
     const doc = createEmptyDocument({ width: 8, height: 8 }, "doc00001", style);
     const mask = doc.layers.find((l) => l.kind === "mask");
-    expect(mask).toMatchObject({ color: "#0000ff", opacity: 0.3, invert: false });
+    expect(mask).toMatchObject({ color: "#0000ff", opacity: 0.3, subtract: false });
 
     // Existing mask: the provider is not even consulted.
     let calls = 0;

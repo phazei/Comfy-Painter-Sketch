@@ -69,11 +69,10 @@ class TestMainNode(_PreviewPatch):
     def test_main_options_do_not_affect_regions(self) -> None:
         """Main fill changes IMAGE only; the region slices the unfilled composite."""
         image = torch.stack((torch.zeros(6, 8, 3), torch.ones(6, 8, 3)))
-        mask_rgba = torch.ones(6, 8, 4)
-        document = _manifest(layers=[{"id": "m", "kind": "mask", "invert": True}],
+        mask_rgba = torch.ones(6, 8, 4)  # opaque cmask -> full mask
+        document = _manifest(layers=[{"id": "m", "kind": "mask"}],
                              mainOutput={"applyMask": "fill", "fillColor": "#ff0000"},
                              regions=[_region(4)])
-        mask_rgba[..., 3] = 0.0  # inverted -> full mask
         with mock.patch.object(painter_sketch, "load_layer_rgba", return_value=mask_rgba), \
                 mock.patch.object(painter_sketch, "run_composite", wraps=painter_sketch.run_composite) as compose:
             out = PainterSketch.execute(document, 100, 100, image=image)
@@ -83,6 +82,17 @@ class TestMainNode(_PreviewPatch):
         torch.testing.assert_close(region.image, image[:, 1:5, 2:6])
         self.assertTrue(torch.all(region.mask == 1))
         torch.testing.assert_close(self.preview.call_args.args[0], image[:1])
+
+    def test_empty_subtract_cmask_is_noop(self) -> None:
+        """A visible subtract cmask without a file changes nothing, Main or region."""
+        image = torch.rand(1, 6, 8, 3)
+        document = _manifest(layers=[{"id": "m", "kind": "mask", "file": None, "subtract": True}],
+                             regions=[_region(4, rect={"x": -2, "y": 1, "width": 4, "height": 4})])
+        for invert in (False, True):
+            with self.subTest(invert=invert):
+                out = PainterSketch.execute(document, 8, 6, "#000000", invert, image)
+                self.assertTrue(torch.all(out.result[1] == int(invert)))
+                self.assertTrue(torch.all(out.result[2].get(4).mask == int(invert)))
 
     def test_off_image_region_uses_background_widget(self) -> None:
         """With an input image connected, off-image region px use the background colour."""

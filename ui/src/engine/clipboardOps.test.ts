@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createEmptyDocument } from "../document/create";
 import type { Point, Rect } from "../geometry/rect";
-import { unionMaskCoverage } from "./clipboardMath";
+import { subtractCoverage, unionCoverage, unionMaskCoverage } from "./clipboardMath";
 import { PASTE_TRANSFORM_NOTE } from "./clipboardOps";
 import type { Editor as EditorClass } from "./editor";
 import { docToImage, imageToDoc } from "./frameMap";
@@ -280,7 +280,7 @@ describe("copy / cut gates", () => {
 });
 
 describe("copy merged under Quick Mask", () => {
-  it("copies the visible masks' effective union as gray, within the selection", () => {
+  it("copies the visible cmasks combined (normal union minus subtract union) as gray, within the selection", () => {
     const ed = new Editor(createEmptyDocument({ width: 4, height: 1 }), "widgets");
     ed.setPaintTarget("mask");
     const a = ed.layerOps.addMask();
@@ -292,24 +292,33 @@ describe("copy merged under Quick Mask", () => {
       (ed.layerCanvas(id) as unknown as FakeCanvas).ctx.putImageData(new FakeImageData(px, alpha.length, 1), -ed.bounds.x, -ed.bounds.y);
     };
     for (const m of masks) write(m.id, [0, 0, 0, 0]);
-    write(a as string, [200, 0, 0, 0]);
-    write(b as string, [0, 0, 255, 0]);
-    ed.layerOps.setMaskInvert(b as string, true); // effective 255, 255, 0, 255
+    write(a as string, [200, 255, 100, 0]);
+    write(b as string, [0, 255, 51, 255]);
+    expect(ed.layerOps.setMaskSubtract(b as string, true)).toBe(true); // U * (1 - S): 200, 0, 80, 0
     ed.selection.apply(rectSelection({ x: 0, y: 0, width: 3, height: 1 }), "replace");
     const clip = ed.clipboard.copy(true);
     expect(clip).not.toBeNull();
     const gray = Array.from(clip!.data.data).filter((_, i) => i % 4 === 0);
     const alpha = Array.from(clip!.data.data).filter((_, i) => i % 4 === 3);
-    expect(gray).toEqual([255, 255, 0]);
+    expect(gray).toEqual([200, 0, 80]);
     expect(alpha).toEqual([255, 255, 255]);
   });
 
-  it("unionMaskCoverage treats pixels outside the read rect as uncovered (255 inverted)", () => {
+  it("unionMaskCoverage treats pixels outside the read rect as uncovered", () => {
     const area = { x: 0, y: 0, width: 3, height: 1 };
     const union = new Uint8Array(3);
-    unionMaskCoverage(union, area, { x: 1, y: 0, width: 1, height: 1 }, new Uint8ClampedArray([0, 0, 0, 100]), false);
+    unionMaskCoverage(union, area, { x: 1, y: 0, width: 1, height: 1 }, new Uint8ClampedArray([0, 0, 0, 100]));
     expect(Array.from(union)).toEqual([0, 100, 0]);
-    unionMaskCoverage(union, area, { x: 1, y: 0, width: 1, height: 1 }, new Uint8ClampedArray([0, 0, 0, 200]), true);
-    expect(Array.from(union)).toEqual([255, 100, 255]);
+    unionMaskCoverage(union, area, { x: 0, y: 0, width: 2, height: 1 }, new Uint8ClampedArray([0, 0, 0, 50, 0, 0, 0, 30]));
+    expect(Array.from(union)).toEqual([50, 100, 0]);
+  });
+
+  it("unionCoverage is a max; subtractCoverage is U * (1 - S)", () => {
+    const u = new Uint8Array([0, 100, 200, 255, 255]);
+    unionCoverage(u, new Uint8Array([10, 50, 255, 0, 255]));
+    expect(Array.from(u)).toEqual([10, 100, 255, 255, 255]);
+    subtractCoverage(u, new Uint8Array([0, 255, 51, 128, 0]));
+    // 10, 0, 255 * 204 / 255 = 204, 255 * 127 / 255 = 127, 255
+    expect(Array.from(u)).toEqual([10, 0, 204, 127, 255]);
   });
 });

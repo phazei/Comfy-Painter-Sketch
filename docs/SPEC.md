@@ -169,7 +169,7 @@ are contract-stable (the frontend widget depends on them).
 | 5 | `width` | INT | 1024, 64..16384, step 8 | Only used when `image` is not linked. |
 | 6 | `height` | INT | same | Same. |
 | 7 | `background` | COLOR | `#ffffff` | Fill with no image; replaces the image when the Background eye is off; fills regions outside the image. Alpha ignored; unparseable = white + log warning. |
-| 8 | `invert_mask` | BOOLEAN | false | Inverts the cmask union (section 3). |
+| 8 | `invert_mask` | BOOLEAN | false | Inverts the normal cmask union; Subtract cmasks are removed afterwards (section 3). |
 
 `width`/`height` are hidden while `image` is linked and rewritten to every
 loaded image size (rounded to step 8, clamped). Disconnecting keeps the frame.
@@ -242,7 +242,7 @@ Files: `nodes/painter_sketch.py`, `nodes/painter_sketch_regions.py`,
    all-zero plane (all shown, or all hidden with `invert`); an unreadable lmask
    file is ignored (layer shows unmasked).
 5. **Image/Input Mask row.** With the Input Mask in use, the row's manifest
-   settings apply (defaults: visible, not inverted) and its pixels are the
+   settings apply (defaults: visible, normal) and its pixels are the
    prepared coverage. Otherwise, with an image and a visible `imageMask` record,
    its file is used only if exactly the image size (stale size skipped, info
    log). Never used without an image.
@@ -253,13 +253,20 @@ Files: `nodes/painter_sketch.py`, `nodes/painter_sketch_regions.py`,
    - Background eye off (`backgroundVisible: false`): composite premultiplied
      over transparency into `P, A`. `IMAGE = P + bg*(1-A)` (bg = `background`);
      `straight = P/A` clamped, `bg` where `A = 0`.
-7. **MASK.** Each visible cmask: alpha placed through the frame map (0 outside),
-   own invert applied, union = max. A visible Image/Input Mask row joins the same
-   way (placed at the image origin, its invert applied). Then `invert_mask`
-   (`1 - combined`; all ones when no cmask row is visible). cmask
-   `opacity`/`color` are display only. Background eye off:
-   `MASK = max(that, 1 - A)`; transparency joins after `invert_mask` and is never
-   inverted.
+7. **MASK.** Every cmask row (cmasks and the Image/Input Mask row) is normal
+   or **Subtract** (`subtract`). Each visible row's alpha is placed through the
+   frame map (the row at the image origin; 0 outside the placed rect, raw, never
+   flipped). `U` = max of the visible normal rows; with `invert_mask`,
+   `U = 1 - U` (all ones when no normal row is visible -- Subtract rows don't
+   count). `S` = max of the visible Subtract rows. `MASK = U * (1 - S)`:
+   Subtract means "never masked here", whatever `invert_mask` says. Only
+   Subtract rows and `invert_mask` off = all zeros (not special-cased). An
+   empty visible normal cmask still counts as a mask row (zeros); an empty
+   Subtract one changes nothing. cmask `opacity`/`color` are display only.
+   Background eye off: `MASK = max(that, 1 - A)`; transparency joins last and
+   is never inverted or subtracted. **Why:** a per-cmask invert was removed
+   because two inverted cmasks union to the inverse of their intersection,
+   masking almost everything; Subtract combines.
 8. **Outputs.** `apply_output_options` for Main; regions via `build_regions` from
    the same composite. Main's options never affect regions.
 
@@ -340,15 +347,17 @@ widget value is the JSON (stable key order), or `""` for an untouched document.
 | `regions` | `Region[]` | always (may be `[]`) |
 | `mainOutput?` | `OutputOptions` | when set |
 | `backgroundVisible?` | `false` | only when false |
-| `imageMask?` | `{file, visible, color, opacity, invert, sourceKey, width, height}` | while the row exists |
+| `imageMask?` | `{file, visible, color, opacity, subtract?, sourceKey, width, height}` | while the row exists |
 | `placement?` | `{x, y, scale}` | only when not identity |
 | `activeLayerId` | string | always |
 | `layers` | `Layer[]`, bottom -> top, Background excluded | always |
 
 - `Layer`: `id`, `name`, `kind: "paint" | "text" | "mask"`, `visible`,
   `locked`, `opacity` (0..1), `blendMode: "normal"` (reserved, ignored),
-  `file: string | null`; optional `color` and `invert` (cmasks), `textData`
-  (text layers; see section 12 Text), `layerMask` (paint layers that have one).
+  `file: string | null`; optional `color` and `subtract: true` (cmasks;
+  `subtract` is written only when true and read only on cmasks, anything but
+  `true` = normal), `textData` (text layers; see section 12 Text), `layerMask`
+  (paint layers that have one).
 - `layerMask`: `{file: string | null, enabled, invert, outside: "reveal" |
   "hide"}`. Pixels are white RGB with the hidden amount in alpha, sized like the
   layer's bounds; `file: null` = all shown.
@@ -719,7 +728,7 @@ and in modal states; on short nodes tracks shrink to fit, down to a floor.
   | Region mode | Main / region · Outputs | white | Main + regions (current marked); Back to {layer} (leaves region mode) |
   | Background selected | Background · Read-only | fill colour; stripes over an image | Duplicate to editable layer; Back to {layer} |
   | Image/Input Mask current | {row} · Read-only | mask colour | Duplicate to editable mask; Back to {layer} |
-  | Quick Mask | {cmask} · Mask | mask colour | Invert mask ✓; View this mask alone ✓ (cmask solo); Lock/Unlock; Back to {layer} (Q) |
+  | Quick Mask | {cmask} · Mask (· Subtract for a Subtract cmask) | mask colour | Subtract ✓; View this mask alone ✓ (cmask solo); Lock/Unlock; Back to {layer} (Q) |
   | Paint layer, lmask targeted | {layer} · Mask | half white / half black | Pixels; Layer mask (current); View layer mask only ✓ (Alt-click); Enable/Disable layer mask (⇧-click) |
   | Paint layer | {layer} · Pixels | checker | same; without lmask: Pixels, Add layer mask (reveal all / show only selection) |
   | Text layer | {layer} · Pixels | checker | Pixels; Rasterize text (commits open edit, then rasterize confirm) |
@@ -845,8 +854,9 @@ Files: `ui/` (shell, bars, popover/menu, focus/keyboard, `modifierScope.ts`),
 Properties: `name` (trimmed, max 100, empty ignored); `visible` (not undoable;
 hidden cmasks are excluded from MASK); `locked` (refuses pixel edits only --
 delete/rename/reorder/opacity/eye still work; not undoable); `opacity` (paint:
-composite; cmask: overlay, display only); `color`, `invert` (cmask; invert
-applies before the union); `layerMask` (paint only).
+composite; cmask: overlay, display only); `color`, `subtract` (cmask; its
+coverage is removed from the union, section 3 step 7; toggling it is one undo
+step); `layerMask` (paint only).
 
 Invariants:
 - `activeLayerId` is always a paint or text layer.
@@ -884,9 +894,10 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
   a Delete (trash) button that stays in the collapsed header. Headers are not
   rows (no selection, hover or drop target). Collapse is session UI state.
 - **Row actions** (`layerRow.ts`):
-  - cmask: colour bar (current cmask only), eye, thumbnail (white on black,
-    invert applied), name + colour swatch (picker; one undo step per session),
-    invert, lock, solo.
+  - cmask: colour bar (current cmask only), eye, thumbnail (raw coverage,
+    white on black; a small subtract-icon badge when Subtract), name +
+    colour swatch (picker; one undo step per session) + "Subtract" when on,
+    Subtract toggle, lock, solo.
   - Paint / text: eye, thumbnail (image footprint incl. placement; "T" on
     text), lmask slot (section 9; not on text), name, lock, solo.
   - Image/Input Mask: as cmask, but a lock badge instead of lock, plus
@@ -910,10 +921,12 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 - **Footer** (`layersFooter.ts`): New layer, New mask, Duplicate, Merge Down.
   - New layer: above the active paint layer, active, Quick Mask off.
   - New mask: above the current cmask, becomes current (Quick Mask on).
-  - Duplicate: the active paint/text layer (copies visible, locked, opacity and
-    the lmask with pixels; above the original, active). Disabled for cmasks; on
-    the Image/Input Mask row makes an editable cmask, on Background an editable
-    paint layer (below).
+  - Duplicate: the selected row. A paint/text layer copies visible, locked,
+    opacity and the lmask with pixels (above the original, active). A cmask
+    (under Quick Mask) copies pixels, visible, locked, opacity and Subtract,
+    takes the next free palette colour, sits above the original and becomes
+    current + target; disabled at 7 cmasks. The Image/Input Mask row makes an
+    editable cmask, Background an editable paint layer (below). One undo step.
   - Merge Down: disabled whenever Ctrl+E would be refused.
 - **Delete** (`sectionDeleteState`) acts on the selected target: the current
   cmask under Quick Mask, otherwise the active layer (with an lmask targeted it
@@ -931,9 +944,15 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 
 ### cmasks, current mask and Quick Mask
 
-- Combine rule: each cmask's invert, then union (max), then the node's
-  `invert_mask`. Colour and overlay opacity are display only; tints draw bottom
-  to top above the paint, the Image Mask lowest.
+- Combine rule (section 3 step 7): union of the normal cmasks, the node's
+  `invert_mask`, then the union of the **Subtract** cmasks is removed
+  (`U * (1 - S)`). Colour and overlay opacity are display only.
+- **Stage overlay**: normal cmask tints draw bottom to top above the paint,
+  the Image Mask lowest. A Subtract cmask knocks most of its coverage out of
+  the normal tints (a faint ghost stays, so the removed part reads lighter) and
+  is drawn itself as a faint tint plus a diagonal hatch in its colour, so it is
+  visible where it overlaps nothing too. The editor never previews
+  `invert_mask`.
 - **Current mask** (session only): the last selected cmask row (the Image/Input
   Mask row included); falls back to the top-most cmask. A new mask becomes
   current. **Target cmask** (session only): the last selected *real* cmask,
@@ -949,15 +968,17 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 - Painting a cmask: brush, eraser, bucket, shapes, selection fill and Delete
   act on coverage. Strokes are forced white (FG/BG ignored); opacity and flow
   apply.
-- Ctrl+click a cmask row selects its effective coverage (invert applied), hard.
-- Merge Down of cmasks: union of both effective coverages, stored under the
-  lower cmask's invert, colour and name.
+- Ctrl+click a cmask row selects its raw coverage, hard (Subtract is not a flip).
+- Merge Down of cmasks: both normal or both Subtract -> union, the lower
+  cmask's mode, colour and name. Different modes are refused with "Can't merge
+  a Subtract mask with a normal one." (Ctrl+E note; the footer button disables),
+  because a Subtract cmask acts on every cmask, not just the one below.
 - Queueing while a hidden cmask has ever held paint shows "The mask is hidden."
 
 ### Image Mask / Input Mask row
 
 - One fixed cmask-shaped row directly above Background. Eye, solo, colour,
-  invert and Ctrl+click work; never lockable, renamable, draggable or
+  Subtract and Ctrl+click work; never lockable, renamable, draggable or
   deletable; not counted toward 7.
 - **Image Mask** = the input image's alpha (coverage = 255 - alpha), uploaded
   as a PNG when the source changes. **Input Mask** = the `mask` input; replaces
@@ -965,11 +986,11 @@ The Layers tab of the side panel (section 7); `ui/layersPanel.ts` and siblings.
 - Selecting it makes it the current cmask (Quick Mask on) but not the target
   cmask; every pixel edit and Merge Down from it are refused with "<Image Mask |
   Input Mask> can't be edited -- duplicate it to edit."
-- A new row takes the next free palette colour. Eye, colour, opacity and invert
-  survive source changes (colour/opacity/invert undoable, eye not).
-- **Duplicate** makes an ordinary cmask: coverage resampled into document
+- A new row takes the next free palette colour. Eye, colour, opacity and
+  Subtract survive source changes (colour/opacity/Subtract undoable, eye not).
+- **Duplicate** makes an ordinary cmask: raw coverage resampled into document
   coordinates, named "<row name> copy", next palette colour, the row's opacity,
-  visibility and invert; bottom of the cmask stack, current; one undo step.
+  visibility and Subtract; bottom of the cmask stack, current; one undo step.
   Disabled without coverage or at 7 cmasks.
 - Drawn and sampled only over an image of exactly its size.
 
@@ -1042,8 +1063,10 @@ ones. New pixel-editing paths must call this gate.
   paint bakes the upper opacity in; text rasterizes first (prompt); the lower
   row becomes active / current. One undo step. Refused when either row is
   hidden, solo-hidden or locked, or nothing is below ("Nothing to merge down
-  into."); never into Background or the Image Mask row. An enabled upper lmask
-  is applied first ("Layer mask applied."); the lower lmask stays.
+  into."), or when the two cmasks differ in Subtract mode ("cmasks, current
+  mask and Quick Mask" above); never into Background or the Image Mask row. An
+  enabled upper lmask is applied first ("Layer mask applied."); the lower lmask
+  stays.
 - **Clear** (history pill, confirm): empties every layer, removes lmasks,
   converts text to paint, resets the frame to the minimum frame of the current
   image, resets placement, regions and Main options, ends solos and drops the
@@ -1501,10 +1524,10 @@ One path decides what the bucket and the wand read (`sampleTarget`,
 |---|---|
 | lmask-only view with the viewed lmask targeted | That lmask as opaque gray (white = hidden), invert and `outside` applied. Wins over the Sample option; works on a hidden layer. |
 | Current layer, paint/text target | The layer's raw pixels (its lmask not applied). |
-| Current layer, cmask target (incl. Image/Input Mask) | The cmask's effective coverage (invert applied) as opaque gray; the Image/Input Mask is resampled to doc coords, 0 outside the image. |
+| Current layer, cmask target (incl. Image/Input Mask) | The cmask's raw coverage as opaque gray (Subtract not applied); the Image/Input Mask is resampled to doc coords, 0 outside the image. |
 | Current layer, no layer | Falls back to All layers. |
 | All layers, pixel or lmask target | The visible composite: background + visible paint layers at opacity, lmasks applied, solo and the Background eye honoured; no cmask tints. |
-| All layers, cmask target | The union (max) of the cmasks shown on the stage (eye and solo respected, each inverted per its setting); the Image/Input Mask row joins while shown and applicable. |
+| All layers, cmask target | The combined result of the cmasks shown on the stage (eye and solo respected): normal union minus Subtract union (section 3 step 7, without `invert_mask`); the Image/Input Mask row joins while shown and applicable. Matches Python's MASK to 1/255. |
 | Background | Only the input image (or the width x height fill), same placement, no paint; reads the image even with the Background eye off. |
 
 **Hidden targets**: the bucket goes through the edit gate (hidden target refused
@@ -1597,12 +1620,12 @@ bounded by the image. Hidden during a transform drag.
 intersect):
 
 - Paint, text and cmask rows: **hard** (alpha > 0 -> 255); a cmask uses its
-  effective coverage; the lmask is ignored; works on hidden layers; doesn't
+  raw coverage (Subtract is not a flip); the lmask is ignored; works on hidden layers; doesn't
   change the current layer, Quick Mask or solo; settles a float first; an empty
   layer notes and keeps the selection.
   Why: a soft selection left an `a*(1-a)` residue on every edge when moved, and
   ghosted on repeat.
-- Image/Input Mask row: hard, invert applied, resampled to doc coords.
+- Image/Input Mask row: hard, raw coverage, resampled to doc coords.
 - lmask thumbnail: **soft**, the shown part (section 9).
 - The Background row can't load a selection.
 
@@ -1669,12 +1692,14 @@ Files: `engine/floatOps.ts`, `floatLift.ts`, `floatCommit.ts`,
 **Copy / cut** (each settles a float first)
 
 - Ctrl+C: the target's selected pixels (coverage-weighted), or the whole layer
-  without a selection; trimmed to non-transparent pixels. cmask: opaque grayscale
-  (white = masked). Paint with an enabled lmask: the masked result; lmask
-  targeted: the lmask as grayscale.
+  without a selection; trimmed to non-transparent pixels. cmask (incl. the
+  Image/Input Mask row): raw coverage as opaque grayscale (white = masked).
+  Paint with an enabled lmask: the masked result; lmask targeted: the lmask as
+  grayscale.
 - Ctrl+Shift+C (copy merged): what is visible, including the image, within the
   selection or the image area; no image when the Background eye is off; under
-  Quick Mask the union of visible cmasks as grayscale.
+  Quick Mask the combined cmask result as grayscale (the same rule as "All
+  layers" sampling, section 14; the Image/Input Mask row included).
 - Ctrl+X: copy + clear in one patch (text rasterizes first; lmask: reveals).
 - Hidden / solo-hidden layers refuse; locked layers can be copied. The read-only
   SOURCE rows copy too (reading isn't editing): Background what it shows (image
@@ -2064,6 +2089,7 @@ cause shows the raw error text as the reason.
 | The layer mask shows nothing. | Ctrl+click an lmask that shows nothing. |
 | Layer mask applied. | Merge Down with an enabled upper lmask. |
 | Nothing to merge down into. | Ctrl+E with no valid row below. |
+| Can't merge a Subtract mask with a normal one. | Ctrl+E on two cmasks of different modes. |
 | This layer can't be moved. | Move on a kind without a mover. |
 | No pixels are selected. | Lift/move with a selection holding no pixels. |
 | The layer is empty. | Flip / whole-layer lift of an empty layer. |

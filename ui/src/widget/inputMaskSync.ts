@@ -6,7 +6,7 @@
  * our executed mask preview, or an empty row waiting for a run).
  *
  * - The row is always shown while connected; its settings (eye, colour,
- *   opacity, invert) carry over from whatever row was there. It has no file
+ *   opacity, Subtract) carry over from whatever row was there. It has no file
  *   and never uploads (Python has the tensor).
  * - Pixels are fetched once per choice key + image size per session; a newer
  *   choice discards an older fetch. Coverage is resampled to the image size.

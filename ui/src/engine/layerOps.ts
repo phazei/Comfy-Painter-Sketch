@@ -1,7 +1,7 @@
 /**
  * Layer commands of the editor core (layers panel, SPEC "Layers"):
  * add / duplicate (incl. the Background row) / delete / reorder / rename /
- * opacity / mask colour and invert (undoable {@link LayersEntry} history entries), plus visibility,
+ * opacity / mask colour and Subtract mode (undoable {@link LayersEntry} history entries), plus visibility,
  * lock and the active layer (not undoable, like Photoshop and the mask eye).
  *
  * The document's `activeLayerId` always names a paint-like layer (the layer
@@ -115,7 +115,7 @@ export class LayerOps {
 
   /**
    * Quick Mask auto-select: the topmost visible, unlocked mask with raw
-   * painted coverage at a document point ({@link pickMask}; `invert` ignored).
+   * painted coverage at a document point ({@link pickMask}; Subtract ignored).
    * @param x - Document x.
    * @param y - Document y.
    * @returns Mask layer id, or `null` if nothing is hit.
@@ -260,8 +260,10 @@ export class LayerOps {
   }
 
   /**
-   * Duplicate a paint layer (pixels included) directly above it; the copy
-   * becomes active.
+   * Duplicate a layer (pixels included) directly above it. A paint/text copy
+   * becomes active; a cmask copy (settings kept, next free palette colour
+   * like the Image Mask's Duplicate) becomes the current mask and refuses at
+   * the cmask limit. One undo step.
    * @param layerId - Source layer (default: the active layer).
    * @returns New layer id, or `null` if not possible.
    */
@@ -272,7 +274,13 @@ export class LayerOps {
     const source = s.doc.layers[index];
     if (!source) return null;
     const layer: Layer = { ...source, id: createId(8), name: copyLayerName(source.name, s.doc.layers) };
-    insertLayer(s, layer, index + 1, captureLayerPixels(s, source.id));
+    const mask = source.kind === "mask";
+    if (mask) {
+      const used = s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color);
+      layer.color = nextMaskStyle(used, s.maskStyle()).color;
+      s.setCurrentMask(layer.id);
+    }
+    insertLayer(s, layer, index + 1, captureLayerPixels(s, source.id), !mask);
     this.soloNew(layer);
     return layer.id;
   }
@@ -383,14 +391,17 @@ export class LayerOps {
   }
 
   /**
-   * Per-mask invert (applied before the union).
-   * @param layerId - Mask layer id.
-   * @param invert - Invert state.
+   * Cmask mode (mask layer or the Image / Input Mask row): Subtract removes
+   * its coverage from the union of the normal cmasks (`U * (1 - S)`, like
+   * the MASK output); normal joins the union. One undoable settings step.
+   * @param layerId - Mask layer id or `IMAGE_MASK_ID`.
+   * @param subtract - `true` = Subtract, `false` = normal.
    * @returns `true` if changed.
    */
-  setMaskInvert(layerId: string, invert: boolean): boolean {
-    if (findLayer(this.s, layerId)?.kind !== "mask") return false;
-    return setLayerProps(this.s, layerId, { invert });
+  setMaskSubtract(layerId: string, subtract: boolean): boolean {
+    const layer = findLayer(this.s, layerId);
+    if (layer?.kind !== "mask" || (layer.subtract === true) === subtract) return false;
+    return setLayerProps(this.s, layerId, { subtract });
   }
 
   // ── Internals ───────────────────────────────────────────────────────────

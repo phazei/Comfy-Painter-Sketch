@@ -9,8 +9,7 @@
  *   untouched for a copy).
  * - {@link compositeOver}: straight-alpha source-over of one buffer onto
  *   another at an integer offset (float commit, paint Merge Down).
- * - {@link mergeMaskCoverage}: union (max) of two masks' effective coverage,
- *   stored under the lower mask's invert.
+ * - {@link mergeMaskCoverage}: union (max) of two masks' coverage (Merge Down).
  * - {@link offsetSelection} / {@link selectionHit}: whole-pixel selection moves.
  */
 
@@ -117,30 +116,19 @@ export function copyPixels(dst: Uint8ClampedArray, dstRect: Rect, src: Uint8Clam
 }
 
 /**
- * Merge Down for masks: result coverage = max(effective upper, effective
- * lower), each mask's invert applied first; stored under the lower mask's
- * invert (inverted lower: 255 - union). RGB is set to white (mask convention).
+ * Merge Down for masks (both of the same mode): result coverage =
+ * max(upper, lower). RGB is set to white (mask convention).
  * @param upper - Upper mask RGBA (coverage in alpha).
- * @param upperInvert - Upper mask invert.
  * @param lower - Lower mask RGBA, same size; modified in place.
- * @param lowerInvert - Lower mask invert.
  */
-export function mergeMaskCoverage(
-  upper: Uint8ClampedArray,
-  upperInvert: boolean,
-  lower: Uint8ClampedArray,
-  lowerInvert: boolean,
-): void {
+export function mergeMaskCoverage(upper: Uint8ClampedArray, lower: Uint8ClampedArray): void {
   for (let p = 0; p < lower.length; p += 4) {
     const u = upper[p + 3] as number;
     const l = lower[p + 3] as number;
-    const eu = upperInvert ? 255 - u : u;
-    const el = lowerInvert ? 255 - l : l;
-    const union = eu > el ? eu : el;
     lower[p] = 255;
     lower[p + 1] = 255;
     lower[p + 2] = 255;
-    lower[p + 3] = lowerInvert ? 255 - union : union;
+    lower[p + 3] = u > l ? u : l;
   }
 }
 

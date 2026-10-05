@@ -2,8 +2,9 @@
 tests/test_output_transparency.py -- The composite's transparency joins the output masks.
 
 Transparency in outputs (SPEC "Python execution"): with the
-Background eye off, ``T = 1 - composite alpha`` joins the mask-layer union
-AFTER ``invert_mask`` (max, never inverted), for Main and every region. Fill
+Background eye off, ``T = 1 - composite alpha`` joins the cmask result
+AFTER ``invert_mask`` and subtract cmasks (max, never inverted or subtracted),
+for Main and every region. Fill
 fills holes, Crop includes them, Alpha makes them transparent with the
 un-premultiplied layer colour (no background fringe). Plain IMAGE keeps the
 background colour under holes. Background visible: nothing changes.
@@ -111,6 +112,14 @@ class TestMask(_NodeCase):
         """Mask cols 0-5 inverted -> 0 there; T still marks col 4 (0.5) and col 5 (1)."""
         _, mask, _, _ = self.run_node(_manifest(), {"p": _paint(), "m": _mask_cols(slice(0, 6))}, invert=True)
         expected = torch.tensor([0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
+        torch.testing.assert_close(mask, expected.expand(1, 6, 8))
+
+    def test_subtract_does_not_remove_holes(self) -> None:
+        """T joins after subtraction: holes under a subtract cmask stay masked."""
+        document = _manifest([_layer("paint", "p"), _layer("mask", "m"), _layer("mask", "s", subtract=True)])
+        tensors = {"p": _paint(), "m": _mask_cols(slice(0, 8)), "s": _mask_cols(slice(3, 8))}
+        _, mask, _, _ = self.run_node(document, tensors)
+        expected = torch.tensor([1.0, 1.0, 1.0, 0.0, 0.5, 1.0, 1.0, 1.0])
         torch.testing.assert_close(mask, expected.expand(1, 6, 8))
 
     def test_background_visible_unchanged(self) -> None:

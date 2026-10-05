@@ -150,8 +150,8 @@ export class SelectionOps {
    * Ctrl+click on a layer row (Photoshop's thumbnail Ctrl+click): the layer's
    * pixels become the selection, combined by `mode`. The selection is hard:
    * full strength wherever the alpha is > 0 (soft edges are not kept as
-   * partial coverage). A mask uses its effective coverage (per-mask invert
-   * applied, as the overlay shows it). Works on hidden layers; does not change the
+   * partial coverage). A cmask uses its raw coverage (the Subtract mode
+   * does not change it). Works on hidden layers; does not change the
    * current layer, Quick Mask or solo. An empty layer notes and leaves the
    * selection unchanged.
    * @param layerId - Paint, text or mask layer id.
@@ -178,10 +178,9 @@ export class SelectionOps {
       s.events.emit("note", EMPTY_LAYER_NOTE);
       return false;
     }
-    const next = layer.kind === "mask" && layer.invert === true ? invertSelection(alpha) : alpha;
-    // Full strength wherever the (effective) alpha is > 0: lifting then takes
+    // Full strength wherever the alpha is > 0: lifting then takes
     // the pixels whole, so a move leaves no residue and keeps exact alpha.
-    return this.apply(hardenSelection(next), mode);
+    return this.apply(hardenSelection(alpha), mode);
   }
 
   // ── Pixel commands (one undo patch each) ────────────────────────────────

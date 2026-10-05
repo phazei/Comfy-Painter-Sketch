@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createEmptyDocument } from "../document/create";
 import type { Rect } from "../geometry/rect";
 import type { Editor as EditorClass } from "./editor";
+import { MIXED_MASK_MERGE_NOTE } from "./editorTypes";
 import { compositeOver, liftPixels, mergeMaskCoverage, offsetSelection, selectionHit } from "./floatMath";
 import { rectSelection } from "./selection";
 
@@ -172,17 +173,14 @@ describe("floatMath", () => {
     expect(Array.from(dst.subarray(4))).toEqual([255, 0, 0, 255]);
   });
 
-  it("merges mask coverage as the union of effective coverage under the lower invert", () => {
-    const px = (a: number) => new Uint8ClampedArray([255, 255, 255, a]);
+  it("merges mask coverage as the union (max), RGB white", () => {
+    const px = (a: number) => new Uint8ClampedArray([0, 0, 0, a]);
     const lower = px(50);
-    mergeMaskCoverage(px(200), false, lower, false);
-    expect(lower[3]).toBe(200);
-    const inv = px(50); // effective 205
-    mergeMaskCoverage(px(200), false, inv, true);
-    expect(inv[3]).toBe(50); // union 205 stored inverted
-    const upInv = px(100);
-    mergeMaskCoverage(px(0), true, upInv, false); // upper effective 255
-    expect(upInv[3]).toBe(255);
+    mergeMaskCoverage(px(200), lower);
+    expect(Array.from(lower)).toEqual([255, 255, 255, 200]);
+    const higher = px(220);
+    mergeMaskCoverage(px(10), higher);
+    expect(higher[3]).toBe(220);
   });
 
   it("offsets selections and hit-tests at 50 % coverage", () => {
@@ -429,21 +427,48 @@ describe("merge down", () => {
     expect(notes.length).toBe(2);
   });
 
-  it("merges masks as a union under the lower mask's invert", () => {
+  /** Two cmasks: the lower painted at x 0-1, the upper (current) at x 4-5. */
+  function twoMasks(): { ed: EditorClass; lowerMask: string; upperMask: string; notes: string[] } {
     const ed = editor();
+    const notes: string[] = [];
+    ed.events.on("note", (n) => notes.push(n));
     ed.setPaintTarget("mask");
     const lowerMask = ed.maskLayer?.id ?? "";
     fill(ed, { x: 0, y: 0, width: 2, height: 1 }, "#ffffff");
     const upperMask = ed.layerOps.addMask();
     if (!upperMask) throw new Error("no mask");
     fill(ed, { x: 4, y: 0, width: 2, height: 1 }, "#ffffff");
-    ed.layerOps.setMaskInvert(lowerMask, true);
+    return { ed, lowerMask, upperMask, notes };
+  }
+
+  it("merges normal masks as the raw union; the result stays normal", () => {
+    const { ed, lowerMask } = twoMasks();
+    expect(ed.canMergeDown()).toBe(true);
     expect(ed.mergeDown()).toBe(true);
-    // Lower (inverted) effective: 0 at x 0-1, 255 elsewhere; union with the upper's x 4-5,
-    // stored inverted: 255 at x 0-1, 0 elsewhere.
-    expect(alphaAt(ed, lowerMask, 0, 0)).toBe(255);
-    expect(alphaAt(ed, lowerMask, 4, 0)).toBe(0);
-    expect(alphaAt(ed, lowerMask, 2, 0)).toBe(0);
+    expect([0, 2, 4].map((x) => alphaAt(ed, lowerMask, x, 0))).toEqual([255, 0, 255]);
     expect(ed.maskLayer?.id).toBe(lowerMask);
+    expect(ed.maskLayer?.subtract).toBe(false);
+  });
+
+  it("merges two Subtract masks as the raw union; the result stays Subtract", () => {
+    const { ed, lowerMask, upperMask } = twoMasks();
+    ed.layerOps.setMaskSubtract(lowerMask, true);
+    ed.layerOps.setMaskSubtract(upperMask, true);
+    expect(ed.canMergeDown()).toBe(true);
+    expect(ed.mergeDown()).toBe(true);
+    expect([0, 2, 4].map((x) => alphaAt(ed, lowerMask, x, 0))).toEqual([255, 0, 255]);
+    expect(ed.maskLayer).toMatchObject({ id: lowerMask, subtract: true });
+  });
+
+  it("refuses to merge a Subtract mask with a normal one (note), either way round", () => {
+    for (const which of ["upper", "lower"] as const) {
+      const { ed, lowerMask, upperMask, notes } = twoMasks();
+      ed.layerOps.setMaskSubtract(which === "upper" ? upperMask : lowerMask, true);
+      expect(ed.canMergeDown()).toBe(false);
+      expect(ed.mergeDown()).toBe(false);
+      expect(notes).toEqual([MIXED_MASK_MERGE_NOTE]);
+      expect(ed.doc.layers.some((l) => l.id === upperMask)).toBe(true);
+      expect(alphaAt(ed, lowerMask, 4, 0)).toBe(0);
+    }
   });
 });

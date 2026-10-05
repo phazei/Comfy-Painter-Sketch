@@ -55,7 +55,7 @@ describe("ensureMaskLayer", () => {
     const { layer, created } = ensureMaskLayer(doc);
     expect(created).toBe(true);
     expect(doc.layers[doc.layers.length - 1]).toBe(layer);
-    expect(layer).toMatchObject({ kind: "mask", name: "Mask 1", color: "#ff0000", opacity: 0.5, invert: false, file: null });
+    expect(layer).toMatchObject({ kind: "mask", name: "Mask 1", color: "#ff0000", opacity: 0.5, subtract: false, file: null });
     expect(doc.activeLayerId).toBe(activeBefore);
   });
 

@@ -8,11 +8,13 @@
  * Saved as the optional manifest field `imageMask` (additive, written only
  * while the row exists; missing = no row):
  *
- *   imageMask?: { file, visible, color, opacity, invert, sourceKey, width, height }
+ *   imageMask?: { file, visible, color, opacity, subtract?, sourceKey, width, height }
+ *
+ * (`subtract` is written only when `true`.)
  *
  * In the editor it is a `Layer`-shaped record with the fixed id
  * {@link IMAGE_MASK_ID} that is never part of `layers`, so the generic mask
- * settings (eye, colour, invert, overlay opacity, solo) apply to it as they
+ * settings (eye, colour, subtract, overlay opacity, solo) apply to it as they
  * are. Reading lives in `parse.ts` (shared guards).
  *
  * Input Mask: while the node's `mask` input is connected the same
@@ -58,7 +60,7 @@ export interface ImageMask extends Layer {
 }
 
 /**
- * A new Image Mask record (visible, not inverted, no file yet), named after its source.
+ * A new Image Mask record (visible, normal (not subtract), no file yet), named after its source.
  * @param sourceKey - Background source key (an Input Mask key while `mask` is connected).
  * @param size - Image size.
  * @param style - Overlay colour + opacity.
@@ -75,7 +77,7 @@ export function createImageMask(sourceKey: string, size: Size, style: Readonly<M
     blendMode: "normal",
     file: null,
     color: style.color,
-    invert: false,
+    subtract: false,
     sourceKey,
     width: size.width,
     height: size.height,
@@ -103,7 +105,7 @@ export function serializeImageMask(mask: Readonly<ImageMask>): Record<string, un
     visible: mask.visible,
     ...(mask.color !== undefined ? { color: mask.color } : {}),
     opacity: mask.opacity,
-    invert: mask.invert === true,
+    ...(mask.subtract === true ? { subtract: true } : {}),
     sourceKey: mask.sourceKey,
     width: mask.width,
     height: mask.height,

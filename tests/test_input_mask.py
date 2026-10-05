@@ -8,7 +8,7 @@ Covers:
   - resize to the image size (ComfyUI's bilinear ``resize_mask``), 2D masks
   - batch mapping: mask n for image n when the counts match, else the first
   - LoadImage's 64x64 all-zero placeholder = no mask
-  - combine: the row's invert / eye from the manifest, defaults without a
+  - combine: the row's subtract / eye from the manifest, defaults without a
     record, the record's file ignored while connected, no image -> unused
   - preview under its own ui key (first mask, content id; placeholder item)
   - a 4-channel IMAGE is used as RGB (3-channel outputs)
@@ -46,7 +46,7 @@ def _manifest(image_mask: dict | None = None) -> str:
                     "opacity": 1, "blendMode": "normal", "file": None}],
     }
     if image_mask is not None:
-        doc["imageMask"] = {"file": FILE, "visible": True, "color": "#00ff00", "opacity": 0.5, "invert": False,
+        doc["imageMask"] = {"file": FILE, "visible": True, "color": "#00ff00", "opacity": 0.5, "subtract": False,
                             "sourceKey": "mask:x", "width": 8, "height": 4, **image_mask}
     return json.dumps(doc)
 
@@ -135,8 +135,12 @@ class TestExecute(unittest.TestCase):
         self.assertEqual(float(out.result[1][0, 1, 1]), 0.0)
         self.assertEqual(float(out.result[1][0, 0, 0]), 1.0)
 
-    def test_row_invert_and_eye_apply(self) -> None:
-        out = _run(self.mask, document=_manifest({"invert": True}))
+    def test_row_subtract_and_eye_apply(self) -> None:
+        # Subtract row, no normal cmask: nothing to subtract from.
+        out = _run(self.mask, document=_manifest({"subtract": True}))
+        self.assertEqual(float(out.result[1].max()), 0.0)
+        # With invert_mask: everything masked except the Input Mask's coverage.
+        out = _run(self.mask, document=_manifest({"subtract": True}), invert_mask=True)
         self.assertEqual(float(out.result[1][0, 1, 1]), 0.0)
         self.assertEqual(float(out.result[1][0, 0, 0]), 1.0)
         out = _run(self.mask, document=_manifest({"visible": False}))
@@ -186,7 +190,7 @@ class TestExecute(unittest.TestCase):
         self.assertEqual(float(out.result[1].min()), 1.0)
 
     def test_placeholder_and_no_image(self) -> None:
-        out = _run(torch.zeros(1, 64, 64), document=_manifest({"invert": True}))
+        out = _run(torch.zeros(1, 64, 64), document=_manifest({"subtract": True}))
         self.assertEqual(float(out.result[1].max()), 0.0)
         with mock.patch.object(previews.UI, "PreviewImage", _FakePreview):
             out = PainterSketch.execute(document=_manifest(), width=8, height=4, mask=self.mask)

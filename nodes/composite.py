@@ -37,22 +37,25 @@ Compositing (SPEC "Python execution"):
     Applied bottom -> top; broadcast over the batch dimension.
 
 Mask combination (SPEC "Python execution"):
-    Each visible mask layer's alpha channel -> optional per-layer invert ->
-    max union over all visible mask layers -> node-level invert_mask.
-    Areas outside the placed layer (not covered by the PNG) count as 0.0
-    *before* the per-layer invert, so a fully-inverted mask layer with no
-    paint covers the whole frame.
+    Each visible cmask is either normal or ``subtract``; its alpha channel is
+    placed through the frame map (0.0 outside the placed rect).
+        U = max over visible normal cmasks       (node ``invert_mask``: 1 - U;
+                                                  all ones with no normal row)
+        S = max over visible subtract cmasks
+        MASK = U * (1 - S)                        (subtract wins over invert_mask)
+    A subtract row is 0 outside its placed rect (the Image / Input Mask row:
+    outside the image), so it only removes what it covers.
 
 Image Mask:
     The loaded Image Mask coverage (``layer_tensors[IMAGE_MASK_KEY]``, image
-    px, exactly the run-time image size) joins the union like a visible mask
-    layer: placed at the image origin (0 outside the image), its own invert,
-    then the max. Only when visible and not stale (the ``mask`` input's
-    coverage, from ``input_mask.py``, takes its place).
+    px, exactly the run-time image size) joins U or S (its row's ``subtract``)
+    like a visible cmask, placed at the image origin (0 outside the image).
+    Only when visible and not stale (the ``mask`` input's coverage, from
+    ``input_mask.py``, takes its place).
 
 Transparency in outputs (SPEC "Python execution"): with the Background eye
 off the layers composite over a transparent base (:func:`run_transparent_composite`);
-``T = 1 - alpha`` joins the MASK after ``invert_mask`` (max, never inverted).
+``T = 1 - alpha`` joins the MASK after subtraction (max, never inverted).
 With the eye on the composite is opaque and none of this runs.
 """
 
@@ -300,16 +303,20 @@ def combine_mask_layers(
     origin: tuple[int, int] = (0, 0),
     image_mask: tuple[torch.Tensor, bool] | None = None,
 ) -> torch.Tensor:
-    """Build the final MASK tensor from visible mask layers.
+    """Build the final MASK tensor from visible cmasks (mask layers + Image / Input Mask row).
 
     Per SPEC "Python execution":
-      1. Place each visible mask layer's alpha channel onto the W x H canvas
-         (zeros outside the placed area, *before* per-layer invert).
-      2. Apply per-layer ``invert`` (``1 - alpha``).
-      3. Union (max) across all mask layers.
-      4. Apply node-level ``invert_mask``.
-    The Image Mask (``image_mask``) counts as one more visible mask layer,
-    placed at the image origin instead of through the frame map.
+      1. ``U`` = union (max) of the visible normal cmasks, each placed onto
+         the W x H canvas (zeros outside the placed area).
+      2. Node-level ``invert_mask``: ``U = 1 - U``; all ones when no normal
+         cmask row is visible (visible subtract rows don't count).
+      3. ``S`` = union (max) of the visible ``subtract`` cmasks (zeros outside
+         the placed area: the Image / Input Mask row never subtracts outside
+         the image; a mask layer only where its own placed pixels reach).
+      4. ``MASK = U * (1 - S)``: subtract always wins over ``invert_mask``.
+    The Image Mask (``image_mask``) counts as one more visible cmask, placed
+    at the image origin instead of through the frame map. An empty normal
+    cmask still counts as a mask row (zeros); an empty subtract one is a no-op.
 
     Opacity and display color are intentionally ignored for masks (SPEC "Python execution":
     cmask opacity/color are display only).
@@ -324,7 +331,7 @@ def combine_mask_layers(
         placement:     Move-tool placement (default identity).
         image_size:    ``(W, H)`` of the run-time image; default = canvas size.
         origin:        Image px of the canvas top-left (viewport canvases).
-        image_mask:    ``(coverage [ih, iw] or [Bm, ih, iw] in image px, invert)``
+        image_mask:    ``(coverage [ih, iw] or [Bm, ih, iw] in image px, subtract)``
                        of a visible Image / Input Mask, or ``None``.
 
     Returns:
@@ -333,43 +340,38 @@ def combine_mask_layers(
     iw, ih = image_size or (W, H)
     s, ox, oy = _layout(iw, ih, frame, placement)
 
-    combined = torch.zeros((H, W), dtype=torch.float32)
+    union = torch.zeros((H, W), dtype=torch.float32)
+    subtracted = torch.zeros((H, W), dtype=torch.float32)
     has_mask = False
 
     for layer in layers:
-        if layer.kind != "mask":
+        if layer.kind != "mask" or not layer.visible:
             continue
-        if not layer.visible:
-            continue
-        has_mask = True
-
+        if not layer.subtract:
+            has_mask = True
         rgba = layer_tensors.get(layer.id)
         if rgba is None:
-            # Empty mask layer; a per-layer invert of zeros = ones (full mask)
-            placed_a = torch.zeros((H, W), dtype=torch.float32)
+            continue  # empty row: zeros in U (still a mask row), a no-op in S
+        placed_a = _place_layer(rgba, bounds, W, H, s, ox, oy, origin)[:, :, 3]
+        if layer.subtract:
+            subtracted = torch.max(subtracted, placed_a)
         else:
-            placed = _place_layer(rgba, bounds, W, H, s, ox, oy, origin)  # [H, W, 4]
-            placed_a = placed[:, :, 3]  # alpha channel
-
-        if layer.invert:
-            placed_a = 1.0 - placed_a
-
-        combined = torch.max(combined, placed_a)
+            union = torch.max(union, placed_a)
 
     if image_mask is not None:
-        has_mask = True
-        coverage, invert = image_mask
+        coverage, subtract = image_mask
         placed_a = _place_image_px(coverage, W, H, origin)
-        combined = torch.max(combined, 1.0 - placed_a if invert else placed_a)
+        if subtract:
+            subtracted = torch.max(subtracted, placed_a)
+        else:
+            has_mask = True
+            union = torch.max(union, placed_a)
 
     if invert_mask:
-        if not has_mask:
-            # No mask layers + invert = full mask
-            combined = torch.ones((H, W), dtype=torch.float32)
-        else:
-            combined = 1.0 - combined
+        # No normal row + invert = full mask
+        union = 1.0 - union if has_mask else torch.ones((H, W), dtype=torch.float32)
 
-    return combined
+    return union * (1.0 - subtracted)
 
 
 def _place_image_px(coverage: torch.Tensor, W: int, H: int, origin: tuple[int, int]) -> torch.Tensor:
@@ -401,7 +403,7 @@ def _image_mask_input(
     mask = doc.image_mask
     if coverage is None or mask is None or not mask.visible:
         return None
-    return coverage, mask.invert
+    return coverage, mask.subtract
 
 
 # ── Top-level entry point ─────────────────────────────────────────────────────
@@ -465,8 +467,8 @@ def run_transparent_composite(
     """:func:`run_composite` with the Background eye off: the composite's own transparency.
 
     The base is transparent instead of the input image. IMAGE = the layers
-    flattened onto ``background``; MASK = ``max(mask layers incl. invert_mask,
-    T)`` with ``T = 1 - A`` added after ``invert_mask`` (never inverted), the
+    flattened onto ``background``; MASK = ``max(cmasks incl. invert_mask and
+    subtract, T)`` with ``T = 1 - A`` added after both (never inverted or subtracted), the
     same max union as the mask layers. ``straight`` is the un-premultiplied
     layer colour (``P / A``; ``background`` where ``A = 0``) for outputs that
     blend by their mask (Fill, Alpha), so soft edges carry no background fringe.

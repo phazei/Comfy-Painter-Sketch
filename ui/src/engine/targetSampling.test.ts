@@ -1,7 +1,7 @@
 /**
  * "Current layer" sampling of the magic wand and paint bucket follows the
  * current TARGET: the active paint layer, or under Quick Mask the current
- * mask (incl. the Image Mask row) as its effective coverage in gray -- never
+ * mask (incl. the Image Mask row) as its raw coverage in gray -- never
  * the last selected paint layer. A hidden target (eye off / hidden by solo)
  * refuses with the gate's hidden note; "All layers" never notes; the
  * lmask-only view still samples a hidden layer's mask. Compositing canvas fake.
@@ -100,14 +100,14 @@ describe("wand, Current layer = the current target (bug 1)", () => {
     }
   });
 
-  it("gray coverage: tolerance applies to the coverage values; invert keeps the regions", () => {
+  it("gray coverage: tolerance applies to the coverage values; Subtract keeps the raw regions", () => {
     const soft = setup(20);
     soft.ed.selectMask(soft.mask);
     // 20 is within 32 of 0: selects across the stripe.
     expect(row(soft.ed.pixelOps.wandSelection(wandReq(1, "layer")), [1, 5, 14])).toEqual([255, 255, 255]);
     const inv = setup();
     inv.ed.selectMask(inv.mask);
-    inv.ed.layerOps.setMaskInvert(inv.mask, true);
+    expect(inv.ed.layerOps.setMaskSubtract(inv.mask, true)).toBe(true);
     expect(row(inv.ed.pixelOps.wandSelection(wandReq(5, "layer")), [4, 11, 3, 12])).toEqual([255, 255, 0, 0]);
   });
 
@@ -131,10 +131,10 @@ describe("bucket, Current layer on a mask (bug 1)", () => {
     expect(alphaAt(ed, l1, 10, 1)).toBe(0); // paint layer untouched
   });
 
-  it("same with the mask inverted", () => {
+  it("same with the mask in Subtract mode (raw coverage)", () => {
     const { ed, mask } = setup();
     ed.selectMask(mask);
-    ed.layerOps.setMaskInvert(mask, true);
+    ed.layerOps.setMaskSubtract(mask, true);
     expect(ed.pixelOps.fill(fillReq(14, "layer"))).toBe(true);
     expect([alphaAt(ed, mask, 13, 1), alphaAt(ed, mask, 15, 1), alphaAt(ed, mask, 1, 1)]).toEqual([255, 255, 0]);
   });
@@ -217,7 +217,7 @@ describe("hidden current target (bug 2)", () => {
 
 // ── All layers with a mask targeted ───────────────────────────────────────────
 
-describe("All layers with a mask targeted: the visible masks' union", () => {
+describe("All layers with a mask targeted: the visible cmasks combined (normal union minus subtract union)", () => {
   /** setup() plus Mask 2 covering x >= 14; Mask 1 is the current mask. */
   function masksSetup(): Scene & { mask2: string } {
     const sc = setup();
@@ -234,12 +234,22 @@ describe("All layers with a mask targeted: the visible masks' union", () => {
     expect(row(ed.pixelOps.wandSelection(wandReq(12, "all")), [12, 13, 11, 14])).toEqual([255, 255, 0, 0]);
   });
 
-  it("per-mask invert, hidden masks excluded, solo as displayed", () => {
-    const inv = masksSetup();
-    inv.ed.layerOps.setMaskInvert(inv.mask2, true); // effective 255 at 0..13
-    expect(row(inv.ed.pixelOps.wandSelection(wandReq(14, "all")), [14, 15, 13])).toEqual([255, 255, 0]);
-    expect(row(inv.ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 8, 13, 14])).toEqual([255, 255, 255, 0]);
+  it("a Subtract mask removes its coverage from the union; alone it leaves nothing", () => {
+    const sub = masksSetup();
+    paint(sub.ed, sub.mask2, (x) => (x >= 10 ? [255, 255, 255, 255] : null)); // now x >= 10
+    sub.ed.layerOps.setMaskSubtract(sub.mask2, true);
+    // U = stripe 4..11, S = 10..15: result 255 at 4..9 only.
+    expect(row(sub.ed.pixelOps.wandSelection(wandReq(5, "all")), [4, 9, 3, 10])).toEqual([255, 255, 0, 0]);
+    expect(row(sub.ed.pixelOps.wandSelection(wandReq(12, "all")), [10, 15, 9, 1])).toEqual([255, 255, 0, 0]);
+    // Partial subtract: U * (1 - S) = 255 * (255 - 128) / 255 = 127 at 10..11 (its own region).
+    paint(sub.ed, sub.mask2, (x) => (x >= 10 ? [255, 255, 255, 128] : null));
+    expect(row(sub.ed.pixelOps.wandSelection(wandReq(10, "all")), [10, 11, 9, 12])).toEqual([255, 255, 0, 0]);
+    // No normal cmask shown: nothing is covered.
+    sub.ed.layerOps.setVisible(sub.mask, false);
+    expect(row(sub.ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 5, 12, 15])).toEqual([255, 255, 255, 255]);
+  });
 
+  it("hidden masks excluded, solo as displayed", () => {
     const hid = masksSetup();
     hid.ed.layerOps.setVisible(hid.mask2, false);
     expect(row(hid.ed.pixelOps.wandSelection(wandReq(12, "all")), [12, 15, 11])).toEqual([255, 255, 0]);
@@ -282,13 +292,13 @@ describe("Image Mask row as the current mask", () => {
     return { ed, notes };
   }
 
-  it("wand samples its coverage (invert applied)", () => {
+  it("wand samples its raw coverage (Subtract ignored)", () => {
     const { ed } = imageSetup();
     const sel = ed.pixelOps.wandSelection(wandReq(1, "layer"));
     expect(row(sel, [1, 2, 0, 3])).toEqual([255, 255, 0, 0]);
     expect(selAt(sel, 1, 2)).toBe(255);
-    ed.layerOps.setMaskInvert(IMAGE_MASK_ID, true);
-    expect(row(ed.pixelOps.wandSelection(wandReq(0, "layer")), [0, 3, 7, 1])).toEqual([255, 255, 255, 0]);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true);
+    expect(row(ed.pixelOps.wandSelection(wandReq(1, "layer")), [1, 2, 0, 3])).toEqual([255, 255, 0, 0]);
   });
 
   it("hidden: the wand refuses with the mask note; the bucket keeps the Image Mask note", () => {
@@ -308,6 +318,20 @@ describe("Image Mask row as the current mask", () => {
     expect(ed.selectMask(mask)).toBe(true);
     expect(row(ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 2, 0, 3])).toEqual([255, 255, 0, 0]);
     ed.layerOps.setVisible(IMAGE_MASK_ID, false);
+    expect(row(ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 2, 0, 3])).toEqual([255, 255, 255, 255]);
+  });
+
+  it("All layers: a Subtract row removes its coverage from the normal union", () => {
+    const { ed } = imageSetup();
+    ed.setBackground({ kind: "image", image: {} as CanvasImageSource }, SIZE);
+    const mask = ed.doc.layers.find((l) => l.kind === "mask")?.id ?? "";
+    paint(ed, mask, () => [255, 255, 255, 255]); // Mask 1 covers everything
+    expect(ed.selectMask(mask)).toBe(true);
+    expect(ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true)).toBe(true);
+    // 255 everywhere minus the row's 2x2 hole block at (1..2, 1..2).
+    expect(row(ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 2, 0, 3])).toEqual([255, 255, 0, 0]);
+    expect(row(ed.pixelOps.wandSelection(wandReq(0, "all")), [0, 3, 7, 1])).toEqual([255, 255, 255, 0]);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, false); // normal: joins the union (all 255)
     expect(row(ed.pixelOps.wandSelection(wandReq(1, "all")), [1, 2, 0, 3])).toEqual([255, 255, 255, 255]);
   });
 });

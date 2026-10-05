@@ -93,11 +93,10 @@ export class LayerDisplay {
       const source = s.floatPreview(layer.id) ?? (stroking ? s.stroke.updatePreview(surface).canvas : surface.canvas);
       const tint = this.tintFor(layer.id);
       const color = maskDisplayColor(layer);
-      const invert = layer.invert === true;
-      const key = { bounds, color, invert, revision: s.runtime.revision(layer.id) };
+      const key = { bounds, color, revision: s.runtime.revision(layer.id) };
       const canvas = tint.update(source, key, stroking ? s.stroke.lastRefreshed : null);
       const offset = this.moveOffset(layer.id);
-      out.push({ tint: canvas, color, opacity: layer.opacity, invert, ...(offset ? { offset } : {}) });
+      out.push({ tint: canvas, color, opacity: layer.opacity, subtract: layer.subtract === true, ...(offset ? { offset } : {}) });
     }
     return out;
   }
@@ -110,9 +109,8 @@ export class LayerDisplay {
     const source = s.imageMask.canvas();
     if (!source) return null;
     const color = maskDisplayColor(mask);
-    const invert = mask.invert === true;
-    const key = { bounds: { x: 0, y: 0, width: mask.width, height: mask.height }, color, invert, revision: s.imageMask.revision };
-    return { tint: this.tintFor(mask.id).update(source, key, null), color, opacity: mask.opacity, invert, imageSpace: true };
+    const key = { bounds: { x: 0, y: 0, width: mask.width, height: mask.height }, color, revision: s.imageMask.revision };
+    return { tint: this.tintFor(mask.id).update(source, key, null), color, opacity: mask.opacity, subtract: mask.subtract === true, imageSpace: true };
   }
 
   private tintFor(id: string): MaskTint {

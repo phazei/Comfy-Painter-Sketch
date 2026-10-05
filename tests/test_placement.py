@@ -38,11 +38,11 @@ def _doc_json(**extra) -> str:
 
 
 def _paint(lid="l1"):
-    return Layer(id=lid, kind="paint", visible=True, opacity=1.0, file="f", invert=False)
+    return Layer(id=lid, kind="paint", visible=True, opacity=1.0, file="f")
 
 
 def _mask(lid="m1"):
-    return Layer(id=lid, kind="mask", visible=True, opacity=1.0, file="f", invert=False)
+    return Layer(id=lid, kind="mask", visible=True, opacity=1.0, file="f")
 
 
 def _square(size=100, x0=0, y0=0, x1=10, y1=10):

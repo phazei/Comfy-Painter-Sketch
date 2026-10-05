@@ -256,6 +256,9 @@
   gap: 6px;
   min-width: 0;
   overflow: hidden;
+  /* Fixed: the content is a 10 px swatch, optional 11 px text, or "Text" / "Read-only"; the row height must not depend on which. */
+  height: 14px;
+  line-height: 14px;
   color: var(--cps-fg-hint);
   font-size: 11px;
   white-space: nowrap;
@@ -264,6 +267,17 @@
 .cps-layer-row.cps-layer-mask .cps-layer-sub,
 .cps-layer-row.cps-layer-image-mask .cps-layer-sub {
   color: var(--cps-fg-muted);
+}
+
+/* Subtract cmask: "Subtract" beside the swatch; the thumbnail badge is a plain minus, shorter than the other badges. */
+.cps-layer-badge.cps-layer-subtract-badge {
+  height: 10px;
+  bottom: -2px;
+}
+
+.cps-layer-subtract-label {
+  color: var(--cps-fg);
+  font-weight: 600;
 }
 
 /* Input Mask waiting for a run. */
@@ -336,11 +350,11 @@
   color: var(--cps-fg-disabled);
 }
 
-.cps-layer-button.cps-layer-invert {
+.cps-layer-button.cps-layer-subtract {
   color: var(--cps-fg-hint);
 }
 
-.cps-layer-button.cps-layer-invert.cps-active {
+.cps-layer-button.cps-layer-subtract.cps-active {
   background: var(--cps-active-bg);
   color: var(--cps-fg-strong);
 }

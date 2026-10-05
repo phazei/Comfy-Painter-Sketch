@@ -17,7 +17,7 @@ const KEY = "filename=cat.png&subfolder=&type=input";
 
 function withMask(): PainterDocument {
   const doc = createEmptyDocument({ width: 64, height: 32 }, "abcd1234");
-  doc.imageMask = { ...createImageMask(KEY, { width: 640, height: 320 }, { color: "#00ff00", opacity: 0.4 }), file: "painter-sketch/ps-abcd1234-00ff.png [input]", invert: true };
+  doc.imageMask = { ...createImageMask(KEY, { width: 640, height: 320 }, { color: "#00ff00", opacity: 0.4 }), file: "painter-sketch/ps-abcd1234-00ff.png [input]", subtract: true };
   return doc;
 }
 
@@ -34,12 +34,20 @@ describe("imageMask manifest field", () => {
     const saved = JSON.parse(text) as Record<string, unknown>;
     expect(saved["imageMask"]).toEqual({
       file: "painter-sketch/ps-abcd1234-00ff.png [input]", visible: true, color: "#00ff00", opacity: 0.4,
-      invert: true, sourceKey: KEY, width: 640, height: 320,
+      subtract: true, sourceKey: KEY, width: 640, height: 320,
     });
     const back = parsed(text);
     expect(back.imageMask).toEqual(doc.imageMask);
     expect(back.imageMask?.id).toBe(IMAGE_MASK_ID);
     expect(stringifyDocument(back)).toBe(text);
+  });
+
+  it("writes `subtract` only when true", () => {
+    const doc = withMask();
+    if (doc.imageMask) doc.imageMask.subtract = false;
+    const saved = JSON.parse(stringifyDocument(doc)) as Record<string, Record<string, unknown>>;
+    expect("subtract" in (saved["imageMask"] ?? {})).toBe(false);
+    expect(parsed(saved).imageMask?.subtract).toBe(false);
   });
 
   it("old manifests load without a row and stay byte-identical", () => {
@@ -62,8 +70,8 @@ describe("imageMask manifest field", () => {
         expect(result.document.layers).toHaveLength(2);
       }
     }
-    const lenient = parsed({ ...base, imageMask: { ...base["imageMask"], file: " ", visible: "no", invert: 1, opacity: 7 } });
-    expect(lenient.imageMask).toMatchObject({ file: null, visible: true, invert: false, opacity: 1 });
+    const lenient = parsed({ ...base, imageMask: { ...base["imageMask"], file: " ", visible: "no", subtract: 1, opacity: 7 } });
+    expect(lenient.imageMask).toMatchObject({ file: null, visible: true, subtract: false, opacity: 1 });
   });
 
   it("clones independently", () => {

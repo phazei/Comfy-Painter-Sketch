@@ -55,15 +55,15 @@ describe("Input Mask row", () => {
   it("is named Input Mask while connected and Image Mask again after; settings survive both ways", () => {
     const { ed } = setup();
     ed.imageMask.setFromAlpha("filename=a.png&subfolder=&type=input", SIZE, alphaOpaqueWithHole());
-    ed.layerOps.setMaskInvert(IMAGE_MASK_ID, true);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true);
     ed.layerOps.setMaskColor(IMAGE_MASK_ID, "#123456");
     ed.imageMask.setInput(KEY, SIZE, block(), false);
-    expect(ed.doc.imageMask).toMatchObject({ name: INPUT_MASK_NAME, invert: true, color: "#123456", file: null, sourceKey: KEY });
+    expect(ed.doc.imageMask).toMatchObject({ name: INPUT_MASK_NAME, subtract: true, color: "#123456", file: null, sourceKey: KEY });
     expect(ed.imageMask.isInput).toBe(true);
     ed.layerOps.setVisible(IMAGE_MASK_ID, false);
     // Disconnect: the image alpha comes back with the settings.
     ed.imageMask.setFromAlpha("filename=a.png&subfolder=&type=input", SIZE, alphaOpaqueWithHole());
-    expect(ed.doc.imageMask).toMatchObject({ name: IMAGE_MASK_NAME, invert: true, visible: false, color: "#123456" });
+    expect(ed.doc.imageMask).toMatchObject({ name: IMAGE_MASK_NAME, subtract: true, visible: false, color: "#123456" });
     expect(ed.imageMask.isInput).toBe(false);
   });
 

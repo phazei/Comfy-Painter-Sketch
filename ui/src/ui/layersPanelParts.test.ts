@@ -26,10 +26,10 @@ describe("soloMark", () => {
 });
 
 describe("rowModel", () => {
-  it("cmask: colour, invert and current; no lmask slot", () => {
-    const m = rowModel(layer({ id: "m", kind: "mask", color: "#00ff00", invert: true }), { ...FLAGS, current: true });
+  it("cmask: colour, subtract and current; no lmask slot", () => {
+    const m = rowModel(layer({ id: "m", kind: "mask", color: "#00ff00", subtract: true }), { ...FLAGS, current: true });
     expect(m.color).toBe("#00ff00");
-    expect(m.invert).toBe(true);
+    expect(m.subtract).toBe(true);
     expect(m.current).toBe(true);
     expect(m.maskSlot).toBeUndefined();
   });

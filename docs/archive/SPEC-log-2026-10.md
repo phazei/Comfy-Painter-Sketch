@@ -118,3 +118,15 @@ Order: 1 -> 2 -> 3 -> 4 -> 5 -> 6.
 6. [ ] **Manual checklist** (AGENTS.md "Testing") with Nodes 2.0 off and on, then
    release.
 
+
+### cmask Invert replaced by Subtract (2026-10-04)
+
+Per-cmask `invert` (mask layers and the `imageMask` record) is gone; the
+field is `subtract`. No migration and no manifest version bump: the node is
+unreleased, and old `invert` values are simply ignored on load (a cmask reads
+as normal). Don't add a migration for `invert` later. Reason: the union of two
+inverted cmasks is the inverse of their intersection, so almost everything was
+masked; Subtract (`MASK = U * (1 - S)`) composes. Side effect removed: an
+inverted Image/Input Mask row was 1 outside the image in Python and 0 in the
+editor; with Subtract outside is 0 everywhere. The "To mask" target fix
+(`lastCmaskId`) landed the same day.

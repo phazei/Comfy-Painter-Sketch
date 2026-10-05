@@ -1,12 +1,13 @@
 /**
  * One row of the layers panel (design handoff "Layers tab"), left to right:
  *
- * - cmask: 3 px current bar (mask colour) | eye | 36 x 28 thumbnail | name
- *   over a sub-line (10 px colour swatch; the overlay opacity is the panel
- *   header's chip) | invert | lock | solo.
+ * - cmask: 3 px current bar (mask colour) | eye | 36 x 28 thumbnail (a plain
+ *   minus badge for a Subtract cmask, like the lock badge) | name over a sub-line (10 px colour swatch,
+ *   "Subtract" when on; the overlay opacity is the panel header's chip) |
+ *   subtract | lock | solo.
  * - paint / text: spacer | eye | checker thumbnail ("T" badge for text) |
  *   lmask slot (`layerMaskThumb.ts`) | name (+ "Text") | lock | solo.
- * - Image / Input Mask: like a cmask (bar, swatch, invert) with a
+ * - Image / Input Mask: like a cmask (bar, swatch, subtract) with a
  *   lock badge on the thumbnail instead of a lock button, plus Duplicate
  *   ("Duplicate to an editable mask"); no rename, never dragged.
  * - Background: spacer | eye | thumbnail + lock badge | "Background" /
@@ -45,6 +46,9 @@ export const INPUT_MASK_TOOLTIP = "From the connected mask input (it replaces th
  */
 export const LAYER_NAME_CLAMP_CLASS = "cps-layer-name-clamp";
 
+/** Tooltip of a Subtract cmask's badge and (on) button. */
+const SUBTRACT_ON_TITLE = "Subtract mask: its coverage is removed from the other masks (click to make it normal)";
+
 /** CSS class suffix per row kind (`cps-layer-<suffix>`). */
 const ROW_CLASS: Readonly<Record<RowKind, string>> = { paint: "paint", mask: "mask", imageMask: "image-mask", background: "background" };
 
@@ -60,8 +64,8 @@ export interface RowModel {
   standby: boolean;
   /** Mask display colour. */
   color?: string;
-  /** Mask invert. */
-  invert?: boolean;
+  /** Subtract cmask: its coverage is removed from the cmask union (badge, sub-line, button on). */
+  subtract?: boolean;
   /** Current mask: left bar in the mask's colour, Quick Mask on or off. */
   current?: boolean;
   /** Editable text layer ("T" badge, "Text" sub-line). */
@@ -96,7 +100,7 @@ export interface RowActions extends MaskSlotActions {
   toggleLocked(id: string): void;
   rename(id: string, name: string): void;
   pickColor(id: string, anchor: HTMLElement): void;
-  toggleInvert(id: string): void;
+  toggleSubtract(id: string): void;
   /** Duplicate button of a read-only row (Image / Input Mask, Background). */
   duplicate(id: string): void;
   /** Inline rename started/ended (the panel defers rebuilds; focus is handed back). */
@@ -116,9 +120,11 @@ export class LayerRow {
   private readonly eye: HTMLButtonElement;
   private readonly lock: HTMLButtonElement | null = null;
   private readonly swatch: HTMLButtonElement | null = null;
-  private readonly invertButton: HTMLButtonElement | null = null;
+  private readonly subtractButton: HTMLButtonElement | null = null;
   private readonly dupButton: HTMLButtonElement | null = null;
   private readonly textBadge: HTMLSpanElement | null = null;
+  private readonly subtractBadge: HTMLSpanElement | null = null;
+  private readonly subtractLabel: HTMLSpanElement | null = null;
   private readonly soloButton: HTMLButtonElement;
   private readonly hintEl: HTMLDivElement | null = null;
   private readonly thumbBox: HTMLSpanElement;
@@ -163,6 +169,13 @@ export class LayerRow {
       this.maskSlot = new LayerMaskSlot(id, actions);
       this.element.appendChild(this.maskSlot.element);
     }
+    if (maskLike) {
+      this.subtractBadge = el("span", "cps-layer-badge cps-layer-subtract-badge");
+      this.subtractBadge.title = SUBTRACT_ON_TITLE;
+      setIcon(this.subtractBadge, "minus", 9);
+      this.subtractBadge.hidden = true;
+      this.thumbBox.appendChild(this.subtractBadge);
+    }
     if (readOnly) {
       const badge = el("span", "cps-layer-badge cps-layer-lock-badge");
       badge.title = kind === "background" ? "Read-only: the background (input image) is locked" : "Read-only (duplicate it to edit)";
@@ -178,7 +191,10 @@ export class LayerRow {
     if (maskLike) {
       const swatch = button("cps-layer-swatch", () => actions.pickColor(id, swatch));
       swatch.title = "Mask colour (display only)";
-      this.sub.appendChild(swatch);
+      this.subtractLabel = el("span", "cps-layer-subtract-label");
+      this.subtractLabel.textContent = "Subtract";
+      this.subtractLabel.hidden = true;
+      this.sub.append(swatch, this.subtractLabel);
       this.swatch = swatch;
     } else if (kind === "background") {
       this.sub.textContent = "Read-only";
@@ -193,9 +209,9 @@ export class LayerRow {
     this.element.appendChild(text);
 
     if (maskLike) {
-      this.invertButton = button("cps-layer-invert", () => actions.toggleInvert(id));
-      setIcon(this.invertButton, "invert", 16);
-      this.element.appendChild(this.invertButton);
+      this.subtractButton = button("cps-layer-subtract", () => actions.toggleSubtract(id));
+      setIcon(this.subtractButton, "maskSubtract", 16);
+      this.element.appendChild(this.subtractButton);
     }
     if (!readOnly) {
       this.lock = button("cps-layer-lock", () => actions.toggleLocked(id));
@@ -284,11 +300,14 @@ export class LayerRow {
       this.lock.title = model.locked ? "Unlock layer" : "Lock layer (refuses painting)";
     }
     if (this.swatch && model.color) this.swatch.style.backgroundColor = model.color;
-    if (this.invertButton) {
-      const on = model.invert === true;
-      this.invertButton.classList.toggle("cps-active", on);
-      this.invertButton.setAttribute("aria-pressed", String(on));
-      this.invertButton.title = on ? "Mask inverted (click to un-invert)" : "Invert mask";
+    if (this.subtractButton) {
+      const on = model.subtract === true;
+      this.subtractButton.classList.toggle("cps-active", on);
+      this.subtractButton.setAttribute("aria-pressed", String(on));
+      this.subtractButton.title = on ? SUBTRACT_ON_TITLE : "Subtract: remove this mask's coverage from the other masks";
+      el.classList.toggle("cps-subtract", on);
+      if (this.subtractBadge) this.subtractBadge.hidden = !on;
+      if (this.subtractLabel) this.subtractLabel.hidden = !on;
     }
   }
 

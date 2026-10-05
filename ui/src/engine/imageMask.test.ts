@@ -40,17 +40,16 @@ describe("coverageInDoc", () => {
   // Column x has coverage 60 * x; both rows equal.
   const coverage = new Uint8Array([0, 60, 120, 180, 0, 60, 120, 180]);
 
-  it("identity map copies the plane; outside the image is 0 even inverted", () => {
+  it("identity map copies the plane; outside the image is 0", () => {
     const map = frameMap(size, size);
     const rect = { x: -1, y: 0, width: 6, height: 1 };
-    expect([...coverageInDoc(coverage, size, map, rect, false)]).toEqual([0, 0, 60, 120, 180, 0]);
-    expect([...coverageInDoc(coverage, size, map, rect, true)]).toEqual([0, 255, 195, 135, 75, 0]);
+    expect([...coverageInDoc(coverage, size, map, rect)]).toEqual([0, 0, 60, 120, 180, 0]);
   });
 
   it("maps a larger frame onto the smaller image (frame fit)", () => {
     // Frame 8x4 on the 4x2 image: s = 0.5, doc px 2..3 -> image px 1.
     const map = frameMap({ width: 8, height: 4 }, size);
-    const out = coverageInDoc(coverage, size, map, { x: 0, y: 0, width: 8, height: 1 }, false);
+    const out = coverageInDoc(coverage, size, map, { x: 0, y: 0, width: 8, height: 1 });
     expect(out[0]).toBe(0);
     expect(out[7]).toBe(180);
     // Doc px 3 centre = image x 1.75: between columns 1 and 2.

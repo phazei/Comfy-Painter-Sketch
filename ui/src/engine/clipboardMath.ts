@@ -5,6 +5,8 @@
  *
  * - {@link applyCoverage}: selection coverage -> alpha (copy of selected pixels).
  * - {@link maskToGray}: mask coverage -> opaque grayscale (what other apps expect).
+ * - {@link unionMaskCoverage} / {@link unionCoverage} / {@link subtractCoverage}:
+ *   the cmask combine rule (normal union minus subtract union).
  * - {@link imageToMaskGray}: a pasted image -> lmask float values (luminance x alpha).
  * - {@link pasteRect} / {@link cropToCap}: where a pasted image lands (document px)
  *   and how much of it fits in the paint-area cap.
@@ -68,27 +70,48 @@ export function maskToGray(rgba: Uint8ClampedArray, coverage: Uint8Array | null)
 }
 
 /**
- * Fold one mask's EFFECTIVE coverage (its invert applied) into a union (max),
- * as the MASK output does. The mask's pixels cover `read` (a part of `area`,
- * e.g. clipped to the paint bounds); elsewhere its raw coverage is 0, i.e.
- * 255 effective when inverted.
+ * Fold one mask's raw coverage into a union (max), as the MASK output does
+ * (normal cmasks into `U`, subtract cmasks into `S`). The mask's pixels cover
+ * `read` (a part of `area`, e.g. clipped to the paint bounds); elsewhere its
+ * coverage is 0.
  * @param union - Union coverage over `area`, `area.width * area.height` bytes (modified).
  * @param area - Union rect (document px).
  * @param read - Rect the pixels cover (inside `area`), or `null` for none.
  * @param rgba - Mask pixels over `read` (coverage in alpha).
- * @param invert - The mask's invert flag.
  */
-export function unionMaskCoverage(union: Uint8Array, area: Rect, read: Rect | null, rgba: Uint8ClampedArray, invert: boolean): void {
+export function unionMaskCoverage(union: Uint8Array, area: Rect, read: Rect | null, rgba: Uint8ClampedArray): void {
   for (let y = 0; y < area.height; y++) {
     const ry = area.y + y - (read?.y ?? 0);
     for (let x = 0; x < area.width; x++) {
       const rx = area.x + x - (read?.x ?? 0);
       const inside = read !== null && rx >= 0 && ry >= 0 && rx < read.width && ry < read.height;
-      const a = inside ? (rgba[(ry * read.width + rx) * 4 + 3] as number) : 0;
-      const v = invert ? 255 - a : a;
+      const v = inside ? (rgba[(ry * read.width + rx) * 4 + 3] as number) : 0;
       const i = y * area.width + x;
       if (v > (union[i] as number)) union[i] = v;
     }
+  }
+}
+
+/**
+ * Fold a coverage plane of the same size into a union (max), in place.
+ * @param union - Union coverage (modified).
+ * @param coverage - Coverage to add, same length.
+ */
+export function unionCoverage(union: Uint8Array, coverage: Uint8Array): void {
+  for (let i = 0; i < union.length; i++) if ((coverage[i] as number) > (union[i] as number)) union[i] = coverage[i] as number;
+}
+
+/**
+ * The cmask combine rule (Python `combine_mask_layers`, without the node's
+ * `invert_mask`): `result = U * (1 - S)`, `U` = union of the normal cmasks,
+ * `S` = union of the subtract cmasks; per pixel `round(u * (255 - s) / 255)`.
+ * @param union - `U` (modified: becomes the result).
+ * @param subtracted - `S`, same length.
+ */
+export function subtractCoverage(union: Uint8Array, subtracted: Uint8Array): void {
+  for (let i = 0; i < union.length; i++) {
+    const s = subtracted[i] as number;
+    if (s > 0) union[i] = Math.round(((union[i] as number) * (255 - s)) / 255);
   }
 }
 

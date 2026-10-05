@@ -1,19 +1,14 @@
 /**
- * Cached tinted rendering of one mask layer for the on-screen overlay.
+ * Cached tinted rendering of one cmask for the on-screen overlay.
  *
  * Mask pixels store coverage in ALPHA (RGB is white, ignored). The overlay is
- * `color` wherever coverage is set (or, for an inverted layer, wherever it is
- * NOT set), so the compositor can draw it with plain `source-over` at the
- * layer's display opacity:
- *
- * - normal:   draw coverage, then `source-in` fill with `color`
- * - inverted: fill with `color`, then `destination-out` the coverage
+ * `color` wherever coverage is set: draw the coverage, then `source-in` fill
+ * with `color`. Its alpha is the raw coverage, so the compositor can draw it
+ * with `source-over` (normal cmask) or use it as a knock-out shape
+ * (`destination-out`, Subtract cmask) at the layer's display opacity.
  *
  * The cache is rebuilt fully when its inputs change (pixel revision, colour,
- * invert, bounds) and only inside the dirty rect while a stroke is previewed.
- * Area outside the layer's bounds is handled by the compositor (inverted
- * layers tint the rest of the image rect, matching Python: outside counts as
- * 0 before invert).
+ * bounds) and only inside the dirty rect while a stroke is previewed.
  */
 
 import { intersectRect, isEmptyRect, rectEquals } from "../geometry/rect";
@@ -26,13 +21,12 @@ export interface MaskTintKey {
   /** Layer bounds (document coords); the source canvas is sized to it. */
   bounds: Rect;
   color: string;
-  invert: boolean;
   /** Changes whenever the layer's committed pixels change. */
   revision: number;
 }
 
 /**
- * Tinted overlay cache for one mask layer.
+ * Tinted overlay cache for one cmask.
  */
 export class MaskTint {
   private surface: Surface | null = null;
@@ -49,13 +43,13 @@ export class MaskTint {
   update(source: HTMLCanvasElement, key: MaskTintKey, dirty: Rect | null): HTMLCanvasElement {
     const surface = this.ensureSurface(key.bounds);
     if (!this.key || !sameKey(this.key, key)) {
-      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key);
+      paint(surface.ctx, source, { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height }, key.color);
     } else if (dirty) {
       const local = intersectRect(
         { x: dirty.x - key.bounds.x, y: dirty.y - key.bounds.y, width: dirty.width, height: dirty.height },
         { x: 0, y: 0, width: key.bounds.width, height: key.bounds.height },
       );
-      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key);
+      if (!isEmptyRect(local)) paint(surface.ctx, source, local, key.color);
     }
     this.key = { ...key, bounds: { ...key.bounds } };
     return surface.canvas;
@@ -79,29 +73,22 @@ export class MaskTint {
 }
 
 function sameKey(a: MaskTintKey, b: MaskTintKey): boolean {
-  return a.revision === b.revision && a.color === b.color && a.invert === b.invert && rectEquals(a.bounds, b.bounds);
+  return a.revision === b.revision && a.color === b.color && rectEquals(a.bounds, b.bounds);
 }
 
 /** Re-tint `r` (surface-local, integer) from `source`. */
-function paint(ctx: CanvasRenderingContext2D, source: HTMLCanvasElement, r: Rect, key: MaskTintKey): void {
+function paint(ctx: CanvasRenderingContext2D, source: HTMLCanvasElement, r: Rect, color: string): void {
   ctx.save();
   ctx.beginPath();
   ctx.rect(r.x, r.y, r.width, r.height);
   ctx.clip();
   ctx.globalAlpha = 1;
   ctx.clearRect(r.x, r.y, r.width, r.height);
-  ctx.fillStyle = key.color;
-  if (key.invert) {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-  } else {
-    ctx.globalCompositeOperation = "source-over";
-    ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
-    // source-in clears outside the drawn shape too -- the clip keeps it local.
-    ctx.globalCompositeOperation = "source-in";
-    ctx.fillRect(r.x, r.y, r.width, r.height);
-  }
+  ctx.globalCompositeOperation = "source-over";
+  ctx.drawImage(source, r.x, r.y, r.width, r.height, r.x, r.y, r.width, r.height);
+  // source-in clears outside the drawn shape too -- the clip keeps it local.
+  ctx.globalCompositeOperation = "source-in";
+  ctx.fillStyle = color;
+  ctx.fillRect(r.x, r.y, r.width, r.height);
   ctx.restore();
 }

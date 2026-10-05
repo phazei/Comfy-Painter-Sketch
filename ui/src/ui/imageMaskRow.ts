@@ -15,10 +15,10 @@ import type { LayerRow } from "./layerRow";
 let emptyCanvas: HTMLCanvasElement | null = null;
 
 /**
- * Redraw the Image Mask thumbnail when its coverage or invert changed
- * (white-on-black like mask thumbnails, framed like the Background's). No
- * coverage (Input Mask not loaded: "no mask") is plain black, invert or not, like
- * the stage (nothing drawn).
+ * Redraw the Image Mask thumbnail when its coverage changed (raw coverage,
+ * white-on-black like mask thumbnails, framed like the Background's). No
+ * coverage (Input Mask not loaded: "no mask") is plain black, like the stage
+ * (nothing drawn).
  * @param editor - Bound editor.
  * @param row - The row, if shown.
  */
@@ -35,9 +35,8 @@ export function refreshImageMaskThumb(editor: Editor, row: LayerRow | undefined)
     row.thumb.update(`none|${editor.imageMask.revision}`, size, { kind: "layer", canvas: emptyCanvas, region, mask: true, invert: false });
     return;
   }
-  const invert = mask.invert === true;
   const region = { x: 0, y: 0, width: canvas.width, height: canvas.height };
-  row.thumb.update(`${editor.imageMask.revision}|${invert}`, size, { kind: "layer", canvas, region, mask: true, invert });
+  row.thumb.update(`${editor.imageMask.revision}`, size, { kind: "layer", canvas, region, mask: true, invert: false });
 }
 
 /** Hint under the Input Mask row while a run has to deliver its pixels. */
@@ -67,8 +66,8 @@ export function canDuplicateRow(editor: Editor, id: string | null): boolean {
 /**
  * Footer / row Duplicate: the Image Mask becomes an ordinary mask (and the
  * current mask), the Background an ordinary paint layer at the bottom of the
- * paint stack (and the active layer); otherwise the active paint layer is
- * duplicated as before.
+ * paint stack (and the active layer); otherwise the selected row (active
+ * paint layer, or the current cmask under Quick Mask) is duplicated.
  * @param editor - Bound editor.
  * @param id - Selected row id (`BACKGROUND_SOLO_ID` = the Background row).
  */
@@ -78,7 +77,7 @@ export function duplicateRow(editor: Editor, id: string | null): void {
     return;
   }
   if (id !== IMAGE_MASK_ID) {
-    editor.layerOps.duplicate();
+    editor.layerOps.duplicate(id ?? undefined);
     return;
   }
   const copy = editor.imageMask.duplicate();

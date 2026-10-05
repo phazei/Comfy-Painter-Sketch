@@ -16,7 +16,7 @@ Document model (v1, SPEC "Document and saved files"):
     mainOutput?: OutputOptions             -- independent Main post-processing
     placement?: {x, y, scale}              -- Move tool (optional; missing = identity)
     backgroundVisible?: bool               -- Background row eye (missing = true)
-    imageMask?: {file, visible, color, opacity, invert, sourceKey, width, height}
+    imageMask?: {file, visible, color, opacity, subtract, sourceKey, width, height}
                                            -- Image Mask (input image's alpha, image px);
                                               a connected ``mask`` input uses only its settings (file ignored)
     activeLayerId: str
@@ -30,7 +30,8 @@ Layer model:
     opacity        -- 0-1 float (clamped; non-numeric/bool/non-finite -> 1)
     blendMode      -- "normal" only in v1
     file           -- "painter-sketch/<name>.<webp|png> [input]" or null
-    invert         -- bool, mask layers only (non-boolean -> False)
+    subtract       -- bool, mask layers only (non-boolean -> False): the row
+                      is subtracted from the MASK instead of joining the union
     layerMask?     -- {file, enabled, invert, outside}, paint layers only (layer_masks.py)
 """
 
@@ -85,7 +86,7 @@ class Layer:
     visible: bool
     opacity: float      # clamped to [0, 1]
     file: str | None    # annotated path or None
-    invert: bool        # mask layers: invert alpha before union
+    subtract: bool = False  # mask layers only: subtracted from the MASK, not unioned
     layer_mask: LayerMask | None = None  # paint layers only (layer_masks.py)
 
 
@@ -115,7 +116,7 @@ class ImageMask:
     """
     file: str | None
     visible: bool
-    invert: bool
+    subtract: bool
     width: int
     height: int
 
@@ -228,7 +229,7 @@ def parse_image_mask(raw: object) -> ImageMask | None:
     Missing -> ``None``. Not an object, no string ``sourceKey`` or no valid
     ``width`` / ``height`` -> ``None`` with a warning (the editor drops it
     too). ``file`` non-string / blank -> ``None``; ``visible`` non-boolean ->
-    ``True``; ``invert`` non-boolean -> ``False`` (``ui/src/document/parse.ts``).
+    ``True``; ``subtract`` non-boolean -> ``False`` (``ui/src/document/parse.ts``).
 
     Args:
         raw: The manifest's ``imageMask`` value (any JSON value or None).
@@ -247,11 +248,11 @@ def parse_image_mask(raw: object) -> ImageMask | None:
     if not isinstance(file_val, str) or not file_val.strip():
         file_val = None
     visible = raw.get("visible", True)
-    invert = raw.get("invert", False)
+    subtract = raw.get("subtract", False)
     return ImageMask(
         file=file_val,
         visible=visible if isinstance(visible, bool) else True,
-        invert=invert if isinstance(invert, bool) else False,
+        subtract=subtract if isinstance(subtract, bool) else False,
         width=sides[0],
         height=sides[1],
     )
@@ -287,10 +288,8 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
     if isinstance(file_val, str) and not file_val.strip():
         file_val = None
 
-    # Same as the editor: only a real boolean counts ("yes" / 1 -> False).
-    invert = raw.get("invert", False)
-    if not isinstance(invert, bool):
-        invert = False
+    # Mask layers only. Same as the editor: only a real boolean counts ("yes" / 1 -> False).
+    subtract = raw.get("subtract", False) if kind == "mask" else False
 
     return Layer(
         id=layer_id,
@@ -298,7 +297,7 @@ def _parse_layer(raw: dict, idx: int) -> Layer | None:
         visible=visible,
         opacity=opacity,
         file=file_val,
-        invert=invert,
+        subtract=subtract if isinstance(subtract, bool) else False,
         # Paint layers only, like the editor (text / mask layers never have one).
         layer_mask=parse_layer_mask(raw.get("layerMask")) if kind == "paint" else None,
     )

@@ -44,7 +44,7 @@ export function pickLayer(
 
 /**
  * Quick Mask auto-select: the topmost visible, unlocked mask layer whose
- * RAW painted coverage (alpha, `invert` ignored) at the pick point exceeds
+ * RAW painted coverage (alpha, the Subtract mode ignored) at the pick point exceeds
  * `threshold` -- you grab the mask by the strokes you can see and drag.
  * @param layers - Document layers, bottom -> top.
  * @param alphaAt - Coverage sampler for the pick point (only called for pickable masks).

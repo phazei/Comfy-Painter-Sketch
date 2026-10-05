@@ -130,7 +130,7 @@ describe("layer row clicks", () => {
     const root = row.element as unknown as FakeElement;
     click(root);
     click(root, { ctrlKey: true });
-    for (const name of ["cps-layer-invert", "cps-layer-lock", "cps-layer-solo", "cps-layer-eye"]) {
+    for (const name of ["cps-layer-subtract", "cps-layer-lock", "cps-layer-solo", "cps-layer-eye"]) {
       const b = root.find(name)[0];
       if (!b) throw new Error(`no ${name}`);
       click(b);
@@ -138,7 +138,7 @@ describe("layer row clicks", () => {
     expect(calls).toEqual([
       ["select", "m"],
       ["loadSelection", "m", "replace"],
-      ["toggleInvert", "m"],
+      ["toggleSubtract", "m"],
       ["toggleLocked", "m"],
       ["toggleSolo", "m"],
       ["toggleVisible", "m"],

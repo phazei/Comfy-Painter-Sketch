@@ -20,7 +20,8 @@
  *   past the paint-area cap instead starts like an image-source insert
  *   (`sourceInsert.ts`, native size, same placement) and crops on commit. The new layer takes over solo (`LayerOps.addWithPixels`).
  *   An active selection is dropped (Photoshop), in the same undo step.
- * - Copy merged under Quick Mask: the visible masks' effective union as
+ * - Copy merged under Quick Mask: the visible cmasks combined like the MASK
+ *   output (normal union minus subtract union) as
  *   grayscale (same format as a single-mask copy).
  * - Layer masks: with the pixels targeted, copy takes the masked
  *   result (layer x the shown part of its enabled lmask) and cut clears the
@@ -52,7 +53,7 @@ import { containsRect, frameRect, intersectRect, isEmptyRect, roundOutRect, unio
 import { imageAreaInDoc } from "./imageArea";
 import type { Point, Rect, Size } from "../geometry/rect";
 import { boundsCap } from "./bounds";
-import { applyCoverage, cropToCap, fitRect, imageToMaskGray, maskToGray, pasteRect, pastedLayerName, unionMaskCoverage } from "./clipboardMath";
+import { applyCoverage, cropToCap, fitRect, imageToMaskGray, maskToGray, pasteRect, pastedLayerName } from "./clipboardMath";
 import { readDocRegion, sceneFor, visibleScene } from "./docComposite";
 import { coverageInDoc } from "./imageMask";
 import { IMAGE_MASK_ID } from "../document/imageMask";
@@ -65,11 +66,11 @@ import type { EditKind } from "./layerMask";
 import { applyMaskAlpha, maskFloatSurfaces } from "./layerMaskCarry";
 import type { LayerOps } from "./layerOps";
 import { layerContentRect } from "./layerTranslate";
+import { combinedMaskCoverage } from "./pixelOps";
 import { LOCKED_LAYER_NOTE } from "./editorTypes";
 import { editBlockNote, preparePixelEdit } from "./rasterize";
 import { coverageFor, eraseCoverage, rectSelection, selectionExtent } from "./selection";
 import { recordSelectionMove } from "./selectionFollow";
-import { shownOnStage } from "./solo";
 import { holeAt } from "./sourceInsert";
 import { createSurface, releaseSurface } from "./surface";
 import { paramsMatrix, transformedAabb, translation } from "./transformMath";
@@ -167,7 +168,7 @@ export class ClipboardOps {
     const s = this.s;
     if (s.sourceSelected === "background") return this.copyBackground();
     const layer = this.editLayer();
-    if (layer?.id === IMAGE_MASK_ID) return this.copyImageMask(layer);
+    if (layer?.id === IMAGE_MASK_ID) return this.copyImageMask();
     // Copying a layer you can't see is refused like an edit (locked is fine to copy).
     const block = layer ? editBlockNote(s, layer, this.kind(layer)) : null;
     if (block && block !== LOCKED_LAYER_NOTE) {
@@ -448,17 +449,17 @@ export class ClipboardOps {
   }
 
   /**
-   * The Image / Input Mask row: its effective coverage (invert applied,
-   * 0 outside the image, like its Ctrl+click selection) as opaque gray,
+   * The Image / Input Mask row: its raw coverage (0 outside the image, like
+   * its Ctrl+click selection; Subtract does not change it) as opaque gray,
    * within the selection -- the same format as a mask layer copy.
    */
-  private copyImageMask(layer: Layer): ClipImage | null {
+  private copyImageMask(): ClipImage | null {
     const s = this.s;
     const area = this.imageArea();
     const plane = s.imageMask.coverage;
     if (isEmptyRect(area) || !plane) return null;
     const size = s.imageMask.size;
-    const coverage = coverageInDoc(plane, size, documentMap(s.doc, size), area, layer.invert === true);
+    const coverage = coverageInDoc(plane, size, documentMap(s.doc, size), area);
     const data = new ImageData(area.width, area.height);
     for (let i = 0; i < coverage.length; i++) data.data[i * 4 + 3] = coverage[i] as number;
     const sel = s.selection.current;
@@ -467,18 +468,14 @@ export class ClipboardOps {
   }
 
   /**
-   * Copy merged with Quick Mask on: the union of the visible masks' effective
-   * coverage (per-mask invert applied, like the MASK output) as opaque
+   * Copy merged with Quick Mask on: the visible cmasks combined like the
+   * MASK output (normal union minus subtract union, Image / Input Mask row
+   * included while shown; {@link combinedMaskCoverage}) as opaque
    * grayscale -- the same format as a single-mask copy -- within the selection.
    */
   private copyMergedMasks(area: Rect): ClipImage | null {
     const s = this.s;
-    const union = new Uint8Array(area.width * area.height);
-    for (const layer of s.doc.layers) {
-      if (layer.kind !== "mask" || !shownOnStage(layer, s.solo.current)) continue;
-      const read = s.store.read(layer.id, area);
-      unionMaskCoverage(union, area, read?.rect ?? null, read?.data.data ?? new Uint8ClampedArray(0), layer.invert === true);
-    }
+    const union = combinedMaskCoverage(s, area);
     const data = new ImageData(area.width, area.height);
     for (let i = 0; i < union.length; i++) data.data[i * 4 + 3] = union[i] as number;
     const sel = s.selection.current;

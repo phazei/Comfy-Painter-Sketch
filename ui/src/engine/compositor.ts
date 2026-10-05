@@ -6,8 +6,10 @@
  * agree (SPEC "Canvas, view and fullscreen"). Order: neutral surround,
  * transparency checker + background inside the image rect (unless the
  * background eye is off), visible paint layers bottom -> top at their opacity
- * (Normal blend only), visible mask layers as tinted overlays at their display
- * opacity, then a dim veil over paint outside the image and the image outline.
+ * (Normal blend only), visible cmasks as tinted overlays at their display
+ * opacity (Subtract cmasks knock out the normal tints and are hatched,
+ * `drawMaskOverlays`), then a dim veil over paint outside the image and the
+ * image outline.
  * With `paintArea`: the grown cobweb backdrop (`cobweb/`) over the surround
  * outside the maximum paint area, clipped so it never shows inside it (right
  * after the surround fill, under everything else), and a crisp border around
@@ -21,6 +23,8 @@ import type { Point, Rect, Size } from "../geometry/rect";
 import type { CobwebBackdrop } from "./cobweb/cobwebBackdrop";
 import { docRectToImage, layerPlacement } from "./frameMap";
 import type { FrameMap } from "./frameMap";
+import { createSurface, releaseSurface } from "./surface";
+import type { Surface } from "./surface";
 import { docRectToStage } from "./viewport";
 import type { ViewTransform } from "./viewport";
 
@@ -37,16 +41,20 @@ export interface CompositeLayer {
   offset?: Point;
 }
 
-/** One mask layer's overlay (already tinted, see `maskTint.ts`). */
+/** One cmask's overlay (already tinted, see `maskTint.ts`). */
 export interface MaskOverlay {
-  /** Tinted coverage sized to `bounds`. */
+  /** Tinted raw coverage sized to `bounds` (alpha = coverage). */
   tint: CanvasImageSource;
-  /** Display colour (fills the image area outside the layer when inverted). */
+  /** Display colour (the Subtract hatch). */
   color: string;
   /** Display opacity 0..1. */
   opacity: number;
-  /** Per-layer invert: the image area outside the layer's bounds is fully tinted. */
-  invert: boolean;
+  /**
+   * Subtract cmask: knocks its coverage out of the normal cmask tints and is
+   * drawn hatched in its own colour (SPEC "Layers" > "cmasks, current mask
+   * and Quick Mask").
+   */
+  subtract: boolean;
   /** Move-tool drag preview: draw shifted by this many document px. */
   offset?: Point;
   /** Image px coverage (the Image Mask): drawn over the image rect, not through the frame map. */
@@ -97,6 +105,13 @@ export const STAGE_STYLE = {
   frameShadow: "rgba(0, 0, 0, 0.6)",
   capLine: "#000000",
   capGlow: "rgba(255, 255, 255, 0.18)",
+  /** How much of the normal tints a Subtract cmask removes where it covers (a faint ghost stays). */
+  subtractKnockout: 0.7,
+  /** A Subtract cmask's own tint, as a fraction of its display opacity. */
+  subtractTint: 0.35,
+  /** Subtract hatch: diagonal lines every `hatchCell` CSS px, `hatchLine` CSS px wide. */
+  hatchCell: 8,
+  hatchLine: 1.25,
 } as const;
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -192,28 +207,7 @@ function drawScene(input: CompositeInput): void {
     const r = at(layer.offset);
     ctx.drawImage(layer.source, r.x, r.y, r.width, r.height);
   }
-  // Mask overlays: same placement; an inverted mask is also fully tinted over
-  // the image outside the placed layer (Python: 0 there before invert).
-  for (const mask of input.masks) {
-    if (mask.opacity <= 0) continue;
-    ctx.globalAlpha = mask.opacity;
-    const r = mask.imageSpace ? imageRect : at(mask.offset);
-    ctx.drawImage(mask.tint, r.x, r.y, r.width, r.height);
-    if (mask.invert) {
-      // (image rect) minus (placed rect); clip first because the placed rect
-      // may stick out of the image on one axis.
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(0, 0, imageSize.width, imageSize.height);
-      ctx.clip();
-      ctx.fillStyle = mask.color;
-      ctx.beginPath();
-      ctx.rect(0, 0, imageSize.width, imageSize.height);
-      ctx.rect(r.x, r.y, r.width, r.height);
-      ctx.fill("evenodd");
-      ctx.restore();
-    }
-  }
+  drawMaskOverlays(input, (mask) => (mask.imageSpace ? imageRect : at(mask.offset)));
   ctx.globalAlpha = 1;
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -237,6 +231,127 @@ function drawScene(input: CompositeInput): void {
   ctx.strokeStyle = extends_ ? STAGE_STYLE.frameOutline : STAGE_STYLE.frameShadow;
   ctx.strokeRect(frameScreen.x - lw / 2, frameScreen.y - lw / 2, frameScreen.width + lw, frameScreen.height + lw);
   if (capScreen) drawCapBorder(ctx, capScreen);
+}
+
+// ── Mask overlays ─────────────────────────────────────────────────────────────
+
+/** Stage-sized scratch canvases for the mask pass, one pair per stage context. */
+const maskScratch = new WeakMap<CanvasRenderingContext2D, { group: Surface; shape: Surface }>();
+const hatchPatterns = new Map<string, CanvasPattern>();
+
+/**
+ * Draw the cmask overlays above the paint (the caller has set the
+ * document -> device transform). Normal cmasks: their tints, bottom to top,
+ * source-over at their opacity -- the same as before Subtract existed, and
+ * the only pass when no Subtract cmask is shown. With Subtract cmasks the
+ * normal tints go into a stage-sized group first; each Subtract cmask then
+ * knocks its coverage out of that group (`subtractKnockout`: a faint ghost
+ * stays, so the removed part reads lighter), and is drawn itself as a faint
+ * tint plus a diagonal hatch in its colour, so it is visible where it
+ * overlaps nothing too. The group is drawn once at the end.
+ * @param input - Scene.
+ * @param placeAt - Document rect a mask is drawn at.
+ */
+function drawMaskOverlays(input: CompositeInput, placeAt: (mask: MaskOverlay) => Rect): void {
+  const { ctx } = input;
+  const masks = input.masks.filter((m) => m.opacity > 0);
+  if (masks.length === 0) return;
+  if (!masks.some((m) => m.subtract)) {
+    for (const mask of masks) {
+      ctx.globalAlpha = mask.opacity;
+      const r = placeAt(mask);
+      ctx.drawImage(mask.tint, r.x, r.y, r.width, r.height);
+    }
+    return;
+  }
+  const { group, shape } = scratchFor(ctx);
+  const transform = ctx.getTransform();
+  const g = group.ctx;
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, group.canvas.width, group.canvas.height);
+  g.setTransform(transform);
+  g.imageSmoothingEnabled = ctx.imageSmoothingEnabled;
+  g.globalCompositeOperation = "source-over";
+  for (const mask of masks) {
+    if (mask.subtract) continue;
+    g.globalAlpha = mask.opacity;
+    const r = placeAt(mask);
+    g.drawImage(mask.tint, r.x, r.y, r.width, r.height);
+  }
+  for (const mask of masks) {
+    if (!mask.subtract) continue;
+    const r = placeAt(mask);
+    g.globalCompositeOperation = "destination-out";
+    g.globalAlpha = STAGE_STYLE.subtractKnockout;
+    g.drawImage(mask.tint, r.x, r.y, r.width, r.height);
+    g.globalCompositeOperation = "source-over";
+    g.globalAlpha = mask.opacity * STAGE_STYLE.subtractTint;
+    g.drawImage(mask.tint, r.x, r.y, r.width, r.height);
+    // Hatch: the coverage shape, filled with a screen-space line pattern.
+    const h = shape.ctx;
+    h.setTransform(1, 0, 0, 1, 0, 0);
+    h.clearRect(0, 0, shape.canvas.width, shape.canvas.height);
+    h.setTransform(transform);
+    h.imageSmoothingEnabled = ctx.imageSmoothingEnabled;
+    h.globalCompositeOperation = "source-over";
+    h.globalAlpha = 1;
+    h.drawImage(mask.tint, r.x, r.y, r.width, r.height);
+    const pattern = hatchPattern(ctx, mask.color, input.pixelRatio);
+    if (pattern) {
+      h.setTransform(1, 0, 0, 1, 0, 0);
+      h.globalCompositeOperation = "source-in";
+      h.fillStyle = pattern;
+      h.fillRect(0, 0, shape.canvas.width, shape.canvas.height);
+    }
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalAlpha = mask.opacity;
+    g.drawImage(shape.canvas, 0, 0);
+    g.setTransform(transform);
+  }
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+  ctx.drawImage(group.canvas, 0, 0);
+  ctx.restore();
+}
+
+/** Scratch canvases matching the stage's backing size (recreated on resize). */
+function scratchFor(ctx: CanvasRenderingContext2D): { group: Surface; shape: Surface } {
+  const { width, height } = ctx.canvas;
+  const have = maskScratch.get(ctx);
+  if (have && have.group.canvas.width === width && have.group.canvas.height === height) return have;
+  if (have) {
+    releaseSurface(have.group);
+    releaseSurface(have.shape);
+  }
+  const made = { group: createSurface(width, height), shape: createSurface(width, height) };
+  maskScratch.set(ctx, made);
+  return made;
+}
+
+/** Diagonal-line pattern in `color`, device px (cached per colour and pixel ratio). */
+function hatchPattern(ctx: CanvasRenderingContext2D, color: string, pixelRatio: number): CanvasPattern | null {
+  const cell = Math.max(2, Math.round(STAGE_STYLE.hatchCell * pixelRatio));
+  const key = `${color}|${cell}`;
+  const cached = hatchPatterns.get(key);
+  if (cached) return cached;
+  const tile = createSurface(cell, cell);
+  const t = tile.ctx;
+  t.strokeStyle = color;
+  t.lineWidth = STAGE_STYLE.hatchLine * pixelRatio;
+  t.lineCap = "square";
+  t.beginPath();
+  // One diagonal through the tile plus the two corner stubs so lines join across tiles.
+  t.moveTo(0, cell);
+  t.lineTo(cell, 0);
+  t.moveTo(-cell / 2, cell / 2);
+  t.lineTo(cell / 2, -cell / 2);
+  t.moveTo(cell / 2, cell * 1.5);
+  t.lineTo(cell * 1.5, cell / 2);
+  t.stroke();
+  const pattern = ctx.createPattern(tile.canvas, "repeat");
+  if (pattern) hatchPatterns.set(key, pattern);
+  return pattern;
 }
 
 // ── Maximum paint area ────────────────────────────────────────────────────────

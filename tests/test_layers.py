@@ -33,7 +33,7 @@ from nodes.layers import is_safe_file_value, load_layer_rgba  # noqa: E402
 
 def _layer(file: str) -> Layer:
     """Paint layer referencing ``file``."""
-    return Layer(id="l1", kind="paint", visible=True, opacity=1.0, file=file, invert=False)
+    return Layer(id="l1", kind="paint", visible=True, opacity=1.0, file=file)
 
 
 class TestLoadLayerRgba(unittest.TestCase):

@@ -17,8 +17,9 @@ Execution flow:
     5. Composite paint/text layers over the base -> IMAGE (via :mod:`composite`);
        with the Background eye off over a transparent base, flattened onto
        the ``background`` colour.
-    6. Combine mask layers -> MASK (via :mod:`composite`); with the Background
-       eye off, plus the composite's transparency, after ``invert_mask``.
+    6. Combine cmasks -> MASK (via :mod:`composite`): normal rows unioned,
+       ``invert_mask``, then subtract rows removed; with the Background eye
+       off, plus the composite's transparency, after all of that.
     7. Apply Main's output options; build the region slots from the same
        composite (:mod:output_processing); preview the first input frame.
 

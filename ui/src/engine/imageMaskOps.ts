@@ -10,7 +10,7 @@
  *   the `mask` input is connected {@link ImageMaskOps.setInput} (the "Input
  *   Mask": no file, never uploaded; `widget/inputMaskSync.ts`). None is an
  *   undo step: the row follows the source like the background does. Eye,
- *   colour, invert and overlay opacity go through `layerOps` like any mask
+ *   colour, subtract and overlay opacity go through `layerOps` like any mask
  *   (same undo rules); pixel edits are refused (`rasterize.ts`).
  * - It is shown and output only over an image of exactly its size
  *   ({@link imageMaskApplies}, Python skips a stale file the same way).
@@ -100,7 +100,7 @@ export class ImageMaskOps {
     const next = createImageMask(sourceKey, size, style);
     if (prev) {
       next.visible = prev.visible;
-      next.invert = prev.invert === true;
+      next.subtract = prev.subtract === true;
     }
     s.doc.imageMask = next;
     s.imageMask.set(coverage, size, true);
@@ -136,7 +136,7 @@ export class ImageMaskOps {
     const next = createImageMask(sourceKey, size, style);
     if (prev) {
       next.visible = prev.visible;
-      next.invert = prev.invert === true;
+      next.subtract = prev.subtract === true;
     }
     s.doc.imageMask = next;
     if (coverage && coverage.length === size.width * size.height) s.imageMask.set(coverage, size, false);
@@ -206,12 +206,12 @@ export class ImageMaskOps {
     if (!mask || !coverage || !canAddMask(s.doc.layers) || !readyCheck(s)) return null;
     const { rect, map } = imageMaskArea(s, mask);
     if (isEmptyRect(rect)) return null;
-    const data = new ImageData(maskFilePixels(coverageInDoc(coverage, s.imageMask.size, map, rect, false)), rect.width, rect.height);
+    const data = new ImageData(maskFilePixels(coverageInDoc(coverage, s.imageMask.size, map, rect)), rect.width, rect.height);
     // Next free palette colour (like "New mask"; the row's own colour counts as used).
     const used = [...s.doc.layers.filter((l) => l.kind === "mask").map((l) => l.color), maskDisplayColor(mask)];
     const layer = createMaskLayer(copyLayerName(mask.name, s.doc.layers), { color: nextMaskStyle(used, s.maskStyle()).color, opacity: mask.opacity });
     layer.visible = mask.visible;
-    layer.invert = mask.invert === true;
+    layer.subtract = mask.subtract === true;
     const first = s.doc.layers.findIndex((l) => l.kind === "mask");
     s.setCurrentMask(layer.id);
     insertLayer(s, layer, first >= 0 ? first : s.doc.layers.length, { x: rect.x, y: rect.y, data }, false);
@@ -241,8 +241,8 @@ export function imageMaskApplies(s: EditorState): boolean {
 }
 
 /**
- * Ctrl+click on the row: the effective coverage (invert applied, only over
- * the image) in document coords, hard like every layer -> selection.
+ * Ctrl+click on the row: the raw coverage (only over the image; the
+ * Subtract mode does not change it) in document coords, hard like every layer -> selection.
  * @param s - Editor state.
  * @returns Selection, or `null` when nothing is covered.
  */
@@ -252,7 +252,7 @@ export function imageMaskSelection(s: EditorState): Selection | null {
   if (!mask || !coverage) return null;
   const { rect, map } = imageMaskArea(s, mask);
   if (isEmptyRect(rect)) return null;
-  return hardenSelection(selectionFromCoverage(coverageInDoc(coverage, s.imageMask.size, map, rect, mask.invert === true), rect));
+  return hardenSelection(selectionFromCoverage(coverageInDoc(coverage, s.imageMask.size, map, rect), rect));
 }
 
 /** The mask's image rect in document coords (clipped to the paint-area cap) and the map for its size. */

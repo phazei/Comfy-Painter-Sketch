@@ -195,20 +195,26 @@ class TestLayerParsing(unittest.TestCase):
         ]))
         self.assertEqual(doc.layers[0].file, "painter-sketch/abc.png [input]")
 
-    def test_invert_default_false(self):
+    def test_subtract_default_false(self):
         doc = parse_document(_make_doc(layers=[self._layer(kind="mask")]))
-        self.assertFalse(doc.layers[0].invert)
+        self.assertFalse(doc.layers[0].subtract)
 
-    def test_invert_true_preserved(self):
-        doc = parse_document(_make_doc(layers=[self._layer(kind="mask", invert=True)]))
-        self.assertTrue(doc.layers[0].invert)
+    def test_subtract_true_preserved(self):
+        doc = parse_document(_make_doc(layers=[self._layer(kind="mask", subtract=True)]))
+        self.assertTrue(doc.layers[0].subtract)
 
-    def test_non_boolean_invert_ignored(self):
-        """Like the editor (parse.ts readLayer), only a real boolean inverts."""
+    def test_subtract_ignored_on_paint_and_text(self):
+        for kind in ("paint", "text"):
+            with self.subTest(kind=kind):
+                doc = parse_document(_make_doc(layers=[self._layer(kind=kind, subtract=True)]))
+                self.assertFalse(doc.layers[0].subtract)
+
+    def test_non_boolean_subtract_ignored(self):
+        """Like the editor (parse.ts readLayer), only a real boolean subtracts."""
         for value in (1, "true", "yes", [1], {"a": 1}, None):
             with self.subTest(value=value):
-                doc = parse_document(_make_doc(layers=[self._layer(kind="mask", invert=value)]))
-                self.assertFalse(doc.layers[0].invert)
+                doc = parse_document(_make_doc(layers=[self._layer(kind="mask", subtract=value)]))
+                self.assertFalse(doc.layers[0].subtract)
 
     def test_non_numeric_opacity_defaults_to_one(self):
         """Like the editor's clamp01: bool, string, null, NaN, inf -> 1."""

@@ -7,7 +7,8 @@ Run with:  python -m unittest tests.test_composite   (from repo root)
 Covers:
   - _place_layer: correct placement, scale=1 integer, partial overlap, no overlap
   - composite_paint_layers: passthrough, single layer, hidden skipped, opacity
-  - combine_mask_layers: no masks=zeros, single mask, per-layer invert, node invert
+  - combine_mask_layers: no masks=zeros, single mask, node invert, subtract
+    cmasks (MASK = U * (1 - S), subtract wins over invert_mask)
   - run_composite: red paint layer over grey; frame-mismatch scale+center
   - text layers (with textData) composite exactly like paint layers
 """
@@ -37,10 +38,10 @@ def _bounds(x=0, y=0, w=100, h=100):
     return Bounds(x=x, y=y, width=w, height=h)
 
 def _paint_layer(lid="l1", visible=True, opacity=1.0, file="f"):
-    return Layer(id=lid, kind="paint", visible=visible, opacity=opacity, file=file, invert=False)
+    return Layer(id=lid, kind="paint", visible=visible, opacity=opacity, file=file)
 
-def _mask_layer(lid="m1", visible=True, invert=False, file="f"):
-    return Layer(id=lid, kind="mask", visible=visible, opacity=1.0, file=file, invert=invert)
+def _mask_layer(lid="m1", visible=True, subtract=False, file="f"):
+    return Layer(id=lid, kind="mask", visible=visible, opacity=1.0, file=file, subtract=subtract)
 
 def _rgba(h, w, r=0.0, g=0.0, b=0.0, a=1.0):
     """Solid-colour RGBA tensor [h, w, 4]."""
@@ -221,21 +222,22 @@ class TestCombineMaskLayers(unittest.TestCase):
     def test_mask_opacity_ignored(self):
         """Mask layer opacity is display-only; does NOT affect MASK output."""
         base = torch.full((1, 10, 10, 3), 0.5)
-        layer = Layer(id="m1", kind="mask", visible=True, opacity=0.3, file="f", invert=False)
+        layer = Layer(id="m1", kind="mask", visible=True, opacity=0.3, file="f")
         doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=[layer])
         rgba = _rgba(10, 10, a=1.0)
         _, mask = run_composite(base, doc, {"m1": rgba}, invert_mask=False)
         # Must be 1.0, not 0.3
         self.assertAlmostEqual(mask[0, 5, 5].item(), 1.0, places=4)
 
-    def test_per_layer_invert(self):
-        """Per-layer invert: full-alpha layer inverted -> mask = 0.0."""
+    def test_subtract_only_is_empty(self):
+        """Only subtract cmasks, invert_mask off -> nothing to subtract from: zeros."""
         base = torch.full((1, 10, 10, 3), 0.5)
-        layer = _mask_layer(invert=True)
+        layer = _mask_layer(subtract=True)
         doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=[layer])
-        rgba = _rgba(10, 10, a=1.0)
+        rgba = _rgba(10, 10, a=0.0)
+        rgba[:, :5, 3] = 1.0
         _, mask = run_composite(base, doc, {"m1": rgba}, invert_mask=False)
-        self.assertAlmostEqual(mask[0, 5, 5].item(), 0.0, places=4)
+        self.assertEqual(mask.sum().item(), 0.0)
 
     def test_hidden_mask_skipped(self):
         base = torch.full((1, 10, 10, 3), 0.5)
@@ -264,9 +266,48 @@ class TestCombineMaskLayers(unittest.TestCase):
         _, mask = run_composite(base, doc, {"m1": rgba, "m2": rgba}, invert_mask=False)
         self.assertAlmostEqual(mask[0, 5, 5].item(), 0.5, places=4)
 
-    def test_seven_masks_union_invert_hidden(self):
-        """7 masks, each covering its own row; per-mask invert before the
-        union, hidden masks skipped, node invert applied to the final union."""
+    def test_two_subtract_one_normal(self):
+        """Normal cmask minus two disjoint subtract cmasks."""
+        base = torch.full((1, 10, 10, 3), 0.5)
+        layers = [_mask_layer("n"), _mask_layer("s1", subtract=True), _mask_layer("s2", subtract=True)]
+        normal = _rgba(10, 10, a=0.0)
+        normal[:, :8, 3] = 1.0          # cols 0-7
+        s1 = _rgba(10, 10, a=0.0)
+        s1[:, 1:3, 3] = 1.0             # cols 1-2
+        s2 = _rgba(10, 10, a=0.0)
+        s2[:, 5:7, 3] = 0.5             # cols 5-6, half
+        doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=layers)
+        _, mask = run_composite(base, doc, {"n": normal, "s1": s1, "s2": s2}, invert_mask=False)
+        expected = [1.0, 0.0, 0.0, 1.0, 1.0, 0.5, 0.5, 1.0, 0.0, 0.0]
+        for col, value in enumerate(expected):
+            self.assertAlmostEqual(mask[0, 4, col].item(), value, places=4, msg=f"col {col}")
+
+    def test_invert_mask_with_subtract(self):
+        """invert_mask + a subtract cmask: everything masked except the subtract area."""
+        base = torch.full((1, 10, 10, 3), 0.5)
+        layer = _mask_layer(subtract=True)
+        rgba = _rgba(10, 10, a=0.0)
+        rgba[2:4, 2:4, 3] = 1.0
+        doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=[layer])
+        _, mask = run_composite(base, doc, {"m1": rgba}, invert_mask=True)
+        expected = torch.ones(10, 10)
+        expected[2:4, 2:4] = 0.0
+        self.assertTrue(torch.equal(mask[0], expected))
+
+    def test_empty_subtract_is_noop(self):
+        """A visible subtract cmask without a file changes nothing (and is no mask row)."""
+        base = torch.full((1, 10, 10, 3), 0.5)
+        layers = [_mask_layer("n"), _mask_layer("s", subtract=True, file=None)]
+        doc = Document(frame=_frame(10, 10), bounds=_bounds(0, 0, 10, 10), layers=layers)
+        _, mask = run_composite(base, doc, {"n": _rgba(10, 10, a=0.5), "s": None}, invert_mask=False)
+        self.assertTrue(torch.allclose(mask, torch.full_like(mask, 0.5)))
+        doc.layers = [layers[1]]
+        _, mask = run_composite(base, doc, {"s": None}, invert_mask=True)
+        self.assertTrue(torch.equal(mask, torch.ones_like(mask)))
+
+    def test_seven_masks_union_subtract_hidden(self):
+        """7 masks, each covering its own row; hidden masks skipped, a subtract
+        mask removes its row after node invert."""
         base = torch.full((1, 10, 10, 3), 0.5)
         layers, tensors = [], {}
         for i in range(7):
@@ -280,15 +321,18 @@ class TestCombineMaskLayers(unittest.TestCase):
         for row in range(10):
             expected = 1.0 if row < 7 and row != 3 else 0.0
             self.assertAlmostEqual(mask[0, row, 0].item(), expected, places=4)
-        # Inverted m6 is 0 on row 6 and 1 elsewhere; no other mask covers row 6.
-        layers[6] = _mask_layer(lid="m6", invert=True)
+        # Subtract m6 removes row 6 (nobody else covers it) and leaves the rest.
+        layers[6] = _mask_layer(lid="m6", subtract=True)
         _, mask = run_composite(base, doc, tensors, invert_mask=False)
         self.assertAlmostEqual(mask[0, 6, 0].item(), 0.0, places=4)
-        self.assertAlmostEqual(mask[0, 9, 0].item(), 1.0, places=4)
-        self.assertAlmostEqual(mask[0, 3, 0].item(), 1.0, places=4)
-        _, mask = run_composite(base, doc, tensors, invert_mask=True)
-        self.assertAlmostEqual(mask[0, 6, 0].item(), 1.0, places=4)
+        self.assertAlmostEqual(mask[0, 5, 0].item(), 1.0, places=4)
         self.assertAlmostEqual(mask[0, 9, 0].item(), 0.0, places=4)
+        # invert_mask flips the union (rows 0-5 except 3 -> 0); row 6 stays subtracted.
+        _, mask = run_composite(base, doc, tensors, invert_mask=True)
+        self.assertAlmostEqual(mask[0, 6, 0].item(), 0.0, places=4)
+        self.assertAlmostEqual(mask[0, 5, 0].item(), 0.0, places=4)
+        self.assertAlmostEqual(mask[0, 3, 0].item(), 1.0, places=4)
+        self.assertAlmostEqual(mask[0, 9, 0].item(), 1.0, places=4)
 
 
 class TestFrameMismatch(unittest.TestCase):

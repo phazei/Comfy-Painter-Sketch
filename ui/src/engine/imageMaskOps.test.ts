@@ -2,7 +2,7 @@
  * Image Mask row in the editor: made from the source's alpha (not an
  * undo step, dirty until uploaded), opaque removes it, every pixel edit is
  * refused with the note, settings are ordinary (undoable) mask settings,
- * Ctrl+click selects its effective coverage, Duplicate makes an editable
+ * Ctrl+click selects its raw coverage, Duplicate makes an editable
  * mask, solo works, Merge Down refuses. Canvas fakes: `fakeCanvas.testutil.ts`.
  */
 
@@ -64,14 +64,14 @@ describe("Image Mask row", () => {
     ed.imageMask.markUploaded(ed.imageMask.version, "painter-sketch/ps-x-1.png [input]");
     expect(ed.dirty).toBe(false);
     ed.layerOps.setMaskColor(IMAGE_MASK_ID, "#123456");
-    ed.layerOps.setMaskInvert(IMAGE_MASK_ID, true);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true);
     ed.layerOps.setVisible(IMAGE_MASK_ID, false);
     expect(ed.dirty).toBe(false);
     expect(ed.doc.imageMask?.file).toBe("painter-sketch/ps-x-1.png [input]");
     // A new source keeps the settings but needs a new file.
     ed.imageMask.setFromAlpha("filename=b.png&subfolder=&type=input", SIZE, alphaWithHole());
     expect(ed.dirty).toBe(true);
-    expect(ed.doc.imageMask).toMatchObject({ color: "#123456", invert: true, visible: false, file: null });
+    expect(ed.doc.imageMask).toMatchObject({ color: "#123456", subtract: true, visible: false, file: null });
     // An upload of the previous version finishing late does not name the new source's file.
     ed.imageMask.markUploaded(ed.imageMask.version - 1, "painter-sketch/ps-x-1.png [input]");
     expect(ed.doc.imageMask?.file).toBeNull();
@@ -90,8 +90,12 @@ describe("Image Mask row", () => {
     expect(fresh.dirty).toBe(false);
   });
 
-  it("colour / invert / opacity are undoable settings; rename and lock are refused", () => {
+  it("colour / Subtract / opacity are undoable settings; rename and lock are refused", () => {
     const { ed } = setup();
+    expect(ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true)).toBe(true);
+    expect(ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true)).toBe(false);
+    ed.undo();
+    expect(ed.doc.imageMask?.subtract).toBe(false);
     const before = ed.doc.imageMask?.color;
     expect(ed.layerOps.setMaskColor(IMAGE_MASK_ID, "#abcdef")).toBe(true);
     expect(ed.layerOps.setOpacity(IMAGE_MASK_ID, 0.2)).toBe(true);
@@ -140,24 +144,29 @@ describe("Image Mask row", () => {
     expect(notes).toContain(IMAGE_MASK_NOTE);
   });
 
-  it("Ctrl+click selects the effective coverage (invert applied, image only)", () => {
+  it("Ctrl+click selects and copy takes the raw coverage (image only), also in Subtract mode", () => {
     const { ed } = setup();
     expect(ed.selection.fromLayer(IMAGE_MASK_ID, "replace")).toBe(true);
     const cov = (x: number, y: number): number => coverageAt(ed.selection.current, x, y);
     expect([cov(1, 1), cov(2, 2), cov(0, 0), cov(5, 5)]).toEqual([255, 255, 0, 0]);
-    ed.layerOps.setMaskInvert(IMAGE_MASK_ID, true);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true);
+    ed.selection.deselect();
     ed.selection.fromLayer(IMAGE_MASK_ID, "replace");
-    expect([cov(1, 1), cov(0, 0), cov(7, 7), cov(9, 9)]).toEqual([0, 255, 255, 0]);
+    expect([cov(1, 1), cov(2, 2), cov(0, 0), cov(7, 7), cov(9, 9)]).toEqual([255, 255, 0, 0, 0]);
+    ed.selection.deselect();
+    ed.selectMask(IMAGE_MASK_ID);
+    const px = ed.clipboard.copy(false)?.data.data;
+    expect([px?.[(1 * 8 + 1) * 4], px?.[0]]).toEqual([255, 0]);
   });
 
   it("Duplicate makes an ordinary current mask with the coverage and settings", () => {
     const { ed } = setup();
-    ed.layerOps.setMaskInvert(IMAGE_MASK_ID, true);
+    ed.layerOps.setMaskSubtract(IMAGE_MASK_ID, true);
     const masksBefore = ed.doc.layers.filter((l) => l.kind === "mask").length;
     const id = ed.imageMask.duplicate();
     expect(id).toBeTruthy();
     const copy = ed.doc.layers.find((l) => l.id === id);
-    expect(copy).toMatchObject({ kind: "mask", name: "Image Mask copy", invert: true, opacity: ed.doc.imageMask?.opacity });
+    expect(copy).toMatchObject({ kind: "mask", name: "Image Mask copy", subtract: true, opacity: ed.doc.imageMask?.opacity });
     expect(ed.doc.layers.filter((l) => l.kind === "mask").length).toBe(masksBefore + 1);
     // Distinct colour: neither the row's nor any existing mask's.
     const others = [ed.doc.imageMask?.color, ...ed.doc.layers.filter((l) => l.kind === "mask" && l.id !== id).map((l) => l.color)];

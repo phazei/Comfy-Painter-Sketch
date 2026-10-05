@@ -235,7 +235,8 @@ function readLayer(value: unknown): Layer | null {
     file: typeof file === "string" ? file : null,
   };
   if (typeof value["color"] === "string") layer.color = value["color"];
-  if (typeof value["invert"] === "boolean") layer.invert = value["invert"];
+  // Mask layers only, lenient (as Python): anything but `true` is normal.
+  if (kind === "mask") layer.subtract = value["subtract"] === true;
   // Layer masks: paint layers only (as saved; Python checks the saved kind too).
   if (kind === "paint") {
     const { mask } = readLayerMask(value["layerMask"]);
@@ -257,8 +258,8 @@ function readLayer(value: unknown): Layer | null {
 /**
  * Read the optional `imageMask` record (`imageMask.ts`) leniently: a
  * record without a string `sourceKey` or a valid size is dropped (Python
- * ignores it too); unusable `file` -> none, `visible` -> true, `invert` ->
- * false, colour / opacity as for mask layers.
+ * ignores it too); unusable `file` -> none, `visible` -> true, `subtract`
+ * -> false unless `true`, colour / opacity as for mask layers.
  * @param value - Saved `imageMask` value.
  * @returns The record (absent when missing or dropped) and a repair flag.
  */
@@ -270,14 +271,14 @@ function readImageMask(value: unknown): { mask?: ImageMask; repaired: boolean } 
     log.warn("imageMask is malformed; dropping it", value);
     return { repaired: true };
   }
-  const { file, visible, color, invert } = value;
+  const { file, visible, color, subtract } = value;
   const mask = createImageMask(sourceKey, size, {
     color: typeof color === "string" ? color : DEFAULT_MASK_COLOR,
     opacity: clamp01(value["opacity"], DEFAULT_MASK_OPACITY),
   });
   if (typeof file === "string" && file.trim()) mask.file = file;
   if (typeof visible === "boolean") mask.visible = visible;
-  mask.invert = invert === true;
+  mask.subtract = subtract === true;
   const repaired = (file !== null && mask.file === null) || (visible !== undefined && typeof visible !== "boolean");
   return { mask, repaired };
 }

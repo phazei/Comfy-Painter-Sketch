@@ -137,6 +137,7 @@ const ALIASES: Readonly<Record<string, string>> = {
   italic: "italic",
   // Layers panel.
   plus: "plus",
+  minus: "minus",
   duplicate: "copy",
   mergeDown: "layers-arrow-down",
   eye: "eye",
@@ -145,6 +146,7 @@ const ALIASES: Readonly<Record<string, string>> = {
   unlock: "lock-open",
   solo: "circle-dot",
   maskView: "scan-eye",
+  maskSubtract: "squares-subtract",
   // UI refresh: bottom bar, menus, strip.
   help: "circle-help",
   warning: "triangle-alert",

@@ -88,8 +88,8 @@ class TestOffImageRegions(unittest.TestCase):
         mask[5, 9, 3] = 1.0                                 # frame (5, 1): right of image
         self.tensors = {"p": paint, "m": mask}
         self.doc = Document(Frame(4, 4), bounds, layers=[
-            Layer("p", "paint", True, 1.0, "p.png", False),
-            Layer("m", "mask", True, 1.0, "m.png", False),
+            Layer("p", "paint", True, 1.0, "p.png"),
+            Layer("m", "mask", True, 1.0, "m.png"),
         ], regions=[Region("wide", 1, RegionRect(-3, 0, 10, 3))])
 
     def _render(self, invert: bool) -> tuple[torch.Tensor, torch.Tensor, RegionOutput]:
@@ -116,6 +116,22 @@ class TestOffImageRegions(unittest.TestCase):
         self.assertEqual(float(region.mask[0, 0, 0]), 1.0)
         torch.testing.assert_close(region.mask[:, :, 3:7], mask[:, 0:3, 0:4])
 
+    def test_subtract_mask_off_image(self) -> None:
+        """A subtract cmask is 0 outside its paint: under invert_mask the off-image
+        area stays masked except where the subtract layer itself has paint."""
+        sub = torch.zeros(12, 12, 4)
+        sub[4, 1, 3] = 1.0                                  # frame (-3, 0): left of image
+        sub[5, 5, 3] = 1.0                                  # frame (1, 1): inside
+        self.tensors["s"] = sub
+        self.doc.layers.append(Layer("s", "mask", True, 1.0, "s.png", subtract=True))
+        _, mask, region = self._render(True)
+        expected = torch.ones(2, 3, 10)
+        expected[:, 1, 8] = 0.0                             # normal cmask, inverted
+        expected[:, 0, 0] = 0.0                             # subtracted off-image
+        expected[:, 1, 4] = 0.0                             # subtracted inside
+        torch.testing.assert_close(region.mask, expected)
+        torch.testing.assert_close(region.mask[:, :, 3:7], mask[:, 0:3, 0:4])
+
     def test_region_fully_outside_image(self) -> None:
         """A region right of the image is pure background plus the mask there."""
         doc = Document(self.doc.frame, self.doc.bounds, self.doc.layers,
@@ -131,7 +147,7 @@ class TestOffImageRegions(unittest.TestCase):
         base = torch.rand(1, 6, 6, 3)
         paint = torch.rand(12, 12, 4)
         doc = Document(Frame(4, 4), Bounds(-4, -4, 12, 12),
-                       layers=[Layer("p", "paint", True, 0.7, "p.png", False)])
+                       layers=[Layer("p", "paint", True, 0.7, "p.png")])
         image, _ = run_composite(base, doc, {"p": paint}, False)
         render = viewport_renderer(base, doc, {"p": paint}, False, RED)
         view, _, straight = render((-2, -1, 5, 4))

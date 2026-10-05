@@ -169,16 +169,16 @@ describe("layer -> selection (Ctrl+click)", () => {
     expect(depth(ed)).toBe(steps);
   });
 
-  it("inverted mask loads its effective coverage", () => {
+  it("a Subtract mask loads its raw coverage (the mode is ignored)", () => {
     const { ed } = setup();
     const mask = ed.layerOps.addMask();
     expect(mask).toBeTruthy();
     if (!mask) return;
     paintRect(ed, mask, 0, 0, 2, 2);
-    ed.layerOps.setMaskInvert(mask, true);
+    ed.layerOps.setMaskSubtract(mask, true);
     ed.selection.fromLayer(mask, "replace");
-    expect(cov(ed, 0, 0)).toBe(0);
-    expect(cov(ed, 10, 10)).toBe(255);
+    expect(cov(ed, 0, 0)).toBe(255);
+    expect(cov(ed, 10, 10)).toBe(0);
   });
 
   it("mask row: soft mask pixels load at full strength", () => {
@@ -188,9 +188,9 @@ describe("layer -> selection (Ctrl+click)", () => {
     setAlpha(ed, mask, 3, 3, 40);
     ed.selection.fromLayer(mask, "replace");
     expect([cov(ed, 3, 3), cov(ed, 4, 3)]).toEqual([255, 0]);
-    ed.layerOps.setMaskInvert(mask, true);
+    ed.layerOps.setMaskSubtract(mask, true);
     ed.selection.fromLayer(mask, "replace");
-    expect([cov(ed, 3, 3), cov(ed, 4, 3)]).toEqual([255, 255]); // effective 215 > 0
+    expect([cov(ed, 3, 3), cov(ed, 4, 3)]).toEqual([255, 0]); // raw, also in Subtract mode
   });
 });
 

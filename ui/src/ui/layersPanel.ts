@@ -329,7 +329,7 @@ export class LayersPanel {
       toggleSolo: (id) => this.editor?.toggleSolo(id),
       toggleLocked: (id) => this.withEditor((e) => e.layerOps.setLocked(id, !findLayer(e, id)?.locked)),
       rename: (id, name) => this.withEditor((e) => e.layerOps.rename(id, name)),
-      toggleInvert: (id) => this.withEditor((e) => e.layerOps.setMaskInvert(id, findLayer(e, id)?.invert !== true)),
+      toggleSubtract: (id) => this.withEditor((e) => e.layerOps.setMaskSubtract(id, findLayer(e, id)?.subtract !== true)),
       // Read-only rows: the Image / Input Mask (an editable cmask) and the Background (a paint layer).
       duplicate: (id) => this.withEditor((e) => (id === IMAGE_MASK_ID || id === BACKGROUND_ID) && duplicateRow(e, id)),
       pickColor: (id, anchor) => {

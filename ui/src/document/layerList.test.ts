@@ -61,7 +61,7 @@ describe("delete / duplicate constraints", () => {
     const maskId = doc.layers[3]!.id;
     expect(canDeleteLayer(doc.layers, "A")).toBe(true);
     expect(canDeleteLayer(doc.layers, maskId)).toBe(false);
-    expect(canDuplicateLayer(doc.layers, maskId)).toBe(false);
+    expect(canDuplicateLayer(doc.layers, maskId)).toBe(true);
     expect(canDuplicateLayer(doc.layers, "C")).toBe(true);
     doc.layers = doc.layers.filter((l) => l.id === "A" || l.kind === "mask");
     expect(canDeleteLayer(doc.layers, "A")).toBe(false);
@@ -149,17 +149,17 @@ describe("applyLayerChange", () => {
   it("applies and reverts props, removing optional fields that were absent", () => {
     const doc = threeLayerDoc();
     const layer = doc.layers[0]!;
-    const after = { name: "Sky", invert: true };
+    const after = { name: "Sky", subtract: true };
     const before = readProps(layer, after);
-    expect(before).toEqual({ name: "A", invert: undefined });
+    expect(before).toEqual({ name: "A", subtract: undefined });
     expect(propsDiffer(layer, after)).toBe(true);
     const change: LayerChange<string> = { op: "props", id: "A", before, after };
     applyLayerChange(doc.layers, change, true);
     expect(layer.name).toBe("Sky");
-    expect(layer.invert).toBe(true);
+    expect(layer.subtract).toBe(true);
     expect(propsDiffer(layer, after)).toBe(false);
     applyLayerChange(doc.layers, change, false);
     expect(layer.name).toBe("A");
-    expect("invert" in layer).toBe(false);
+    expect("subtract" in layer).toBe(false);
   });
 });

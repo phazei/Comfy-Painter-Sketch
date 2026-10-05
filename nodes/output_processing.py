@@ -133,8 +133,9 @@ def apply_output_options(
 
     Args:
         image:    ``[B, H, W, 3]`` IMAGE.
-        mask:     ``[B, H, W]`` final MASK (incl. ``invert_mask``, the
-                  Image / Input Mask and the Background-off transparency).
+        mask:     ``[B, H, W]`` final MASK (incl. ``invert_mask``, subtract
+                  cmasks, the Image / Input Mask and the Background-off
+                  transparency).
         options:  This output's options.
         straight: ``[1 | B, H, W, 3]`` un-premultiplied colour, or ``None``
                   (Background visible: no transparency).

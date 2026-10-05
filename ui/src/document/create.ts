@@ -75,7 +75,7 @@ export interface MaskStyle {
 export const DEFAULT_MASK_STYLE: Readonly<MaskStyle> = { color: DEFAULT_MASK_COLOR, opacity: DEFAULT_MASK_OPACITY };
 
 /**
- * A new, empty, visible, not inverted mask layer.
+ * A new, empty, visible, normal (not subtract) mask layer.
  *
  * @param name - Display name.
  * @param style - Colour + overlay opacity (default red, 50 %).
@@ -92,7 +92,7 @@ export function createMaskLayer(name = FIRST_MASK_NAME, style: Readonly<MaskStyl
     blendMode: "normal",
     file: null,
     color: style.color,
-    invert: false,
+    subtract: false,
   };
 }
 

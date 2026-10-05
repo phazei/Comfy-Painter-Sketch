@@ -113,16 +113,15 @@ export function coverageFromMaskFile(rgba: Uint8ClampedArray): Uint8Array {
 /**
  * Resample image-px coverage into a document rect: each document pixel
  * centre is mapped to the image (`map`) and sampled bilinearly (edge
- * clamped); centres outside the image are 0 (also when inverted: the Image
- * Mask only covers the image).
+ * clamped); centres outside the image are 0 (the Image Mask only covers the
+ * image).
  * @param coverage - Coverage plane, `size` sized.
  * @param size - Image size of the plane.
  * @param map - Document -> image map for that image size.
  * @param rect - Integer document rect to fill.
- * @param invert - Return the effective coverage (`255 - c` inside the image).
  * @returns Coverage over `rect`, row-major.
  */
-export function coverageInDoc(coverage: Uint8Array, size: Size, map: FrameMap, rect: Rect, invert: boolean): Uint8Array {
+export function coverageInDoc(coverage: Uint8Array, size: Size, map: FrameMap, rect: Rect): Uint8Array {
   const { width: w, height: h } = size;
   const out = new Uint8Array(Math.max(0, rect.width * rect.height));
   for (let y = 0; y < rect.height; y++) {
@@ -142,7 +141,7 @@ export function coverageInDoc(coverage: Uint8Array, size: Size, map: FrameMap, r
       const top = (coverage[y0 * w + x0] as number) * (1 - tx) + (coverage[y0 * w + x1] as number) * tx;
       const bottom = (coverage[y1 * w + x0] as number) * (1 - tx) + (coverage[y1 * w + x1] as number) * tx;
       const v = Math.round(top * (1 - ty) + bottom * ty);
-      out[y * rect.width + x] = invert ? 255 - v : v;
+      out[y * rect.width + x] = v;
     }
   }
   return out;

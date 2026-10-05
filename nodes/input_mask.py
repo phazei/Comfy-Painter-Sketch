@@ -3,9 +3,9 @@ nodes/input_mask.py -- The optional ``mask`` input (SPEC "Python execution").
 
 While ``mask`` is connected it replaces the input image's alpha (the Image
 Mask file) as the coverage of the fixed mask row; the row's settings
-(eye, invert; colour / opacity are display-only) still come from the
+(eye, subtract; colour / opacity are display-only) still come from the
 manifest's ``imageMask`` record, whose ``file`` is then ignored. Without a
-record the row has its defaults (visible, not inverted), like the editor.
+record the row has its defaults (visible, normal: not subtract), like the editor.
 
 Tensor rules (pure torch, no files):
     - ``[H, W]`` masks are one-frame batches.
@@ -99,7 +99,7 @@ def row_settings(doc: Document, size: tuple[int, int]) -> Document:
     """``doc`` with an ``image_mask`` record for the Input Mask row.
 
     The saved record's settings apply (its file is ignored while ``mask`` is
-    connected); without one the defaults do (visible, not inverted).
+    connected); without one the defaults do (visible, not subtract).
 
     Args:
         doc:  Parsed document.
@@ -110,12 +110,15 @@ def row_settings(doc: Document, size: tuple[int, int]) -> Document:
     """
     if doc.image_mask is not None:
         return doc
-    record = ImageMask(file=None, visible=True, invert=False, width=size[0], height=size[1])
+    record = ImageMask(file=None, visible=True, subtract=False, width=size[0], height=size[1])
     return dataclasses.replace(doc, image_mask=record)
 
 
 def mask_without_document(coverage: torch.Tensor, batch: int, invert_mask: bool) -> torch.Tensor:
     """MASK output when the manifest is empty / unreadable: the Input Mask alone (default settings).
+
+    Without a document there is no row record, so the row is a visible
+    normal (non-subtract) cmask: the union is the coverage itself.
 
     Args:
         coverage:    Prepared coverage (:func:`prepare_input_mask`).

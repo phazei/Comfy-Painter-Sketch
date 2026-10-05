@@ -8,7 +8,7 @@
  * | Region mode | Main / region · Outputs | outputs, Back to {layer} |
  * | Background selected | Background · Read-only | Duplicate to an editable layer, Back |
  * | Image / Input Mask current (Quick Mask) | {row} · Read-only | Duplicate to an editable mask, Back |
- * | Quick Mask | {cmask} · Mask | Invert, View alone, Lock (Simple: only Unlock), Back (Q) |
+ * | Quick Mask | {cmask} · Mask (· Subtract for a Subtract cmask) | Subtract, View alone, Lock (Simple: only Unlock), Back (Q) |
  * | lmask targeted | {layer} · Mask | Pixels / Layer mask, View, Enable |
  * | Paint layer | {layer} · Pixels | same; no lmask: Add layer mask |
  * | Text layer | {layer} · Pixels | Rasterize text |
@@ -215,7 +215,7 @@ export class EditChip {
     return {
       title: mask.name,
       entries: [
-        { label: "Invert mask", icon: "invert", checked: mask.invert === true, onPick: () => this.edit(editor, () => editor.layerOps.setMaskInvert(id, mask.invert !== true)) },
+        { label: "Subtract", icon: "maskSubtract", checked: mask.subtract === true, onPick: () => this.edit(editor, () => editor.layerOps.setMaskSubtract(id, mask.subtract !== true)) },
         // View only (no beforeEdit), like the row's solo button.
         { label: "View this mask alone", icon: "solo", checked: editor.solo.mask === id, onPick: () => editor.toggleSolo(id) },
         ...lock,
@@ -322,7 +322,7 @@ export function chipModel(session: EditorSession): ChipModel {
   }
   const mask = editor.paintTarget === "mask" ? editor.maskLayer : undefined;
   if (mask) {
-    const part = mask.id === IMAGE_MASK_ID ? "Read-only" : "Mask";
+    const part = mask.id === IMAGE_MASK_ID ? "Read-only" : mask.subtract === true ? "Subtract" : "Mask";
     return { name: mask.name, part, swatch: maskDisplayColor(mask), ring: false };
   }
   const paint = findPaintLayer(editor.doc);
